@@ -10,7 +10,7 @@ export type WatchState = {
 
 export type WatcherDeps = {
   fetchIssues: () => Promise<LinearIssue[]>;
-  launch: (name: string) => void;
+  launch: (name: string) => Promise<void> | void;
   log: (msg: string) => void;
 };
 
@@ -47,7 +47,7 @@ export async function pollOnce(state: WatchState, deps: WatcherDeps): Promise<vo
   for (const issue of detectNewIssues(state, issues)) {
     const name = buildSessionName(issue.identifier, issue.title);
     try {
-      deps.launch(name);
+      await deps.launch(name);
       // Mark seen only after a successful launch so failures retry next poll.
       state.seen.add(issue.id);
       deps.log(`launched session '${name}' for ${issue.identifier}`);
@@ -63,11 +63,16 @@ export type WatcherConfig = {
   pollIntervalMinutes: number;
 };
 
-export function launchSession(name: string): void {
+export function launchSession(name: string): Promise<void> {
   const script = join(homedir(), "new-session.sh");
   const proc = spawn("bash", [script, name], { detached: true, stdio: "ignore" });
-  proc.on("error", (err) => console.error(`[watcher] spawn error for '${name}': ${err}`));
   proc.unref();
+  // spawn() reports failures like ENOENT asynchronously via 'error'; wait for
+  // the 'spawn' event so callers can treat a failed launch as an error and retry.
+  return new Promise((resolve, reject) => {
+    proc.once("spawn", () => resolve());
+    proc.once("error", (err) => reject(err));
+  });
 }
 
 export function startWatcher(config: WatcherConfig): () => void {

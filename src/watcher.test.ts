@@ -75,6 +75,28 @@ test("pollOnce retries an issue whose launch failed", async () => {
   assert.ok(state.seen.has("a"));
 });
 
+test("pollOnce retries an issue whose async launch rejected", async () => {
+  const state = freshState();
+  const launched: string[] = [];
+  let fail = true;
+  const deps = {
+    fetchIssues: async () => [issue("a", "ENG-1", "Fix bug")],
+    launch: async (name: string) => {
+      if (fail) throw new Error("spawn failed");
+      launched.push(name);
+    },
+    log: () => {},
+  };
+  await pollOnce(state, { ...deps, fetchIssues: async () => [] }); // baseline
+  await pollOnce(state, deps); // launch rejects
+  assert.ok(!state.seen.has("a"), "rejected launch must not be marked seen");
+  assert.deepEqual(launched, []);
+  fail = false;
+  await pollOnce(state, deps); // retried and succeeds
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+  assert.ok(state.seen.has("a"));
+});
+
 test("pollOnce survives fetch failure without touching state", async () => {
   const state = freshState();
   await pollOnce(state, { fetchIssues: async () => [issue("a", "ENG-1", "One")], launch: () => {}, log: () => {} }); // baseline

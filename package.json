@@ -1,0 +1,16 @@
+{
+  "name": "linear-helper",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env --import tsx/esm index.ts",
+    "check": "node --env-file=.env --import tsx/esm scripts/check.ts",
+    "test": "node --import tsx/esm --test src/*.test.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0"
+  }
+}

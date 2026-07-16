@@ -1,10 +1,11 @@
+import { envOr } from "../src/env.ts";
 import { fetchTriggerIssues, resolveContext } from "../src/linear-api.ts";
 import { buildSessionName } from "../src/watcher.ts";
 
-const apiKey = process.env.LINEAR_API_KEY ?? "";
+const apiKey = process.env.LINEAR_API_KEY?.trim() ?? "";
 if (!apiKey) throw new Error("LINEAR_API_KEY is required (put it in .env)");
-const teamName = process.env.LINEAR_TEAM_NAME ?? "Engineering";
-const stateName = process.env.TRIGGER_STATE_NAME ?? "In Progress";
+const teamName = envOr("LINEAR_TEAM_NAME", "Engineering");
+const stateName = envOr("TRIGGER_STATE_NAME", "In Progress");
 
 const ctx = await resolveContext(apiKey, teamName, stateName);
 console.log(`team="${teamName}" state="${stateName}" viewer=${ctx.viewerId}`);

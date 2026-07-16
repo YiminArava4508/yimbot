@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fetchTriggerIssues, type LinearContext, type LinearIssue } from "./linear-api.ts";
 
+export const sessionScriptPath = join(homedir(), "new-session.sh");
+
 export type WatchState = {
   seen: Set<string>;
   initialized: boolean;
@@ -64,15 +66,21 @@ export type WatcherConfig = {
 };
 
 export function launchSession(name: string): Promise<void> {
-  const script = join(homedir(), "new-session.sh");
-  const proc = spawn("bash", [script, name], { detached: true, stdio: "ignore" });
+  const proc = spawn("bash", [sessionScriptPath, name], { detached: true, stdio: "ignore" });
   proc.unref();
   // spawn() reports failures like ENOENT asynchronously via 'error'; wait for
   // the 'spawn' event so callers can treat a failed launch as an error and retry.
-  return new Promise((resolve, reject) => {
+  const result = new Promise<void>((resolve, reject) => {
     proc.once("spawn", () => resolve());
     proc.once("error", (err) => reject(err));
   });
+  // Diagnostic only: the session script runs detached, so a non-zero exit
+  // (e.g. tmux/worktree setup failing inside the script) would otherwise be
+  // invisible — this does not affect the seen/retry semantics above.
+  proc.once("exit", (code) => {
+    if (code !== 0) console.error(`[watcher] new-session.sh for '${name}' exited ${code}`);
+  });
+  return result;
 }
 
 export function startWatcher(config: WatcherConfig): () => void {
@@ -94,7 +102,9 @@ export function startWatcher(config: WatcherConfig): () => void {
     }
   };
 
-  void poll();
-  const timer = setInterval(() => void poll(), config.pollIntervalMinutes * 60 * 1000);
+  const safePoll = () => void poll().catch((err) => console.error(`[watcher] poll crashed: ${err}`));
+
+  safePoll();
+  const timer = setInterval(safePoll, config.pollIntervalMinutes * 60 * 1000);
   return () => clearInterval(timer);
 }

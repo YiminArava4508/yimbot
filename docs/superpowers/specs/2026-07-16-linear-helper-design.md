@@ -69,6 +69,14 @@ recreating it, so re-triggering after a restart is harmless.
 | `LINEAR_TEAM_NAME` | no | `Engineering` |
 | `TRIGGER_STATE_NAME` | no | `In Progress` |
 | `POLL_INTERVAL_MINUTES` | no | `3` |
+| `CODEBASE_PATH` | no | `~/Work/gemini` |
+
+**Codebase sync (added 2026-07-17):** like shortcut-helper, the daemon runs
+`git pull --rebase origin main` in `CODEBASE_PATH` at startup and every poll
+interval (`src/codebase-sync.ts`, ported verbatim), so new worktree sessions
+branch from up-to-date code. Failures (including rebase conflicts) are
+logged and never crash the daemon. Startup fails fast if `CODEBASE_PATH` is
+missing or not a git repository.
 
 Team name and state name are resolved to IDs once at startup; the viewer
 (user) ID is resolved from the API key. Startup fails fast with a clear

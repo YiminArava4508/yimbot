@@ -24,7 +24,8 @@ schedule** — one-at-a-time work is gated by *state*, not by a timer.
 ### The gate (WIP limits)
 
 On each poll, before selecting anything, the picker checks two counts of the
-viewer's assigned Engineering issues:
+viewer's assigned issues **across all teams** (these are personal-capacity
+limits — they are matched by assignee + state *name*, with no team filter):
 
 1. **In Progress count** — must be `0`. One ticket in progress at a time; the
    picker does not start new work until the current ticket has landed in Review.
@@ -38,13 +39,21 @@ server via the existing In-Review resume trigger), reserving a review slot with
 the `< 3` check guarantees the invariant: **In Progress ≤ 1, In Review ≤ 3** —
 at most 4 active sessions/servers, review cap never exceeded.
 
-These counts are **not cycle-scoped**: a leftover review from a previous cycle
-still holds a server, so it still counts against the cap.
+These counts are **viewer-wide and not cycle-scoped**: any ticket assigned to
+you that is In Progress or In Review counts — whatever team or cycle it belongs
+to — because it reflects work you're personally holding (and, for reviews, a
+running local server). A leftover review from a previous cycle, or an
+In-Progress ticket in another team, still counts against the limits.
 
 ### Selection
 
 When the gate is open, choose from the viewer's assigned issues that are in the
-**current cycle** and in the **Todo** state (`TODO_STATE_NAME`, default "Todo"):
+**current cycle** and in the **Todo** state (`TODO_STATE_NAME`, default "Todo").
+Selection is scoped to the **watched team** (`LINEAR_TEAM_NAME`, "Engineering"):
+in practice that is where all your active-cycle work lives, and — critically —
+it means the picked ticket moves into exactly the "In Progress" state the
+existing launch trigger already watches, so the launch machinery is unchanged.
+(The WIP *counts* above are the only thing that is team-agnostic.)
 
 1. **Drop** any ticket carrying a risk-ish label (`RISK_LABELS`, default
    `migration,infra,security,breaking`) — those are left for a deliberate manual
@@ -78,12 +87,16 @@ the next poll (it marks an issue seen only after a successful launch).
   returns the top `LinearIssue` or `null`. No I/O; fully unit-testable.
 - **`src/linear-api.ts`** additions:
   - `resolveContext` is reused to resolve a **Todo** state context at startup.
-  - `fetchCycleTodoIssues(apiKey, ctx)` — the team's **active cycle** Todo issues
-    assigned to the viewer, selecting `id identifier title priority sortOrder`
-    and `labels { nodes { name } }`.
+  - `fetchCycleTodoIssues(apiKey, ctx)` — the watched team's **active cycle**
+    Todo issues assigned to the viewer, selecting
+    `id identifier title priority sortOrder` and `labels { nodes { name } }`.
+    Scoped by team + assignee + Todo state + `cycle: { isActive: { eq: true } }`.
   - `moveIssueToState(apiKey, issueId, stateId)` — `issueUpdate` mutation.
-  - In-Progress / In-Review counts reuse the existing `fetchTriggerIssues` on the
-    already-resolved progress/review contexts (`.length`).
+  - `countAssignedInState(apiKey, viewerId, stateName)` — counts issues matched
+    by **assignee + state name only, no team filter**, for the viewer-wide WIP
+    limits. Called once for the In-Progress state name and once for the
+    In-Review state name. (This is why the counts cannot reuse the team-scoped
+    `fetchTriggerIssues`, which filters by a single team's state ID.)
 - **`src/watcher.ts`** — a `pickOnce(deps)` orchestration wired into
   `startWatcher`'s poll after the two existing triggers. `deps` exposes
   `autoPick`, `maxReview`, `countInProgress`, `countInReview`,

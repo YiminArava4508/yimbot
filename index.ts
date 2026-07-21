@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
 import { resolveContext } from "./src/linear-api.ts";
-import { sessionScriptPath, startWatcher } from "./src/watcher.ts";
+import { runLocalEnvScriptPath, sessionScriptPath, startWatcher } from "./src/watcher.ts";
 
 const apiKey = process.env.LINEAR_API_KEY?.trim() ?? "";
 const teamName = envOr("LINEAR_TEAM_NAME", "Engineering");
 const stateName = envOr("TRIGGER_STATE_NAME", "In Progress");
+const reviewStateName = envOr("REVIEW_STATE_NAME", "In Review");
 const pollIntervalMinutes = Number(envOr("POLL_INTERVAL_MINUTES", "3"));
 const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
 
@@ -20,6 +21,9 @@ if (!Number.isFinite(pollIntervalMinutes) || pollIntervalMinutes <= 0) {
 if (!existsSync(sessionScriptPath)) {
   throw new Error(`new-session.sh not found at ${sessionScriptPath}`);
 }
+if (!existsSync(runLocalEnvScriptPath)) {
+  throw new Error(`run-local-env.sh not found at ${runLocalEnvScriptPath}`);
+}
 if (!existsSync(codebasePath)) {
   throw new Error(`CODEBASE_PATH does not exist: ${codebasePath}`);
 }
@@ -29,12 +33,13 @@ try {
   throw new Error(`CODEBASE_PATH is not a git repository: ${codebasePath}`);
 }
 
-const context = await resolveContext(apiKey, teamName, stateName);
+const progressContext = await resolveContext(apiKey, teamName, stateName);
+const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
 console.log(
-  `[linear-helper] watching "${teamName}" for issues entering "${stateName}" every ${pollIntervalMinutes}m, syncing ${codebasePath}`,
+  `[linear-helper] watching "${teamName}": launch on "${stateName}", resume dev env on "${reviewStateName}", every ${pollIntervalMinutes}m; syncing ${codebasePath}`,
 );
 
-const stop = startWatcher({ apiKey, context, pollIntervalMinutes });
+const stop = startWatcher({ apiKey, progressContext, reviewContext, pollIntervalMinutes });
 
 void pullCodebase(codebasePath);
 const syncTimer = setInterval(

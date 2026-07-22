@@ -197,7 +197,7 @@ export type WatcherConfig = {
   apiKey: string;
   progressContext: LinearContext;
   reviewContext: LinearContext;
-  pollIntervalMinutes: number;
+  heartbeatIntervalMinutes: number;
   // When false (the default), the In-Review → resume-dev-env trigger is skipped
   // entirely: entering review no longer spins up the local server.
   resumeOnReview: boolean;
@@ -291,7 +291,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     log,
   };
 
-  // Autonomous picker: on each poll, when idle and the review queue has room,
+  // Autonomous picker: on each heartbeat, when idle and the review queue has room,
   // move the top current-cycle Todo into "In Progress" so trigger 1 launches it.
   const pickerLog = (msg: string) => console.log(`[picker] ${msg}`);
   const { picker } = config;
@@ -309,7 +309,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   let running = false;
-  const poll = async () => {
+  const heartbeat = async () => {
     if (running) return;
     running = true;
     try {
@@ -324,9 +324,10 @@ export function startWatcher(config: WatcherConfig): () => void {
     }
   };
 
-  const safePoll = () => void poll().catch((err) => console.error(`[watcher] poll crashed: ${err}`));
+  const safeHeartbeat = () =>
+    void heartbeat().catch((err) => console.error(`[watcher] heartbeat crashed: ${err}`));
 
-  safePoll();
-  const timer = setInterval(safePoll, config.pollIntervalMinutes * 60 * 1000);
+  safeHeartbeat();
+  const timer = setInterval(safeHeartbeat, config.heartbeatIntervalMinutes * 60 * 1000);
   return () => clearInterval(timer);
 }

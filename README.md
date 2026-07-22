@@ -18,8 +18,8 @@ failures are logged and never crash the daemon.
 ## How it works
 
 The first time you run it, yimbot asks a few setup questions. After that it
-quietly checks your Linear board every few minutes and can do three things (plus
-keep your code up to date):
+quietly checks your Linear board every few minutes — its **heartbeat** — and can
+do three things (plus keep your code up to date):
 
 ```mermaid
 flowchart TD
@@ -28,7 +28,7 @@ flowchart TD
     W --> C["yimbot is running,<br/>watching your Linear board"]
     B -- yes --> C
 
-    C --> P{{"Every few minutes,<br/>check the board"}}
+    C --> P{{"💓 Heartbeat: every few<br/>minutes, check the board"}}
 
     P --> S["Keep the code<br/>up to date"]
 

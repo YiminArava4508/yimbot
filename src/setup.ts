@@ -15,7 +15,7 @@ export type YimbotConfig = {
   triggerStateName: string;
   reviewStateName: string;
   todoStateName: string;
-  pollIntervalMinutes: number;
+  heartbeatIntervalMinutes: number;
   codebasePath: string;
   resumeOnReview: boolean;
   autoPick: boolean;
@@ -63,7 +63,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     LINEAR_TEAM_NAME: c.teamName,
     TRIGGER_STATE_NAME: c.triggerStateName,
     REVIEW_STATE_NAME: c.reviewStateName,
-    POLL_INTERVAL_MINUTES: String(c.pollIntervalMinutes),
+    HEARTBEAT_INTERVAL_MINUTES: String(c.heartbeatIntervalMinutes),
     CODEBASE_PATH: c.codebasePath,
     RESUME_ON_REVIEW: String(c.resumeOnReview),
     AUTO_PICK: String(c.autoPick),
@@ -83,7 +83,7 @@ export function serializeEnvFile(c: YimbotConfig): string {
     `LINEAR_TEAM_NAME=${r.LINEAR_TEAM_NAME}`,
     `TRIGGER_STATE_NAME=${r.TRIGGER_STATE_NAME}`,
     `REVIEW_STATE_NAME=${r.REVIEW_STATE_NAME}`,
-    `POLL_INTERVAL_MINUTES=${r.POLL_INTERVAL_MINUTES}`,
+    `HEARTBEAT_INTERVAL_MINUTES=${r.HEARTBEAT_INTERVAL_MINUTES}`,
     `CODEBASE_PATH=${r.CODEBASE_PATH}`,
     `RESUME_ON_REVIEW=${r.RESUME_ON_REVIEW}`,
     "",
@@ -222,11 +222,11 @@ export async function runSetup(): Promise<YimbotConfig> {
   );
 
   const isPositive = (v: string | undefined) => Number(v) > 0 && Number.isFinite(Number(v));
-  const pollIntervalMinutes = Number(
+  const heartbeatIntervalMinutes = Number(
     bail(
       await p.text({
-        message: "Poll interval (minutes)",
-        initialValue: envOr("POLL_INTERVAL_MINUTES", "3"),
+        message: "Heartbeat interval (minutes) — how often to check the board",
+        initialValue: envOr("HEARTBEAT_INTERVAL_MINUTES", envOr("POLL_INTERVAL_MINUTES", "3")),
         validate: (v) => (isPositive(v) ? undefined : "Must be a positive number"),
       }),
     ),
@@ -301,7 +301,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     triggerStateName,
     reviewStateName,
     todoStateName,
-    pollIntervalMinutes,
+    heartbeatIntervalMinutes,
     codebasePath,
     resumeOnReview,
     autoPick,

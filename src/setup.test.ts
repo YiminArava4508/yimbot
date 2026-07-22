@@ -19,7 +19,7 @@ const sample: YimbotConfig = {
   triggerStateName: "In Progress",
   reviewStateName: "In Review",
   todoStateName: "Todo",
-  pollIntervalMinutes: 3,
+  heartbeatIntervalMinutes: 3,
   codebasePath: "/home/ymbo/Work/gemini",
   resumeOnReview: false,
   autoPick: false,
@@ -61,7 +61,7 @@ test("configToEnvRecord maps every setting to its env key", () => {
   assert.equal(r.TRIGGER_STATE_NAME, "In Progress");
   assert.equal(r.REVIEW_STATE_NAME, "In Review");
   assert.equal(r.TODO_STATE_NAME, "Todo");
-  assert.equal(r.POLL_INTERVAL_MINUTES, "3");
+  assert.equal(r.HEARTBEAT_INTERVAL_MINUTES, "3");
   assert.equal(r.CODEBASE_PATH, "/home/ymbo/Work/gemini");
   assert.equal(r.RESUME_ON_REVIEW, "false");
   assert.equal(r.AUTO_PICK, "false");

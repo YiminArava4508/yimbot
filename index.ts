@@ -23,7 +23,11 @@ const apiKey = process.env.LINEAR_API_KEY?.trim() ?? "";
 const teamName = envOr("LINEAR_TEAM_NAME", "Engineering");
 const stateName = envOr("TRIGGER_STATE_NAME", "In Progress");
 const reviewStateName = envOr("REVIEW_STATE_NAME", "In Review");
-const pollIntervalMinutes = Number(envOr("POLL_INTERVAL_MINUTES", "3"));
+// The heartbeat: how often the central loop ticks. Reads the new
+// HEARTBEAT_INTERVAL_MINUTES, falling back to the legacy POLL_INTERVAL_MINUTES.
+const heartbeatIntervalMinutes = Number(
+  envOr("HEARTBEAT_INTERVAL_MINUTES", envOr("POLL_INTERVAL_MINUTES", "3")),
+);
 const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
 // Resuming the local dev env when a ticket enters "In Review" is opt-in and off
 // by default — only "true"/"on"/"yes"/"1" enables it.
@@ -43,8 +47,8 @@ const riskLabels = envOr("RISK_LABELS", "migration,infra,security,breaking")
 const todoStateName = envOr("TODO_STATE_NAME", "Todo");
 
 if (!apiKey) throw new Error("LINEAR_API_KEY is required");
-if (!Number.isFinite(pollIntervalMinutes) || pollIntervalMinutes <= 0) {
-  throw new Error("POLL_INTERVAL_MINUTES must be a positive number");
+if (!Number.isFinite(heartbeatIntervalMinutes) || heartbeatIntervalMinutes <= 0) {
+  throw new Error("HEARTBEAT_INTERVAL_MINUTES must be a positive number");
 }
 if (!Number.isFinite(maxReview) || maxReview <= 0) {
   throw new Error("MAX_REVIEW must be a positive number");
@@ -68,7 +72,7 @@ const progressContext = await resolveContext(apiKey, teamName, stateName);
 const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
 const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 console.log(
-  `[yimbot] watching "${teamName}": launch on "${stateName}", ${resumeOnReview ? `resume dev env on "${reviewStateName}", ` : ""}every ${pollIntervalMinutes}m; syncing ${codebasePath}`,
+  `[yimbot] watching "${teamName}": launch on "${stateName}", ${resumeOnReview ? `resume dev env on "${reviewStateName}", ` : ""}every ${heartbeatIntervalMinutes}m; syncing ${codebasePath}`,
 );
 console.log(
   autoPick
@@ -80,7 +84,7 @@ const stop = startWatcher({
   apiKey,
   progressContext,
   reviewContext,
-  pollIntervalMinutes,
+  heartbeatIntervalMinutes,
   resumeOnReview,
   picker: {
     autoPick,
@@ -95,7 +99,7 @@ const stop = startWatcher({
 void pullCodebase(codebasePath);
 const syncTimer = setInterval(
   () => void pullCodebase(codebasePath),
-  pollIntervalMinutes * 60 * 1000,
+  heartbeatIntervalMinutes * 60 * 1000,
 );
 
 function shutdown(): void {

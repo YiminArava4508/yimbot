@@ -5,7 +5,7 @@
 
 ## Problem
 
-Today the linear-helper daemon is *reactive*: it only launches work when a
+Today the yimbot daemon is *reactive*: it only launches work when a
 human manually moves a ticket into **In Progress**. That manual move is the last
 remaining hand-crank in an otherwise autonomous pipeline (In Progress → worktree
 + tmux → autonomous `pickup-ticket` → tests green → move to Review + local

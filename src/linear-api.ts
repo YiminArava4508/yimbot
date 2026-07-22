@@ -12,6 +12,16 @@ export type LinearContext = {
   stateId: string;
 };
 
+// A Todo issue in the active cycle, enriched with the fields the picker needs
+// to rank it. `priority` uses Linear's inverted scale: 0=None, 1=Urgent,
+// 2=High, 3=Medium, 4=Low. `sortOrder` is the manual cycle order (lower =
+// higher in the list). `labels` are label names.
+export type CycleTodoIssue = LinearIssue & {
+  priority: number;
+  sortOrder: number;
+  labels: string[];
+};
+
 async function gql<T>(
   apiKey: string,
   query: string,
@@ -82,6 +92,55 @@ export async function resolveContext(
   return { viewerId: data.viewer.id, teamId: team.id, stateId: state.id };
 }
 
+export type LinearTeam = { id: string; name: string; key: string };
+export type LinearState = { id: string; name: string; type: string };
+
+// Authenticate an API key by fetching the viewer. Returns the viewer's name for
+// a friendly "signed in as …" confirmation; throws (via gql) on a bad key.
+export async function fetchViewer(
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ id: string; name: string }> {
+  type ViewerData = { viewer: { id: string; name: string } };
+  const data = await gql<ViewerData>(apiKey, `query Viewer { viewer { id name } }`, {}, fetchImpl);
+  return data.viewer;
+}
+
+// Teams the API key can access, for the setup wizard's team picker.
+export async function fetchTeams(
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LinearTeam[]> {
+  type TeamsData = { teams: { nodes: LinearTeam[] } };
+  const data = await gql<TeamsData>(
+    apiKey,
+    `query Teams { teams(first: 100) { nodes { id name key } } }`,
+    {},
+    fetchImpl,
+  );
+  return data.teams.nodes;
+}
+
+// A team's workflow states, for the setup wizard's trigger/review/todo pickers.
+// Selecting from this list guarantees the name written to .env resolves at
+// daemon startup (resolveContext matches state by name).
+export async function fetchTeamStates(
+  apiKey: string,
+  teamId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LinearState[]> {
+  type StatesData = { team: { states: { nodes: LinearState[] } } };
+  const data = await gql<StatesData>(
+    apiKey,
+    `query TeamStates($teamId: String!) {
+      team(id: $teamId) { states { nodes { id name type } } }
+    }`,
+    { teamId },
+    fetchImpl,
+  );
+  return data.team.states.nodes;
+}
+
 export async function fetchTriggerIssues(
   apiKey: string,
   ctx: LinearContext,
@@ -106,4 +165,109 @@ export async function fetchTriggerIssues(
     fetchImpl,
   );
   return data.issues.nodes;
+}
+
+// The watched team's active-cycle Todo issues assigned to the viewer, enriched
+// with priority, sortOrder, and label names for the picker to rank. Scoped by
+// team + assignee + state + the currently-active cycle.
+export async function fetchCycleTodoIssues(
+  apiKey: string,
+  ctx: LinearContext,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CycleTodoIssue[]> {
+  type Node = {
+    id: string;
+    identifier: string;
+    title: string;
+    priority: number;
+    sortOrder: number;
+    labels: { nodes: { name: string }[] };
+  };
+  type IssuesData = { issues: { nodes: Node[] } };
+  const data = await gql<IssuesData>(
+    apiKey,
+    `query CycleTodos($teamId: ID!, $stateId: ID!, $viewerId: ID!) {
+      issues(
+        first: 50
+        filter: {
+          team: { id: { eq: $teamId } }
+          state: { id: { eq: $stateId } }
+          assignee: { id: { eq: $viewerId } }
+          cycle: { isActive: { eq: true } }
+        }
+      ) {
+        nodes {
+          id
+          identifier
+          title
+          priority
+          sortOrder
+          labels { nodes { name } }
+        }
+      }
+    }`,
+    { teamId: ctx.teamId, stateId: ctx.stateId, viewerId: ctx.viewerId },
+    fetchImpl,
+  );
+  return data.issues.nodes.map((n) => ({
+    id: n.id,
+    identifier: n.identifier,
+    title: n.title,
+    priority: n.priority,
+    sortOrder: n.sortOrder,
+    labels: n.labels.nodes.map((l) => l.name),
+  }));
+}
+
+// Count the viewer's assigned issues in a state matched by name, across ALL
+// teams (no team filter) — the personal-capacity WIP counts. Uses the state
+// name (not a team-scoped id) precisely so it spans teams.
+export async function countAssignedInState(
+  apiKey: string,
+  viewerId: string,
+  stateName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<number> {
+  type IssuesData = { issues: { nodes: { id: string }[] } };
+  const data = await gql<IssuesData>(
+    apiKey,
+    `query CountAssigned($viewerId: ID!, $stateName: String!) {
+      issues(
+        first: 100
+        filter: {
+          assignee: { id: { eq: $viewerId } }
+          state: { name: { eq: $stateName } }
+        }
+      ) {
+        nodes { id }
+      }
+    }`,
+    { viewerId, stateName },
+    fetchImpl,
+  );
+  return data.issues.nodes.length;
+}
+
+// Move an issue to a new workflow state. Throws if Linear reports the update
+// did not succeed, so callers can retry.
+export async function moveIssueToState(
+  apiKey: string,
+  issueId: string,
+  stateId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  type UpdateData = { issueUpdate: { success: boolean } };
+  const data = await gql<UpdateData>(
+    apiKey,
+    `mutation MoveIssue($id: String!, $stateId: String!) {
+      issueUpdate(id: $id, input: { stateId: $stateId }) {
+        success
+      }
+    }`,
+    { id: issueId, stateId },
+    fetchImpl,
+  );
+  if (!data.issueUpdate.success) {
+    throw new Error(`issueUpdate failed for ${issueId}`);
+  }
 }

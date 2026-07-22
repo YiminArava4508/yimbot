@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { envOr } from "./env.ts";
 
-const NAME = "LINEAR_HELPER_TEST_VAR";
+const NAME = "YIMBOT_TEST_VAR";
 
 test("envOr returns fallback when unset", () => {
   delete process.env[NAME];

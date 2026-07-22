@@ -1,14 +1,16 @@
 {
-  "name": "linear-helper",
+  "name": "yimbot",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node --env-file=.env --import tsx/esm index.ts",
+    "start": "node --env-file-if-exists=.env --import tsx/esm index.ts",
+    "onboard": "node --env-file-if-exists=.env --import tsx/esm scripts/onboard.ts",
     "check": "node --env-file=.env --import tsx/esm scripts/check.ts",
     "test": "node --import tsx/esm --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "tsx": "^4.19.2"
   },
   "devDependencies": {

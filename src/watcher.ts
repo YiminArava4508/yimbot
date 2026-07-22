@@ -2,7 +2,16 @@ import { execFileSync, spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fetchTriggerIssues, type LinearContext, type LinearIssue } from "./linear-api.ts";
+import {
+  countAssignedInState,
+  type CycleTodoIssue,
+  fetchCycleTodoIssues,
+  fetchTriggerIssues,
+  type LinearContext,
+  type LinearIssue,
+  moveIssueToState,
+} from "./linear-api.ts";
+import { selectNextTicket } from "./picker.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const runLocalEnvScriptPath = join(homedir(), "run-local-env.sh");
@@ -107,11 +116,89 @@ export async function pollOnce(state: WatchState, deps: WatcherDeps): Promise<vo
   }
 }
 
+export type PickDeps = {
+  // Whether autonomous picking is enabled at all.
+  autoPick: boolean;
+  // Max concurrent In-Review tickets before the pipeline stalls.
+  maxReview: number;
+  // Label names that disqualify a ticket from being auto-picked.
+  riskLabels: string[];
+  // Viewer-wide counts (across all teams) of the personal WIP states.
+  countInProgress: () => Promise<number>;
+  countInReview: () => Promise<number>;
+  // The watched team's active-cycle Todo issues assigned to the viewer.
+  fetchCycleTodos: () => Promise<CycleTodoIssue[]>;
+  // Move the chosen ticket into the watched "In Progress" state, so the
+  // existing launch trigger picks it up on the next poll.
+  moveToInProgress: (issue: CycleTodoIssue) => Promise<void>;
+  log: (msg: string) => void;
+};
+
+// One autonomous-picker tick. Gated by WIP limits: acts only when nothing is
+// In Progress (one at a time) and the review queue has room; otherwise it does
+// nothing (logging a stall when the review cap is the blocker). When the gate
+// is open it selects the top eligible current-cycle Todo and moves it to In
+// Progress — it never launches anything itself.
+//
+// Known limitation: launching relies on trigger 1 detecting the Todo→In
+// Progress transition, and that trigger only fires once per issue per daemon
+// lifetime (its seen-set is never cleared). So if a human moves an
+// already-launched ticket back to Todo, the picker can re-pick it and move it
+// to In Progress but trigger 1 will ignore it — it stays In Progress with no
+// session and stalls the picker until a human intervenes. This only happens on
+// a manual backward move; the normal forward flow is unaffected.
+export async function pickOnce(deps: PickDeps): Promise<void> {
+  if (!deps.autoPick) return;
+
+  let inReview: number;
+  try {
+    if ((await deps.countInProgress()) > 0) return; // busy — one ticket at a time
+    inReview = await deps.countInReview();
+  } catch (err) {
+    deps.log(`pick failed: ${err}`);
+    return;
+  }
+  if (inReview >= deps.maxReview) {
+    deps.log(`review full (${inReview}/${deps.maxReview}) — pipeline stalled`);
+    return;
+  }
+
+  let todos: CycleTodoIssue[];
+  try {
+    todos = await deps.fetchCycleTodos();
+  } catch (err) {
+    deps.log(`pick failed: ${err}`);
+    return;
+  }
+
+  const next = selectNextTicket(todos, { riskLabels: deps.riskLabels });
+  if (!next) return;
+
+  try {
+    await deps.moveToInProgress(next);
+    deps.log(`picked ${next.identifier} → In Progress`);
+  } catch (err) {
+    deps.log(`failed to move ${next.identifier}: ${err}`);
+  }
+}
+
+export type PickerConfig = {
+  autoPick: boolean;
+  maxReview: number;
+  riskLabels: string[];
+  // Watched-team Todo context (team + Todo state + viewer) for cycle queries.
+  todoContext: LinearContext;
+  // State names for the viewer-wide, team-agnostic WIP counts.
+  progressStateName: string;
+  reviewStateName: string;
+};
+
 export type WatcherConfig = {
   apiKey: string;
   progressContext: LinearContext;
   reviewContext: LinearContext;
   pollIntervalMinutes: number;
+  picker: PickerConfig;
 };
 
 export function launchSession(name: string): Promise<void> {
@@ -200,6 +287,23 @@ export function startWatcher(config: WatcherConfig): () => void {
     log,
   };
 
+  // Autonomous picker: on each poll, when idle and the review queue has room,
+  // move the top current-cycle Todo into "In Progress" so trigger 1 launches it.
+  const pickerLog = (msg: string) => console.log(`[picker] ${msg}`);
+  const { picker } = config;
+  const viewerId = config.progressContext.viewerId;
+  const pickDeps: PickDeps = {
+    autoPick: picker.autoPick,
+    maxReview: picker.maxReview,
+    riskLabels: picker.riskLabels,
+    countInProgress: () => countAssignedInState(config.apiKey, viewerId, picker.progressStateName),
+    countInReview: () => countAssignedInState(config.apiKey, viewerId, picker.reviewStateName),
+    fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, picker.todoContext),
+    moveToInProgress: (issue) =>
+      moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId),
+    log: pickerLog,
+  };
+
   let running = false;
   const poll = async () => {
     if (running) return;
@@ -207,6 +311,10 @@ export function startWatcher(config: WatcherConfig): () => void {
     try {
       await pollOnce(progressState, progressDeps);
       await pollOnce(reviewState, reviewDeps);
+      // The picker MUST run last: the triggers fetch first, so a ticket the
+      // picker moves to In Progress this tick is launched on the NEXT tick (not
+      // double-launched now), and the one-in-progress gate blocks re-picking it.
+      await pickOnce(pickDeps);
     } finally {
       running = false;
     }

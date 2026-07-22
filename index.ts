@@ -5,7 +5,19 @@ import { join } from "node:path";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
 import { resolveContext } from "./src/linear-api.ts";
+import { configToEnvRecord, isConfigured, runSetup } from "./src/setup.ts";
 import { runLocalEnvScriptPath, sessionScriptPath, startWatcher } from "./src/watcher.ts";
+
+// First-run onboarding: with no API key configured (fresh clone, or .env never
+// filled in), walk the user through setup, write .env, and apply the result to
+// this process's env so the daemon starts immediately after. Node loads .env via
+// --env-file-if-exists, so a missing file no longer crashes before we get here.
+if (!isConfigured(process.env)) {
+  const config = await runSetup();
+  for (const [key, value] of Object.entries(configToEnvRecord(config))) {
+    process.env[key] = value;
+  }
+}
 
 const apiKey = process.env.LINEAR_API_KEY?.trim() ?? "";
 const teamName = envOr("LINEAR_TEAM_NAME", "Engineering");
@@ -14,9 +26,23 @@ const reviewStateName = envOr("REVIEW_STATE_NAME", "In Review");
 const pollIntervalMinutes = Number(envOr("POLL_INTERVAL_MINUTES", "3"));
 const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
 
+// Autonomous picker config. AUTO_PICK is on unless explicitly disabled with a
+// recognized off-value (false/off/no/0), so an intuitive toggle can't silently
+// leave picking enabled.
+const autoPick = !["false", "off", "no", "0"].includes(envOr("AUTO_PICK", "true").toLowerCase());
+const maxReview = Number(envOr("MAX_REVIEW", "3"));
+const riskLabels = envOr("RISK_LABELS", "migration,infra,security,breaking")
+  .split(",")
+  .map((l) => l.trim())
+  .filter(Boolean);
+const todoStateName = envOr("TODO_STATE_NAME", "Todo");
+
 if (!apiKey) throw new Error("LINEAR_API_KEY is required");
 if (!Number.isFinite(pollIntervalMinutes) || pollIntervalMinutes <= 0) {
   throw new Error("POLL_INTERVAL_MINUTES must be a positive number");
+}
+if (!Number.isFinite(maxReview) || maxReview <= 0) {
+  throw new Error("MAX_REVIEW must be a positive number");
 }
 if (!existsSync(sessionScriptPath)) {
   throw new Error(`new-session.sh not found at ${sessionScriptPath}`);
@@ -35,11 +61,30 @@ try {
 
 const progressContext = await resolveContext(apiKey, teamName, stateName);
 const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
+const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 console.log(
-  `[linear-helper] watching "${teamName}": launch on "${stateName}", resume dev env on "${reviewStateName}", every ${pollIntervalMinutes}m; syncing ${codebasePath}`,
+  `[yimbot] watching "${teamName}": launch on "${stateName}", resume dev env on "${reviewStateName}", every ${pollIntervalMinutes}m; syncing ${codebasePath}`,
+);
+console.log(
+  autoPick
+    ? `[yimbot] auto-pick ON: from "${todoStateName}" in the active cycle, 1 in progress, max ${maxReview} in review; skipping labels [${riskLabels.join(", ")}]`
+    : "[yimbot] auto-pick OFF",
 );
 
-const stop = startWatcher({ apiKey, progressContext, reviewContext, pollIntervalMinutes });
+const stop = startWatcher({
+  apiKey,
+  progressContext,
+  reviewContext,
+  pollIntervalMinutes,
+  picker: {
+    autoPick,
+    maxReview,
+    riskLabels,
+    todoContext,
+    progressStateName: stateName,
+    reviewStateName,
+  },
+});
 
 void pullCodebase(codebasePath);
 const syncTimer = setInterval(
@@ -54,10 +99,10 @@ function shutdown(): void {
 }
 
 process.on("SIGINT", () => {
-  console.log("\n[linear-helper] shutting down");
+  console.log("\n[yimbot] shutting down");
   shutdown();
 });
 process.on("SIGTERM", () => {
-  console.log("[linear-helper] shutting down");
+  console.log("[yimbot] shutting down");
   shutdown();
 });

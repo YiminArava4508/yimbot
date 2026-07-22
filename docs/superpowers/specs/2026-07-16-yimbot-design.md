@@ -1,11 +1,11 @@
-# linear-helper — design
+# yimbot — design
 
 **Date:** 2026-07-16
 **Status:** approved
 
 ## Purpose
 
-A local daemon at `~/Work/linear-helper` that polls Linear and, when an issue
+A local daemon at `~/Work/yimbot` that polls Linear and, when an issue
 assigned to Yimin in the **Engineering** team moves into the **In Progress**
 state, launches a local work session via the existing `~/new-session.sh`
 (git worktree + tmux session).
@@ -25,7 +25,7 @@ TypeScript, run directly by Node (same conventions as shortcut-helper:
 env-var config, `pnpm start`, Ctrl+C to stop).
 
 ```
-~/Work/linear-helper/
+~/Work/yimbot/
   index.ts          — config from .env, dependency checks, starts watcher,
                       SIGINT/SIGTERM handling
   src/

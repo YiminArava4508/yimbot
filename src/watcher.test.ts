@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { LinearIssue } from "./linear-api.ts";
+import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
 import {
   buildSessionName,
   detectNewIssues,
   findExistingSession,
+  pickOnce,
+  type PickDeps,
   pollOnce,
   resumeExistingEnv,
   type WatchState,
@@ -189,4 +191,115 @@ test("resumeExistingEnv propagates resume errors so the poll retries", async () 
     }),
     /tmux failed/,
   );
+});
+
+function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIssue {
+  return {
+    identifier: `ENG-${overrides.id}`,
+    title: `Issue ${overrides.id}`,
+    priority: 0,
+    sortOrder: 0,
+    labels: [],
+    ...overrides,
+  };
+}
+
+function pickDeps(overrides: Partial<PickDeps> = {}): {
+  deps: PickDeps;
+  moved: CycleTodoIssue[];
+  logs: string[];
+} {
+  const moved: CycleTodoIssue[] = [];
+  const logs: string[] = [];
+  const deps: PickDeps = {
+    autoPick: true,
+    maxReview: 3,
+    riskLabels: ["migration"],
+    countInProgress: async () => 0,
+    countInReview: async () => 0,
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
+    moveToInProgress: async (issue) => void moved.push(issue),
+    log: (msg) => void logs.push(msg),
+    ...overrides,
+  };
+  return { deps, moved, logs };
+}
+
+test("pickOnce does nothing when autoPick is off", async () => {
+  let counted = false;
+  const { deps, moved } = pickDeps({
+    autoPick: false,
+    countInProgress: async () => {
+      counted = true;
+      return 0;
+    },
+  });
+  await pickOnce(deps);
+  assert.equal(moved.length, 0);
+  assert.equal(counted, false, "must not even query counts when disabled");
+});
+
+test("pickOnce skips (no pick) when a ticket is already In Progress", async () => {
+  const { deps, moved } = pickDeps({ countInProgress: async () => 1 });
+  await pickOnce(deps);
+  assert.equal(moved.length, 0);
+});
+
+test("pickOnce stalls and logs when the review queue is full", async () => {
+  const { deps, moved, logs } = pickDeps({ maxReview: 3, countInReview: async () => 3 });
+  await pickOnce(deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => /stall/i.test(l) && l.includes("3/3")));
+});
+
+test("pickOnce moves the selected top-priority ticket to In Progress", async () => {
+  const { deps, moved, logs } = pickDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "low", priority: 3 }),
+      cycleTodo({ id: "urgent", priority: 1 }),
+    ],
+  });
+  await pickOnce(deps);
+  assert.deepEqual(moved.map((i) => i.id), ["urgent"]);
+  assert.ok(logs.some((l) => l.includes("ENG-urgent")));
+});
+
+test("pickOnce picks nothing when no eligible Todo exists", async () => {
+  const { deps, moved } = pickDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "risky", labels: ["migration"] })],
+  });
+  await pickOnce(deps);
+  assert.equal(moved.length, 0);
+});
+
+test("pickOnce logs and swallows a move failure without throwing", async () => {
+  const { deps, logs } = pickDeps({
+    moveToInProgress: async () => {
+      throw new Error("linear 500");
+    },
+  });
+  await pickOnce(deps);
+  assert.ok(logs.some((l) => /linear 500/.test(l)));
+});
+
+test("pickOnce swallows a count failure without throwing or moving", async () => {
+  const { deps, moved, logs } = pickDeps({
+    countInProgress: async () => {
+      throw new Error("count 503");
+    },
+  });
+  await pickOnce(deps); // must not throw
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => /count 503/.test(l)));
+});
+
+test("pickOnce swallows a fetchCycleTodos failure without throwing or moving", async () => {
+  const { deps, moved, logs } = pickDeps({
+    fetchCycleTodos: async () => {
+      throw new Error("todos 503");
+    },
+  });
+  await pickOnce(deps); // must not throw
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => /todos 503/.test(l)));
 });

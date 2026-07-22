@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Out-of-repo files (`~/new-session.sh`, `~/.claude/skills/pickup-ticket/SKILL.md`) are **not** under git. Before editing an existing out-of-repo file, make a timestamped backup: `cp <file> <file>.bak.$(date +%s)` — matching the existing `new-session.sh.bak.<ts>` convention. New files need no backup. Do not attempt `git commit` for these paths.
-- Only the linear-helper repo files (this plan, the spec) are committed to git, on branch `build-watcher`.
+- Only the yimbot repo files (this plan, the spec) are committed to git, on branch `build-watcher`.
 - Implementation must **stop at green tests** — no PR, no push, no diff creation. That boundary is a hard requirement of the spec.
 - Preserve existing `new-session.sh` behavior for every non-ticket session name (bare `claude`) and all tmux/worktree setup unchanged.
 - Seed prompt text must contain **no double-quote characters** (it is embedded inside `claude \"$CLAUDE_PROMPT\"` in a `tmux send-keys`), matching the current script.
@@ -23,7 +23,7 @@
 - `~/.claude/skills/pickup-ticket/SKILL.md` — **new.** Source of truth for the autonomous pickup flow and the risk rubric. Invoked by name from the seed prompt; also `/pickup-ticket` by hand.
 - `~/new-session.sh` — **modified.** Extract `seed_prompt_for()` (pure, testable); add a source-guard so the file can be sourced by tests without running session setup; rewrite the seed block to hand off to the pickup-ticket skill and warn if the skill is missing.
 - `~/new-session.test.sh` — **new.** Plain-bash assertion tests for `seed_prompt_for()` (no test framework/deps).
-- `docs/superpowers/plans/2026-07-21-autonomous-ticket-pickup.md` — this plan (committed to linear-helper).
+- `docs/superpowers/plans/2026-07-21-autonomous-ticket-pickup.md` — this plan (committed to yimbot).
 
 ---
 
@@ -300,7 +300,7 @@ Expected: matching lines for the handoff, then `OK: seed handoff updated, old st
 
 The change is prompt/skill only; daemon TypeScript is untouched. Run:
 ```bash
-cd ~/Work/linear-helper && pnpm typecheck && pnpm test
+cd ~/Work/yimbot && pnpm typecheck && pnpm test
 ```
 Expected: typecheck clean and all daemon tests pass (27/27 per current baseline).
 
@@ -315,7 +315,7 @@ Trigger a ticket whose plan hits a rubric trigger (e.g. one that requires a DB m
 - [ ] **Step 5: Commit the plan doc**
 
 ```bash
-cd ~/Work/linear-helper
+cd ~/Work/yimbot
 git add docs/superpowers/plans/2026-07-21-autonomous-ticket-pickup.md
 git commit -m "docs: implementation plan for autonomous ticket pickup"
 ```

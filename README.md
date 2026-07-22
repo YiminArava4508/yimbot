@@ -112,4 +112,11 @@ export CODEBASE_PATH=~/Work/your-repo
 export SESSION_EDIT_DIRS="frontend backend"      # optional editor windows
 export SESSION_SETUP_HOOK=~/my-worktree-setup.sh # optional; called <worktree> <name>
 export SESSION_LOCAL_ENV_CMD="docker compose up" # optional; staged in shell history
+export PLAN_MODEL=opus                            # optional; model the session plans on
+export IMPL_MODEL=sonnet                          # optional; model for implementation subagents
 ```
+
+The daemon passes `PLAN_MODEL` / `IMPL_MODEL` through from its `.env` (set them in
+`pnpm onboard`): the ticket session plans on `PLAN_MODEL`, and the pickup-ticket
+skill runs its implementation subagents on `IMPL_MODEL` — so planning and
+implementation can use different models.

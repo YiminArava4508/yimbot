@@ -20,6 +20,10 @@
 #   SESSION_LOCAL_ENV_CMD  command staged into the shell window's
 #                          history (Up then Enter runs it) to start
 #                          the local dev env on demand              (none)
+#   PLAN_MODEL             model the Claude session plans on;
+#                          passed to `claude --model`               (Claude default)
+#   IMPL_MODEL             model exported for the implementation
+#                          subagents, read by the pickup-ticket skill (Claude default)
 
 set -uo pipefail
 
@@ -139,11 +143,17 @@ done
 # Claude window. Ticket sessions (sc-<id>-… / eng-<id>-…) are seeded to fetch the
 # ticket and hand off to the pickup-ticket skill; any other name gets a bare claude.
 tmux new-window -t "$NAME" -n Claude -c "$WORKTREE"
+# Launch Claude on the planning model (if set) and pass the implementation model
+# through the environment so the pickup-ticket skill can run its implementation
+# subagents on it. Both are optional — unset means Claude's default model.
+CLAUDE_LAUNCH="claude"
+[ -n "${PLAN_MODEL:-}" ] && CLAUDE_LAUNCH="claude --model $PLAN_MODEL"
+[ -n "${IMPL_MODEL:-}" ] && CLAUDE_LAUNCH="IMPL_MODEL=$IMPL_MODEL $CLAUDE_LAUNCH"
 CLAUDE_PROMPT=$(seed_prompt_for "$NAME")
 if [ -n "$CLAUDE_PROMPT" ]; then
-  tmux send-keys -t "$NAME:Claude" "claude \"$CLAUDE_PROMPT\"" C-m
+  tmux send-keys -t "$NAME:Claude" "$CLAUDE_LAUNCH \"$CLAUDE_PROMPT\"" C-m
 else
-  tmux send-keys -t "$NAME:Claude" "claude" C-m
+  tmux send-keys -t "$NAME:Claude" "$CLAUDE_LAUNCH" C-m
 fi
 
 log "All windows set up. Switching to session '$NAME'"

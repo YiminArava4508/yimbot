@@ -17,6 +17,8 @@ export type YimbotConfig = {
   todoStateName: string;
   heartbeatIntervalMinutes: number;
   codebasePath: string;
+  planModel: string;
+  implModel: string;
   resumeOnReview: boolean;
   autoPick: boolean;
   maxReview: number;
@@ -65,6 +67,8 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     REVIEW_STATE_NAME: c.reviewStateName,
     HEARTBEAT_INTERVAL_MINUTES: String(c.heartbeatIntervalMinutes),
     CODEBASE_PATH: c.codebasePath,
+    PLAN_MODEL: c.planModel,
+    IMPL_MODEL: c.implModel,
     RESUME_ON_REVIEW: String(c.resumeOnReview),
     AUTO_PICK: String(c.autoPick),
     MAX_REVIEW: String(c.maxReview),
@@ -86,6 +90,10 @@ export function serializeEnvFile(c: YimbotConfig): string {
     `HEARTBEAT_INTERVAL_MINUTES=${r.HEARTBEAT_INTERVAL_MINUTES}`,
     `CODEBASE_PATH=${r.CODEBASE_PATH}`,
     `RESUME_ON_REVIEW=${r.RESUME_ON_REVIEW}`,
+    "",
+    "# --- Session models (Claude Code model alias or id) ---",
+    `PLAN_MODEL=${r.PLAN_MODEL}`,
+    `IMPL_MODEL=${r.IMPL_MODEL}`,
     "",
     "# --- Autonomous ticket picker ---",
     `AUTO_PICK=${r.AUTO_PICK}`,
@@ -232,6 +240,21 @@ export async function runSetup(): Promise<YimbotConfig> {
     ),
   );
 
+  const planModel = bail(
+    await p.text({
+      message: "Model for planning (Claude Code alias or id, e.g. opus)",
+      initialValue: envOr("PLAN_MODEL", "opus"),
+      validate: (v) => (v?.trim() ? undefined : "Required"),
+    }),
+  ).trim();
+  const implModel = bail(
+    await p.text({
+      message: "Model for implementing (runs the implementation subagents)",
+      initialValue: envOr("IMPL_MODEL", "sonnet"),
+      validate: (v) => (v?.trim() ? undefined : "Required"),
+    }),
+  ).trim();
+
   const resumeOnReview = bail(
     await p.confirm({
       message: "Spin up the local dev env when a ticket enters review?",
@@ -303,6 +326,8 @@ export async function runSetup(): Promise<YimbotConfig> {
     todoStateName,
     heartbeatIntervalMinutes,
     codebasePath,
+    planModel,
+    implModel,
     resumeOnReview,
     autoPick,
     maxReview,

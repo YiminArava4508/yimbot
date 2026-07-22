@@ -21,6 +21,8 @@ const sample: YimbotConfig = {
   todoStateName: "Todo",
   heartbeatIntervalMinutes: 3,
   codebasePath: "/home/ymbo/Work/gemini",
+  planModel: "opus",
+  implModel: "sonnet",
   resumeOnReview: false,
   autoPick: false,
   maxReview: 3,
@@ -63,6 +65,8 @@ test("configToEnvRecord maps every setting to its env key", () => {
   assert.equal(r.TODO_STATE_NAME, "Todo");
   assert.equal(r.HEARTBEAT_INTERVAL_MINUTES, "3");
   assert.equal(r.CODEBASE_PATH, "/home/ymbo/Work/gemini");
+  assert.equal(r.PLAN_MODEL, "opus");
+  assert.equal(r.IMPL_MODEL, "sonnet");
   assert.equal(r.RESUME_ON_REVIEW, "false");
   assert.equal(r.AUTO_PICK, "false");
   assert.equal(r.MAX_REVIEW, "3");

@@ -302,7 +302,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     { path: runLocalEnvScriptPath, label: "~/run-local-env.sh", role: "resumes dev env on review (only if you enabled it above)" },
   ];
   p.note(
-    preflight.map((c) => `${existsSync(c.path) ? "✓" : "✗"} ${c.label} — ${c.role}`).join("\n"),
+    preflight.map((c) => `${existsSync(c.path) ? "[ok]" : "[missing]"} ${c.label} — ${c.role}`).join("\n"),
     "Pre-flight",
   );
   if (!existsSync(sessionScriptPath)) {

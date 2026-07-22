@@ -28,20 +28,20 @@ flowchart TD
     W --> C["yimbot is running,<br/>watching your Linear board"]
     B -- yes --> C
 
-    C --> P{{"💓 Heartbeat: every few<br/>minutes, check the board"}}
+    C --> P{{"Heartbeat: every few<br/>minutes, check the board"}}
 
     P --> S["Keep the code<br/>up to date"]
 
-    P --> G1["🚀 Start new work"]
+    P --> G1["Start new work"]
     G1 --> T1{"Did you move a card<br/>to 'In Progress'?"}
     T1 -- yes --> L["Open a fresh workspace and<br/>let Claude start building it"]
 
-    P --> G2["🎯 Grab the next task"]
+    P --> G2["Grab the next task"]
     G2 --> PK{"Free to take on more?<br/>nothing in progress,<br/>review not backed up"}
     PK -- yes --> M["Take the top to-do<br/>and start it"]
     M -.->|next check| T1
 
-    P --> G3["🔁 Reopen for a look"]
+    P --> G3["Reopen for a look"]
     G3 --> T2{"Did a card move to<br/>'In Review'? (if turned on)"}
     T2 -- yes --> R["Bring its app back up<br/>so you can review it"]
 
@@ -59,12 +59,12 @@ flowchart TD
     linkStyle 13,14,15 stroke:#c05621,stroke-width:2px;
 ```
 
-- 🚀 **Start new work (green):** when you move a card to **In Progress**, yimbot
+- **Start new work (green):** when you move a card to **In Progress**, yimbot
   opens a fresh, isolated copy of the code and has Claude start building it.
-- 🎯 **Grab the next task (blue):** when nothing is being worked on and the review
+- **Grab the next task (blue):** when nothing is being worked on and the review
   pile isn't too deep, it pulls your top to-do into progress so the launch step
   picks it up next time. *(optional; setting: `AUTO_PICK`)*
-- 🔁 **Reopen for a look (amber):** when a card moves to **In Review**, it brings
+- **Reopen for a look (amber):** when a card moves to **In Review**, it brings
   that card's app back up so you can try it. *(off by default; setting:
   `RESUME_ON_REVIEW`)*
 

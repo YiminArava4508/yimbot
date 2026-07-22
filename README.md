@@ -28,27 +28,43 @@ flowchart TD
     W --> C["Daemon running"]
     B -- yes --> C
 
-    C --> P{{"Every POLL_INTERVAL_MINUTES (default 3m)"}}
+    C --> P{{"Poll every POLL_INTERVAL_MINUTES (default 3m)"}}
 
-    P --> S["git pull --rebase in CODEBASE_PATH<br/>keep the branch base fresh"]
+    P --> S["Sync: git pull --rebase in CODEBASE_PATH<br/>keep the branch base fresh"]
 
-    P --> T1{"Issue entered<br/>In Progress?"}
+    P --> G1["🚀 Launch: start work on tickets<br/>you moved to In Progress"]
+    G1 --> T1{"Issue entered<br/>In Progress?"}
     T1 -- yes --> L["new-session.sh:<br/>git worktree + tmux + Claude session<br/>implements the ticket"]
 
-    P --> PK{"AUTO_PICK on,<br/>nothing In Progress,<br/>In Review has room?"}
-    PK -- yes --> M["Pick top active-cycle Todo,<br/>move it to In Progress"]
+    P --> G2["🎯 Pick: pull the next Todo<br/>into the pipeline"]
+    G2 --> PK{"AUTO_PICK on,<br/>nothing In Progress,<br/>In Review has room?"}
+    PK -- yes --> M["Move top active-cycle Todo<br/>to In Progress"]
     M -.->|next poll| T1
 
-    P --> T2{"RESUME_ON_REVIEW on and<br/>issue entered In Review?"}
+    P --> G3["🔁 Resume: bring a dev env<br/>back up for review"]
+    G3 --> T2{"RESUME_ON_REVIEW on and<br/>issue entered In Review?"}
     T2 -- yes --> R["run-local-env.sh:<br/>resume local dev env"]
+
+    classDef launch fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
+    classDef pick fill:#bee3f8,stroke:#2b6cb0,color:#1a202c;
+    classDef resume fill:#feebc8,stroke:#c05621,color:#1a202c;
+    classDef sync fill:#e2e8f0,stroke:#718096,color:#1a202c;
+    class G1,T1,L launch;
+    class G2,PK,M pick;
+    class G3,T2,R resume;
+    class S sync;
+    linkStyle 5 stroke:#718096,stroke-width:2px;
+    linkStyle 6,7,8 stroke:#2f855a,stroke-width:2px;
+    linkStyle 9,10,11,12 stroke:#2b6cb0,stroke-width:2px;
+    linkStyle 13,14,15 stroke:#c05621,stroke-width:2px;
 ```
 
-- **Trigger 1 — launch:** an issue assigned to you entering **In Progress**
+- 🚀 **Launch (green):** an issue assigned to you entering **In Progress**
   creates a worktree + tmux session and kicks off a Claude session to implement it.
-- **Picker (`AUTO_PICK`):** when nothing is In Progress and the In-Review queue
-  has room (`MAX_REVIEW`), it moves the top-priority active-cycle **Todo** into
-  In Progress, which Trigger 1 launches on the next poll.
-- **Trigger 2 — resume (`RESUME_ON_REVIEW`, off by default):** an issue entering
+- 🎯 **Pick (blue, `AUTO_PICK`):** when nothing is In Progress and the In-Review
+  queue has room (`MAX_REVIEW`), it moves the top-priority active-cycle **Todo**
+  into In Progress, which the launch path picks up on the next poll.
+- 🔁 **Resume (amber, `RESUME_ON_REVIEW`, off by default):** an issue entering
   **In Review** resumes that worktree's local dev env.
 
 ## Setup
@@ -96,5 +112,3 @@ export SESSION_EDIT_DIRS="frontend backend"      # optional editor windows
 export SESSION_SETUP_HOOK=~/my-worktree-setup.sh # optional; called <worktree> <name>
 export SESSION_LOCAL_ENV_CMD="docker compose up" # optional; staged in shell history
 ```
-
-Design doc: `docs/superpowers/specs/2026-07-16-yimbot-design.md`.

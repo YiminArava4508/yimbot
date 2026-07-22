@@ -73,4 +73,28 @@ pnpm check     # one-shot: print the issues the filter currently matches
 pnpm start     # run the daemon (Ctrl+C to stop); onboards first if unconfigured
 ```
 
+## Session launcher
+
+When an issue enters the launch state, the daemon shells out to
+`~/new-session.sh <name>`. A generic, self-contained launcher ships in this repo
+at [`scripts/new-session.sh`](scripts/new-session.sh): it creates (or reuses) a
+git worktree off `CODEBASE_PATH`, opens a tmux session with a Claude window, and
+seeds ticket sessions (`eng-…` / `sc-…`) to hand off to the `pickup-ticket`
+skill. Install it where the daemon expects it:
+
+```bash
+ln -s "$PWD/scripts/new-session.sh" ~/new-session.sh
+```
+
+Nothing project-specific is baked in. Point it at your repo and, if you need
+per-worktree setup (ports, env files, dependency installs) or a dev-env command,
+wire the optional hooks:
+
+```bash
+export CODEBASE_PATH=~/Work/your-repo
+export SESSION_EDIT_DIRS="frontend backend"      # optional editor windows
+export SESSION_SETUP_HOOK=~/my-worktree-setup.sh # optional; called <worktree> <name>
+export SESSION_LOCAL_ENV_CMD="docker compose up" # optional; staged in shell history
+```
+
 Design doc: `docs/superpowers/specs/2026-07-16-yimbot-design.md`.

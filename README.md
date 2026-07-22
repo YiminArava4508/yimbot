@@ -17,33 +17,33 @@ failures are logged and never crash the daemon.
 
 ## How it works
 
-First launch onboards you; then the daemon runs one poll loop every
-`POLL_INTERVAL_MINUTES`, driving three independent behaviors off your Linear
-board plus a codebase sync.
+The first time you run it, yimbot asks a few setup questions. After that it
+quietly checks your Linear board every few minutes and can do three things (plus
+keep your code up to date):
 
 ```mermaid
 flowchart TD
-    A(["pnpm start"]) --> B{".env configured?"}
-    B -- no --> W["Onboarding wizard:<br/>authenticate key, pick team and states,<br/>validate codebase, write .env"]
-    W --> C["Daemon running"]
+    A(["Start yimbot"]) --> B{"Is it set up yet?"}
+    B -- no --> W["First-time setup:<br/>answer a few questions,<br/>your answers are saved"]
+    W --> C["yimbot is running,<br/>watching your Linear board"]
     B -- yes --> C
 
-    C --> P{{"Poll every POLL_INTERVAL_MINUTES (default 3m)"}}
+    C --> P{{"Every few minutes,<br/>check the board"}}
 
-    P --> S["Sync: git pull --rebase in CODEBASE_PATH<br/>keep the branch base fresh"]
+    P --> S["Keep the code<br/>up to date"]
 
-    P --> G1["🚀 Launch: start work on tickets<br/>you moved to In Progress"]
-    G1 --> T1{"Issue entered<br/>In Progress?"}
-    T1 -- yes --> L["new-session.sh:<br/>git worktree + tmux + Claude session<br/>implements the ticket"]
+    P --> G1["🚀 Start new work"]
+    G1 --> T1{"Did you move a card<br/>to 'In Progress'?"}
+    T1 -- yes --> L["Open a fresh workspace and<br/>let Claude start building it"]
 
-    P --> G2["🎯 Pick: pull the next Todo<br/>into the pipeline"]
-    G2 --> PK{"AUTO_PICK on,<br/>nothing In Progress,<br/>In Review has room?"}
-    PK -- yes --> M["Move top active-cycle Todo<br/>to In Progress"]
-    M -.->|next poll| T1
+    P --> G2["🎯 Grab the next task"]
+    G2 --> PK{"Free to take on more?<br/>nothing in progress,<br/>review not backed up"}
+    PK -- yes --> M["Take the top to-do<br/>and start it"]
+    M -.->|next check| T1
 
-    P --> G3["🔁 Resume: bring a dev env<br/>back up for review"]
-    G3 --> T2{"RESUME_ON_REVIEW on and<br/>issue entered In Review?"}
-    T2 -- yes --> R["run-local-env.sh:<br/>resume local dev env"]
+    P --> G3["🔁 Reopen for a look"]
+    G3 --> T2{"Did a card move to<br/>'In Review'? (if turned on)"}
+    T2 -- yes --> R["Bring its app back up<br/>so you can review it"]
 
     classDef launch fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
     classDef pick fill:#bee3f8,stroke:#2b6cb0,color:#1a202c;
@@ -59,13 +59,14 @@ flowchart TD
     linkStyle 13,14,15 stroke:#c05621,stroke-width:2px;
 ```
 
-- 🚀 **Launch (green):** an issue assigned to you entering **In Progress**
-  creates a worktree + tmux session and kicks off a Claude session to implement it.
-- 🎯 **Pick (blue, `AUTO_PICK`):** when nothing is In Progress and the In-Review
-  queue has room (`MAX_REVIEW`), it moves the top-priority active-cycle **Todo**
-  into In Progress, which the launch path picks up on the next poll.
-- 🔁 **Resume (amber, `RESUME_ON_REVIEW`, off by default):** an issue entering
-  **In Review** resumes that worktree's local dev env.
+- 🚀 **Start new work (green):** when you move a card to **In Progress**, yimbot
+  opens a fresh, isolated copy of the code and has Claude start building it.
+- 🎯 **Grab the next task (blue):** when nothing is being worked on and the review
+  pile isn't too deep, it pulls your top to-do into progress so the launch step
+  picks it up next time. *(optional; setting: `AUTO_PICK`)*
+- 🔁 **Reopen for a look (amber):** when a card moves to **In Review**, it brings
+  that card's app back up so you can try it. *(off by default; setting:
+  `RESUME_ON_REVIEW`)*
 
 ## Setup
 

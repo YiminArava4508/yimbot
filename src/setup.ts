@@ -17,6 +17,7 @@ export type YimbotConfig = {
   todoStateName: string;
   pollIntervalMinutes: number;
   codebasePath: string;
+  resumeOnReview: boolean;
   autoPick: boolean;
   maxReview: number;
   riskLabels: string[];
@@ -64,6 +65,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     REVIEW_STATE_NAME: c.reviewStateName,
     POLL_INTERVAL_MINUTES: String(c.pollIntervalMinutes),
     CODEBASE_PATH: c.codebasePath,
+    RESUME_ON_REVIEW: String(c.resumeOnReview),
     AUTO_PICK: String(c.autoPick),
     MAX_REVIEW: String(c.maxReview),
     TODO_STATE_NAME: c.todoStateName,
@@ -83,6 +85,7 @@ export function serializeEnvFile(c: YimbotConfig): string {
     `REVIEW_STATE_NAME=${r.REVIEW_STATE_NAME}`,
     `POLL_INTERVAL_MINUTES=${r.POLL_INTERVAL_MINUTES}`,
     `CODEBASE_PATH=${r.CODEBASE_PATH}`,
+    `RESUME_ON_REVIEW=${r.RESUME_ON_REVIEW}`,
     "",
     "# --- Autonomous ticket picker ---",
     `AUTO_PICK=${r.AUTO_PICK}`,
@@ -194,7 +197,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     envOr("TRIGGER_STATE_NAME", "In Progress"),
   );
   const reviewStateName = await pickState(
-    "Resume the dev env when an issue enters…",
+    'Your "In Review" state (caps auto-picking)',
     envOr("REVIEW_STATE_NAME", "In Review"),
   );
   const todoStateName = await pickState(
@@ -227,6 +230,15 @@ export async function runSetup(): Promise<YimbotConfig> {
         validate: (v) => (isPositive(v) ? undefined : "Must be a positive number"),
       }),
     ),
+  );
+
+  const resumeOnReview = bail(
+    await p.confirm({
+      message: "Spin up the local dev env when a ticket enters review?",
+      initialValue: ["true", "on", "yes", "1"].includes(
+        envOr("RESUME_ON_REVIEW", "false").toLowerCase(),
+      ),
+    }),
   );
 
   const autoPickDefault = !["false", "off", "no", "0"].includes(
@@ -264,7 +276,7 @@ export async function runSetup(): Promise<YimbotConfig> {
 
   const preflight = [
     { path: sessionScriptPath, label: "~/new-session.sh", role: "launches worktree+tmux sessions (required)" },
-    { path: runLocalEnvScriptPath, label: "~/run-local-env.sh", role: "resumes dev envs on review (optional)" },
+    { path: runLocalEnvScriptPath, label: "~/run-local-env.sh", role: "resumes dev env on review (only if you enabled it above)" },
   ];
   p.note(
     preflight.map((c) => `${existsSync(c.path) ? "✓" : "✗"} ${c.label} — ${c.role}`).join("\n"),
@@ -291,6 +303,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     todoStateName,
     pollIntervalMinutes,
     codebasePath,
+    resumeOnReview,
     autoPick,
     maxReview,
     riskLabels,

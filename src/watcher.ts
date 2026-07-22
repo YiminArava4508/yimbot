@@ -198,6 +198,9 @@ export type WatcherConfig = {
   progressContext: LinearContext;
   reviewContext: LinearContext;
   pollIntervalMinutes: number;
+  // When false (the default), the In-Review → resume-dev-env trigger is skipped
+  // entirely: entering review no longer spins up the local server.
+  resumeOnReview: boolean;
   picker: PickerConfig;
 };
 
@@ -273,7 +276,8 @@ export function startWatcher(config: WatcherConfig): () => void {
     log,
   };
 
-  // Trigger 2: issues entering "In Review" → resume the existing env only.
+  // Trigger 2 (opt-in via resumeOnReview, default off): issues entering "In
+  // Review" → resume the existing env only. When disabled, this is never polled.
   const reviewState: WatchState = { seen: new Set(), initialized: false };
   const reviewDeps: WatcherDeps = {
     fetchIssues: () => fetchTriggerIssues(config.apiKey, config.reviewContext),
@@ -310,7 +314,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     running = true;
     try {
       await pollOnce(progressState, progressDeps);
-      await pollOnce(reviewState, reviewDeps);
+      if (config.resumeOnReview) await pollOnce(reviewState, reviewDeps);
       // The picker MUST run last: the triggers fetch first, so a ticket the
       // picker moves to In Progress this tick is launched on the NEXT tick (not
       // double-launched now), and the one-in-progress gate blocks re-picking it.

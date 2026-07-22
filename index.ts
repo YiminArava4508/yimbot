@@ -25,6 +25,11 @@ const stateName = envOr("TRIGGER_STATE_NAME", "In Progress");
 const reviewStateName = envOr("REVIEW_STATE_NAME", "In Review");
 const pollIntervalMinutes = Number(envOr("POLL_INTERVAL_MINUTES", "3"));
 const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+// Resuming the local dev env when a ticket enters "In Review" is opt-in and off
+// by default — only "true"/"on"/"yes"/"1" enables it.
+const resumeOnReview = ["true", "on", "yes", "1"].includes(
+  envOr("RESUME_ON_REVIEW", "false").toLowerCase(),
+);
 
 // Autonomous picker config. AUTO_PICK is on unless explicitly disabled with a
 // recognized off-value (false/off/no/0), so an intuitive toggle can't silently
@@ -47,7 +52,7 @@ if (!Number.isFinite(maxReview) || maxReview <= 0) {
 if (!existsSync(sessionScriptPath)) {
   throw new Error(`new-session.sh not found at ${sessionScriptPath}`);
 }
-if (!existsSync(runLocalEnvScriptPath)) {
+if (resumeOnReview && !existsSync(runLocalEnvScriptPath)) {
   throw new Error(`run-local-env.sh not found at ${runLocalEnvScriptPath}`);
 }
 if (!existsSync(codebasePath)) {
@@ -63,7 +68,7 @@ const progressContext = await resolveContext(apiKey, teamName, stateName);
 const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
 const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 console.log(
-  `[yimbot] watching "${teamName}": launch on "${stateName}", resume dev env on "${reviewStateName}", every ${pollIntervalMinutes}m; syncing ${codebasePath}`,
+  `[yimbot] watching "${teamName}": launch on "${stateName}", ${resumeOnReview ? `resume dev env on "${reviewStateName}", ` : ""}every ${pollIntervalMinutes}m; syncing ${codebasePath}`,
 );
 console.log(
   autoPick
@@ -76,6 +81,7 @@ const stop = startWatcher({
   progressContext,
   reviewContext,
   pollIntervalMinutes,
+  resumeOnReview,
   picker: {
     autoPick,
     maxReview,

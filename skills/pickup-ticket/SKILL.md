@@ -1,29 +1,38 @@
 ---
 name: pickup-ticket
-description: Use when picking up a Linear/Shortcut ticket in a fresh worktree session — plans the work, auto-implements low-risk plans to green tests, and pauses for approval on risky ones.
+description: Use when picking up a Linear/Shortcut ticket in a fresh worktree session — plans the work, resolves its own uncertainties, and implements to a green PR; pauses only for genuinely dangerous, hard-to-reverse changes.
 user-invocable: true
 ---
 
 # Pickup Ticket
 
-Take a ticket from "just fetched" to either implemented-with-green-tests (when
-the plan is small and localized) or a paused, ready-for-your-"go" plan (when the
-plan is risky). The caller has already fetched the ticket and read its
-description, acceptance criteria, and comments before invoking this skill.
+Take a ticket from "just fetched" all the way to a green, ready-for-review PR,
+resolving your own uncertainties as you go. Only genuinely dangerous,
+hard-to-reverse work pauses for a human "go". The caller has already fetched the
+ticket and read its description, acceptance criteria, and comments before
+invoking this skill.
+
+**Never stop to ask permission to plan or to implement, and never stop just
+because you have an open question or a design choice to make.** Resolving those
+yourself is the job.
 
 ## Flow
 
 1. **Plan.** Invoke `superpowers:writing-plans` and produce the implementation
    plan for this ticket. Design/plan docs are written under `docs/superpowers/`.
+   When the plan surfaces an **open question or a design fork**, resolve it
+   yourself: pick the simplest reversible option that satisfies the ticket's
+   acceptance criteria, and record the decision plus the rejected alternative in
+   the plan (a short "Decisions" note). Do not pause to ask.
 
-2. **Classify** the plan against the Risk Rubric below.
+2. **Classify** the plan against the Hard-Stop Rubric below.
 
 3. **Branch:**
-   - **HIGH RISK** → print a concise summary naming which rubric trigger(s)
+   - **HARD STOP** → print a concise summary naming which hard-stop trigger(s)
      fired and the path to the plan, then **STOP and wait for the human to say
      "go"** (or to amend the plan). Do not write code.
-   - **LOW RISK** → announce "Plan is low-risk (<one-line reason>); implementing
-     automatically." then continue to step 4.
+   - **Otherwise** → announce "No hard-stop triggers (<one-line reason>);
+     implementing automatically." then continue to step 4.
 
 4. **Implement.** Check the environment for `IMPL_MODEL` (e.g. `echo "$IMPL_MODEL"`).
    - If it is **set**, dispatch the implementation to subagents so it runs on
@@ -43,27 +52,38 @@ description, acceptance criteria, and comments before invoking this skill.
      and note it in the summary.
    Re-run the full test suite after fixing and loop until it is green again.
 
-6. **Finish at green.** When the full test suite passes, run the
-   end-of-implementation steps:
+6. **Ship at green.** When the full test suite passes, run the
+   end-of-implementation steps in this order:
+   - **Push** the branch to origin (`git push -u origin HEAD`).
+   - **Open a PR** with `gh pr create` as a **non-draft** PR (so the daemon's
+     review step can pick up review comments). Title = the ticket summary; body
+     = a short "what changed / why / test result", any **Decisions** you made to
+     resolve uncertainty (with the alternative you rejected), and the ticket
+     reference so the tracker auto-links the PR. Follow the repo's commit/PR
+     conventions: never mention Claude, Claude Code, or AI, and add no "Generated
+     with" or "Co-Authored-By" trailers.
    - **Move the ticket to the Review column** in the kanban board (not Done —
-     Review signals it's ready for someone to review).
+     Review signals the PR is ready for someone to review).
    - **Spin up the local server on this session's tmux pane** so the change can
      be inspected running.
-   Then STOP. Print a summary of what changed and the test result. Do **not**
-   create a PR, push, or open a diff — that stays manual.
+   Then STOP. Print a summary of what changed, the PR URL, and the test result.
 
-## Risk Rubric
+## Hard-Stop Rubric
 
-Treat the plan as **HIGH RISK** if **any** of the following hold; otherwise it
-is **LOW RISK**:
+Pause for a human "go" **only** if the plan involves one of the following —
+genuinely dangerous, hard-to-reverse work:
 
-- The plan involves a **database migration or schema change**.
-- The plan touches **authentication, billing/payments, or shared/core
-  libraries** (code many other modules depend on).
-- The plan touches **more than 8 files**.
-- The ticket carries a **risk-ish label** (e.g. `migration`, `infra`,
-  `breaking`, `security`) or an estimate above the team's "small" threshold.
-- The plan itself contains **open questions or flagged uncertainty**.
+- A **database migration or schema change**.
+- **Authentication**.
+- **Billing or payments**.
+- A **destructive or irreversible infrastructure/data operation** (deleting
+  resources, data-destroying commands, and the like).
 
-When unsure whether a trigger applies, treat it as HIGH RISK and pause. Bias
-toward asking.
+Nothing else pauses. Touching many files, touching shared or core code, or the
+plan containing an open question is **not** a reason to stop — resolve it and
+keep going.
+
+When unsure, **bias toward proceeding**: resolve the uncertainty with a
+documented default and implement. Pause only when a hard-stop trigger clearly
+and unavoidably applies, and only because the change is dangerous or
+irreversible — never merely because you have a question.

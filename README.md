@@ -18,14 +18,14 @@ failures are logged and never crash the daemon.
 ## How it works
 
 The first time you run it, yimbot asks a few setup questions. After that it
-quietly checks your Linear board every few minutes — its **heartbeat** — and can
-do three things (plus keep your code up to date):
+quietly checks your Linear board and your open PRs every few minutes (its
+**heartbeat**) and can do four things (plus keep your code up to date):
 
 ```mermaid
 flowchart TD
     A(["Start yimbot"]) --> B{"Is it set up yet?"}
     B -- no --> W["First-time setup:<br/>answer a few questions,<br/>your answers are saved"]
-    W --> C["yimbot is running,<br/>watching your Linear board"]
+    W --> C["yimbot is running,<br/>watching Linear + your PRs"]
     B -- yes --> C
 
     C --> P{{"Heartbeat: every few<br/>minutes, check the board"}}
@@ -37,36 +37,42 @@ flowchart TD
     T1 -- yes --> L["Open a fresh workspace and<br/>let Claude start building it"]
 
     P --> G2["Grab the next task"]
-    G2 --> PK{"Free to take on more?<br/>nothing in progress,<br/>review not backed up"}
+    G2 --> PK{"Free to take on more?<br/>nothing in progress"}
     PK -- yes --> M["Take the top to-do<br/>and start it"]
     M -.->|next check| T1
 
-    P --> G3["Reopen for a look"]
-    G3 --> T2{"Did a card move to<br/>'In Review'? (if turned on)"}
-    T2 -- yes --> R["Bring its app back up<br/>so you can review it"]
+    P --> G3["Handle review comments"]
+    G3 --> T2{"An open PR of yours with<br/>unresolved comments?"}
+    T2 -- yes --> R["Open a session that fixes them,<br/>pushes, resolves the threads,<br/>and asks for re-review"]
 
-    classDef launch fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
-    classDef pick fill:#bee3f8,stroke:#2b6cb0,color:#1a202c;
-    classDef resume fill:#feebc8,stroke:#c05621,color:#1a202c;
+    P --> G4["Flag ready to test"]
+    G4 --> T3{"Did a card move<br/>to 'In Review'?"}
+    T3 -- yes --> F["Mark its session with a<br/>'ready to test' icon"]
+
+    classDef deploy fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
+    classDef claim fill:#bee3f8,stroke:#2b6cb0,color:#1a202c;
+    classDef review fill:#feebc8,stroke:#c05621,color:#1a202c;
+    classDef ready fill:#e9d8fd,stroke:#6b46c1,color:#1a202c;
     classDef sync fill:#e2e8f0,stroke:#718096,color:#1a202c;
-    class G1,T1,L launch;
-    class G2,PK,M pick;
-    class G3,T2,R resume;
+    class G1,T1,L deploy;
+    class G2,PK,M claim;
+    class G3,T2,R review;
+    class G4,T3,F ready;
     class S sync;
-    linkStyle 5 stroke:#718096,stroke-width:2px;
-    linkStyle 6,7,8 stroke:#2f855a,stroke-width:2px;
-    linkStyle 9,10,11,12 stroke:#2b6cb0,stroke-width:2px;
-    linkStyle 13,14,15 stroke:#c05621,stroke-width:2px;
 ```
 
 - **Start new work (green):** when you move a card to **In Progress**, yimbot
   opens a fresh, isolated copy of the code and has Claude start building it.
-- **Grab the next task (blue):** when nothing is being worked on and the review
-  pile isn't too deep, it pulls your top to-do into progress so the launch step
-  picks it up next time. *(optional; setting: `AUTO_PICK`)*
-- **Reopen for a look (amber):** when a card moves to **In Review**, it brings
-  that card's app back up so you can try it. *(off by default; setting:
-  `RESUME_ON_REVIEW`)*
+- **Grab the next task (blue):** when nothing is being worked on, it pulls your
+  top to-do into progress so the deploy step picks it up next time. *(optional;
+  setting: `AUTO_CLAIM`)*
+- **Handle review comments (amber):** every heartbeat, for each of your open PRs
+  that has unresolved comments, it opens a session that addresses every comment,
+  gets tests green, pushes, resolves the threads, and re-requests review. Needs
+  `gh` installed and authenticated; runs against the repo at `CODEBASE_PATH`.
+- **Flag ready to test (purple):** when a card moves to **In Review**, it marks
+  that card's session with a "ready to test" icon so you know you can run local
+  dev there to try it. (yimbot no longer starts the dev env for you.)
 
 ## Setup
 
@@ -92,15 +98,19 @@ pnpm start     # run the daemon (Ctrl+C to stop); onboards first if unconfigured
 
 ## Session launcher & skill
 
-When an issue enters the launch state, the daemon shells out to
+When an issue enters the deploy state, the daemon shells out to
 `~/new-session.sh <name>`, which creates (or reuses) a git worktree off
-`CODEBASE_PATH`, opens a tmux session with a Claude window, and seeds ticket
-sessions (`eng-…` / `sc-…`) to hand off to the **pickup-ticket** skill (plan →
-implement → self-review → finish). Both ship in this repo —
-[`scripts/new-session.sh`](scripts/new-session.sh) and
-[`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md) — and **`pnpm onboard`
-symlinks them into place** (`~/new-session.sh` and
-`~/.claude/skills/pickup-ticket`), verifying them in its pre-flight. An existing
+`CODEBASE_PATH`, opens a tmux session with a Claude window, and seeds the session
+by name: ticket sessions (`eng-…` / `sc-…`) hand off to the **pickup-ticket**
+skill (plan, implement, self-review, finish), and PR fix sessions (`pr-<n>-fix`,
+launched by the review step with `~/new-session.sh pr-<n>-fix <branch>`) hand off
+to the **address-pr-comments** skill (fix comments, push, resolve threads,
+re-request review). All ship in this repo:
+[`scripts/new-session.sh`](scripts/new-session.sh),
+[`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md), and
+[`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md). **`pnpm onboard`
+symlinks them into place** (`~/new-session.sh`, `~/.claude/skills/pickup-ticket`,
+`~/.claude/skills/address-pr-comments`), verifying them in its pre-flight. An existing
 file at either path is never overwritten without asking (it's backed up first).
 
 Nothing project-specific is baked in. Point it at your repo and, if you need

@@ -3,12 +3,12 @@ import { test } from "node:test";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
 import {
   buildSessionName,
+  claimOnce,
+  type ClaimDeps,
   detectNewIssues,
   findExistingSession,
-  pickOnce,
-  type PickDeps,
+  markFeatureReady,
   pollOnce,
-  resumeExistingEnv,
   type WatchState,
 } from "./watcher.ts";
 
@@ -153,44 +153,30 @@ test("findExistingSession prefers a session over a worktree and picks determinis
   assert.equal(match, "eng-42-a");
 });
 
-test("resumeExistingEnv resumes the matched session and logs", async () => {
-  const resumed: string[] = [];
+test("markFeatureReady flags the matched session and logs", () => {
+  const flagged: string[] = [];
   const logs: string[] = [];
-  await resumeExistingEnv(issue("i", "ENG-42", "New title"), {
+  markFeatureReady(issue("i", "ENG-42", "New title"), {
     listSessions: () => ["eng-42-old-title"],
     listWorktrees: () => ["eng-42-old-title"],
-    resume: (name) => void resumed.push(name),
+    markReady: (name) => void flagged.push(name),
     log: (msg) => void logs.push(msg),
   });
-  assert.deepEqual(resumed, ["eng-42-old-title"]);
+  assert.deepEqual(flagged, ["eng-42-old-title"]);
   assert.ok(logs.some((l) => l.includes("ENG-42") && l.includes("eng-42-old-title")));
 });
 
-test("resumeExistingEnv skips (no resume, no throw) when nothing matches", async () => {
-  const resumed: string[] = [];
+test("markFeatureReady skips (no flag) when nothing matches", () => {
+  const flagged: string[] = [];
   const logs: string[] = [];
-  await resumeExistingEnv(issue("i", "ENG-42", "New title"), {
+  markFeatureReady(issue("i", "ENG-42", "New title"), {
     listSessions: () => ["eng-7-x"],
     listWorktrees: () => ["eng-9-y"],
-    resume: (name) => void resumed.push(name),
+    markReady: (name) => void flagged.push(name),
     log: (msg) => void logs.push(msg),
   });
-  assert.deepEqual(resumed, []);
+  assert.deepEqual(flagged, []);
   assert.ok(logs.some((l) => l.includes("ENG-42") && /skip/i.test(l)));
-});
-
-test("resumeExistingEnv propagates resume errors so the poll retries", async () => {
-  await assert.rejects(
-    resumeExistingEnv(issue("i", "ENG-42", "t"), {
-      listSessions: () => ["eng-42-a"],
-      listWorktrees: () => [],
-      resume: () => {
-        throw new Error("tmux failed");
-      },
-      log: () => {},
-    }),
-    /tmux failed/,
-  );
 });
 
 function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIssue {
@@ -204,19 +190,17 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
   };
 }
 
-function pickDeps(overrides: Partial<PickDeps> = {}): {
-  deps: PickDeps;
+function claimDeps(overrides: Partial<ClaimDeps> = {}): {
+  deps: ClaimDeps;
   moved: CycleTodoIssue[];
   logs: string[];
 } {
   const moved: CycleTodoIssue[] = [];
   const logs: string[] = [];
-  const deps: PickDeps = {
-    autoPick: true,
-    maxReview: 3,
+  const deps: ClaimDeps = {
+    autoClaim: true,
     riskLabels: ["migration"],
     countInProgress: async () => 0,
-    countInReview: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
     moveToInProgress: async (issue) => void moved.push(issue),
     log: (msg) => void logs.push(msg),
@@ -225,81 +209,74 @@ function pickDeps(overrides: Partial<PickDeps> = {}): {
   return { deps, moved, logs };
 }
 
-test("pickOnce does nothing when autoPick is off", async () => {
+test("claimOnce does nothing when autoClaim is off", async () => {
   let counted = false;
-  const { deps, moved } = pickDeps({
-    autoPick: false,
+  const { deps, moved } = claimDeps({
+    autoClaim: false,
     countInProgress: async () => {
       counted = true;
       return 0;
     },
   });
-  await pickOnce(deps);
+  await claimOnce(deps);
   assert.equal(moved.length, 0);
   assert.equal(counted, false, "must not even query counts when disabled");
 });
 
-test("pickOnce skips (no pick) when a ticket is already In Progress", async () => {
-  const { deps, moved } = pickDeps({ countInProgress: async () => 1 });
-  await pickOnce(deps);
+test("claimOnce skips (no pick) when a ticket is already In Progress", async () => {
+  const { deps, moved } = claimDeps({ countInProgress: async () => 1 });
+  await claimOnce(deps);
   assert.equal(moved.length, 0);
 });
 
-test("pickOnce stalls and logs when the review queue is full", async () => {
-  const { deps, moved, logs } = pickDeps({ maxReview: 3, countInReview: async () => 3 });
-  await pickOnce(deps);
-  assert.equal(moved.length, 0);
-  assert.ok(logs.some((l) => /stall/i.test(l) && l.includes("3/3")));
-});
-
-test("pickOnce moves the selected top-priority ticket to In Progress", async () => {
-  const { deps, moved, logs } = pickDeps({
+test("claimOnce moves the selected top-priority ticket to In Progress", async () => {
+  const { deps, moved, logs } = claimDeps({
     fetchCycleTodos: async () => [
       cycleTodo({ id: "low", priority: 3 }),
       cycleTodo({ id: "urgent", priority: 1 }),
     ],
   });
-  await pickOnce(deps);
+  await claimOnce(deps);
   assert.deepEqual(moved.map((i) => i.id), ["urgent"]);
   assert.ok(logs.some((l) => l.includes("ENG-urgent")));
 });
 
-test("pickOnce picks nothing when no eligible Todo exists", async () => {
-  const { deps, moved } = pickDeps({
+test("claimOnce picks nothing when no eligible Todo exists", async () => {
+  const { deps, moved } = claimDeps({
     fetchCycleTodos: async () => [cycleTodo({ id: "risky", labels: ["migration"] })],
   });
-  await pickOnce(deps);
+  await claimOnce(deps);
   assert.equal(moved.length, 0);
 });
 
-test("pickOnce logs and swallows a move failure without throwing", async () => {
-  const { deps, logs } = pickDeps({
+test("claimOnce logs and swallows a move failure without throwing", async () => {
+  const { deps, logs } = claimDeps({
     moveToInProgress: async () => {
       throw new Error("linear 500");
     },
   });
-  await pickOnce(deps);
+  await claimOnce(deps);
   assert.ok(logs.some((l) => /linear 500/.test(l)));
 });
 
-test("pickOnce swallows a count failure without throwing or moving", async () => {
-  const { deps, moved, logs } = pickDeps({
+test("claimOnce swallows a count failure without throwing or moving", async () => {
+  const { deps, moved, logs } = claimDeps({
     countInProgress: async () => {
       throw new Error("count 503");
     },
   });
-  await pickOnce(deps); // must not throw
+  await claimOnce(deps); // must not throw
   assert.equal(moved.length, 0);
   assert.ok(logs.some((l) => /count 503/.test(l)));
 });
 
-test("pickOnce swallows a fetchCycleTodos failure without throwing or moving", async () => {
-  const { deps, moved, logs } = pickDeps({
+test("claimOnce swallows a fetchCycleTodos failure without throwing or moving", async () => {
+  const { deps, moved, logs } = claimDeps({
     fetchCycleTodos: async () => {
       throw new Error("todos 503");
     },
   });
-  await pickOnce(deps); // must not throw
+  await claimOnce(deps); // must not throw
   assert.equal(moved.length, 0);
   assert.ok(logs.some((l) => /todos 503/.test(l)));
 });

@@ -37,11 +37,14 @@ die() {
 }
 
 # Build the Claude seed prompt for a session name. Echoes a fetch-then-handoff
-# prompt for recognized ticket sessions (sc-<id>-… / eng-<id>-…), or nothing for
-# any other name. Kept as a pure function so it can be unit-tested via sourcing.
+# prompt for recognized sessions (sc-<id>-… / eng-<id>-… ticket sessions, or
+# pr-<n>-fix comment-fix sessions), or nothing for any other name. Kept as a pure
+# function so it can be unit-tested via sourcing.
 seed_prompt_for() {
   local name=$1
-  if [[ "$name" =~ ^sc-([0-9]+)- ]]; then
+  if [[ "$name" =~ ^pr-([0-9]+)-fix$ ]]; then
+    printf 'You are addressing review comments on pull request #%s, checked out in this worktree. Invoke the address-pr-comments skill and follow it exactly.' "${BASH_REMATCH[1]}"
+  elif [[ "$name" =~ ^sc-([0-9]+)- ]]; then
     printf 'Fetch Shortcut story %s via the Shortcut MCP (mcp__shortcut__stories-get-by-id) and read its description, acceptance criteria, and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^eng-([0-9]+)- ]]; then
     printf 'Fetch Linear issue ENG-%s via the Linear MCP (mcp__linear-server__get_issue) and read its description and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
@@ -54,16 +57,21 @@ seed_prompt_for() {
 
 NAME=${1:-}
 [ -n "$NAME" ] || {
-  echo "Usage: $0 <name>"
+  echo "Usage: $0 <name> [branch]"
   exit 1
 }
+# Optional 2nd arg: the branch to check out. Defaults to the session name (a
+# normal ticket session branches on its own name). PR fix sessions pass the PR's
+# branch here so the tmux session is named by PR (pr-<n>-fix) while the worktree
+# is keyed by — and reuses — the branch's existing worktree.
+BRANCH=${2:-$NAME}
 
 : "${CODEBASE_PATH:?set CODEBASE_PATH to the git repo to branch from}"
 git -C "$CODEBASE_PATH" rev-parse --git-dir >/dev/null 2>&1 ||
   die "CODEBASE_PATH is not a git repo: $CODEBASE_PATH"
 
-# Sanitize the name into a worktree dir (same rule the daemon's slug uses).
-WORKTREE_DIR=$(echo "$NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)
+# Sanitize the branch into a worktree dir (same rule the daemon's slug uses).
+WORKTREE_DIR=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)
 WORKTREE=$WORKTREES_DIR/$WORKTREE_DIR
 
 # --- Create or reuse the worktree ---
@@ -87,13 +95,19 @@ create_worktree() {
     rm -rf "$WORKTREE"
   fi
   mkdir -p "$WORKTREES_DIR"
-  if git -C "$CODEBASE_PATH" show-ref --verify --quiet "refs/heads/$NAME" ||
-    git -C "$CODEBASE_PATH" show-ref --verify --quiet "refs/remotes/origin/$NAME"; then
-    log "Checking out existing branch '$NAME'"
-    git -C "$CODEBASE_PATH" worktree add "$WORKTREE" "$NAME" || die "git worktree add failed"
+  # A branch passed explicitly (PR fix) may live only on origin; fetch it so the
+  # remote-tracking ref below resolves.
+  [ "$BRANCH" != "$NAME" ] && git -C "$CODEBASE_PATH" fetch origin "$BRANCH" >/dev/null 2>&1
+  if git -C "$CODEBASE_PATH" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    log "Checking out existing local branch '$BRANCH'"
+    git -C "$CODEBASE_PATH" worktree add "$WORKTREE" "$BRANCH" || die "git worktree add failed"
+  elif git -C "$CODEBASE_PATH" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+    log "Checking out origin branch '$BRANCH'"
+    git -C "$CODEBASE_PATH" worktree add --track -b "$BRANCH" "$WORKTREE" "origin/$BRANCH" ||
+      die "git worktree add failed"
   else
-    log "Creating new branch '$NAME'"
-    git -C "$CODEBASE_PATH" worktree add "$WORKTREE" -b "$NAME" || die "git worktree add failed"
+    log "Creating new branch '$BRANCH'"
+    git -C "$CODEBASE_PATH" worktree add "$WORKTREE" -b "$BRANCH" || die "git worktree add failed"
   fi
 }
 create_worktree

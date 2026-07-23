@@ -17,16 +17,14 @@ import {
 const sample: YimbotConfig = {
   apiKey: "lin_api_secret",
   teamName: "Engineering",
-  triggerStateName: "In Progress",
+  deployStateName: "In Progress",
   reviewStateName: "In Review",
   todoStateName: "Todo",
   heartbeatIntervalMinutes: 3,
   codebasePath: "/home/ymbo/Work/gemini",
   planModel: "opus",
   implModel: "sonnet",
-  resumeOnReview: false,
-  autoPick: false,
-  maxReview: 3,
+  autoClaim: false,
   riskLabels: ["migration", "infra"],
 };
 
@@ -77,20 +75,18 @@ test("configToEnvRecord maps every setting to its env key", () => {
   const r = configToEnvRecord(sample);
   assert.equal(r.LINEAR_API_KEY, "lin_api_secret");
   assert.equal(r.LINEAR_TEAM_NAME, "Engineering");
-  assert.equal(r.TRIGGER_STATE_NAME, "In Progress");
+  assert.equal(r.DEPLOY_STATE_NAME, "In Progress");
   assert.equal(r.REVIEW_STATE_NAME, "In Review");
   assert.equal(r.TODO_STATE_NAME, "Todo");
   assert.equal(r.HEARTBEAT_INTERVAL_MINUTES, "3");
   assert.equal(r.CODEBASE_PATH, "/home/ymbo/Work/gemini");
   assert.equal(r.PLAN_MODEL, "opus");
   assert.equal(r.IMPL_MODEL, "sonnet");
-  assert.equal(r.RESUME_ON_REVIEW, "false");
-  assert.equal(r.AUTO_PICK, "false");
-  assert.equal(r.MAX_REVIEW, "3");
+  assert.equal(r.AUTO_CLAIM, "false");
   assert.equal(r.RISK_LABELS, "migration,infra");
 });
 
-test("serializeEnvFile emits parseable KEY=value lines with the picker section", () => {
+test("serializeEnvFile emits parseable KEY=value lines with the claim section", () => {
   const text = serializeEnvFile(sample);
   const kv: Record<string, string> = {};
   for (const line of text.split("\n")) {
@@ -100,13 +96,13 @@ test("serializeEnvFile emits parseable KEY=value lines with the picker section",
   }
   assert.equal(kv.LINEAR_API_KEY, "lin_api_secret");
   assert.equal(kv.REVIEW_STATE_NAME, "In Review");
-  assert.equal(kv.AUTO_PICK, "false");
+  assert.equal(kv.AUTO_CLAIM, "false");
   assert.equal(kv.RISK_LABELS, "migration,infra");
-  assert.ok(text.includes("# --- Autonomous ticket picker ---"));
+  assert.ok(text.includes("# --- Autonomous claim step ---"));
 });
 
 test("serializeEnvFile round-trips empty risk labels", () => {
-  const text = serializeEnvFile({ ...sample, riskLabels: [], autoPick: true });
+  const text = serializeEnvFile({ ...sample, riskLabels: [], autoClaim: true });
   assert.match(text, /^RISK_LABELS=$/m);
-  assert.match(text, /^AUTO_PICK=true$/m);
+  assert.match(text, /^AUTO_CLAIM=true$/m);
 });

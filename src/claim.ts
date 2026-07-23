@@ -1,7 +1,7 @@
 import type { CycleTodoIssue } from "./linear-api.ts";
 
 export type SelectOptions = {
-  // Label names (any casing) that disqualify a ticket from auto-picking.
+  // Label names (any casing) that disqualify a ticket from being claimed.
   riskLabels: string[];
 };
 
@@ -11,10 +11,10 @@ function priorityRank(priority: number): number {
   return priority === 0 ? Number.POSITIVE_INFINITY : priority;
 }
 
-// Choose the next Todo ticket to start: drop risk-labeled tickets, then order
+// Choose the next Todo ticket to claim: drop risk-labeled tickets, then order
 // by priority (Urgent first, None last), breaking ties on the manual cycle
 // order. Returns null when nothing qualifies.
-export function selectNextTicket(
+export function selectNextClaim(
   todos: CycleTodoIssue[],
   opts: SelectOptions,
 ): CycleTodoIssue | null {

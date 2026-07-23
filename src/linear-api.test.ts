@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   countAssignedInState,
   fetchCycleTodoIssues,
-  fetchTriggerIssues,
+  fetchIssuesInState,
   moveIssueToState,
   resolveContext,
 } from "./linear-api.ts";
@@ -61,13 +61,13 @@ test("resolveContext throws when state is missing", async () => {
   );
 });
 
-test("fetchTriggerIssues returns issue nodes", async () => {
+test("fetchIssuesInState returns issue nodes", async () => {
   const fetchImpl = fakeFetch({
     data: {
       issues: { nodes: [{ id: "i-1", identifier: "ENG-42", title: "Fix login" }] },
     },
   });
-  const issues = await fetchTriggerIssues(
+  const issues = await fetchIssuesInState(
     "key",
     { viewerId: "u", teamId: "t", stateId: "s" },
     fetchImpl,
@@ -78,7 +78,7 @@ test("fetchTriggerIssues returns issue nodes", async () => {
 test("GraphQL errors are surfaced", async () => {
   const fetchImpl = fakeFetch({ errors: [{ message: "bad key" }] });
   await assert.rejects(
-    fetchTriggerIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl),
+    fetchIssuesInState("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl),
     /bad key/,
   );
 });
@@ -86,7 +86,7 @@ test("GraphQL errors are surfaced", async () => {
 test("HTTP errors are surfaced with status", async () => {
   const fetchImpl = fakeFetch({}, false, 401);
   await assert.rejects(
-    fetchTriggerIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl),
+    fetchIssuesInState("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl),
     /Linear API 401/,
   );
 });

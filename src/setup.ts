@@ -14,23 +14,21 @@ import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import { envOr } from "./env.ts";
 import { fetchTeamStates, fetchTeams, fetchViewer } from "./linear-api.ts";
-import { runLocalEnvScriptPath, sessionScriptPath } from "./watcher.ts";
+import { sessionScriptPath } from "./watcher.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
 // collects these; the daemon reads them back via envOr() at startup.
 export type YimbotConfig = {
   apiKey: string;
   teamName: string;
-  triggerStateName: string;
+  deployStateName: string;
   reviewStateName: string;
   todoStateName: string;
   heartbeatIntervalMinutes: number;
   codebasePath: string;
   planModel: string;
   implModel: string;
-  resumeOnReview: boolean;
-  autoPick: boolean;
-  maxReview: number;
+  autoClaim: boolean;
   riskLabels: string[];
 };
 
@@ -72,15 +70,13 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
   return {
     LINEAR_API_KEY: c.apiKey,
     LINEAR_TEAM_NAME: c.teamName,
-    TRIGGER_STATE_NAME: c.triggerStateName,
+    DEPLOY_STATE_NAME: c.deployStateName,
     REVIEW_STATE_NAME: c.reviewStateName,
     HEARTBEAT_INTERVAL_MINUTES: String(c.heartbeatIntervalMinutes),
     CODEBASE_PATH: c.codebasePath,
     PLAN_MODEL: c.planModel,
     IMPL_MODEL: c.implModel,
-    RESUME_ON_REVIEW: String(c.resumeOnReview),
-    AUTO_PICK: String(c.autoPick),
-    MAX_REVIEW: String(c.maxReview),
+    AUTO_CLAIM: String(c.autoClaim),
     TODO_STATE_NAME: c.todoStateName,
     RISK_LABELS: c.riskLabels.join(","),
   };
@@ -94,19 +90,17 @@ export function serializeEnvFile(c: YimbotConfig): string {
     "",
     `LINEAR_API_KEY=${r.LINEAR_API_KEY}`,
     `LINEAR_TEAM_NAME=${r.LINEAR_TEAM_NAME}`,
-    `TRIGGER_STATE_NAME=${r.TRIGGER_STATE_NAME}`,
+    `DEPLOY_STATE_NAME=${r.DEPLOY_STATE_NAME}`,
     `REVIEW_STATE_NAME=${r.REVIEW_STATE_NAME}`,
     `HEARTBEAT_INTERVAL_MINUTES=${r.HEARTBEAT_INTERVAL_MINUTES}`,
     `CODEBASE_PATH=${r.CODEBASE_PATH}`,
-    `RESUME_ON_REVIEW=${r.RESUME_ON_REVIEW}`,
     "",
     "# --- Session models (Claude Code model alias or id) ---",
     `PLAN_MODEL=${r.PLAN_MODEL}`,
     `IMPL_MODEL=${r.IMPL_MODEL}`,
     "",
-    "# --- Autonomous ticket picker ---",
-    `AUTO_PICK=${r.AUTO_PICK}`,
-    `MAX_REVIEW=${r.MAX_REVIEW}`,
+    "# --- Autonomous claim step ---",
+    `AUTO_CLAIM=${r.AUTO_CLAIM}`,
     `TODO_STATE_NAME=${r.TODO_STATE_NAME}`,
     `RISK_LABELS=${r.RISK_LABELS}`,
     "",
@@ -146,6 +140,11 @@ const hostLinks: HostLink[] = [
     source: join(repoRoot, "skills/pickup-ticket"),
     target: join(homedir(), ".claude/skills/pickup-ticket"),
     label: "pickup-ticket skill (~/.claude/skills/pickup-ticket)",
+  },
+  {
+    source: join(repoRoot, "skills/address-pr-comments"),
+    target: join(homedir(), ".claude/skills/address-pr-comments"),
+    label: "address-pr-comments skill (~/.claude/skills/address-pr-comments)",
   },
 ];
 
@@ -287,16 +286,16 @@ export async function runSetup(): Promise<YimbotConfig> {
       }),
     );
 
-  const triggerStateName = await pickState(
+  const deployStateName = await pickState(
     "Launch a session when an issue enters…",
-    envOr("TRIGGER_STATE_NAME", "In Progress"),
+    envOr("DEPLOY_STATE_NAME", envOr("TRIGGER_STATE_NAME", "In Progress")),
   );
   const reviewStateName = await pickState(
-    'Your "In Review" state (caps auto-picking)',
+    'Your "In Review" state (flags a session ready to test)',
     envOr("REVIEW_STATE_NAME", "In Review"),
   );
   const todoStateName = await pickState(
-    "Auto-pick ready work from…",
+    "Auto-claim ready work from…",
     envOr("TODO_STATE_NAME", "Todo"),
   );
 
@@ -342,39 +341,20 @@ export async function runSetup(): Promise<YimbotConfig> {
     }),
   ).trim();
 
-  const resumeOnReview = bail(
-    await p.confirm({
-      message: "Spin up the local dev env when a ticket enters review?",
-      initialValue: ["true", "on", "yes", "1"].includes(
-        envOr("RESUME_ON_REVIEW", "false").toLowerCase(),
-      ),
-    }),
+  const autoClaimDefault = !["false", "off", "no", "0"].includes(
+    envOr("AUTO_CLAIM", envOr("AUTO_PICK", "true")).toLowerCase(),
   );
-
-  const autoPickDefault = !["false", "off", "no", "0"].includes(
-    envOr("AUTO_PICK", "true").toLowerCase(),
+  const autoClaim = bail(
+    await p.confirm({ message: "Enable the autonomous claim step?", initialValue: autoClaimDefault }),
   );
-  const autoPick = bail(
-    await p.confirm({ message: "Enable autonomous ticket picking?", initialValue: autoPickDefault }),
-  );
-  let maxReview = Number(envOr("MAX_REVIEW", "3"));
   let riskLabels = envOr("RISK_LABELS", "migration,infra,security,breaking")
     .split(",")
     .map((l) => l.trim())
     .filter(Boolean);
-  if (autoPick) {
-    maxReview = Number(
-      bail(
-        await p.text({
-          message: "Pause picking when this many of your tickets are In Review",
-          initialValue: String(maxReview),
-          validate: (v) => (isPositive(v) ? undefined : "Must be a positive number"),
-        }),
-      ),
-    );
+  if (autoClaim) {
     const labelsStr = bail(
       await p.text({
-        message: "Never auto-pick tickets with these labels (comma-separated)",
+        message: "Never auto-claim tickets with these labels (comma-separated)",
         initialValue: riskLabels.join(","),
       }),
     );
@@ -393,7 +373,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       label: "~/.claude/skills/pickup-ticket",
       role: "plan→implement→review flow (required)",
     },
-    { path: runLocalEnvScriptPath, label: "~/run-local-env.sh", role: "resumes dev env on review (only if you enabled it above)" },
+    {
+      path: join(homedir(), ".claude/skills/address-pr-comments"),
+      label: "~/.claude/skills/address-pr-comments",
+      role: "review step: address PR comments (required for PR handling)",
+    },
   ];
   p.note(
     preflight.map((c) => `${existsSync(c.path) ? "[ok]" : "[missing]"} ${c.label} — ${c.role}`).join("\n"),
@@ -415,16 +399,14 @@ export async function runSetup(): Promise<YimbotConfig> {
   const config: YimbotConfig = {
     apiKey,
     teamName,
-    triggerStateName,
+    deployStateName,
     reviewStateName,
     todoStateName,
     heartbeatIntervalMinutes,
     codebasePath,
     planModel,
     implModel,
-    resumeOnReview,
-    autoPick,
-    maxReview,
+    autoClaim,
     riskLabels,
   };
   writeEnvFile(serializeEnvFile(config));

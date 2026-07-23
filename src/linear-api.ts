@@ -12,8 +12,8 @@ export type LinearContext = {
   stateId: string;
 };
 
-// A Todo issue in the active cycle, enriched with the fields the picker needs
-// to rank it. `priority` uses Linear's inverted scale: 0=None, 1=Urgent,
+// A Todo issue in the active cycle, enriched with the fields the claim step
+// needs to rank it. `priority` uses Linear's inverted scale: 0=None, 1=Urgent,
 // 2=High, 3=Medium, 4=Low. `sortOrder` is the manual cycle order (lower =
 // higher in the list). `labels` are label names.
 export type CycleTodoIssue = LinearIssue & {
@@ -121,7 +121,7 @@ export async function fetchTeams(
   return data.teams.nodes;
 }
 
-// A team's workflow states, for the setup wizard's trigger/review/todo pickers.
+// A team's workflow states, for the setup wizard's deploy/review/todo state selectors.
 // Selecting from this list guarantees the name written to .env resolves at
 // daemon startup (resolveContext matches state by name).
 export async function fetchTeamStates(
@@ -141,7 +141,10 @@ export async function fetchTeamStates(
   return data.team.states.nodes;
 }
 
-export async function fetchTriggerIssues(
+// The viewer's assigned issues in one state of the watched team. Shared by the
+// deploy step (In Progress) and the review step (In Review) — both watch a
+// single state, so this is deliberately state-agnostic.
+export async function fetchIssuesInState(
   apiKey: string,
   ctx: LinearContext,
   fetchImpl: typeof fetch = fetch,
@@ -149,7 +152,7 @@ export async function fetchTriggerIssues(
   type IssuesData = { issues: { nodes: LinearIssue[] } };
   const data = await gql<IssuesData>(
     apiKey,
-    `query TriggerIssues($teamId: ID!, $stateId: ID!, $viewerId: ID!) {
+    `query IssuesInState($teamId: ID!, $stateId: ID!, $viewerId: ID!) {
       issues(
         first: 50
         filter: {
@@ -168,7 +171,7 @@ export async function fetchTriggerIssues(
 }
 
 // The watched team's active-cycle Todo issues assigned to the viewer, enriched
-// with priority, sortOrder, and label names for the picker to rank. Scoped by
+// with priority, sortOrder, and label names for the claim step to rank. Scoped by
 // team + assignee + state + the currently-active cycle.
 export async function fetchCycleTodoIssues(
   apiKey: string,

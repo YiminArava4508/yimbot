@@ -8,6 +8,7 @@ import {
   detectNewIssues,
   findExistingSession,
   markFeatureReady,
+  parseWorktreePorcelain,
   pollOnce,
   sanitizeBranchToSession,
   type WatchState,
@@ -142,6 +143,64 @@ test("findExistingSession matches despite a title change (identifier prefix only
 
 test("findExistingSession returns null when nothing matches", () => {
   assert.equal(findExistingSession("ENG-42", ["eng-7-a"], ["eng-9-b"]), null);
+});
+
+test("parseWorktreePorcelain returns path+branch for each branched worktree", () => {
+  const out = [
+    "worktree /home/ymbo/Work/gemini",
+    "HEAD abc123",
+    "branch refs/heads/main",
+    "",
+    "worktree /home/ymbo/Work/worktrees/eng-42-foo",
+    "HEAD def456",
+    "branch refs/heads/eng-42-foo",
+    "",
+  ].join("\n");
+  assert.deepEqual(parseWorktreePorcelain(out), [
+    { path: "/home/ymbo/Work/gemini", branch: "main" },
+    { path: "/home/ymbo/Work/worktrees/eng-42-foo", branch: "eng-42-foo" },
+  ]);
+});
+
+test("parseWorktreePorcelain skips detached-HEAD and bare worktrees (no branch)", () => {
+  const out = [
+    "worktree /home/ymbo/Work/worktrees/eng-1-a",
+    "HEAD abc",
+    "branch refs/heads/eng-1-a",
+    "",
+    "worktree /home/ymbo/Work/worktrees/detached",
+    "HEAD def",
+    "detached",
+    "",
+    "worktree /home/ymbo/Work/gemini/.bare",
+    "bare",
+    "",
+  ].join("\n");
+  assert.deepEqual(parseWorktreePorcelain(out), [
+    { path: "/home/ymbo/Work/worktrees/eng-1-a", branch: "eng-1-a" },
+  ]);
+});
+
+test("parseWorktreePorcelain skips prunable worktrees (dir gone, would die-loop)", () => {
+  const out = [
+    "worktree /home/ymbo/Work/worktrees/eng-1-a",
+    "HEAD abc",
+    "branch refs/heads/eng-1-a",
+    "",
+    "worktree /home/ymbo/Work/worktrees/eng-2-gone",
+    "HEAD def",
+    "branch refs/heads/eng-2-gone",
+    "prunable gitdir file points to non-existent location",
+    "",
+  ].join("\n");
+  assert.deepEqual(parseWorktreePorcelain(out), [
+    { path: "/home/ymbo/Work/worktrees/eng-1-a", branch: "eng-1-a" },
+  ]);
+});
+
+test("parseWorktreePorcelain handles a trailing entry with no final blank line", () => {
+  const out = ["worktree /wt/eng-7-g", "HEAD a", "branch refs/heads/eng-7-g"].join("\n");
+  assert.deepEqual(parseWorktreePorcelain(out), [{ path: "/wt/eng-7-g", branch: "eng-7-g" }]);
 });
 
 test("sanitizeBranchToSession matches new-session.sh's rule (no-op on a clean slug)", () => {

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   type GhRunner,
+  listMyMergedPRs,
   listMyOpenPRs,
+  parseMergedPRs,
   parseOpenPRs,
   parseUnresolvedCount,
   repoSlug,
@@ -34,6 +36,22 @@ test("listMyOpenPRs requests author=@me open PRs and parses them", () => {
   const prs = listMyOpenPRs(run);
   assert.deepEqual(prs, [{ number: 1, headRefName: "eng-1-a", isDraft: true }]);
   assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "open"]);
+});
+
+test("parseMergedPRs keeps only number/headRefName", () => {
+  const prs = parseMergedPRs(
+    JSON.stringify([{ number: 4700, headRefName: "eng-900-y", state: "MERGED", title: "ignored" }]),
+  );
+  assert.deepEqual(prs, [{ number: 4700, headRefName: "eng-900-y" }]);
+});
+
+test("listMyMergedPRs requests author=@me merged PRs and parses them", () => {
+  const { run, calls } = capturingRunner([
+    JSON.stringify([{ number: 2, headRefName: "eng-2-b" }]),
+  ]);
+  const prs = listMyMergedPRs(run);
+  assert.deepEqual(prs, [{ number: 2, headRefName: "eng-2-b" }]);
+  assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "merged"]);
 });
 
 test("repoSlug flattens owner.login and name", () => {

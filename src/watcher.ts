@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectNextClaim } from "./claim.ts";
+import { type CleanupDeps, cleanupOnce, type Worktree } from "./cleanup.ts";
 import {
   countAssignedInState,
   type CycleTodoIssue,
@@ -15,6 +16,7 @@ import {
 import { fixSessionName, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
+export const endSessionScriptPath = join(homedir(), "end-session.sh");
 export const worktreesDir = join(homedir(), "Work/worktrees");
 
 // tmux user option + glyph marking a session's feature as ready for the user to
@@ -212,6 +214,10 @@ export type WatcherConfig = {
   // gh-backed hooks for the review step; null disables PR comment handling (e.g.
   // when gh isn't available or the repo couldn't be resolved at startup).
   prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedCount"> | null;
+  // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
+  // gh unavailable). When set, each heartbeat tears down the worktree + session
+  // of every merged PR whose branch has a worktree under worktreesDir.
+  cleanup: { codebasePath: string; listMergedBranches: () => Set<string> } | null;
 };
 
 export function launchSession(name: string): Promise<void> {
@@ -317,6 +323,67 @@ function listWorktreeDirs(): string[] {
   }
 }
 
+// Parse `git worktree list --porcelain` into path+branch pairs. Entries with no
+// branch (detached HEAD, bare) are skipped: they have no branch to reconcile
+// against a merged PR. Prunable entries (registration whose directory is gone)
+// are skipped too: there is no worktree to clean, and selecting one would make
+// end-session.sh die every heartbeat. Blocks are separated by blank lines; a
+// trailing block with no final blank line is still flushed.
+export function parseWorktreePorcelain(output: string): Worktree[] {
+  const result: Worktree[] = [];
+  let path: string | null = null;
+  let branch: string | null = null;
+  let prunable = false;
+  const flush = () => {
+    if (path && branch && !prunable) result.push({ path, branch });
+    path = null;
+    branch = null;
+    prunable = false;
+  };
+  for (const line of output.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      flush();
+      path = line.slice("worktree ".length).trim();
+    } else if (line.startsWith("branch ")) {
+      branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    } else if (line.startsWith("prunable")) {
+      prunable = true;
+    } else if (line === "") {
+      flush();
+    }
+  }
+  flush();
+  return result;
+}
+
+// The live git worktrees of the codebase repo (path + branch). Empty on any git
+// error (missing repo, git absent).
+export function listGitWorktrees(codebasePath: string): Worktree[] {
+  try {
+    const out = execFileSync("git", ["-C", codebasePath, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return parseWorktreePorcelain(out);
+  } catch {
+    return [];
+  }
+}
+
+// Tear down a merged branch's worktree + session via end-session.sh <branch>.
+// The script runs headless (arg given), so it skips the interactive client UI and
+// just kills the session by name. Detached and fire-and-forget, mirroring
+// spawnFixSession: a failure is logged and the next heartbeat retries (nothing
+// was removed, so the worktree still appears and is re-selected).
+export function runEndSession(branch: string): void {
+  const proc = spawn("bash", [endSessionScriptPath, branch], { detached: true, stdio: "ignore" });
+  proc.unref();
+  proc.once("error", (err) => console.error(`[cleanup] end-session.sh for '${branch}' failed: ${err}`));
+  proc.once("exit", (code) => {
+    if (code !== 0) console.error(`[cleanup] end-session.sh for '${branch}' exited ${code}`);
+  });
+}
+
 export function startWatcher(config: WatcherConfig): () => void {
   const log = (msg: string) => console.log(`[watcher] ${msg}`);
 
@@ -357,6 +424,18 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: reviewIconLog,
   };
 
+  // Cleanup step (gh-driven): each heartbeat, tear down the worktree + session of
+  // every merged PR whose branch still has a worktree.
+  const cleanupLog = (msg: string) => console.log(`[cleanup] ${msg}`);
+  const { cleanup } = config;
+  const cleanupDeps: CleanupDeps | null = cleanup && {
+    listWorktrees: () => listGitWorktrees(cleanup.codebasePath),
+    listMergedBranches: cleanup.listMergedBranches,
+    worktreesDir,
+    teardown: runEndSession,
+    log: cleanupLog,
+  };
+
   // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
@@ -381,6 +460,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       await pollOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
       if (prReviewDeps) reviewOnce(prReviewDeps);
+      if (cleanupDeps) cleanupOnce(cleanupDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

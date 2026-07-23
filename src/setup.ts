@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import { envOr } from "./env.ts";
 import { fetchTeamStates, fetchTeams, fetchViewer } from "./linear-api.ts";
-import { sessionScriptPath } from "./watcher.ts";
+import { endSessionScriptPath, sessionScriptPath } from "./watcher.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
 // collects these; the daemon reads them back via envOr() at startup.
@@ -31,6 +31,7 @@ export type YimbotConfig = {
   autoClaim: boolean;
   riskLabels: string[];
   maxInProgress: number;
+  autoCleanup: boolean;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -81,6 +82,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     TODO_STATE_NAME: c.todoStateName,
     RISK_LABELS: c.riskLabels.join(","),
     MAX_IN_PROGRESS: String(c.maxInProgress),
+    AUTO_CLEANUP: String(c.autoCleanup),
   };
 }
 
@@ -106,6 +108,9 @@ export function serializeEnvFile(c: YimbotConfig): string {
     `TODO_STATE_NAME=${r.TODO_STATE_NAME}`,
     `RISK_LABELS=${r.RISK_LABELS}`,
     `MAX_IN_PROGRESS=${r.MAX_IN_PROGRESS}`,
+    "",
+    "# --- Cleanup step ---",
+    `AUTO_CLEANUP=${r.AUTO_CLEANUP}`,
     "",
   ].join("\n");
 }
@@ -138,6 +143,11 @@ const hostLinks: HostLink[] = [
     source: join(repoRoot, "scripts/new-session.sh"),
     target: join(homedir(), "new-session.sh"),
     label: "session launcher (~/new-session.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/end-session.sh"),
+    target: join(homedir(), "end-session.sh"),
+    label: "session teardown (~/end-session.sh)",
   },
   {
     source: join(repoRoot, "skills/pickup-ticket"),
@@ -377,10 +387,25 @@ export async function runSetup(): Promise<YimbotConfig> {
     maxInProgress = Number(maxStr);
   }
 
+  const autoCleanupDefault = !["false", "off", "no", "0"].includes(
+    envOr("AUTO_CLEANUP", "true").toLowerCase(),
+  );
+  const autoCleanup = bail(
+    await p.confirm({
+      message: "Enable the cleanup step? (remove a worktree + session once its PR merges)",
+      initialValue: autoCleanupDefault,
+    }),
+  );
+
   await installHostLinks();
 
   const preflight = [
     { path: sessionScriptPath, label: "~/new-session.sh", role: "launches worktree+tmux sessions (required)" },
+    {
+      path: endSessionScriptPath,
+      label: "~/end-session.sh",
+      role: "cleanup step: tears down merged PRs' worktrees (required for cleanup)",
+    },
     {
       path: join(homedir(), ".claude/skills/pickup-ticket"),
       label: "~/.claude/skills/pickup-ticket",
@@ -422,6 +447,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     autoClaim,
     riskLabels,
     maxInProgress,
+    autoCleanup,
   };
   writeEnvFile(serializeEnvFile(config));
   p.outro(`Saved to .env — signed in as ${viewerName}, watching "${teamName}".`);

@@ -27,6 +27,7 @@ const sample: YimbotConfig = {
   autoClaim: false,
   riskLabels: ["migration", "infra"],
   maxInProgress: 5,
+  autoCleanup: true,
 };
 
 test("isConfigured requires a non-empty API key", () => {
@@ -86,6 +87,7 @@ test("configToEnvRecord maps every setting to its env key", () => {
   assert.equal(r.AUTO_CLAIM, "false");
   assert.equal(r.RISK_LABELS, "migration,infra");
   assert.equal(r.MAX_IN_PROGRESS, "5");
+  assert.equal(r.AUTO_CLEANUP, "true");
 });
 
 test("serializeEnvFile emits parseable KEY=value lines with the claim section", () => {
@@ -101,6 +103,7 @@ test("serializeEnvFile emits parseable KEY=value lines with the claim section", 
   assert.equal(kv.AUTO_CLAIM, "false");
   assert.equal(kv.RISK_LABELS, "migration,infra");
   assert.equal(kv.MAX_IN_PROGRESS, "5");
+  assert.equal(kv.AUTO_CLEANUP, "true");
   assert.ok(text.includes("# --- Autonomous claim step ---"));
 });
 

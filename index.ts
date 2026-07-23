@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
-import { ghRunner, listMyOpenPRs, repoSlug, unresolvedThreadCount } from "./src/gh.ts";
+import { ghRunner, listMyMergedPRs, listMyOpenPRs, repoSlug, unresolvedThreadCount } from "./src/gh.ts";
 import { resolveContext } from "./src/linear-api.ts";
 import { configToEnvRecord, isConfigured, runSetup } from "./src/setup.ts";
 import { sessionScriptPath, startWatcher } from "./src/watcher.ts";
@@ -48,6 +48,10 @@ const todoStateName = envOr("TODO_STATE_NAME", "Todo");
 // stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
 const maxInProgress = Number(envOr("MAX_IN_PROGRESS", "3"));
 
+// Cleanup step: on by default, disabled with a recognized off-value. Removes a
+// worktree + session once its PR merges.
+const autoCleanup = !["false", "off", "no", "0"].includes(envOr("AUTO_CLEANUP", "true").toLowerCase());
+
 if (!apiKey) throw new Error("LINEAR_API_KEY is required");
 if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
   throw new Error("MAX_IN_PROGRESS must be a positive integer");
@@ -88,6 +92,21 @@ try {
   console.log(`[yimbot] review step OFF: gh unavailable or repo unresolved (${err})`);
 }
 
+// Cleanup step: tear down merged PRs' worktrees. Shares the review step's gh
+// availability signal (prReview !== null): if gh is missing, both are off.
+const cleanup =
+  autoCleanup && prReview
+    ? {
+        codebasePath,
+        listMergedBranches: () => new Set(listMyMergedPRs(gh).map((pr) => pr.headRefName)),
+      }
+    : null;
+console.log(
+  cleanup
+    ? "[yimbot] cleanup step ON: removing worktrees + sessions of merged PRs"
+    : `[yimbot] cleanup step OFF${autoCleanup ? " (gh unavailable)" : ""}`,
+);
+
 console.log(
   `[yimbot] watching "${teamName}": deploy on "${stateName}", ready-to-test flag on "${reviewStateName}", every ${heartbeatIntervalMinutes}m; syncing ${codebasePath}`,
 );
@@ -110,6 +129,7 @@ const stop = startWatcher({
     progressStateName: stateName,
   },
   prReview,
+  cleanup,
 });
 
 void pullCodebase(codebasePath);

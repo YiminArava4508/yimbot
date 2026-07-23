@@ -24,6 +24,21 @@ export function listMyOpenPRs(run: GhRunner): OpenPR[] {
   );
 }
 
+export type MergedPR = { number: number; headRefName: string };
+
+export function parseMergedPRs(json: string): MergedPR[] {
+  const rows = JSON.parse(json) as MergedPR[];
+  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName }));
+}
+
+// The viewer's merged PRs in the runner's repo. Bounded to the 100 most recent:
+// a worktree whose PR merged more than 100 merges ago is not a realistic case.
+export function listMyMergedPRs(run: GhRunner): MergedPR[] {
+  return parseMergedPRs(
+    run(["pr", "list", "--author", "@me", "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
+  );
+}
+
 // owner/name of the repo gh resolves in the runner's cwd — needed as GraphQL
 // variables for the review-thread query below.
 export function repoSlug(run: GhRunner): RepoSlug {

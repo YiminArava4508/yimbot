@@ -77,8 +77,8 @@ pnpm start   # first run walks you through onboarding, writes .env, then starts
 
 On first launch (no `.env`), `pnpm start` drops into an interactive wizard: it
 authenticates your Linear API key, lets you pick your team and workflow states
-from the real Linear data, validates the codebase path is a git repo, and
-checks the helper scripts exist — then writes `.env` and continues into the
+from the real Linear data, validates the codebase path is a git repo, links the session launcher and
+pickup-ticket skill into place — then writes `.env` and continues into the
 daemon. Re-run it anytime with `pnpm onboard` (backs up the old `.env`). You can
 still hand-edit `.env` from `.env.example` if you prefer.
 
@@ -90,18 +90,18 @@ pnpm check     # one-shot: print the issues the filter currently matches
 pnpm start     # run the daemon (Ctrl+C to stop); onboards first if unconfigured
 ```
 
-## Session launcher
+## Session launcher & skill
 
 When an issue enters the launch state, the daemon shells out to
-`~/new-session.sh <name>`. A generic, self-contained launcher ships in this repo
-at [`scripts/new-session.sh`](scripts/new-session.sh): it creates (or reuses) a
-git worktree off `CODEBASE_PATH`, opens a tmux session with a Claude window, and
-seeds ticket sessions (`eng-…` / `sc-…`) to hand off to the `pickup-ticket`
-skill. Install it where the daemon expects it:
-
-```bash
-ln -s "$PWD/scripts/new-session.sh" ~/new-session.sh
-```
+`~/new-session.sh <name>`, which creates (or reuses) a git worktree off
+`CODEBASE_PATH`, opens a tmux session with a Claude window, and seeds ticket
+sessions (`eng-…` / `sc-…`) to hand off to the **pickup-ticket** skill (plan →
+implement → self-review → finish). Both ship in this repo —
+[`scripts/new-session.sh`](scripts/new-session.sh) and
+[`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md) — and **`pnpm onboard`
+symlinks them into place** (`~/new-session.sh` and
+`~/.claude/skills/pickup-ticket`), verifying them in its pre-flight. An existing
+file at either path is never overwritten without asking (it's backed up first).
 
 Nothing project-specific is baked in. Point it at your repo and, if you need
 per-worktree setup (ports, env files, dependency installs) or a dev-env command,

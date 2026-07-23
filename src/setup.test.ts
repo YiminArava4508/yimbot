@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import {
   expandTilde,
   isConfigured,
   isGitRepo,
+  linkState,
   serializeEnvFile,
   type YimbotConfig,
 } from "./setup.ts";
@@ -54,6 +55,22 @@ test("isGitRepo is true for a real repo, false otherwise", () => {
   const repo = mkdtempSync(join(tmpdir(), "yimbot-git-"));
   execFileSync("git", ["-C", repo, "init", "-q"], { stdio: "ignore" });
   assert.equal(isGitRepo(repo), true);
+});
+
+test("linkState detects our symlink vs other vs missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yimbot-link-"));
+  const source = join(dir, "source.sh");
+  writeFileSync(source, "#!/bin/bash\n");
+  assert.equal(linkState(source, join(dir, "missing")), "missing");
+  const ours = join(dir, "ours");
+  symlinkSync(source, ours);
+  assert.equal(linkState(source, ours), "ours");
+  const other = join(dir, "other");
+  symlinkSync(join(dir, "elsewhere"), other);
+  assert.equal(linkState(source, other), "other");
+  const regular = join(dir, "regular");
+  writeFileSync(regular, "x");
+  assert.equal(linkState(source, regular), "other");
 });
 
 test("configToEnvRecord maps every setting to its env key", () => {

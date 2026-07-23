@@ -1,7 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readlinkSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import { envOr } from "./env.ts";
 import { fetchTeamStates, fetchTeams, fetchViewer } from "./linear-api.ts";
@@ -121,6 +130,84 @@ function bail<T>(value: T | symbol): T {
     process.exit(0);
   }
   return value;
+}
+
+// Repo root, so the wizard can link the vendored launcher + skill into place.
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+
+type HostLink = { source: string; target: string; label: string };
+const hostLinks: HostLink[] = [
+  {
+    source: join(repoRoot, "scripts/new-session.sh"),
+    target: join(homedir(), "new-session.sh"),
+    label: "session launcher (~/new-session.sh)",
+  },
+  {
+    source: join(repoRoot, "skills/pickup-ticket"),
+    target: join(homedir(), ".claude/skills/pickup-ticket"),
+    label: "pickup-ticket skill (~/.claude/skills/pickup-ticket)",
+  },
+];
+
+// Whether `target` is already our symlink to `source`, some other existing
+// file/dir, or absent. Drives whether the installer links, skips, or asks.
+export function linkState(source: string, target: string): "ours" | "other" | "missing" {
+  let stat;
+  try {
+    stat = lstatSync(target);
+  } catch {
+    return "missing";
+  }
+  if (stat.isSymbolicLink()) {
+    try {
+      if (readlinkSync(target).replace(/\/+$/, "") === source.replace(/\/+$/, "")) return "ours";
+    } catch {
+      /* unreadable link → treat as other */
+    }
+  }
+  return "other";
+}
+
+// Symlink the repo's vendored launcher + skill into the places the daemon and
+// Claude Code expect. Idempotent; never clobbers an unrelated existing file
+// without asking (backs it up to .bak if the user agrees).
+async function installHostLinks(): Promise<void> {
+  const link = bail(
+    await p.confirm({
+      message: "Link yimbot's session launcher and pickup-ticket skill into place?",
+      initialValue: true,
+    }),
+  );
+  if (!link) return;
+  const results: string[] = [];
+  for (const { source, target, label } of hostLinks) {
+    try {
+      const state = linkState(source, target);
+      if (state === "ours") {
+        results.push(`[ok] ${label} already linked`);
+        continue;
+      }
+      if (state === "other") {
+        const replace = bail(
+          await p.confirm({
+            message: `${target} exists and isn't a yimbot link. Back it up (.bak) and replace with a link to the repo copy?`,
+            initialValue: false,
+          }),
+        );
+        if (!replace) {
+          results.push(`[skip] ${label} left as-is`);
+          continue;
+        }
+        renameSync(target, `${target}.bak`);
+      }
+      mkdirSync(dirname(target), { recursive: true });
+      symlinkSync(source, target);
+      results.push(`[ok] ${label} linked`);
+    } catch (err) {
+      results.push(`[fail] ${label}: ${errMsg(err)}`);
+    }
+  }
+  p.note(results.join("\n"), "Install");
 }
 
 // Obtain an API key that authenticates. Offers to keep an existing key on a
@@ -297,8 +384,15 @@ export async function runSetup(): Promise<YimbotConfig> {
       .filter(Boolean);
   }
 
+  await installHostLinks();
+
   const preflight = [
     { path: sessionScriptPath, label: "~/new-session.sh", role: "launches worktree+tmux sessions (required)" },
+    {
+      path: join(homedir(), ".claude/skills/pickup-ticket"),
+      label: "~/.claude/skills/pickup-ticket",
+      role: "plan→implement→review flow (required)",
+    },
     { path: runLocalEnvScriptPath, label: "~/run-local-env.sh", role: "resumes dev env on review (only if you enabled it above)" },
   ];
   p.note(

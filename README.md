@@ -37,13 +37,13 @@ flowchart TD
     T1 -- yes --> L["Open a fresh workspace and<br/>let Claude start building it"]
 
     P --> G2["Grab the next task"]
-    G2 --> PK{"Free to take on more?<br/>nothing in progress"}
+    G2 --> PK{"Free to take on more?<br/>under your work-in-progress limit"}
     PK -- yes --> M["Take the top to-do<br/>and start it"]
     M -.->|next check| T1
 
     P --> G3["Handle review comments"]
     G3 --> T2{"An open PR of yours with<br/>unresolved comments?"}
-    T2 -- yes --> R["Open a session that fixes them,<br/>pushes, resolves the threads,<br/>and asks for re-review"]
+    T2 -- yes --> R["Add a fix window to that ticket's<br/>session (or open a new one) that fixes<br/>them, pushes, resolves the threads,<br/>and asks for re-review"]
 
     P --> G4["Flag ready to test"]
     G4 --> T3{"Did a card move<br/>to 'In Review'?"}
@@ -63,13 +63,16 @@ flowchart TD
 
 - **Start new work (green):** when you move a card to **In Progress**, yimbot
   opens a fresh, isolated copy of the code and has Claude start building it.
-- **Grab the next task (blue):** when nothing is being worked on, it pulls your
-  top to-do into progress so the deploy step picks it up next time. *(optional;
-  setting: `AUTO_CLAIM`)*
+- **Grab the next task (blue):** while you have fewer than your work-in-progress
+  limit of tickets in progress, it pulls your top to-do into progress so the
+  deploy step picks it up next time. *(optional; settings: `AUTO_CLAIM`,
+  `MAX_IN_PROGRESS` — defaults to 3, set to 1 for one at a time)*
 - **Handle review comments (amber):** every heartbeat, for each of your open PRs
-  that has unresolved comments, it opens a session that addresses every comment,
-  gets tests green, pushes, resolves the threads, and re-requests review. Needs
-  `gh` installed and authenticated; runs against the repo at `CODEBASE_PATH`.
+  that has unresolved comments, it adds a fix window to that PR's ticket session
+  (or opens a standalone session if the ticket session has ended) that addresses
+  every comment, gets tests green, pushes, resolves the threads, and re-requests
+  review. Needs `gh` installed and authenticated; runs against the repo at
+  `CODEBASE_PATH`.
 - **Flag ready to test (purple):** when a card moves to **In Review**, it marks
   that card's session with a "ready to test" icon so you know you can run local
   dev there to try it. (yimbot no longer starts the dev env for you.)
@@ -102,10 +105,13 @@ When an issue enters the deploy state, the daemon shells out to
 `~/new-session.sh <name>`, which creates (or reuses) a git worktree off
 `CODEBASE_PATH`, opens a tmux session with a Claude window, and seeds the session
 by name: ticket sessions (`eng-…` / `sc-…`) hand off to the **pickup-ticket**
-skill (plan, implement, self-review, finish), and PR fix sessions (`pr-<n>-fix`,
+skill (plan, implement, self-review, finish), and PR fixes (`pr-<n>-fix`,
 launched by the review step with `~/new-session.sh pr-<n>-fix <branch>`) hand off
 to the **address-pr-comments** skill (fix comments, push, resolve threads,
-re-request review). All ship in this repo:
+re-request review). A PR fix is added as a window inside its branch's ticket
+session when that session is still alive, so a PR and its ticket share one
+session; if the ticket session has ended, it becomes a standalone `pr-<n>-fix`
+session instead. All ship in this repo:
 [`scripts/new-session.sh`](scripts/new-session.sh),
 [`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md), and
 [`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md). **`pnpm onboard`

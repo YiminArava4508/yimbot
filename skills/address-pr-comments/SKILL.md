@@ -41,7 +41,10 @@ falsely resolve a comment you did not actually address.
    then make the change in the worktree. Check `IMPL_MODEL`
    (`echo "$IMPL_MODEL"`):
    - If set, dispatch the code changes to subagents on that model via
-     `superpowers:subagent-driven-development`.
+     `superpowers:subagent-driven-development`. Subagents do not inherit the
+     global CLAUDE.md, so include this rule in every subagent prompt: never use
+     em dashes (—) or en dashes (–) in any output, including thread replies,
+     code comments, and commit messages.
    - If unset, implement in-session.
    Use `superpowers:test-driven-development` for anything that changes behavior.
 

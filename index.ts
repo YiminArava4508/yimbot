@@ -44,8 +44,14 @@ const riskLabels = envOr("RISK_LABELS", "migration,infra,security,breaking")
   .map((l) => l.trim())
   .filter(Boolean);
 const todoStateName = envOr("TODO_STATE_NAME", "Todo");
+// How many of the viewer's tickets may sit In Progress before the claim step
+// stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
+const maxInProgress = Number(envOr("MAX_IN_PROGRESS", "3"));
 
 if (!apiKey) throw new Error("LINEAR_API_KEY is required");
+if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
+  throw new Error("MAX_IN_PROGRESS must be a positive integer");
+}
 if (!Number.isFinite(heartbeatIntervalMinutes) || heartbeatIntervalMinutes <= 0) {
   throw new Error("HEARTBEAT_INTERVAL_MINUTES must be a positive number");
 }
@@ -87,7 +93,7 @@ console.log(
 );
 console.log(
   autoClaim
-    ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, 1 in progress; skipping labels [${riskLabels.join(", ")}]`
+    ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]`
     : "[yimbot] auto-claim OFF",
 );
 
@@ -99,6 +105,7 @@ const stop = startWatcher({
   claim: {
     autoClaim,
     riskLabels,
+    maxInProgress,
     todoContext,
     progressStateName: stateName,
   },

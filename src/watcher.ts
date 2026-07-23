@@ -12,7 +12,7 @@ import {
   type LinearIssue,
   moveIssueToState,
 } from "./linear-api.ts";
-import { type PrReviewDeps, reviewOnce } from "./pr-review.ts";
+import { fixSessionName, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const worktreesDir = join(homedir(), "Work/worktrees");
@@ -45,6 +45,14 @@ export function buildSessionName(identifier: string, title: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .slice(0, 50)
     .replace(/^-+|-+$/g, "");
+}
+
+// The tmux session / worktree dir a branch maps to, mirroring new-session.sh's
+// rule exactly (`sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50`). A ticket session is
+// launched with name == branch, so a PR's head branch resolves to its ticket
+// session name; the fix guard looks for a window there.
+export function sanitizeBranchToSession(branch: string): string {
+  return branch.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 50);
 }
 
 // The sanitized identifier plus a trailing dash — the shared prefix of the
@@ -128,6 +136,9 @@ export type ClaimDeps = {
   autoClaim: boolean;
   // Label names that disqualify a ticket from being claimed.
   riskLabels: string[];
+  // Ceiling on the personal In-Progress WIP: the claim step acts only while the
+  // count is below this. 1 restores the old one-at-a-time behavior.
+  maxInProgress: number;
   // Viewer-wide count (across all teams) of the personal In-Progress WIP.
   countInProgress: () => Promise<number>;
   // The watched team's active-cycle Todo issues assigned to the viewer.
@@ -138,11 +149,12 @@ export type ClaimDeps = {
   log: (msg: string) => void;
 };
 
-// One tick of the claim step. Gated only by the one-at-a-time rule: acts when
-// nothing is In Progress (there is no review-queue cap — in-review PRs are
-// worked automatically by the review step). When the gate is open it selects the
-// top eligible current-cycle Todo and moves it to In Progress — it never
-// launches anything itself.
+// One tick of the claim step. Gated by the WIP cap: acts while fewer than
+// maxInProgress tickets are In Progress (there is no review-queue cap — in-review
+// PRs are worked automatically by the review step). It claims at most one ticket
+// per tick, so the count climbs toward the cap one heartbeat at a time. When the
+// gate is open it selects the top eligible current-cycle Todo and moves it to In
+// Progress — it never launches anything itself.
 //
 // Known limitation: launching relies on the deploy step detecting the Todo→In
 // Progress transition, and that step only fires once per issue per daemon
@@ -155,7 +167,7 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
   if (!deps.autoClaim) return;
 
   try {
-    if ((await deps.countInProgress()) > 0) return; // busy — one ticket at a time
+    if ((await deps.countInProgress()) >= deps.maxInProgress) return; // at WIP cap
   } catch (err) {
     deps.log(`claim failed: ${err}`);
     return;
@@ -183,6 +195,7 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
 export type ClaimConfig = {
   autoClaim: boolean;
   riskLabels: string[];
+  maxInProgress: number;
   // Watched-team Todo context (team + Todo state + viewer) for cycle queries.
   todoContext: LinearContext;
   // State name for the viewer-wide, team-agnostic In-Progress WIP count.
@@ -219,10 +232,11 @@ export function launchSession(name: string): Promise<void> {
   return result;
 }
 
-// Launch a PR fix session: new-session.sh <name> <branch>, so the tmux session
-// is named by PR number while the worktree is (re)used on the PR's branch.
-// Detached and fire-and-forget — a spawn failure is logged, and the next
-// heartbeat retries (no session was created, so the in-flight guard won't block).
+// Launch a PR fix run: new-session.sh <pr-<n>-fix> <branch>. The script reuses
+// the branch's worktree and, when the branch's ticket session is still alive,
+// adds the fix as a window there; otherwise it falls back to a standalone
+// pr-<n>-fix session. Detached and fire-and-forget — a spawn failure is logged,
+// and the next heartbeat retries (nothing was created, so the guard won't block).
 export function spawnFixSession(name: string, branch: string): void {
   const proc = spawn("bash", [sessionScriptPath, name, branch], { detached: true, stdio: "ignore" });
   proc.unref();
@@ -240,6 +254,29 @@ export function tmuxHasSession(name: string): boolean {
   } catch {
     return false;
   }
+}
+
+// Whether a window by this name exists in the given tmux session. False when the
+// session or the tmux server is absent.
+export function tmuxWindowExists(session: string, window: string): boolean {
+  try {
+    const out = execFileSync("tmux", ["list-windows", "-t", `=${session}`, "-F", "#{window_name}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.split("\n").some((name) => name.trim() === window);
+  } catch {
+    return false;
+  }
+}
+
+// In-flight guard for a PR's fix run. A fix lives either as a standalone
+// pr-<n>-fix session (when the ticket session was gone) or as a pr-<n>-fix window
+// inside the branch's ticket session. Either presence means don't re-spawn.
+export function fixInFlight(prNumber: number, branch: string): boolean {
+  const name = fixSessionName(prNumber);
+  if (tmuxHasSession(name)) return true;
+  return tmuxWindowExists(sanitizeBranchToSession(branch), name);
 }
 
 // Flag a tmux session's feature as ready to test by setting the session-scoped
@@ -315,12 +352,12 @@ export function startWatcher(config: WatcherConfig): () => void {
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
     listOpenPRs: config.prReview.listOpenPRs,
     unresolvedCount: config.prReview.unresolvedCount,
-    sessionExists: tmuxHasSession,
+    fixInFlight,
     spawnFix: spawnFixSession,
     log: reviewIconLog,
   };
 
-  // Claim step: on each heartbeat, when nothing is In Progress, move the top
+  // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
   const { claim } = config;
@@ -328,6 +365,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   const claimDeps: ClaimDeps = {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
+    maxInProgress: claim.maxInProgress,
     countInProgress: () => countAssignedInState(config.apiKey, viewerId, claim.progressStateName),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     moveToInProgress: (issue) =>
@@ -345,8 +383,8 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (prReviewDeps) reviewOnce(prReviewDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
-      // tick (not double-launched now), and the one-in-progress gate blocks
-      // re-claiming it.
+      // tick (not double-launched now), and the higher In-Progress count keeps
+      // the WIP cap accounting correct.
       await claimOnce(claimDeps);
     } finally {
       running = false;

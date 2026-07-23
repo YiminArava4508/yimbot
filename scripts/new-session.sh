@@ -112,6 +112,37 @@ create_worktree() {
 }
 create_worktree
 
+# Launch Claude in a tmux target (session:window). Uses the planning model if
+# set and passes the implementation model through the environment for the
+# pickup-ticket skill; both optional. Seeds the ticket/PR prompt when recognized.
+launch_claude_in() {
+  local target=$1
+  local cmd="claude"
+  [ -n "${PLAN_MODEL:-}" ] && cmd="claude --model $PLAN_MODEL"
+  [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
+  local prompt
+  prompt=$(seed_prompt_for "$NAME")
+  if [ -n "$prompt" ]; then
+    tmux send-keys -t "$target" "$cmd \"$prompt\"" C-m
+  else
+    tmux send-keys -t "$target" "$cmd" C-m
+  fi
+}
+
+# --- PR fix into the ticket's existing session ---
+# A fix invocation (BRANCH != NAME) whose branch has a live ticket session
+# (named after the sanitized branch, == WORKTREE_DIR) is added as a detached
+# window there rather than a standalone session, so a PR and its ticket share one
+# session. No setup hook: the ticket session already ran it on this worktree.
+if [ "$BRANCH" != "$NAME" ] && tmux has-session -t "=$WORKTREE_DIR" 2>/dev/null; then
+  log "Adding fix window '$NAME' to ticket session '$WORKTREE_DIR'"
+  tmux new-window -d -t "$WORKTREE_DIR" -n "$NAME" -c "$WORKTREE" ||
+    die "Failed to add window '$NAME' to session '$WORKTREE_DIR'"
+  launch_claude_in "$WORKTREE_DIR:$NAME"
+  log "Fix window added (detached)"
+  exit 0
+fi
+
 # --- Optional project-specific setup (ports, env files, dependency installs) ---
 if [ -n "${SESSION_SETUP_HOOK:-}" ]; then
   if [ -f "$SESSION_SETUP_HOOK" ]; then
@@ -157,18 +188,7 @@ done
 # Claude window. Ticket sessions (sc-<id>-… / eng-<id>-…) are seeded to fetch the
 # ticket and hand off to the pickup-ticket skill; any other name gets a bare claude.
 tmux new-window -t "$NAME" -n Claude -c "$WORKTREE"
-# Launch Claude on the planning model (if set) and pass the implementation model
-# through the environment so the pickup-ticket skill can run its implementation
-# subagents on it. Both are optional — unset means Claude's default model.
-CLAUDE_LAUNCH="claude"
-[ -n "${PLAN_MODEL:-}" ] && CLAUDE_LAUNCH="claude --model $PLAN_MODEL"
-[ -n "${IMPL_MODEL:-}" ] && CLAUDE_LAUNCH="IMPL_MODEL=$IMPL_MODEL $CLAUDE_LAUNCH"
-CLAUDE_PROMPT=$(seed_prompt_for "$NAME")
-if [ -n "$CLAUDE_PROMPT" ]; then
-  tmux send-keys -t "$NAME:Claude" "$CLAUDE_LAUNCH \"$CLAUDE_PROMPT\"" C-m
-else
-  tmux send-keys -t "$NAME:Claude" "$CLAUDE_LAUNCH" C-m
-fi
+launch_claude_in "$NAME:Claude"
 
 log "All windows set up. Switching to session '$NAME'"
 tmux select-window -t "$FIRST_WINDOW"

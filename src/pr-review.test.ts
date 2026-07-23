@@ -17,7 +17,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   const d: PrReviewDeps = {
     listOpenPRs: () => [pr(4706)],
     unresolvedCount: () => 2,
-    sessionExists: () => false,
+    fixInFlight: () => false,
     spawnFix: (name, branch) => void spawned.push({ name, branch }),
     log: (m) => void logs.push(m),
     ...overrides,
@@ -47,10 +47,14 @@ test("reviewOnce skips a PR with no unresolved threads", () => {
   assert.equal(spawned.length, 0);
 });
 
-test("reviewOnce skips a PR whose fix session is already running (in-flight guard)", () => {
+test("reviewOnce skips a PR whose fix is already in flight (in-flight guard)", () => {
   let counted = false;
+  const seen: { number: number; branch: string }[] = [];
   const { deps: d, spawned } = deps({
-    sessionExists: (name) => name === "pr-4706-fix",
+    fixInFlight: (number, branch) => {
+      seen.push({ number, branch });
+      return number === 4706;
+    },
     unresolvedCount: () => {
       counted = true;
       return 5;
@@ -58,7 +62,8 @@ test("reviewOnce skips a PR whose fix session is already running (in-flight guar
   });
   reviewOnce(d);
   assert.equal(spawned.length, 0);
-  assert.equal(counted, false, "must not even count threads when a fix session exists");
+  assert.equal(counted, false, "must not even count threads when a fix is in flight");
+  assert.deepEqual(seen, [{ number: 4706, branch: "eng-4706-x" }], "guard gets PR number and branch");
 });
 
 test("reviewOnce continues to other PRs when one PR's thread count throws", () => {

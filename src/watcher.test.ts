@@ -9,6 +9,7 @@ import {
   findExistingSession,
   markFeatureReady,
   pollOnce,
+  sanitizeBranchToSession,
   type WatchState,
 } from "./watcher.ts";
 
@@ -143,6 +144,15 @@ test("findExistingSession returns null when nothing matches", () => {
   assert.equal(findExistingSession("ENG-42", ["eng-7-a"], ["eng-9-b"]), null);
 });
 
+test("sanitizeBranchToSession matches new-session.sh's rule (no-op on a clean slug)", () => {
+  assert.equal(sanitizeBranchToSession("eng-4706-add-foo"), "eng-4706-add-foo");
+});
+
+test("sanitizeBranchToSession replaces disallowed chars and caps at 50", () => {
+  assert.equal(sanitizeBranchToSession("feat/ENG-42_fix bar"), "feat-ENG-42-fix-bar");
+  assert.equal(sanitizeBranchToSession("x".repeat(60)).length, 50);
+});
+
 test("findExistingSession does not match a numeric-prefix neighbour", () => {
   // ENG-4 must not match eng-42-... — the boundary dash prevents it.
   assert.equal(findExistingSession("ENG-4", ["eng-42-fix-login"], []), null);
@@ -200,6 +210,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
   const deps: ClaimDeps = {
     autoClaim: true,
     riskLabels: ["migration"],
+    maxInProgress: 3,
     countInProgress: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
     moveToInProgress: async (issue) => void moved.push(issue),
@@ -223,8 +234,14 @@ test("claimOnce does nothing when autoClaim is off", async () => {
   assert.equal(counted, false, "must not even query counts when disabled");
 });
 
-test("claimOnce skips (no pick) when a ticket is already In Progress", async () => {
-  const { deps, moved } = claimDeps({ countInProgress: async () => 1 });
+test("claimOnce still claims when In-Progress count is below the cap", async () => {
+  const { deps, moved } = claimDeps({ maxInProgress: 3, countInProgress: async () => 1 });
+  await claimOnce(deps);
+  assert.equal(moved.length, 1);
+});
+
+test("claimOnce skips (no pick) when In-Progress count is at the cap", async () => {
+  const { deps, moved } = claimDeps({ maxInProgress: 2, countInProgress: async () => 2 });
   await claimOnce(deps);
   assert.equal(moved.length, 0);
 });

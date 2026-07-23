@@ -30,6 +30,7 @@ export type YimbotConfig = {
   implModel: string;
   autoClaim: boolean;
   riskLabels: string[];
+  maxInProgress: number;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -79,6 +80,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     AUTO_CLAIM: String(c.autoClaim),
     TODO_STATE_NAME: c.todoStateName,
     RISK_LABELS: c.riskLabels.join(","),
+    MAX_IN_PROGRESS: String(c.maxInProgress),
   };
 }
 
@@ -103,6 +105,7 @@ export function serializeEnvFile(c: YimbotConfig): string {
     `AUTO_CLAIM=${r.AUTO_CLAIM}`,
     `TODO_STATE_NAME=${r.TODO_STATE_NAME}`,
     `RISK_LABELS=${r.RISK_LABELS}`,
+    `MAX_IN_PROGRESS=${r.MAX_IN_PROGRESS}`,
     "",
   ].join("\n");
 }
@@ -351,6 +354,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     .split(",")
     .map((l) => l.trim())
     .filter(Boolean);
+  let maxInProgress = Number(envOr("MAX_IN_PROGRESS", "3"));
   if (autoClaim) {
     const labelsStr = bail(
       await p.text({
@@ -362,6 +366,15 @@ export async function runSetup(): Promise<YimbotConfig> {
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
+    const maxStr = bail(
+      await p.text({
+        message: "Max tickets In Progress at once (WIP cap)",
+        initialValue: String(Number.isInteger(maxInProgress) && maxInProgress >= 1 ? maxInProgress : 3),
+        validate: (v) =>
+          Number.isInteger(Number(v)) && Number(v) >= 1 ? undefined : "Enter a positive integer",
+      }),
+    );
+    maxInProgress = Number(maxStr);
   }
 
   await installHostLinks();
@@ -408,6 +421,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     implModel,
     autoClaim,
     riskLabels,
+    maxInProgress,
   };
   writeEnvFile(serializeEnvFile(config));
   p.outro(`Saved to .env — signed in as ${viewerName}, watching "${teamName}".`);

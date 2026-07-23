@@ -11,8 +11,10 @@ export type PrReviewDeps = {
   listOpenPRs: () => OpenPR[];
   // Unresolved review-thread count for a PR (any author).
   unresolvedCount: (prNumber: number) => number;
-  // Whether a tmux session by this name already exists (the in-flight guard).
-  sessionExists: (name: string) => boolean;
+  // In-flight guard: whether a fix for this PR is already running or
+  // finished-but-open, either as a standalone pr-<n>-fix session or as a
+  // pr-<n>-fix window inside the branch's ticket session.
+  fixInFlight: (prNumber: number, branch: string) => boolean;
   // Launch a fix session (session name, branch to check out in the worktree).
   spawnFix: (sessionName: string, branch: string) => void;
   log: (msg: string) => void;
@@ -22,8 +24,9 @@ export type PrReviewDeps = {
 // unresolved comments and no fix session already running, spawn a fix session.
 // There is no seen-set: dedup comes from resolved threads (a fully addressed PR
 // has zero unresolved threads next tick) plus the in-flight session guard. A
-// finished fix session is left alive (feature-ready icon set), so its continued
-// existence keeps that PR from re-spawning until the user ends the session.
+// finished fix run is left alive (a window in the ticket session, or a standalone
+// session when that session is gone), so its continued existence keeps that PR
+// from re-spawning until the user closes it.
 export function reviewOnce(deps: PrReviewDeps): void {
   let prs: OpenPR[];
   try {
@@ -36,7 +39,7 @@ export function reviewOnce(deps: PrReviewDeps): void {
   for (const pr of prs) {
     if (pr.isDraft) continue;
     const name = fixSessionName(pr.number);
-    if (deps.sessionExists(name)) continue; // a fix is still running/open for this PR
+    if (deps.fixInFlight(pr.number, pr.headRefName)) continue; // a fix is still running/open
 
     let count: number;
     try {

@@ -79,10 +79,11 @@ const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
 // disabled (null) rather than crashing the daemon.
 const gh = ghRunner(codebasePath);
-let prReview: { listOpenPRs: () => ReturnType<typeof listMyOpenPRs>; unresolvedCount: (n: number) => number } | null =
-  null;
+let prReview:
+  | { listOpenPRs: () => ReturnType<typeof listMyOpenPRs>; unresolvedCount: (n: number) => Promise<number> }
+  | null = null;
 try {
-  const slug = repoSlug(gh);
+  const slug = await repoSlug(gh);
   prReview = {
     listOpenPRs: () => listMyOpenPRs(gh),
     unresolvedCount: (n) => unresolvedThreadCount(gh, slug, n),
@@ -98,7 +99,7 @@ const cleanup =
   autoCleanup && prReview
     ? {
         codebasePath,
-        listMergedBranches: () => new Set(listMyMergedPRs(gh).map((pr) => pr.headRefName)),
+        listMergedPRs: () => listMyMergedPRs(gh),
       }
     : null;
 console.log(
@@ -132,11 +133,20 @@ const stop = startWatcher({
   cleanup,
 });
 
-void pullCodebase(codebasePath);
-const syncTimer = setInterval(
-  () => void pullCodebase(codebasePath),
-  heartbeatIntervalMinutes * 60 * 1000,
-);
+// Re-entrancy guard: a sync that runs longer than one interval must not overlap
+// with the next tick's sync.
+let syncing = false;
+const safeSync = async (): Promise<void> => {
+  if (syncing) return;
+  syncing = true;
+  try {
+    await pullCodebase(codebasePath);
+  } finally {
+    syncing = false;
+  }
+};
+void safeSync();
+const syncTimer = setInterval(() => void safeSync(), heartbeatIntervalMinutes * 60 * 1000);
 
 function shutdown(): void {
   clearInterval(syncTimer);

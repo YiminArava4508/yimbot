@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectNextClaim } from "./claim.ts";
 import { type CleanupDeps, cleanupOnce, type Worktree } from "./cleanup.ts";
+import type { MergedPR } from "./gh.ts";
 import {
   countAssignedInState,
   type CycleTodoIssue,
@@ -13,7 +14,7 @@ import {
   type LinearIssue,
   moveIssueToState,
 } from "./linear-api.ts";
-import { fixSessionName, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
+import { fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
@@ -133,6 +134,63 @@ export async function pollOnce(state: WatchState, deps: WatcherDeps): Promise<vo
   }
 }
 
+// Per-process latch of issues the deploy step has already launched or adopted.
+// Not a startup baseline: unlike the review-icon poll, the deploy step must be
+// restart-safe (see deployOnce), so it reconciles against live sessions instead
+// of assuming everything present at startup is handled.
+export type DeployState = { launched: Set<string> };
+
+export function freshDeployState(): DeployState {
+  return { launched: new Set() };
+}
+
+export type DeployDeps = {
+  fetchIssues: () => Promise<LinearIssue[]>;
+  listSessions: () => string[];
+  listWorktrees: () => string[];
+  // Create a worktree + session for a launched issue.
+  launch: (name: string, issue: LinearIssue) => Promise<void> | void;
+  log: (msg: string) => void;
+};
+
+// One deploy-step tick. For each In-Progress issue: skip it if already
+// launched/adopted this process; else, if a session or worktree already exists
+// for it, adopt it (latch, no relaunch); else launch one and latch it.
+//
+// This is restart-safe where the old seen-set baseline was not: after a restart
+// the latch is empty, but a live ticket's existing session/worktree makes it
+// adopted (never double-launched), while a genuinely orphaned In-Progress ticket
+// (no session AND no worktree) is relaunched once. Because a launched/adopted
+// ticket is latched for the process, the cleanup step removing its worktree after
+// its PR merges does NOT retrigger a launch.
+export async function deployOnce(state: DeployState, deps: DeployDeps): Promise<void> {
+  let issues: LinearIssue[];
+  try {
+    issues = await deps.fetchIssues();
+  } catch (err) {
+    deps.log(`deploy poll failed: ${err}`);
+    return;
+  }
+
+  const sessions = deps.listSessions();
+  const worktrees = deps.listWorktrees();
+  for (const issue of issues) {
+    if (state.launched.has(issue.id)) continue;
+    if (findExistingSession(issue.identifier, sessions, worktrees)) {
+      state.launched.add(issue.id); // adopt an existing session/worktree
+      continue;
+    }
+    const name = buildSessionName(issue.identifier, issue.title);
+    try {
+      await deps.launch(name, issue);
+      state.launched.add(issue.id); // latch only after a successful launch, so failures retry
+      deps.log(`launched session '${name}' for ${issue.identifier}`);
+    } catch (err) {
+      deps.log(`failed to launch ${issue.identifier}: ${err}`);
+    }
+  }
+}
+
 export type ClaimDeps = {
   // Whether the autonomous claim step is enabled at all.
   autoClaim: boolean;
@@ -217,7 +275,7 @@ export type WatcherConfig = {
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
-  cleanup: { codebasePath: string; listMergedBranches: () => Set<string> } | null;
+  cleanup: { codebasePath: string; listMergedPRs: () => Promise<MergedPR[]> } | null;
 };
 
 export function launchSession(name: string): Promise<void> {
@@ -259,6 +317,16 @@ export function tmuxHasSession(name: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+// Kill a tmux session by exact name. Best-effort: no-op if tmux is not running or
+// the session is already gone. Used by the cleanup step for merged PRs' fix sessions.
+export function killTmuxSession(name: string): void {
+  try {
+    execFileSync("tmux", ["kill-session", "-t", `=${name}`], { stdio: "ignore" });
+  } catch {
+    /* tmux not running or session already gone */
   }
 }
 
@@ -387,14 +455,15 @@ export function runEndSession(branch: string): void {
 export function startWatcher(config: WatcherConfig): () => void {
   const log = (msg: string) => console.log(`[watcher] ${msg}`);
 
-  // Deploy step: issues entering "In Progress" → create a worktree + session.
-  const deployState: WatchState = { seen: new Set(), initialized: false };
-  const deployDeps: WatcherDeps = {
+  // Deploy step: issues in "In Progress" → create a worktree + session. Reconciles
+  // against live sessions/worktrees each tick (restart-safe), so it is given the
+  // session/worktree listers rather than a startup baseline.
+  const deployState = freshDeployState();
+  const deployDeps: DeployDeps = {
     fetchIssues: () => fetchIssuesInState(config.apiKey, config.progressContext),
-    launch: async (name, issue) => {
-      await launchSession(name);
-      log(`launched session '${name}' for ${issue.identifier}`);
-    },
+    listSessions: listTmuxSessions,
+    listWorktrees: listWorktreeDirs,
+    launch: (name) => launchSession(name),
     log,
   };
 
@@ -416,11 +485,13 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   // Review step (gh-driven): each heartbeat, address comments on open PRs.
+  const reviewState = freshReviewState();
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
     listOpenPRs: config.prReview.listOpenPRs,
     unresolvedCount: config.prReview.unresolvedCount,
     fixInFlight,
     spawnFix: spawnFixSession,
+    now: () => Date.now(),
     log: reviewIconLog,
   };
 
@@ -430,9 +501,11 @@ export function startWatcher(config: WatcherConfig): () => void {
   const { cleanup } = config;
   const cleanupDeps: CleanupDeps | null = cleanup && {
     listWorktrees: () => listGitWorktrees(cleanup.codebasePath),
-    listMergedBranches: cleanup.listMergedBranches,
+    listMergedPRs: cleanup.listMergedPRs,
     worktreesDir,
     teardown: runEndSession,
+    listSessions: listTmuxSessions,
+    killSession: killTmuxSession,
     log: cleanupLog,
   };
 
@@ -457,10 +530,10 @@ export function startWatcher(config: WatcherConfig): () => void {
     if (running) return;
     running = true;
     try {
-      await pollOnce(deployState, deployDeps);
+      await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
-      if (prReviewDeps) reviewOnce(prReviewDeps);
-      if (cleanupDeps) cleanupOnce(cleanupDeps);
+      if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);
+      if (cleanupDeps) await cleanupOnce(cleanupDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

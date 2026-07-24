@@ -1,15 +1,21 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export type OpenPR = { number: number; headRefName: string; isDraft: boolean };
 export type RepoSlug = { owner: string; name: string };
 
-// Injectable `gh` invoker: takes CLI args, returns stdout. The default shells out
-// to gh with a fixed cwd so the repo resolves from that checkout's origin, and
-// keeps stderr so failures surface a useful message.
-export type GhRunner = (args: string[]) => string;
+// Injectable `gh` invoker: takes CLI args, resolves to stdout. The default shells
+// out to gh with a fixed cwd so the repo resolves from that checkout's origin.
+// Async so the network round-trip never blocks the heartbeat's event loop.
+export type GhRunner = (args: string[]) => Promise<string>;
 
 export function ghRunner(cwd: string): GhRunner {
-  return (args) => execFileSync("gh", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return async (args) => {
+    const { stdout } = await execFileAsync("gh", args, { cwd, encoding: "utf8" });
+    return stdout;
+  };
 }
 
 export function parseOpenPRs(json: string): OpenPR[] {
@@ -18,9 +24,9 @@ export function parseOpenPRs(json: string): OpenPR[] {
 }
 
 // The viewer's open PRs in the runner's repo (drafts included; callers filter).
-export function listMyOpenPRs(run: GhRunner): OpenPR[] {
+export async function listMyOpenPRs(run: GhRunner): Promise<OpenPR[]> {
   return parseOpenPRs(
-    run(["pr", "list", "--author", "@me", "--state", "open", "--json", "number,headRefName,isDraft", "--limit", "100"]),
+    await run(["pr", "list", "--author", "@me", "--state", "open", "--json", "number,headRefName,isDraft", "--limit", "100"]),
   );
 }
 
@@ -33,16 +39,16 @@ export function parseMergedPRs(json: string): MergedPR[] {
 
 // The viewer's merged PRs in the runner's repo. Bounded to the 100 most recent:
 // a worktree whose PR merged more than 100 merges ago is not a realistic case.
-export function listMyMergedPRs(run: GhRunner): MergedPR[] {
+export async function listMyMergedPRs(run: GhRunner): Promise<MergedPR[]> {
   return parseMergedPRs(
-    run(["pr", "list", "--author", "@me", "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
+    await run(["pr", "list", "--author", "@me", "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
   );
 }
 
 // owner/name of the repo gh resolves in the runner's cwd — needed as GraphQL
 // variables for the review-thread query below.
-export function repoSlug(run: GhRunner): RepoSlug {
-  const data = JSON.parse(run(["repo", "view", "--json", "owner,name"])) as {
+export async function repoSlug(run: GhRunner): Promise<RepoSlug> {
+  const data = JSON.parse(await run(["repo", "view", "--json", "owner,name"])) as {
     owner: { login: string };
     name: string;
   };
@@ -63,9 +69,9 @@ export function parseUnresolvedCount(json: string): number {
 
 // Number of unresolved review threads on a PR, any author (humans + bots). This
 // is what decides whether a PR still needs a fix session.
-export function unresolvedThreadCount(run: GhRunner, slug: RepoSlug, prNumber: number): number {
+export async function unresolvedThreadCount(run: GhRunner, slug: RepoSlug, prNumber: number): Promise<number> {
   return parseUnresolvedCount(
-    run([
+    await run([
       "api",
       "graphql",
       "-f",

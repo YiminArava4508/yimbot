@@ -5,8 +5,11 @@ import {
   buildSessionName,
   claimOnce,
   type ClaimDeps,
+  type DeployDeps,
+  deployOnce,
   detectNewIssues,
   findExistingSession,
+  freshDeployState,
   markFeatureReady,
   parseWorktreePorcelain,
   pollOnce,
@@ -122,6 +125,97 @@ test("pollOnce survives fetch failure without touching state", async () => {
     log: (msg: string) => void logs.push(msg),
   });
   assert.ok(state.seen.has("a"), "seen-set must survive fetch failures");
+  assert.ok(logs.some((l) => l.includes("network down")));
+});
+
+function deployDeps(overrides: Partial<DeployDeps> = {}): {
+  deps: DeployDeps;
+  launched: string[];
+  logs: string[];
+} {
+  const launched: string[] = [];
+  const logs: string[] = [];
+  const deps: DeployDeps = {
+    fetchIssues: async () => [issue("a", "ENG-1", "Fix bug")],
+    listSessions: () => [],
+    listWorktrees: () => [],
+    launch: (name) => void launched.push(name),
+    log: (m) => void logs.push(m),
+    ...overrides,
+  };
+  return { deps, launched, logs };
+}
+
+test("deployOnce launches an orphaned In-Progress issue and latches it (no relaunch)", async () => {
+  const state = freshDeployState();
+  const { deps, launched } = deployDeps();
+  await deployOnce(state, deps);
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+  assert.ok(state.launched.has("a"));
+});
+
+test("deployOnce adopts an existing session without launching (restart-safe)", async () => {
+  const state = freshDeployState();
+  const { deps, launched } = deployDeps({ listSessions: () => ["eng-1-existing"] });
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, [], "a live session means the ticket is already handled");
+  assert.ok(state.launched.has("a"), "adopted issues are latched too");
+});
+
+test("deployOnce adopts an existing worktree despite a title change (restart-safe)", async () => {
+  const state = freshDeployState();
+  const { deps, launched } = deployDeps({ listWorktrees: () => ["eng-1-old-slug"] });
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, []);
+  assert.ok(state.launched.has("a"));
+});
+
+test("deployOnce does not relaunch after cleanup removes the worktree (latched)", async () => {
+  const state = freshDeployState();
+  let worktrees: string[] = [];
+  const { deps, launched } = deployDeps({ listWorktrees: () => worktrees });
+  await deployOnce(state, deps); // orphaned → launch, latched
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+  worktrees = []; // cleanup removed the worktree; ticket still In Progress
+  await deployOnce(state, deps); // latched → must not relaunch
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+});
+
+test("deployOnce retries an issue whose launch failed (not latched on failure)", async () => {
+  const state = freshDeployState();
+  const launched: string[] = [];
+  let fail = true;
+  const { deps } = deployDeps({
+    launch: (name) => {
+      if (fail) throw new Error("tmux exploded");
+      launched.push(name);
+    },
+  });
+  await deployOnce(state, deps);
+  assert.ok(!state.launched.has("a"), "a failed launch must not be latched");
+  assert.deepEqual(launched, []);
+  fail = false;
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+  assert.ok(state.launched.has("a"));
+});
+
+test("deployOnce survives a fetch failure without launching or latching", async () => {
+  const state = freshDeployState();
+  const logs: string[] = [];
+  await deployOnce(state, {
+    fetchIssues: async () => {
+      throw new Error("network down");
+    },
+    listSessions: () => [],
+    listWorktrees: () => [],
+    launch: () => {
+      throw new Error("must not launch");
+    },
+    log: (m) => void logs.push(m),
+  });
+  assert.equal(state.launched.size, 0);
   assert.ok(logs.some((l) => l.includes("network down")));
 });
 

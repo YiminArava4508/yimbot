@@ -19,6 +19,11 @@ falsely resolve a comment you did not actually address.
    right branch with `gh pr view <number> --json number,headRefName,state` and
    `git branch --show-current`.
 
+   This worktree is shared with the ticket session and the user may be running
+   local dev in it, so **record the pre-existing state** with
+   `git status --porcelain` before you touch anything. Those files are not yours
+   to commit: never blanket-stage the tree (step 6).
+
 2. **Fetch every unresolved review thread** (any author, humans and bots alike):
 
    ```bash
@@ -48,7 +53,8 @@ falsely resolve a comment you did not actually address.
    - If unset, implement in-session.
    Use `superpowers:test-driven-development` for anything that changes behavior.
 
-   Keep a running record of which thread id maps to which change.
+   Keep a running record of which thread id maps to which change, **and the exact
+   file paths you edit**; you will stage only those paths in step 6.
 
 4. **Safety, never force.** If a thread needs a human decision (an open question,
    a disagreement, a request you cannot confidently satisfy), leave it
@@ -58,12 +64,27 @@ falsely resolve a comment you did not actually address.
 5. **Get tests green.** Run the project's test suite (or the affected tests) and
    loop until green. Do not push red.
 
-6. **Commit and push** to the PR branch:
+6. **Commit and push** to the PR branch. Stage **only the paths you edited** (from
+   step 3) by name, never `git add -A`, or you will sweep up the user's local-dev
+   artifacts and unrelated changes from step 1 into your commit:
 
    ```bash
-   git add -A && git commit -m "address review comments"
+   git add path/to/file-a path/to/file-b   # only your edits
+   git commit -m "address review comments"
    git push
    ```
+
+   If the push is **rejected** (non-fast-forward: the branch advanced on the
+   remote), rebase onto the remote and retry once:
+
+   ```bash
+   git pull --rebase origin "$(git branch --show-current)" && git push
+   ```
+
+   If the rebase hits a conflict or the push still fails, **stop**: run
+   `git rebase --abort`, do NOT resolve any threads, leave the session open, and
+   report in the summary that the branch diverged and needs a human. Do not force
+   push.
 
 7. **Resolve the threads you addressed**, one mutation per thread id from step 3:
 

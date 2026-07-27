@@ -9,6 +9,10 @@ import {
   parseUnresolvedCount,
   repoSlug,
   unresolvedThreadCount,
+  parseUnresolvedInfo,
+  parseViewerLogin,
+  unresolvedThreadInfo,
+  viewerLogin,
 } from "./gh.ts";
 
 // Records the args each gh call received so we can assert on them.
@@ -79,4 +83,64 @@ test("unresolvedThreadCount passes owner/name/number as graphql fields", async (
   assert.ok(calls[0].includes("owner=o"));
   assert.ok(calls[0].includes("name=n"));
   assert.ok(calls[0].includes("number=42"));
+});
+
+function threadsJson(nodes: unknown[]): string {
+  return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes } } } } });
+}
+function thread(isResolved: boolean, createdAt: string, login: string) {
+  return { isResolved, comments: { nodes: [{ createdAt, author: { login } }] } };
+}
+
+test("parseUnresolvedInfo counts unresolved threads and finds the newest other-authored comment", () => {
+  const json = threadsJson([
+    thread(true, "2026-07-01T00:00:00Z", "alice"), // resolved → ignored
+    thread(false, "2026-07-02T00:00:00Z", "alice"),
+    thread(false, "2026-07-05T00:00:00Z", "bob"),
+  ]);
+  const info = parseUnresolvedInfo(json, "yimbot");
+  assert.equal(info.count, 2);
+  assert.equal(info.newestOtherCommentAt, Date.parse("2026-07-05T00:00:00Z"));
+});
+
+test("parseUnresolvedInfo ignores comments authored by the viewer", () => {
+  const json = threadsJson([
+    thread(false, "2026-07-02T00:00:00Z", "bob"),
+    thread(false, "2026-07-09T00:00:00Z", "yimbot"), // viewer's own reply, newest → ignored
+  ]);
+  const info = parseUnresolvedInfo(json, "yimbot");
+  assert.equal(info.count, 2);
+  assert.equal(info.newestOtherCommentAt, Date.parse("2026-07-02T00:00:00Z"));
+});
+
+test("parseUnresolvedInfo returns null timestamp when only the viewer's comments remain", () => {
+  const json = threadsJson([thread(false, "2026-07-09T00:00:00Z", "yimbot")]);
+  const info = parseUnresolvedInfo(json, "yimbot");
+  assert.equal(info.count, 1);
+  assert.equal(info.newestOtherCommentAt, null);
+});
+
+test("parseUnresolvedInfo returns {0,null} for no threads", () => {
+  assert.deepEqual(parseUnresolvedInfo(threadsJson([]), "yimbot"), { count: 0, newestOtherCommentAt: null });
+});
+
+test("unresolvedThreadInfo passes owner/name/number and parses with the viewer login", async () => {
+  const run = async () => threadsJson([thread(false, "2026-07-05T00:00:00Z", "bob")]);
+  const info = await unresolvedThreadInfo(run, { owner: "o", name: "n" }, 42, "yimbot");
+  assert.equal(info.count, 1);
+  assert.equal(info.newestOtherCommentAt, Date.parse("2026-07-05T00:00:00Z"));
+});
+
+test("parseViewerLogin extracts the login", () => {
+  assert.equal(parseViewerLogin(JSON.stringify({ data: { viewer: { login: "yimbot" } } })), "yimbot");
+});
+
+test("viewerLogin queries the graphql viewer", async () => {
+  let sawArgs: string[] = [];
+  const run = async (args: string[]) => {
+    sawArgs = args;
+    return JSON.stringify({ data: { viewer: { login: "yimbot" } } });
+  };
+  assert.equal(await viewerLogin(run), "yimbot");
+  assert.ok(sawArgs.includes("graphql"));
 });

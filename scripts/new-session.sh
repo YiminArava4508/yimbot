@@ -51,29 +51,6 @@ seed_prompt_for() {
   fi
 }
 
-# When sourced (e.g. by a test) load the functions above and stop; only run
-# session setup when the script is executed directly.
-(return 0 2>/dev/null) && return 0
-
-NAME=${1:-}
-[ -n "$NAME" ] || {
-  echo "Usage: $0 <name> [branch]"
-  exit 1
-}
-# Optional 2nd arg: the branch to check out. Defaults to the session name (a
-# normal ticket session branches on its own name). PR fix sessions pass the PR's
-# branch here so the tmux session is named by PR (pr-<n>-fix) while the worktree
-# is keyed by — and reuses — the branch's existing worktree.
-BRANCH=${2:-$NAME}
-
-CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
-git -C "$CODEBASE_PATH" rev-parse --git-dir >/dev/null 2>&1 ||
-  die "CODEBASE_PATH is not a git repo: $CODEBASE_PATH"
-
-# Sanitize the branch into a worktree dir (same rule the daemon's slug uses).
-WORKTREE_DIR=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)
-WORKTREE=$WORKTREES_DIR/$WORKTREE_DIR
-
 # --- Create or reuse the worktree ---
 # Reuse if fully set up; prune a stale git registration whose dir is gone; remove
 # a leftover dir that git doesn't know about; then add the worktree, checking out
@@ -110,7 +87,6 @@ create_worktree() {
     git -C "$CODEBASE_PATH" worktree add "$WORKTREE" -b "$BRANCH" || die "git worktree add failed"
   fi
 }
-create_worktree
 
 # Launch Claude in a tmux target (session:window). Uses the planning model if
 # set and passes the implementation model through the environment for the
@@ -128,6 +104,32 @@ launch_claude_in() {
     tmux send-keys -t "$target" "$cmd" C-m
   fi
 }
+
+# When sourced (e.g. by a test) load the functions above and stop; only run
+# session setup when the script is executed directly.
+(return 0 2>/dev/null) && return 0
+
+NAME=${1:-}
+[ -n "$NAME" ] || {
+  echo "Usage: $0 <name> [branch]"
+  exit 1
+}
+# Optional 2nd arg: the branch to check out. Defaults to the session name (a
+# normal ticket session branches on its own name). PR fix sessions pass the PR's
+# branch here so the tmux session is named by PR (pr-<n>-fix) while the worktree
+# is keyed by — and reuses — the branch's existing worktree.
+BRANCH=${2:-$NAME}
+
+CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
+git -C "$CODEBASE_PATH" rev-parse --git-dir >/dev/null 2>&1 ||
+  die "CODEBASE_PATH is not a git repo: $CODEBASE_PATH"
+
+# Sanitize the branch into a worktree dir (same rule the daemon's slug uses).
+WORKTREE_DIR=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)
+WORKTREE=$WORKTREES_DIR/$WORKTREE_DIR
+
+# Create or reuse the worktree.
+create_worktree
 
 # --- PR fix into the ticket's existing session ---
 # A fix invocation (BRANCH != NAME) whose branch has a live ticket session

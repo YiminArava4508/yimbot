@@ -20,12 +20,17 @@ yourself is the job.
 
 1. **Plan.** Invoke `superpowers:writing-plans` and produce the implementation
    plan for this ticket. Design/plan docs are written under `docs/superpowers/`.
-   When the plan surfaces an **open question or a design fork**, resolve it
-   yourself: pick the simplest reversible option that satisfies the ticket's
-   acceptance criteria, and record the decision plus the rejected alternative in
-   the plan (a short "Decisions" note). Do not pause to ask. If the work clearly
-   won't fit under the **PR Size Limits** below, plan it as a series of
-   shippable slices up front (see that section).
+   Before designing any new function, helper, component, type, or module,
+   deliberately search the repo for existing functionality that already does
+   something similar, and design to reuse or extend it; plan new code only
+   where nothing existing fits. When the plan surfaces an **open question or a
+   design fork**, resolve it yourself: pick the simplest reversible option
+   that satisfies the ticket's acceptance criteria, and record the decision
+   plus the rejected alternative in the plan (a short "Decisions" note),
+   including what existing code was reused or why a candidate did not fit. Do
+   not pause to ask. If the work clearly won't fit under the **PR Size
+   Limits** below, plan it as a series of shippable slices up front (see that
+   section).
 
 2. **Classify** the plan against the Hard-Stop Rubric below.
 
@@ -54,24 +59,42 @@ yourself is the job.
      and note it in the summary.
    Re-run the full test suite after fixing and loop until it is green again.
 
-6. **Ship at green.** When the full test suite passes, run the
+6. **Reuse audit (before any PR).** With tests green, run a dedicated reuse
+   audit on the full change set: a focused pass (dispatch a subagent that
+   greps/reads the repo), separate from the code review in step 5. For every
+   new function, helper, component, type, or extraction the change
+   introduces, search the repo for existing functionality that already
+   covers it. Refactor every confirmed duplication to reuse the existing
+   code; never ship a new invention when the repo already covers it. Re-run
+   the full test suite and loop until it is green again. In a split, run
+   this once on the full implementation, before slicing it into PRs.
+
+7. **Ship at green.** When the full test suite passes, run the
    end-of-implementation steps in this order:
-   - **Check PR size** against the **PR Size Limits** below. If the branch is
-     over the hard limit, split it into a series of smaller PRs *before* pushing
-     — do not open one oversized PR.
-   - **Push** the branch to origin (`git push -u origin HEAD`).
-   - **Open a PR** with `gh pr create` as a **non-draft** PR (so the daemon's
-     review step can pick up review comments). Title = the ticket summary; body
-     = a short "what changed / why / test result", any **Decisions** you made to
-     resolve uncertainty (with the alternative you rejected), and the ticket
-     reference so the tracker auto-links the PR. Follow the repo's commit/PR
-     conventions: never mention Claude, Claude Code, or AI, and add no "Generated
-     with" or "Co-Authored-By" trailers.
-   - **Move the ticket to the Review column** in the kanban board (not Done —
-     Review signals the PR is ready for someone to review).
-   - **Spin up the local server on this session's tmux pane** so the change can
-     be inspected running.
-   Then STOP. Print a summary of what changed, the PR URL, and the test result.
+   - **Check PR size** against the **PR Size Limits** below
+     (`git diff master...HEAD --stat`, ignoring generated files, lockfiles,
+     and snapshots).
+   - **If under the hard limit:** push the branch to origin
+     (`git push -u origin HEAD`) and open a PR with `gh pr create` as a
+     **non-draft** PR (so the daemon's review step can pick up review
+     comments). Title = the ticket summary; body = a short "what changed /
+     why / test result", any **Decisions** you made to resolve uncertainty
+     (with the alternative you rejected, and what was reused), and the
+     ticket reference so the tracker auto-links the PR. Follow the repo's
+     commit/PR conventions: never mention Claude, Claude Code, or AI, and
+     add no "Generated with" or "Co-Authored-By" trailers.
+   - **If over the hard limit:** follow the split flow described in **PR
+     Size Limits** below instead of opening a single PR. The ticket branch
+     itself never gets a PR in a split; only its slice branches do.
+   - **Move the ticket to the Review column** in the kanban board (not Done,
+     since Review signals the PR is ready for someone to review) once the
+     PR, or in a split the whole series, is open.
+   - **Spin up the local server on this session's tmux pane** so the change
+     can be inspected running. In a split, run it from the ticket branch,
+     since that branch is the one that keeps every change for whole-app
+     local testing.
+   Then STOP. Print a summary of what changed, the PR URL (or URLs, for a
+   split), and the test result.
 
 ## Hard-Stop Rubric
 
@@ -100,25 +123,38 @@ because the change is sensitive, breaking, or you have a question.
 
 ## PR Size Limits
 
-Keep PRs small enough to review. Measure the branch's changed lines with
-`git diff main...HEAD --stat` (against the base branch; ignore generated files,
-lockfiles, and snapshots).
+Keep PRs small enough to review. Measure the branch's changed lines against
+`master`: `git diff master...HEAD --stat` (ignore generated files, lockfiles,
+and snapshots).
 
 - **Target: under 500 LOC.** Aim to land every PR under this.
-- **Hard limit: 1000 LOC.** A PR whose changes exceed ~1000 LOC **must** be
-  split into multiple smaller PRs before shipping — no exceptions.
+- **Hard limit: ~1000 LOC.** A branch whose changes exceed ~1000 LOC **must**
+  be split into multiple smaller PRs before shipping, no exceptions.
 
-Split into **normal, independent PRs off the base branch — never GitHub stacked
-PRs.** Use `worktree-workflow`'s "Splitting a PR into Multiple Smaller PRs" for
-the mechanics (a worktree + branch per slice), but **skip its optional
-stacked-PR step (Step 5)**. Each slice must be independently reviewable and
-mergeable on its own.
+Implementation always happens as a whole, on the single ticket branch.
+Splitting is a **PR-time operation**, not a set of separate implementation
+branches: do all the work on the ticket branch, get it fully green (including
+the reuse audit above), and only then decide how to slice it into PRs.
 
-Mark every PR in a split as part of a series in its **title and description** —
-e.g. title `[1/3] <summary>` and a body line listing the sibling PRs and their
-order. Push and open the whole series (all non-draft), then move the ticket to
-Review once.
+**The split flow, driven by `~/split-pr.sh`:**
 
-Prefer to catch large scope at **plan time**: if the plan clearly exceeds ~500
-LOC, structure it as a series of shippable slices from the start rather than
-splitting one giant branch afterward.
+- The **original ticket branch keeps every change and gets no PR of its
+  own.** Leave it up as a local integration branch: it is the only place the
+  whole app can be run and tested locally, end to end.
+- Every PR is a **new, independent slice branch off `master`**, never a
+  branch stacked on another slice and never a GitHub stacked PR. For each
+  slice:
+  1. Create the slice branch off `master`.
+  2. Cherry-pick the subset of commits for that slice onto it.
+  3. Push the slice branch.
+  4. `gh pr create` as a **non-draft** PR, with a series marker `[i/n]` in
+     the title and a body that lists every sibling slice branch/PR and its
+     order in the series.
+  5. Run `~/split-pr.sh <slice-branch> <i> <n>`.
+- Repeat until the whole series is open, then move the ticket to the Review
+  column once, not once per slice.
+
+Prefer to catch large scope at **plan time**: if the plan clearly exceeds
+~500 LOC, anticipate the split from the start. Even so, implement the whole
+thing on the ticket branch first; only slice it into PRs once it is done and
+green.

@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectNextClaim } from "./claim.ts";
-import { type CleanupDeps, cleanupOnce, type Worktree } from "./cleanup.ts";
+import { type CleanupDeps, cleanupOnce, readParentSession, type Worktree } from "./cleanup.ts";
 import type { MergedPR } from "./gh.ts";
 import {
   countAssignedInState,
@@ -505,6 +505,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     teardown: runEndSession,
     listSessions: listTmuxSessions,
     killSession: killTmuxSession,
+    readParentSession,
     log: cleanupLog,
   };
 

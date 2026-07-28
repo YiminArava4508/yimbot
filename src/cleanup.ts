@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { MergedPR } from "./gh.ts";
 
 export type Worktree = { path: string; branch: string };
@@ -24,8 +26,20 @@ export type CleanupDeps = {
   listSessions: () => string[];
   // Kill a tmux session by exact name (a merged PR's fix session).
   killSession: (session: string) => void;
+  // Read a worktree's .yimbot-parent-session marker (its parent tmux session),
+  // or null if it has none. Marks a worktree as a slice of a split group.
+  readParentSession: (worktreePath: string) => string | null;
   log: (msg: string) => void;
 };
+
+// Read a worktree's .yimbot-parent-session marker, written by split-pr.sh when
+// it carves a slice worktree out of an integration branch. Returns null when
+// the worktree has no marker (a normal, non-split ticket).
+export function readParentSession(worktreePath: string): string | null {
+  const markerPath = join(worktreePath, ".yimbot-parent-session");
+  if (!existsSync(markerPath)) return null;
+  return readFileSync(markerPath, "utf8").trim();
+}
 
 // Assemble split groups from live worktrees. A worktree with a non-null parent
 // (its .yimbot-parent-session marker) is a slice; its parent session names the
@@ -118,8 +132,29 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   const mergedBranches = new Set(merged.map((p) => p.headRefName));
   const mergedNumbers = new Set(merged.map((p) => p.number));
 
-  // (a) merged worktrees → tear down worktree + branch-named ticket session.
+  // Split groups: slices marked with a parent session are torn down only as a
+  // whole, once every slice PR has merged. Both the integration worktree and its
+  // slices are excluded from the per-branch path below so a single slice merging
+  // never tears the group (or the session) down early.
+  const groups = buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir);
+  const groupedPaths = new Set(groups.flatMap((g) => g.worktreePaths));
+
+  for (const g of groups) {
+    if (!groupReady(g, mergedBranches)) continue; // partial group → wait indefinitely
+    try {
+      if (g.integrationBranch) deps.teardown(g.integrationBranch);
+      else deps.killSession(g.session);
+      for (const slice of g.sliceBranches) deps.teardown(slice);
+      deps.log(`torn down split group ${g.session} (${g.sliceBranches.length} slice PRs merged)`);
+    } catch (err) {
+      deps.log(`split-group teardown failed for ${g.session}: ${err}`);
+    }
+  }
+
+  // (a) normal merged worktrees (excluding any that belong to a split group) →
+  // tear down worktree + branch-named ticket session.
   for (const w of selectMergedWorktrees(worktrees, mergedBranches, deps.worktreesDir)) {
+    if (groupedPaths.has(w.path)) continue;
     try {
       deps.teardown(w.branch);
       deps.log(`torn down ${w.branch} (PR merged)`);

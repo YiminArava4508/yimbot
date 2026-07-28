@@ -75,6 +75,7 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
     teardown: (branch) => void torn.push(branch),
     listSessions: () => [],
     killSession: (s) => void killed.push(s),
+    readParentSession: () => null,
     log: (m) => void logs.push(m),
     ...overrides,
   };
@@ -238,4 +239,73 @@ test("groupReady is true only when every slice branch is merged", () => {
 test("groupReady is false for a group with no slices", () => {
   const g: SplitGroup = { session: "x", integrationBranch: "x", sliceBranches: [], worktreePaths: [] };
   assert.equal(groupReady(g, new Set()), false);
+});
+
+function recorderDeps(over: Partial<CleanupDeps> & {
+  worktrees: Worktree[];
+  merged: MergedPR[];
+  parents?: Record<string, string>;
+  sessions?: string[];
+}): { deps: CleanupDeps; tornDown: string[]; killed: string[] } {
+  const tornDown: string[] = [];
+  const killed: string[] = [];
+  const deps: CleanupDeps = {
+    listWorktrees: () => over.worktrees,
+    listMergedPRs: async () => over.merged,
+    worktreesDir: WT,
+    teardown: (b) => tornDown.push(b),
+    listSessions: () => over.sessions ?? [],
+    killSession: (s) => killed.push(s),
+    readParentSession: (p) => over.parents?.[p] ?? null,
+    log: () => {},
+  };
+  return { deps, tornDown, killed };
+}
+
+test("cleanupOnce tears down a fully-merged split group and its integration branch", async () => {
+  const { deps, tornDown } = recorderDeps({
+    worktrees: [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    parents: { [`${WT}/eng-1-p1`]: "eng-1", [`${WT}/eng-1-p2`]: "eng-1" },
+    merged: [mpr(1, "eng-1-p1"), mpr(2, "eng-1-p2")],
+  });
+  await cleanupOnce(deps);
+  assert.deepEqual([...tornDown].sort(), ["eng-1", "eng-1-p1", "eng-1-p2"]);
+});
+
+test("cleanupOnce leaves a partially-merged split group entirely alone", async () => {
+  const { deps, tornDown } = recorderDeps({
+    worktrees: [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    parents: { [`${WT}/eng-1-p1`]: "eng-1", [`${WT}/eng-1-p2`]: "eng-1" },
+    merged: [mpr(1, "eng-1-p1")], // only one slice merged
+  });
+  await cleanupOnce(deps);
+  assert.deepEqual(tornDown, []); // the merged slice is NOT torn down early
+});
+
+test("cleanupOnce still tears down a normal (non-split) merged worktree", async () => {
+  const { deps, tornDown } = recorderDeps({
+    worktrees: [{ path: `${WT}/eng-9`, branch: "eng-9" }],
+    merged: [mpr(9, "eng-9")],
+  });
+  await cleanupOnce(deps);
+  assert.deepEqual(tornDown, ["eng-9"]);
+});
+
+test("cleanupOnce kills the session directly when the integration worktree is gone", async () => {
+  const { deps, tornDown, killed } = recorderDeps({
+    worktrees: [{ path: `${WT}/eng-1-p1`, branch: "eng-1-p1" }],
+    parents: { [`${WT}/eng-1-p1`]: "eng-1" },
+    merged: [mpr(1, "eng-1-p1")],
+  });
+  await cleanupOnce(deps);
+  assert.deepEqual(tornDown, ["eng-1-p1"]);
+  assert.deepEqual(killed, ["eng-1"]);
 });

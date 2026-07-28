@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  buildSplitGroups,
   type CleanupDeps,
   cleanupOnce,
+  groupReady,
   selectMergedFixSessions,
   selectMergedWorktrees,
+  type SplitGroup,
   type Worktree,
 } from "./cleanup.ts";
 import type { MergedPR } from "./gh.ts";
@@ -183,4 +186,56 @@ test("cleanupOnce continues to other fix sessions when one kill throws", async (
   await cleanupOnce(d);
   assert.deepEqual(attempted, ["pr-1-fix", "pr-2-fix"]);
   assert.ok(logs.some((l) => /kill failed/.test(l)));
+});
+
+// parentOf map helper: slice worktree path -> parent session name.
+function parentOfMap(m: Record<string, string>) {
+  return (path: string): string | null => m[path] ?? null;
+}
+
+test("buildSplitGroups groups slices with their integration worktree", () => {
+  const worktrees: Worktree[] = [
+    { path: `${WT}/eng-1`, branch: "eng-1" }, // integration (no marker)
+    { path: `${WT}/eng-1-part-1`, branch: "eng-1-part-1" },
+    { path: `${WT}/eng-1-part-2`, branch: "eng-1-part-2" },
+    { path: `${WT}/eng-2`, branch: "eng-2" }, // unrelated normal ticket
+  ];
+  const parentOf = parentOfMap({
+    [`${WT}/eng-1-part-1`]: "eng-1",
+    [`${WT}/eng-1-part-2`]: "eng-1",
+  });
+  const groups = buildSplitGroups(worktrees, parentOf, WT);
+  assert.equal(groups.length, 1);
+  const g = groups[0];
+  assert.equal(g.session, "eng-1");
+  assert.equal(g.integrationBranch, "eng-1");
+  assert.deepEqual([...g.sliceBranches].sort(), ["eng-1-part-1", "eng-1-part-2"]);
+  assert.equal(g.worktreePaths.length, 3);
+});
+
+test("buildSplitGroups tolerates a missing integration worktree", () => {
+  const worktrees: Worktree[] = [{ path: `${WT}/eng-1-part-1`, branch: "eng-1-part-1" }];
+  const parentOf = parentOfMap({ [`${WT}/eng-1-part-1`]: "eng-1" });
+  const groups = buildSplitGroups(worktrees, parentOf, WT);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].integrationBranch, null);
+  assert.deepEqual(groups[0].sliceBranches, ["eng-1-part-1"]);
+});
+
+test("groupReady is true only when every slice branch is merged", () => {
+  const g: SplitGroup = {
+    session: "eng-1",
+    integrationBranch: "eng-1",
+    sliceBranches: ["eng-1-part-1", "eng-1-part-2"],
+    worktreePaths: [],
+  };
+  assert.equal(groupReady(g, new Set(["eng-1-part-1"])), false);
+  assert.equal(groupReady(g, new Set(["eng-1-part-1", "eng-1-part-2"])), true);
+  // Integration branch merging is irrelevant; it has no PR.
+  assert.equal(groupReady(g, new Set(["eng-1"])), false);
+});
+
+test("groupReady is false for a group with no slices", () => {
+  const g: SplitGroup = { session: "x", integrationBranch: "x", sliceBranches: [], worktreePaths: [] };
+  assert.equal(groupReady(g, new Set()), false);
 });

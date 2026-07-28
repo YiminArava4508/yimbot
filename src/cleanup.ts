@@ -2,6 +2,13 @@ import type { MergedPR } from "./gh.ts";
 
 export type Worktree = { path: string; branch: string };
 
+export type SplitGroup = {
+  session: string;
+  integrationBranch: string | null;
+  sliceBranches: string[];
+  worktreePaths: string[];
+};
+
 export type CleanupDeps = {
   // Live git worktrees (any location; filtered here to the worktrees dir).
   listWorktrees: () => Worktree[];
@@ -19,6 +26,46 @@ export type CleanupDeps = {
   killSession: (session: string) => void;
   log: (msg: string) => void;
 };
+
+// Assemble split groups from live worktrees. A worktree with a non-null parent
+// (its .yimbot-parent-session marker) is a slice; its parent session names the
+// group. The integration worktree is the one whose dir is <worktreesDir>/<session>
+// (the ticket branch, no marker). Only groups with at least one slice are returned.
+export function buildSplitGroups(
+  worktrees: Worktree[],
+  parentOf: (path: string) => string | null,
+  worktreesDir: string,
+): SplitGroup[] {
+  const prefix = worktreesDir.endsWith("/") ? worktreesDir : `${worktreesDir}/`;
+  const bySession = new Map<string, { slices: Worktree[] }>();
+  for (const w of worktrees) {
+    if (!w.path.startsWith(prefix)) continue;
+    const parent = parentOf(w.path);
+    if (parent === null) continue;
+    const entry = bySession.get(parent) ?? { slices: [] };
+    entry.slices.push(w);
+    bySession.set(parent, entry);
+  }
+  const groups: SplitGroup[] = [];
+  for (const [session, { slices }] of bySession) {
+    const integration = worktrees.find((w) => w.path === `${prefix}${session}`) ?? null;
+    const worktreePaths = slices.map((s) => s.path);
+    if (integration) worktreePaths.push(integration.path);
+    groups.push({
+      session,
+      integrationBranch: integration ? integration.branch : null,
+      sliceBranches: slices.map((s) => s.branch),
+      worktreePaths,
+    });
+  }
+  return groups;
+}
+
+// A group is ready to tear down only when every slice PR has merged. The
+// integration branch has no PR, so it is never part of the check.
+export function groupReady(group: SplitGroup, mergedBranches: Set<string>): boolean {
+  return group.sliceBranches.length > 0 && group.sliceBranches.every((b) => mergedBranches.has(b));
+}
 
 // Worktrees to tear down: branch is in the merged set AND the worktree lives
 // under worktreesDir. The path filter keeps the main checkout (and any unrelated

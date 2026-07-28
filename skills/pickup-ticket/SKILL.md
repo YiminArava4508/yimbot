@@ -1,6 +1,6 @@
 ---
 name: pickup-ticket
-description: Use when picking up a Linear/Shortcut ticket in a fresh worktree session — plans the work, resolves its own uncertainties, and implements to a green PR; pauses only for genuinely dangerous, hard-to-reverse changes.
+description: Use when picking up a Linear/Shortcut ticket in a fresh worktree session, plans the work, resolves its own uncertainties, and implements to a green PR; pauses only for genuinely dangerous, hard-to-reverse changes.
 user-invocable: true
 ---
 
@@ -52,7 +52,7 @@ yourself is the job.
    `superpowers:test-driven-development`.
 
 5. **Self-review and fix.** With the tests green, run one round of code review on
-   the changes before finishing (before any PR) — invoke
+   the changes before finishing (before any PR): invoke
    `superpowers:requesting-code-review`. Triage the findings by severity and act:
    - **Critical / High / Medium** → fix every one of them.
    - **Low** → fix only if the change is small and localized; otherwise leave it
@@ -99,8 +99,8 @@ yourself is the job.
 ## Hard-Stop Rubric
 
 The PR is the human checkpoint. Code that only takes effect once the PR is
-merged or deployed — including **database migrations, schema changes,
-authentication, and billing/payments logic**, even breaking ones — is **not** a
+merged or deployed (including **database migrations, schema changes,
+authentication, and billing/payments logic**, even breaking ones) is **not** a
 reason to pause. Write it, ship the PR, and let the human review it there.
 
 Pause for a human "go" **only** when implementation itself would **destroy or
@@ -114,11 +114,11 @@ mutate real resources right now**, before any review can happen:
 
 Nothing else pauses. Writing migration, auth, or billing code, touching many
 files, touching shared or core code, or the plan containing an open question is
-**not** a reason to stop — resolve it and keep going.
+**not** a reason to stop, resolve it and keep going.
 
 When unsure, **bias toward proceeding**: resolve the uncertainty with a
 documented default and implement. Pause only when running the work itself would
-irreversibly change real resources before the PR can be reviewed — never merely
+irreversibly change real resources before the PR can be reviewed, never merely
 because the change is sensitive, breaking, or you have a question.
 
 ## PR Size Limits

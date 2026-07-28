@@ -107,7 +107,24 @@ falsely resolve a comment you did not actually address.
    tmux set-option -t "$(tmux display-message -p '#{session_name}')" @feature_status "#[fg=cyan]▶"
    ```
 
-10. **Stop, stay open.** Do not close or kill this session. Print a summary: the
-    threads addressed and resolved, any threads left unresolved and why, and the
-    test result. Leaving the session open is what keeps yimbot from spawning a
-    duplicate fix session for this PR, and lets the user run local dev to test.
+10. **Close the fix session (final step).** Everything above is done: comments
+    addressed, tests green, pushed, addressed threads resolved, review
+    re-requested, ready-to-test flagged. Now end this fix session so a later
+    round of new comments can re-trigger a fresh fix (yimbot dedups by comment
+    recency, not by this session staying open). Print your summary first (threads
+    addressed and resolved, any left unresolved and why, the test result), then
+    as the very last action close the session. The PR number is in the seed
+    prompt; your fix name is `pr-<number>-fix`:
+    - If this tmux session's own name equals `pr-<number>-fix`, you are a
+      standalone fix session, so kill it:
+      ```bash
+      tmux kill-session -t "=pr-<number>-fix"
+      ```
+    - Otherwise you are a `pr-<number>-fix` window inside the branch's ticket
+      session, so kill just this window (leaving the ticket session and its
+      ready-to-test flag intact):
+      ```bash
+      tmux kill-window -t "$(tmux display-message -p '#{session_name}'):pr-<number>-fix"
+      ```
+    Only close on this success path. If you stopped at step 6 because the branch
+    diverged and needs a human, leave the session open as that step says.

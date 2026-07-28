@@ -61,5 +61,9 @@ printf '%s\n' "$SESSION" > "$(parent_marker_path "$WORKTREE")"
 WIN_NAME=$(pr_window_name "$INDEX" "$TOTAL")
 WIN_ID=$(tmux new-window -d -t "$SESSION" -n "$WIN_NAME" -c "$WORKTREE" -P -F '#{window_id}') ||
   { echo "ERROR: failed to add window to session '$SESSION'"; exit 1; }
+# Link this slice window to its already-open PR with a bare claude (no ticket
+# seed): NAME is blanked so launch_claude_in does not inject the pickup-ticket
+# prompt. PLAN_MODEL/IMPL_MODEL are still honored by launch_claude_in.
+NAME=""
 launch_claude_in "$WIN_ID"
 echo "Added '$WIN_NAME' to session '$SESSION' for branch '$BRANCH'"

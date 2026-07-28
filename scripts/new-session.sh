@@ -1,5 +1,5 @@
 #!/bin/bash
-# new-session.sh — create (or reuse) a git worktree + tmux session for a branch,
+# new-session.sh - create (or reuse) a git worktree + tmux session for a branch,
 # then open a Claude window in it. Generic: no project paths, stacks, or personal
 # data are baked in. Configure with the env vars below and optional hooks.
 #
@@ -117,7 +117,7 @@ NAME=${1:-}
 # Optional 2nd arg: the branch to check out. Defaults to the session name (a
 # normal ticket session branches on its own name). PR fix sessions pass the PR's
 # branch here so the tmux session is named by PR (pr-<n>-fix) while the worktree
-# is keyed by — and reuses — the branch's existing worktree.
+# is keyed by (and reuses) the branch's existing worktree.
 BRANCH=${2:-$NAME}
 
 CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}

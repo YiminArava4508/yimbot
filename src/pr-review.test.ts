@@ -90,3 +90,27 @@ test("reviewOnce skips a PR whose fix is already in flight", async () => {
   await reviewOnce(freshReviewState(), d);
   assert.equal(spawned.length, 0);
 });
+
+test("reviewOnce swallows a listOpenPRs failure without throwing or spawning", async () => {
+  const { deps: d, spawned, logs } = deps({
+    listOpenPRs: async () => {
+      throw new Error("gh 500");
+    },
+  });
+  await reviewOnce(freshReviewState(), d); // must not throw
+  assert.equal(spawned.length, 0);
+  assert.ok(logs.some((l) => /gh 500/.test(l)));
+});
+
+test("reviewOnce continues to the next PR when one PR's thread info throws", async () => {
+  const { deps: d, spawned, logs } = deps({
+    listOpenPRs: async () => [pr(1), pr(2)],
+    unresolvedInfo: async (n) => {
+      if (n === 1) throw new Error("graphql 502");
+      return info(1, 1000);
+    },
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-2-fix"]);
+  assert.ok(logs.some((l) => /graphql 502/.test(l)));
+});

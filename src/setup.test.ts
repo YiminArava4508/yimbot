@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
   configToEnvRecord,
   expandTilde,
+  hostLinks,
   isConfigured,
   isGitRepo,
   linkState,
@@ -111,4 +112,10 @@ test("serializeEnvFile round-trips empty risk labels", () => {
   const text = serializeEnvFile({ ...sample, riskLabels: [], autoClaim: true });
   assert.match(text, /^RISK_LABELS=$/m);
   assert.match(text, /^AUTO_CLAIM=true$/m);
+});
+
+test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/split-pr.sh"));
+  assert.ok(link, "split-pr.sh host link is present");
+  assert.ok(link!.source.endsWith("scripts/split-pr.sh"), "sourced from scripts/split-pr.sh");
 });

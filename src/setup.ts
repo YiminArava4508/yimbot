@@ -138,7 +138,7 @@ function bail<T>(value: T | symbol): T {
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 type HostLink = { source: string; target: string; label: string };
-const hostLinks: HostLink[] = [
+export const hostLinks: HostLink[] = [
   {
     source: join(repoRoot, "scripts/new-session.sh"),
     target: join(homedir(), "new-session.sh"),
@@ -148,6 +148,11 @@ const hostLinks: HostLink[] = [
     source: join(repoRoot, "scripts/end-session.sh"),
     target: join(homedir(), "end-session.sh"),
     label: "session teardown (~/end-session.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/split-pr.sh"),
+    target: join(homedir(), "split-pr.sh"),
+    label: "split-PR launcher (~/split-pr.sh)",
   },
   {
     source: join(repoRoot, "skills/pickup-ticket"),
@@ -405,6 +410,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: endSessionScriptPath,
       label: "~/end-session.sh",
       role: "cleanup step: tears down merged PRs' worktrees (required for cleanup)",
+    },
+    {
+      path: join(homedir(), "split-pr.sh"),
+      label: "~/split-pr.sh",
+      role: "adds a PR window per split slice (required for split PRs)",
     },
     {
       path: join(homedir(), ".claude/skills/pickup-ticket"),

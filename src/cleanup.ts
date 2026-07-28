@@ -34,11 +34,17 @@ export type CleanupDeps = {
 
 // Read a worktree's .yimbot-parent-session marker, written by split-pr.sh when
 // it carves a slice worktree out of an integration branch. Returns null when
-// the worktree has no marker (a normal, non-split ticket).
+// the worktree has no marker (a normal, non-split ticket) or when the marker
+// is empty or contains only whitespace.
 export function readParentSession(worktreePath: string): string | null {
   const markerPath = join(worktreePath, ".yimbot-parent-session");
   if (!existsSync(markerPath)) return null;
-  return readFileSync(markerPath, "utf8").trim();
+  try {
+    const raw = readFileSync(markerPath, "utf8").trim();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 // Assemble split groups from live worktrees. A worktree with a non-null parent

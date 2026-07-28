@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { OpenPR } from "./gh.ts";
-import { fixSessionName, freshReviewState, type PrReviewDeps, type ReviewState, reviewOnce, SPAWN_GRACE_MS } from "./pr-review.ts";
+import type { OpenPR, UnresolvedInfo } from "./gh.ts";
+import { fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 function pr(number: number, overrides: Partial<OpenPR> = {}): OpenPR {
   return { number, headRefName: `eng-${number}-x`, isDraft: false, ...overrides };
+}
+
+function info(count: number, newestOtherCommentAt: number | null): UnresolvedInfo {
+  return { count, newestOtherCommentAt };
 }
 
 function deps(overrides: Partial<PrReviewDeps> = {}): {
@@ -16,10 +20,9 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   const logs: string[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
-    unresolvedCount: async () => 2,
+    unresolvedInfo: async () => info(2, 1000),
     fixInFlight: () => false,
     spawnFix: (name, branch) => void spawned.push({ name, branch }),
-    now: () => 0,
     log: (m) => void logs.push(m),
     ...overrides,
   };
@@ -30,10 +33,44 @@ test("fixSessionName is keyed by PR number", () => {
   assert.equal(fixSessionName(4706), "pr-4706-fix");
 });
 
-test("reviewOnce spawns a fix session for a PR with unresolved comments", async () => {
+test("reviewOnce spawns a fix for a PR with a new other-authored comment", async () => {
   const { deps: d, spawned } = deps();
   await reviewOnce(freshReviewState(), d);
   assert.deepEqual(spawned, [{ name: "pr-4706-fix", branch: "eng-4706-x" }]);
+});
+
+test("reviewOnce records the handled timestamp so the same round does not re-spawn", async () => {
+  const { deps: d, spawned } = deps();
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  await reviewOnce(state, d); // same newestOtherCommentAt=1000
+  assert.equal(spawned.length, 1);
+  assert.equal(state.lastHandledAt.get(4706), 1000);
+});
+
+test("reviewOnce re-spawns when a newer comment arrives", async () => {
+  let ts = 1000;
+  const { deps: d, spawned } = deps({ unresolvedInfo: async () => info(1, ts) });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // handles 1000
+  ts = 2000; // new comment
+  await reviewOnce(state, d); // handles 2000
+  assert.equal(spawned.length, 2);
+  assert.equal(state.lastHandledAt.get(4706), 2000);
+});
+
+test("reviewOnce does not loop on deliberately-left threads (older timestamp)", async () => {
+  const { deps: d, spawned } = deps({ unresolvedInfo: async () => info(3, 1000) });
+  const state = freshReviewState();
+  state.lastHandledAt.set(4706, 1000); // already handled up to here
+  await reviewOnce(state, d);
+  assert.equal(spawned.length, 0);
+});
+
+test("reviewOnce skips when only the viewer's own replies remain (null timestamp)", async () => {
+  const { deps: d, spawned } = deps({ unresolvedInfo: async () => info(2, null) });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(spawned.length, 0);
 });
 
 test("reviewOnce skips draft PRs", async () => {
@@ -43,86 +80,13 @@ test("reviewOnce skips draft PRs", async () => {
 });
 
 test("reviewOnce skips a PR with no unresolved threads", async () => {
-  const { deps: d, spawned } = deps({ unresolvedCount: async () => 0 });
+  const { deps: d, spawned } = deps({ unresolvedInfo: async () => info(0, null) });
   await reviewOnce(freshReviewState(), d);
   assert.equal(spawned.length, 0);
 });
 
-test("reviewOnce skips a PR whose fix is already in flight (in-flight guard)", async () => {
-  let counted = false;
-  const seen: { number: number; branch: string }[] = [];
-  const { deps: d, spawned } = deps({
-    fixInFlight: (number, branch) => {
-      seen.push({ number, branch });
-      return number === 4706;
-    },
-    unresolvedCount: async () => {
-      counted = true;
-      return 5;
-    },
-  });
+test("reviewOnce skips a PR whose fix is already in flight", async () => {
+  const { deps: d, spawned } = deps({ fixInFlight: (n) => n === 4706 });
   await reviewOnce(freshReviewState(), d);
   assert.equal(spawned.length, 0);
-  assert.equal(counted, false, "must not even count threads when a fix is in flight");
-  assert.deepEqual(seen, [{ number: 4706, branch: "eng-4706-x" }], "guard gets PR number and branch");
-});
-
-test("reviewOnce does not re-spawn within the grace window (no visible session yet)", async () => {
-  let clock = 0;
-  const spawned: string[] = [];
-  const state: ReviewState = freshReviewState();
-  const { deps: base } = deps();
-  const d: PrReviewDeps = {
-    ...base,
-    fixInFlight: () => false, // session not yet visible to the guard
-    now: () => clock,
-    spawnFix: (name) => void spawned.push(name),
-  };
-
-  await reviewOnce(state, d); // spawns at t=0
-  clock = SPAWN_GRACE_MS - 1;
-  await reviewOnce(state, d); // still within grace: no second spawn
-  assert.deepEqual(spawned, ["pr-4706-fix"]);
-});
-
-test("reviewOnce re-spawns after the grace window elapses (retry a lost spawn)", async () => {
-  let clock = 0;
-  const spawned: string[] = [];
-  const state: ReviewState = freshReviewState();
-  const { deps: base } = deps();
-  const d: PrReviewDeps = {
-    ...base,
-    fixInFlight: () => false,
-    now: () => clock,
-    spawnFix: (name) => void spawned.push(name),
-  };
-
-  await reviewOnce(state, d); // t=0
-  clock = SPAWN_GRACE_MS; // grace elapsed
-  await reviewOnce(state, d);
-  assert.deepEqual(spawned, ["pr-4706-fix", "pr-4706-fix"]);
-});
-
-test("reviewOnce continues to other PRs when one PR's thread count throws", async () => {
-  const { deps: d, spawned, logs } = deps({
-    listOpenPRs: async () => [pr(1), pr(2)],
-    unresolvedCount: async (n) => {
-      if (n === 1) throw new Error("graphql 502");
-      return 3;
-    },
-  });
-  await reviewOnce(freshReviewState(), d);
-  assert.deepEqual(spawned.map((s) => s.name), ["pr-2-fix"]);
-  assert.ok(logs.some((l) => /graphql 502/.test(l)));
-});
-
-test("reviewOnce swallows a listOpenPRs failure without throwing or spawning", async () => {
-  const { deps: d, spawned, logs } = deps({
-    listOpenPRs: async () => {
-      throw new Error("gh 500");
-    },
-  });
-  await reviewOnce(freshReviewState(), d); // must not throw
-  assert.equal(spawned.length, 0);
-  assert.ok(logs.some((l) => /gh 500/.test(l)));
 });

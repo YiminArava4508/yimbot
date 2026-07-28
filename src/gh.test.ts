@@ -6,9 +6,7 @@ import {
   listMyOpenPRs,
   parseMergedPRs,
   parseOpenPRs,
-  parseUnresolvedCount,
   repoSlug,
-  unresolvedThreadCount,
   parseUnresolvedInfo,
   parseViewerLogin,
   unresolvedThreadInfo,
@@ -61,28 +59,6 @@ test("listMyMergedPRs requests author=@me merged PRs and parses them", async () 
 test("repoSlug flattens owner.login and name", async () => {
   const { run } = capturingRunner([JSON.stringify({ owner: { login: "MatthewsREIS" }, name: "gemini" })]);
   assert.deepEqual(await repoSlug(run), { owner: "MatthewsREIS", name: "gemini" });
-});
-
-test("parseUnresolvedCount counts only unresolved threads", () => {
-  const json = JSON.stringify({
-    data: {
-      repository: {
-        pullRequest: { reviewThreads: { nodes: [{ isResolved: true }, { isResolved: false }, { isResolved: false }] } },
-      },
-    },
-  });
-  assert.equal(parseUnresolvedCount(json), 2);
-});
-
-test("unresolvedThreadCount passes owner/name/number as graphql fields", async () => {
-  const { run, calls } = capturingRunner([
-    JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }),
-  ]);
-  const count = await unresolvedThreadCount(run, { owner: "o", name: "n" }, 42);
-  assert.equal(count, 0);
-  assert.ok(calls[0].includes("owner=o"));
-  assert.ok(calls[0].includes("name=n"));
-  assert.ok(calls[0].includes("number=42"));
 });
 
 function threadsJson(nodes: unknown[]): string {

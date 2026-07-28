@@ -61,32 +61,6 @@ const THREADS_QUERY =
   "pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved " +
   "comments(last:1){nodes{createdAt author{login}}}}}}}}";
 
-export function parseUnresolvedCount(json: string): number {
-  const data = JSON.parse(json) as {
-    data: { repository: { pullRequest: { reviewThreads: { nodes: { isResolved: boolean }[] } } } };
-  };
-  return data.data.repository.pullRequest.reviewThreads.nodes.filter((n) => !n.isResolved).length;
-}
-
-// Number of unresolved review threads on a PR, any author (humans + bots). This
-// is what decides whether a PR still needs a fix session.
-export async function unresolvedThreadCount(run: GhRunner, slug: RepoSlug, prNumber: number): Promise<number> {
-  return parseUnresolvedCount(
-    await run([
-      "api",
-      "graphql",
-      "-f",
-      `query=${THREADS_QUERY}`,
-      "-f",
-      `owner=${slug.owner}`,
-      "-f",
-      `name=${slug.name}`,
-      "-F",
-      `number=${prNumber}`,
-    ]),
-  );
-}
-
 export type UnresolvedInfo = { count: number; newestOtherCommentAt: number | null };
 
 type ThreadNode = {

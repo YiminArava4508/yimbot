@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
-import { ghRunner, listMyMergedPRs, listMyOpenPRs, repoSlug, unresolvedThreadCount } from "./src/gh.ts";
+import { ghRunner, listMyMergedPRs, listMyOpenPRs, repoSlug, unresolvedThreadInfo, viewerLogin } from "./src/gh.ts";
 import { resolveContext } from "./src/linear-api.ts";
 import { configToEnvRecord, isConfigured, runSetup } from "./src/setup.ts";
 import { sessionScriptPath, startWatcher } from "./src/watcher.ts";
@@ -80,17 +80,21 @@ const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 // disabled (null) rather than crashing the daemon.
 const gh = ghRunner(codebasePath);
 let prReview:
-  | { listOpenPRs: () => ReturnType<typeof listMyOpenPRs>; unresolvedCount: (n: number) => Promise<number> }
+  | {
+      listOpenPRs: () => ReturnType<typeof listMyOpenPRs>;
+      unresolvedInfo: (n: number) => ReturnType<typeof unresolvedThreadInfo>;
+    }
   | null = null;
 try {
   const slug = await repoSlug(gh);
+  const viewer = await viewerLogin(gh);
   prReview = {
     listOpenPRs: () => listMyOpenPRs(gh),
-    unresolvedCount: (n) => unresolvedThreadCount(gh, slug, n),
+    unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
   };
-  console.log(`[yimbot] review step ON: addressing PR comments in ${slug.owner}/${slug.name}`);
+  console.log(`[yimbot] review step ON: addressing PR comments in ${slug.owner}/${slug.name} as ${viewer}`);
 } catch (err) {
-  console.log(`[yimbot] review step OFF: gh unavailable or repo unresolved (${err})`);
+  console.log(`[yimbot] review step OFF: gh unavailable or repo/viewer unresolved (${err})`);
 }
 
 // Cleanup step: tear down merged PRs' worktrees. Shares the review step's gh

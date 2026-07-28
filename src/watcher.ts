@@ -271,7 +271,7 @@ export type WatcherConfig = {
   claim: ClaimConfig;
   // gh-backed hooks for the review step; null disables PR comment handling (e.g.
   // when gh isn't available or the repo couldn't be resolved at startup).
-  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedCount"> | null;
+  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo"> | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
@@ -488,10 +488,9 @@ export function startWatcher(config: WatcherConfig): () => void {
   const reviewState = freshReviewState();
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
     listOpenPRs: config.prReview.listOpenPRs,
-    unresolvedCount: config.prReview.unresolvedCount,
+    unresolvedInfo: config.prReview.unresolvedInfo,
     fixInFlight,
     spawnFix: spawnFixSession,
-    now: () => Date.now(),
     log: reviewIconLog,
   };
 

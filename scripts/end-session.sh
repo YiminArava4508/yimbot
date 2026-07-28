@@ -13,7 +13,7 @@
 #   end-session.sh <name>       tear down the named session (headless)
 #
 # Config (all overridable via the environment):
-#   CODEBASE_PATH          base git repo the worktree belongs to     (required)
+#   CODEBASE_PATH          base git repo the worktree belongs to     (~/Work/gemini)
 #   WORKTREES_DIR          where worktrees live                      (~/Work/worktrees)
 #   SESSION_TEARDOWN_HOOK  script run before the worktree is removed,
 #                          receiving "<worktree_path> <name>". Put
@@ -37,6 +37,13 @@ sanitize_worktree_dir() {
   echo "$1" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50
 }
 
+# The git repo the worktree belongs to. Defaults to ~/Work/gemini (matching the
+# daemon's index.ts default) so an interactive teardown works without the env
+# var; export CODEBASE_PATH to override. Pure; unit-tested via sourcing.
+codebase_path() {
+  echo "${CODEBASE_PATH:-$HOME/Work/gemini}"
+}
+
 # git branch delete flag. Headless callers (the daemon) have already confirmed
 # the PR merged, so force-delete (-D): a squash merge leaves `git branch -d`
 # thinking the branch is unmerged. Interactive use keeps the safe -d.
@@ -58,7 +65,7 @@ else
   NAME=$(tmux display-message -p '#S') || die "Could not determine current tmux session"
 fi
 
-: "${CODEBASE_PATH:?set CODEBASE_PATH to the git repo the worktree belongs to}"
+CODEBASE_PATH=$(codebase_path)
 
 WORKTREE_DIR=$(sanitize_worktree_dir "$NAME")
 WORKTREE=$WORKTREES_DIR/$WORKTREE_DIR

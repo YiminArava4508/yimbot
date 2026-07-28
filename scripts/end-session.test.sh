@@ -19,4 +19,9 @@ assert_eq "$(sanitize_worktree_dir "$(printf 'a%.0s' {1..60})")" "$(printf 'a%.0
 assert_eq "$(branch_delete_flag true)" "-D" "headless force delete"
 assert_eq "$(branch_delete_flag false)" "-d" "interactive safe delete"
 
+# CODEBASE_PATH defaults to the daemon's ~/Work/gemini when unset (an interactive
+# teardown has no env var), and honors an explicit override.
+assert_eq "$(CODEBASE_PATH=/tmp/repo codebase_path)" "/tmp/repo" "honors CODEBASE_PATH override"
+assert_eq "$(unset CODEBASE_PATH; codebase_path)" "$HOME/Work/gemini" "defaults to ~/Work/gemini when unset"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: end-session.sh helper tests"; else exit 1; fi

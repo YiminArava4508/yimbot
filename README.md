@@ -19,7 +19,7 @@ failures are logged and never crash the daemon.
 
 The first time you run it, yimbot asks a few setup questions. After that it
 quietly checks your Linear board and your open PRs every few minutes (its
-**heartbeat**) and can do five things (plus keep your code up to date):
+**heartbeat**) and can do six things (plus keep your code up to date):
 
 ```mermaid
 flowchart TD
@@ -45,6 +45,10 @@ flowchart TD
     G3 --> T2{"An open PR of yours with<br/>unresolved comments?"}
     T2 -- yes --> R["Add a fix window to that ticket's<br/>session (or open a new one) that fixes<br/>them, pushes, resolves the threads,<br/>and asks for re-review"]
 
+    P --> G6["Fix failing CI"]
+    G6 --> T5{"An open PR of yours<br/>with failing CI?"}
+    T5 -- yes --> CI["Add a CI-fix window to that ticket's<br/>session (or open a new one) that syncs<br/>main if stale, fixes the build, and pushes"]
+
     P --> G4["Flag ready to test"]
     G4 --> T3{"Did a card move<br/>to 'In Review'?"}
     T3 -- yes --> F["Mark its session with a<br/>'ready to test' icon"]
@@ -58,10 +62,12 @@ flowchart TD
     classDef review fill:#feebc8,stroke:#c05621,color:#1a202c;
     classDef ready fill:#e9d8fd,stroke:#6b46c1,color:#1a202c;
     classDef cleanup fill:#fed7d7,stroke:#c53030,color:#1a202c;
+    classDef ci fill:#fefcbf,stroke:#b7791f,color:#1a202c;
     classDef sync fill:#e2e8f0,stroke:#718096,color:#1a202c;
     class G1,T1,L deploy;
     class G2,PK,M claim;
     class G3,T2,R review;
+    class G6,T5,CI ci;
     class G4,T3,F ready;
     class G5,T4,CU cleanup;
     class S sync;
@@ -79,6 +85,15 @@ flowchart TD
   every comment, gets tests green, pushes, resolves the threads, and re-requests
   review. Needs `gh` installed and authenticated; runs against the repo at
   `CODEBASE_PATH`.
+- **Fix failing CI (yellow):** every heartbeat, for each of your open PRs whose
+  CI has concluded as failing, it adds a `pr-<n>-ci` fix window to that PR's
+  ticket session (or opens a standalone session) that first syncs with `main`
+  when the branch is stale (a common cause), otherwise fixes the build, then
+  pushes and closes itself. It's a separate session from the comment fix and the
+  two never run at once on the same worktree; when both a comment and a CI fix
+  are due in the same heartbeat, the comment fix goes first and CI is picked up
+  the next tick. Re-triggers only when a push moves the failing commit, so a
+  green build never loops. Needs `gh` installed and authenticated.
 - **Flag ready to test (purple):** when a card moves to **In Review**, it marks
   that card's session with a "ready to test" icon so you know you can run local
   dev there to try it. (yimbot no longer starts the dev env for you.)
@@ -116,13 +131,14 @@ When an issue enters the deploy state, the daemon shells out to
 `~/new-session.sh <name>`, which creates (or reuses) a git worktree off
 `CODEBASE_PATH`, opens a tmux session with a Claude window, and seeds the session
 by name: ticket sessions (`eng-…` / `sc-…`) hand off to the **pickup-ticket**
-skill (plan, implement, self-review, finish), and PR fixes (`pr-<n>-fix`,
+skill (plan, implement, self-review, finish); PR comment fixes (`pr-<n>-fix`,
 launched by the review step with `~/new-session.sh pr-<n>-fix <branch>`) hand off
 to the **address-pr-comments** skill (fix comments, push, resolve threads,
-re-request review). A PR fix is added as a window inside its branch's ticket
-session when that session is still alive, so a PR and its ticket share one
-session; if the ticket session has ended, it becomes a standalone `pr-<n>-fix`
-session instead.
+re-request review); and PR CI fixes (`pr-<n>-ci`, launched the same way) hand off
+to the **fix-pr-ci** skill (sync main if stale, otherwise fix the build, push). A
+PR fix is added as a window inside its branch's ticket session when that session
+is still alive, so a PR and its ticket share one session; if the ticket session
+has ended, it becomes a standalone `pr-<n>-fix` / `pr-<n>-ci` session instead.
 
 Teardown is the mirror: once a PR merges, the cleanup step shells out to
 `~/end-session.sh <branch>` (headless), which removes that branch's worktree and
@@ -131,12 +147,13 @@ session interactively (moving your client to another session first). All ship in
 this repo:
 [`scripts/new-session.sh`](scripts/new-session.sh),
 [`scripts/end-session.sh`](scripts/end-session.sh),
-[`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md), and
-[`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md). **`pnpm onboard`
+[`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md),
+[`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md), and
+[`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md). **`pnpm onboard`
 symlinks them into place** (`~/new-session.sh`, `~/end-session.sh`,
-`~/.claude/skills/pickup-ticket`, `~/.claude/skills/address-pr-comments`), verifying
-them in its pre-flight. An existing file at any path is never overwritten without
-asking (it's backed up first).
+`~/.claude/skills/pickup-ticket`, `~/.claude/skills/address-pr-comments`,
+`~/.claude/skills/fix-pr-ci`), verifying them in its pre-flight. An existing file
+at any path is never overwritten without asking (it's backed up first).
 
 Nothing project-specific is baked in. Point it at your repo and, if you need
 per-worktree setup (ports, env files, dependency installs) or a dev-env command,

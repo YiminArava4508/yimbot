@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  checksInfo,
   type GhRunner,
   listMyMergedPRs,
   listMyOpenPRs,
+  parseChecksInfo,
   parseMergedPRs,
   parseOpenPRs,
   repoSlug,
@@ -105,6 +107,55 @@ test("unresolvedThreadInfo passes owner/name/number and parses with the viewer l
   const info = await unresolvedThreadInfo(run, { owner: "o", name: "n" }, 42, "yimbot");
   assert.equal(info.count, 1);
   assert.equal(info.newestOtherCommentAt, Date.parse("2026-07-05T00:00:00Z"));
+});
+
+function rollupJson(headRefOid: string, nodes: unknown[]): string {
+  return JSON.stringify({ headRefOid, statusCheckRollup: nodes });
+}
+function checkRun(status: string, conclusion: string | null) {
+  return { __typename: "CheckRun", name: "test", status, conclusion };
+}
+function statusContext(state: string) {
+  return { __typename: "StatusContext", context: "ci", state };
+}
+
+test("parseChecksInfo reports failing on a failed CheckRun conclusion", () => {
+  const json = rollupJson("sha1", [checkRun("COMPLETED", "SUCCESS"), checkRun("COMPLETED", "FAILURE")]);
+  assert.deepEqual(parseChecksInfo(json), { state: "failing", headSha: "sha1" });
+});
+
+test("parseChecksInfo reports failing on a failed StatusContext state", () => {
+  const json = rollupJson("sha2", [statusContext("SUCCESS"), statusContext("ERROR")]);
+  assert.deepEqual(parseChecksInfo(json), { state: "failing", headSha: "sha2" });
+});
+
+test("parseChecksInfo treats an unfinished check as pending, even alongside a failure", () => {
+  const json = rollupJson("sha3", [checkRun("COMPLETED", "FAILURE"), checkRun("IN_PROGRESS", null)]);
+  assert.equal(parseChecksInfo(json).state, "pending");
+});
+
+test("parseChecksInfo treats a PENDING StatusContext as pending", () => {
+  assert.equal(parseChecksInfo(rollupJson("s", [statusContext("PENDING")])).state, "pending");
+});
+
+test("parseChecksInfo reports passing when every check succeeded", () => {
+  const json = rollupJson("sha4", [checkRun("COMPLETED", "SUCCESS"), statusContext("SUCCESS")]);
+  assert.equal(parseChecksInfo(json).state, "passing");
+});
+
+test("parseChecksInfo treats NEUTRAL/SKIPPED conclusions as non-failing", () => {
+  const json = rollupJson("s", [checkRun("COMPLETED", "NEUTRAL"), checkRun("COMPLETED", "SKIPPED")]);
+  assert.equal(parseChecksInfo(json).state, "passing");
+});
+
+test("parseChecksInfo reports none for an empty rollup", () => {
+  assert.deepEqual(parseChecksInfo(rollupJson("sha5", [])), { state: "none", headSha: "sha5" });
+});
+
+test("checksInfo requests headRefOid + statusCheckRollup for the PR and parses them", async () => {
+  const { run, calls } = capturingRunner([rollupJson("deadbeef", [checkRun("COMPLETED", "FAILURE")])]);
+  assert.deepEqual(await checksInfo(run, 4706), { state: "failing", headSha: "deadbeef" });
+  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "headRefOid,statusCheckRollup"]);
 });
 
 test("parseViewerLogin extracts the login", () => {

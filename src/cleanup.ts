@@ -99,12 +99,12 @@ export function selectMergedWorktrees(
   return worktrees.filter((w) => mergedBranches.has(w.branch) && w.path.startsWith(prefix));
 }
 
-const FIX_SESSION_RE = /^pr-(\d+)-fix$/;
+const FIX_SESSION_RE = /^pr-(\d+)-(?:fix|ci)$/;
 
-// Live "pr-<n>-fix" sessions whose PR number is in the merged set. A fix session
-// is named by PR number (not branch), so the branch-keyed worktree teardown never
-// targets it; and it can outlive its worktree (the worktree may already be gone).
-// So it is reconciled directly against the merged-PR numbers here.
+// Live "pr-<n>-fix" / "pr-<n>-ci" sessions whose PR number is in the merged set.
+// A fix session is named by PR number (not branch), so the branch-keyed worktree
+// teardown never targets it; and it can outlive its worktree (the worktree may
+// already be gone). So it is reconciled directly against the merged-PR numbers.
 export function selectMergedFixSessions(sessions: string[], mergedPrNumbers: Set<number>): string[] {
   return sessions.filter((s) => {
     const m = FIX_SESSION_RE.exec(s);
@@ -115,7 +115,7 @@ export function selectMergedFixSessions(sessions: string[], mergedPrNumbers: Set
 // One cleanup-step tick, run every heartbeat. Two independent reconciliations
 // against the viewer's merged PRs: (a) tear down each merged worktree (removes the
 // worktree + its branch-named ticket session), and (b) kill each live pr-<n>-fix
-// session whose PR merged. Both are self-deduping (a removed worktree / killed
+// / pr-<n>-ci session whose PR merged. Both are self-deduping (a removed worktree / killed
 // session is simply gone next tick), so there is no seen-set. Every external call
 // is wrapped so a failure logs and continues, never crashing the heartbeat.
 export async function cleanupOnce(deps: CleanupDeps): Promise<void> {

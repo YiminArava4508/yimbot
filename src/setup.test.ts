@@ -119,3 +119,9 @@ test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {
   assert.ok(link, "split-pr.sh host link is present");
   assert.ok(link!.source.endsWith("scripts/split-pr.sh"), "sourced from scripts/split-pr.sh");
 });
+
+test("hostLinks installs the fix-pr-ci skill", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-ci"));
+  assert.ok(link, "fix-pr-ci skill host link is present");
+  assert.ok(link!.source.endsWith("skills/fix-pr-ci"), "sourced from skills/fix-pr-ci");
+});

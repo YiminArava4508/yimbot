@@ -108,6 +108,41 @@ export async function unresolvedThreadInfo(
   );
 }
 
+export type CiState = "passing" | "failing" | "pending" | "none";
+export type ChecksInfo = { state: CiState; headSha: string };
+
+// CheckRun.conclusion values that mean the check failed. NEUTRAL/SKIPPED/SUCCESS
+// are not failures. A null conclusion means the run hasn't finished (pending).
+const FAILING_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED"]);
+
+type RollupNode = { status?: string; conclusion?: string | null; state?: string };
+
+// CI summary for a PR from `gh pr view --json headRefOid,statusCheckRollup`.
+// `pending` takes precedence over `failing`: while any check is still running we
+// wait rather than act on a half-finished run. A rollup node is a CheckRun
+// (status + conclusion) or a StatusContext (state); classify off whichever fields
+// are present so a missing __typename never misreads a node.
+export function parseChecksInfo(json: string): ChecksInfo {
+  const data = JSON.parse(json) as { headRefOid: string; statusCheckRollup: RollupNode[] };
+  const nodes = data.statusCheckRollup ?? [];
+  let pending = false;
+  let failing = false;
+  for (const n of nodes) {
+    if ((n.status !== undefined && n.status !== "COMPLETED") || n.state === "PENDING" || n.state === "EXPECTED") {
+      pending = true;
+    }
+    if ((n.conclusion != null && FAILING_CONCLUSIONS.has(n.conclusion)) || n.state === "FAILURE" || n.state === "ERROR") {
+      failing = true;
+    }
+  }
+  const state: CiState = nodes.length === 0 ? "none" : pending ? "pending" : failing ? "failing" : "passing";
+  return { state, headSha: data.headRefOid };
+}
+
+export async function checksInfo(run: GhRunner, prNumber: number): Promise<ChecksInfo> {
+  return parseChecksInfo(await run(["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup"]));
+}
+
 export function parseViewerLogin(json: string): string {
   return (JSON.parse(json) as { data: { viewer: { login: string } } }).data.viewer.login;
 }

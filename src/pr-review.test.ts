@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { OpenPR, UnresolvedInfo } from "./gh.ts";
-import { fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
+import type { ChecksInfo, CiState, OpenPR, UnresolvedInfo } from "./gh.ts";
+import { ciSessionName, fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 function pr(number: number, overrides: Partial<OpenPR> = {}): OpenPR {
   return { number, headRefName: `eng-${number}-x`, isDraft: false, ...overrides };
@@ -11,26 +11,145 @@ function info(count: number, newestOtherCommentAt: number | null): UnresolvedInf
   return { count, newestOtherCommentAt };
 }
 
+const noComments = info(0, null);
+function ci(state: CiState, headSha = "sha"): ChecksInfo {
+  return { state, headSha };
+}
+
 function deps(overrides: Partial<PrReviewDeps> = {}): {
   deps: PrReviewDeps;
   spawned: { name: string; branch: string }[];
+  ciSpawned: { name: string; branch: string }[];
   logs: string[];
 } {
   const spawned: { name: string; branch: string }[] = [];
+  const ciSpawned: { name: string; branch: string }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
     unresolvedInfo: async () => info(2, 1000),
+    checksInfo: async () => ci("passing"),
     fixInFlight: () => false,
     spawnFix: (name, branch) => void spawned.push({ name, branch }),
+    spawnCiFix: (name, branch) => void ciSpawned.push({ name, branch }),
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, logs };
+  return { deps: d, spawned, ciSpawned, logs };
 }
 
 test("fixSessionName is keyed by PR number", () => {
   assert.equal(fixSessionName(4706), "pr-4706-fix");
+});
+
+test("ciSessionName is keyed by PR number", () => {
+  assert.equal(ciSessionName(4706), "pr-4706-ci");
+});
+
+test("reviewOnce spawns a CI fix for a PR with failing CI and no comments", async () => {
+  const { deps: d, ciSpawned } = deps({ unresolvedInfo: async () => noComments, checksInfo: async () => ci("failing", "abc") });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.deepEqual(ciSpawned, [{ name: "pr-4706-ci", branch: "eng-4706-x" }]);
+  assert.equal(state.lastHandledCiSha.get(4706), "abc");
+});
+
+test("reviewOnce does not spawn a CI fix for passing/pending/none CI", async () => {
+  for (const state of ["passing", "pending", "none"] as CiState[]) {
+    const { deps: d, ciSpawned } = deps({ unresolvedInfo: async () => noComments, checksInfo: async () => ci(state) });
+    await reviewOnce(freshReviewState(), d);
+    assert.equal(ciSpawned.length, 0, `${state} must not spawn`);
+  }
+});
+
+test("reviewOnce does not re-spawn a CI fix for the same failing SHA", async () => {
+  const { deps: d, ciSpawned } = deps({ unresolvedInfo: async () => noComments, checksInfo: async () => ci("failing", "abc") });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  await reviewOnce(state, d);
+  assert.equal(ciSpawned.length, 1);
+});
+
+test("reviewOnce re-spawns a CI fix when the failing SHA changes", async () => {
+  let sha = "abc";
+  const { deps: d, ciSpawned } = deps({ unresolvedInfo: async () => noComments, checksInfo: async () => ci("failing", sha) });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  sha = "def"; // a fix push moved the head; still red
+  await reviewOnce(state, d);
+  assert.equal(ciSpawned.length, 2);
+  assert.equal(state.lastHandledCiSha.get(4706), "def");
+});
+
+test("reviewOnce prefers the comment fix and skips CI the same tick when both are actionable", async () => {
+  const { deps: d, spawned, ciSpawned } = deps({
+    unresolvedInfo: async () => info(1, 1000),
+    checksInfo: async () => ci("failing", "abc"),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+  assert.equal(ciSpawned.length, 0);
+  assert.equal(state.lastHandledCiSha.has(4706), false, "CI SHA is not recorded when CI was skipped");
+});
+
+test("reviewOnce does not spawn a CI fix while a just-spawned comment fix is not yet visible", async () => {
+  // Comment fix spawned tick 1; fixInFlight still false (session/window starting).
+  // The cross-kind latch must suppress the CI spawn onto the shared worktree.
+  const { deps: d, spawned, ciSpawned } = deps({
+    unresolvedInfo: async () => info(1, 1000),
+    checksInfo: async () => ci("failing", "abc"),
+    fixInFlight: () => false,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // spawns the comment fix
+  await reviewOnce(state, d); // must NOT spawn CI while the comment fix is unobserved
+  assert.equal(spawned.length, 1);
+  assert.equal(ciSpawned.length, 0);
+});
+
+test("reviewOnce spawns the CI fix after the comment fix has been seen live and finished", async () => {
+  let inFlight = false;
+  const { deps: d, spawned, ciSpawned } = deps({
+    unresolvedInfo: async () => info(1, 1000),
+    checksInfo: async () => ci("failing", "abc"),
+    fixInFlight: () => inFlight,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // tick 1: spawn comment fix (latch = fix)
+  inFlight = true;
+  await reviewOnce(state, d); // tick 2: comment fix now visible → clears latch, skips
+  inFlight = false;
+  await reviewOnce(state, d); // tick 3: comment fix gone → CI failing on unhandled sha spawns
+  assert.equal(spawned.length, 1);
+  assert.deepEqual(ciSpawned.map((s) => s.name), ["pr-4706-ci"]);
+});
+
+test("reviewOnce does not spawn a comment fix while a just-spawned CI fix is not yet visible", async () => {
+  // Tick 1 has no comment work, so CI wins and its fix is spawned (latch = ci).
+  // Tick 2 a comment arrives before the CI fix is visible; it must be suppressed.
+  let comments: UnresolvedInfo = noComments;
+  const { deps: d, spawned, ciSpawned } = deps({
+    unresolvedInfo: async () => comments,
+    checksInfo: async () => ci("failing", "abc"),
+    fixInFlight: () => false,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // CI-only failure → spawn CI fix (latch = ci)
+  comments = info(1, 2000); // a comment now arrives, CI fix not yet visible
+  await reviewOnce(state, d); // must NOT spawn the comment fix onto the shared worktree
+  assert.equal(ciSpawned.length, 1);
+  assert.equal(spawned.length, 0);
+});
+
+test("reviewOnce skips CI when a fix is already in flight", async () => {
+  const { deps: d, ciSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    checksInfo: async () => ci("failing", "abc"),
+    fixInFlight: () => true,
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(ciSpawned.length, 0);
 });
 
 test("reviewOnce spawns a fix for a PR with a new other-authored comment", async () => {

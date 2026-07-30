@@ -164,6 +164,11 @@ export const hostLinks: HostLink[] = [
     target: join(homedir(), ".claude/skills/address-pr-comments"),
     label: "address-pr-comments skill (~/.claude/skills/address-pr-comments)",
   },
+  {
+    source: join(repoRoot, "skills/fix-pr-ci"),
+    target: join(homedir(), ".claude/skills/fix-pr-ci"),
+    label: "fix-pr-ci skill (~/.claude/skills/fix-pr-ci)",
+  },
 ];
 
 // Whether `target` is already our symlink to `source`, some other existing
@@ -425,6 +430,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".claude/skills/address-pr-comments"),
       label: "~/.claude/skills/address-pr-comments",
       role: "review step: address PR comments (required for PR handling)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/fix-pr-ci"),
+      label: "~/.claude/skills/fix-pr-ci",
+      role: "review step: fix failing PR CI (required for CI handling)",
     },
   ];
   p.note(

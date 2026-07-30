@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
-import { ghRunner, listMyMergedPRs, listMyOpenPRs, repoSlug, unresolvedThreadInfo, viewerLogin } from "./src/gh.ts";
+import { checksInfo, ghRunner, listMyMergedPRs, listMyOpenPRs, repoSlug, unresolvedThreadInfo, viewerLogin } from "./src/gh.ts";
 import { resolveContext } from "./src/linear-api.ts";
 import { configToEnvRecord, isConfigured, runSetup } from "./src/setup.ts";
 import { sessionScriptPath, startWatcher } from "./src/watcher.ts";
@@ -83,6 +83,7 @@ let prReview:
   | {
       listOpenPRs: () => ReturnType<typeof listMyOpenPRs>;
       unresolvedInfo: (n: number) => ReturnType<typeof unresolvedThreadInfo>;
+      checksInfo: (n: number) => ReturnType<typeof checksInfo>;
     }
   | null = null;
 try {
@@ -91,8 +92,9 @@ try {
   prReview = {
     listOpenPRs: () => listMyOpenPRs(gh),
     unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
+    checksInfo: (n) => checksInfo(gh, n),
   };
-  console.log(`[yimbot] review step ON: addressing PR comments in ${slug.owner}/${slug.name} as ${viewer}`);
+  console.log(`[yimbot] review step ON: addressing PR comments + failing CI in ${slug.owner}/${slug.name} as ${viewer}`);
 } catch (err) {
   console.log(`[yimbot] review step OFF: gh unavailable or repo/viewer unresolved (${err})`);
 }

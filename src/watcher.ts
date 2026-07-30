@@ -14,7 +14,7 @@ import {
   type LinearIssue,
   moveIssueToState,
 } from "./linear-api.ts";
-import { fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
+import { ciSessionName, fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
@@ -269,9 +269,9 @@ export type WatcherConfig = {
   reviewContext: LinearContext;
   heartbeatIntervalMinutes: number;
   claim: ClaimConfig;
-  // gh-backed hooks for the review step; null disables PR comment handling (e.g.
-  // when gh isn't available or the repo couldn't be resolved at startup).
-  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo"> | null;
+  // gh-backed hooks for the review step; null disables PR comment + CI handling
+  // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
+  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "checksInfo"> | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
@@ -344,13 +344,18 @@ export function tmuxWindowExists(session: string, window: string): boolean {
   }
 }
 
-// In-flight guard for a PR's fix run. A fix lives either as a standalone
-// pr-<n>-fix session (when the ticket session was gone) or as a pr-<n>-fix window
-// inside the branch's ticket session. Either presence means don't re-spawn.
+// In-flight guard for a PR's fix runs. A fix (comment `pr-<n>-fix` or CI
+// `pr-<n>-ci`) lives either as a standalone session (when the ticket session was
+// gone) or as a window inside the branch's ticket session. Any of the two names
+// present, in either form, means a fixer is already on this PR's shared worktree
+// — don't spawn another (of either kind).
 export function fixInFlight(prNumber: number, branch: string): boolean {
-  const name = fixSessionName(prNumber);
-  if (tmuxHasSession(name)) return true;
-  return tmuxWindowExists(sanitizeBranchToSession(branch), name);
+  const ticketSession = sanitizeBranchToSession(branch);
+  for (const name of [fixSessionName(prNumber), ciSessionName(prNumber)]) {
+    if (tmuxHasSession(name)) return true;
+    if (tmuxWindowExists(ticketSession, name)) return true;
+  }
+  return false;
 }
 
 // Flag a tmux session's feature as ready to test by setting the session-scoped
@@ -489,8 +494,10 @@ export function startWatcher(config: WatcherConfig): () => void {
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
     listOpenPRs: config.prReview.listOpenPRs,
     unresolvedInfo: config.prReview.unresolvedInfo,
+    checksInfo: config.prReview.checksInfo,
     fixInFlight,
     spawnFix: spawnFixSession,
+    spawnCiFix: spawnFixSession,
     log: reviewIconLog,
   };
 

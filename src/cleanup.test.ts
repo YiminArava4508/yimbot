@@ -59,6 +59,11 @@ test("selectMergedFixSessions ignores non-fix session names", () => {
   assert.deepEqual(selectMergedFixSessions(sessions, new Set([4730])), []);
 });
 
+test("selectMergedFixSessions also reaps merged pr-<n>-ci sessions", () => {
+  const sessions = ["pr-4730-ci", "pr-4731-ci", "pr-4730-fix"];
+  assert.deepEqual(selectMergedFixSessions(sessions, new Set([4730])), ["pr-4730-ci", "pr-4730-fix"]);
+});
+
 function mpr(number: number, headRefName = `eng-${number}-x`): MergedPR {
   return { number, headRefName };
 }

@@ -77,7 +77,8 @@ yourself is the job.
    - **If under the hard limit:** push the branch to origin
      (`git push -u origin HEAD`) and open a PR with `gh pr create` as a
      **non-draft** PR (so the daemon's review step can pick up review
-     comments). Title = the ticket summary; body = a short "what changed /
+     comments). **Always create a brand-new PR; never reopen a previously
+     closed PR, even one referenced by the branch, commit, or ticket.** Title = the ticket summary; body = a short "what changed /
      why / test result", any **Decisions** you made to resolve uncertainty
      (with the alternative you rejected, and what was reused), and the
      ticket reference so the tracker auto-links the PR. Follow the repo's
@@ -147,9 +148,10 @@ the reuse audit above), and only then decide how to slice it into PRs.
   1. Create the slice branch off `master`.
   2. Cherry-pick the subset of commits for that slice onto it.
   3. Push the slice branch.
-  4. `gh pr create` as a **non-draft** PR, with a series marker `[i/n]` in
-     the title and a body that lists every sibling slice branch/PR and its
-     order in the series.
+  4. `gh pr create` as a **non-draft** PR (always a brand-new PR, never a
+     reopened closed one), with a series marker `[i/n]` in the title and a
+     body that lists every sibling slice branch/PR and its order in the
+     series.
   5. Run `~/split-pr.sh <slice-branch> <i> <n>`.
 - Repeat until the whole series is open, then move the ticket to the Review
   column once, not once per slice.

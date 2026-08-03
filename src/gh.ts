@@ -143,6 +143,25 @@ export async function checksInfo(run: GhRunner, prNumber: number): Promise<Check
   return parseChecksInfo(await run(["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup"]));
 }
 
+export type MergeableState = "mergeable" | "conflicting" | "unknown";
+export type MergeableInfo = { state: MergeableState; headSha: string };
+
+// Mergeability summary for a PR from `gh pr view --json mergeable,headRefOid`.
+// GitHub computes mergeability asynchronously, so a just-pushed PR reads UNKNOWN
+// for a moment; only CONFLICTING (actual textual conflicts with the base) is
+// actionable — MERGEABLE, UNKNOWN, and an absent field are all "do nothing",
+// the same discipline the CI rollup applies to a pending run.
+export function parseMergeableInfo(json: string): MergeableInfo {
+  const data = JSON.parse(json) as { mergeable?: string; headRefOid: string };
+  const state: MergeableState =
+    data.mergeable === "CONFLICTING" ? "conflicting" : data.mergeable === "MERGEABLE" ? "mergeable" : "unknown";
+  return { state, headSha: data.headRefOid };
+}
+
+export async function mergeableInfo(run: GhRunner, prNumber: number): Promise<MergeableInfo> {
+  return parseMergeableInfo(await run(["pr", "view", String(prNumber), "--json", "mergeable,headRefOid"]));
+}
+
 export function parseViewerLogin(json: string): string {
   return (JSON.parse(json) as { data: { viewer: { login: string } } }).data.viewer.login;
 }

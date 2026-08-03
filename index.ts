@@ -6,7 +6,16 @@ import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./src/acceptance.ts";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
-import { checksInfo, ghRunner, listMyMergedPRs, listMyOpenPRs, repoSlug, unresolvedThreadInfo, viewerLogin } from "./src/gh.ts";
+import {
+  checksInfo,
+  ghRunner,
+  listMyMergedPRs,
+  listMyOpenPRs,
+  mergeableInfo,
+  repoSlug,
+  unresolvedThreadInfo,
+  viewerLogin,
+} from "./src/gh.ts";
 import { judgeAcceptance, type JudgeRunner } from "./src/judge.ts";
 import {
   countAssignedInState,
@@ -92,6 +101,7 @@ let prReview:
   | {
       listOpenPRs: () => ReturnType<typeof listMyOpenPRs>;
       unresolvedInfo: (n: number) => ReturnType<typeof unresolvedThreadInfo>;
+      mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
       checksInfo: (n: number) => ReturnType<typeof checksInfo>;
     }
   | null = null;
@@ -101,9 +111,12 @@ try {
   prReview = {
     listOpenPRs: () => listMyOpenPRs(gh),
     unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
+    mergeableInfo: (n) => mergeableInfo(gh, n),
     checksInfo: (n) => checksInfo(gh, n),
   };
-  console.log(`[yimbot] review step ON: addressing PR comments + failing CI in ${slug.owner}/${slug.name} as ${viewer}`);
+  console.log(
+    `[yimbot] review step ON: addressing PR comments + conflicts + failing CI in ${slug.owner}/${slug.name} as ${viewer}`,
+  );
 } catch (err) {
   console.log(`[yimbot] review step OFF: gh unavailable or repo/viewer unresolved (${err})`);
 }

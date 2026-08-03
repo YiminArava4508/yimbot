@@ -72,7 +72,7 @@ yourself is the job.
 7. **Ship at green.** When the full test suite passes, run the
    end-of-implementation steps in this order:
    - **Check PR size** against the **PR Size Limits** below
-     (`git diff master...HEAD --stat`, ignoring generated files, lockfiles,
+     (`git diff main...HEAD --stat`, ignoring generated files, lockfiles,
      and snapshots).
    - **If under the hard limit:** push the branch to origin
      (`git push -u origin HEAD`) and open a PR with `gh pr create` as a
@@ -125,7 +125,7 @@ because the change is sensitive, breaking, or you have a question.
 ## PR Size Limits
 
 Keep PRs small enough to review. Measure the branch's changed lines against
-`master`: `git diff master...HEAD --stat` (ignore generated files, lockfiles,
+`main`: `git diff main...HEAD --stat` (ignore generated files, lockfiles,
 and snapshots).
 
 - **Target: under 500 LOC.** Aim to land every PR under this.
@@ -142,10 +142,10 @@ the reuse audit above), and only then decide how to slice it into PRs.
 - The **original ticket branch keeps every change and gets no PR of its
   own.** Leave it up as a local integration branch: it is the only place the
   whole app can be run and tested locally, end to end.
-- Every PR is a **new, independent slice branch off `master`**, never a
+- Every PR is a **new, independent slice branch off `main`**, never a
   branch stacked on another slice and never a GitHub stacked PR. For each
   slice:
-  1. Create the slice branch off `master`.
+  1. Create the slice branch off `main`.
   2. Cherry-pick the subset of commits for that slice onto it.
   3. Push the slice branch.
   4. `gh pr create` as a **non-draft** PR (always a brand-new PR, never a

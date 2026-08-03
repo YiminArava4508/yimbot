@@ -20,6 +20,9 @@
 #   SESSION_LOCAL_ENV_CMD  command staged into the shell window's
 #                          history (Up then Enter runs it) to start
 #                          the local dev env on demand              (none)
+#   SESSION_SETTINGS       settings JSON passed to `claude --settings`;
+#                          a deny-list safety net. Loaded when the file
+#                          exists.        (~/.config/yimbot/session-settings.json)
 #   PLAN_MODEL             model the Claude session plans on;
 #                          passed to `claude --model`               (Claude default)
 #   IMPL_MODEL             model exported for the implementation
@@ -46,6 +49,8 @@ seed_prompt_for() {
     printf 'You are addressing review comments on pull request #%s, checked out in this worktree. Invoke the address-pr-comments skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^pr-([0-9]+)-ci$ ]]; then
     printf 'You are fixing failing CI on pull request #%s, checked out in this worktree. Invoke the fix-pr-ci skill and follow it exactly.' "${BASH_REMATCH[1]}"
+  elif [[ "$name" =~ ^pr-([0-9]+)-conflict$ ]]; then
+    printf 'You are resolving a merge conflict with main on pull request #%s, checked out in this worktree. Invoke the fix-pr-conflict skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^sc-([0-9]+)- ]]; then
     printf 'Fetch Shortcut story %s via the Shortcut MCP (mcp__shortcut__stories-get-by-id) and read its description, acceptance criteria, and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^eng-([0-9]+)-cont-[0-9]+$ ]]; then
@@ -92,14 +97,27 @@ create_worktree() {
   fi
 }
 
-# Launch Claude in a tmux target (session:window). Uses the planning model if
-# set and passes the implementation model through the environment for the
-# pickup-ticket skill; both optional. Seeds the ticket/PR prompt when recognized.
+# Assemble the claude command. Always bypasses permission prompts so pickup /
+# PR-fix sessions run unattended; loads the deny-list settings when present (a
+# safety net that blocks catastrophic commands without prompting); uses the
+# planning model if set and passes the implementation model through the
+# environment for the pickup-ticket skill (all optional). Pure (reads env +
+# checks one file); unit-tested via sourcing.
+build_claude_cmd() {
+  local cmd="claude --dangerously-skip-permissions"
+  local settings=${SESSION_SETTINGS:-$HOME/.config/yimbot/session-settings.json}
+  [ -f "$settings" ] && cmd="$cmd --settings $settings"
+  [ -n "${PLAN_MODEL:-}" ] && cmd="$cmd --model $PLAN_MODEL"
+  [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
+  printf '%s' "$cmd"
+}
+
+# Launch Claude in a tmux target (session:window), seeding the ticket/PR prompt
+# when the session name is recognized.
 launch_claude_in() {
   local target=$1
-  local cmd="claude"
-  [ -n "${PLAN_MODEL:-}" ] && cmd="claude --model $PLAN_MODEL"
-  [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
+  local cmd
+  cmd=$(build_claude_cmd)
   local prompt
   prompt=$(seed_prompt_for "$NAME")
   if [ -n "$prompt" ]; then

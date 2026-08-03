@@ -3,6 +3,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   renameSync,
   symlinkSync,
@@ -75,23 +76,34 @@ export function isGitRepo(path: string): boolean {
 // docs/superpowers/specs/2026-08-03-prereq-preflight-design.md.
 
 export type PackageManager = "pacman" | "apt" | "dnf" | "brew";
+export type Severity = "required" | "recommended";
 
 export type Prerequisite = {
-  key: string; // command name, or "gh-auth" for the auth check
+  key: string; // command name for binaries, or a synthetic key for the rest
   label: string;
-  kind: "binary" | "auth";
+  severity: Severity;
 };
 
-// Ordered so that auto-fixes run in a satisfiable sequence: node/pnpm before
-// claude (claude installs via npm), gh before gh-auth (auth needs the binary).
+// Required checks block setup (the daemon/sessions are useless without them);
+// recommended checks only warn. Binaries come first, ordered so auto-fixes run
+// in a satisfiable sequence: node/pnpm before claude (claude installs via npm),
+// gh before gh-auth (auth needs the binary).
 export const PREREQUISITES: Prerequisite[] = [
-  { key: "git", label: "git", kind: "binary" },
-  { key: "tmux", label: "tmux", kind: "binary" },
-  { key: "gh", label: "GitHub CLI (gh)", kind: "binary" },
-  { key: "node", label: "Node.js (node)", kind: "binary" },
-  { key: "pnpm", label: "pnpm", kind: "binary" },
-  { key: "claude", label: "Claude Code CLI (claude)", kind: "binary" },
-  { key: "gh-auth", label: "gh authenticated", kind: "auth" },
+  { key: "git", label: "git", severity: "required" },
+  { key: "tmux", label: "tmux", severity: "required" },
+  { key: "gh", label: "GitHub CLI (gh)", severity: "required" },
+  { key: "node", label: "Node.js (node)", severity: "required" },
+  { key: "pnpm", label: "pnpm", severity: "required" },
+  { key: "claude", label: "Claude Code CLI (claude)", severity: "required" },
+  { key: "gh-auth", label: "gh authenticated", severity: "required" },
+  { key: "superpowers", label: "superpowers plugin (Claude Code)", severity: "required" },
+  { key: "claude-auth", label: "Claude Code authenticated", severity: "required" },
+  { key: "gh-scopes", label: "gh token scopes (repo, workflow)", severity: "recommended" },
+  { key: "git-identity", label: "git identity (user.name, user.email)", severity: "recommended" },
+  { key: "linear-server", label: "Linear MCP server (linear-server)", severity: "recommended" },
+  { key: "shortcut", label: "Shortcut MCP server (shortcut)", severity: "recommended" },
+  { key: "merge-main", label: "merge-main skill (repo-specific)", severity: "recommended" },
+  { key: "tmux-status", label: "tmux @feature_status in status line", severity: "recommended" },
 ];
 
 // Whether a command is resolvable on PATH. Name comes from PREREQUISITES, never
@@ -115,8 +127,129 @@ export function ghAuthenticated(): boolean {
   }
 }
 
+// `gh auth status` writes to stderr and may exit non-zero; capture both streams.
+function ghAuthStatusOutput(): string {
+  try {
+    return execFileSync("sh", ["-c", "gh auth status 2>&1"], { encoding: "utf8" });
+  } catch (err) {
+    return (err as { stdout?: string }).stdout ?? "";
+  }
+}
+
+// The OAuth scopes on the current gh token, parsed from `gh auth status`.
+export function parseGhScopes(output: string): string[] {
+  const line = output.split("\n").find((l) => l.includes("Token scopes:"));
+  if (!line) return [];
+  return [...line.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+}
+
+export function ghHasScopes(required: string[], output: string): boolean {
+  const have = new Set(parseGhScopes(output));
+  return required.every((s) => have.has(s));
+}
+
+// Server names from `claude mcp list` output, skipping the health-check header
+// and plugin-scoped entries (plugin:<name>:<name>), which are not user servers.
+export function parseMcpServers(output: string): string[] {
+  const names: string[] = [];
+  for (const line of output.split("\n")) {
+    const m = line.match(/^([A-Za-z0-9_-]+):\s/);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
+
+let mcpServersCache: string[] | null = null;
+function mcpServers(): string[] {
+  if (mcpServersCache) return mcpServersCache;
+  let out = "";
+  try {
+    out = execFileSync("sh", ["-c", "claude mcp list 2>&1"], { encoding: "utf8", timeout: 20_000 });
+  } catch (err) {
+    out = (err as { stdout?: string }).stdout ?? "";
+  }
+  mcpServersCache = parseMcpServers(out);
+  return mcpServersCache;
+}
+
+// Base plugin names (before the @marketplace suffix) from installed_plugins.json.
+export function parseInstalledPlugins(json: string): string[] {
+  try {
+    const data = JSON.parse(json) as { plugins?: Record<string, unknown> };
+    if (!data.plugins || typeof data.plugins !== "object") return [];
+    return Object.keys(data.plugins).map((k) => k.split("@")[0]);
+  } catch {
+    return [];
+  }
+}
+
+function pluginInstalled(name: string): boolean {
+  const path = join(homedir(), ".claude/plugins/installed_plugins.json");
+  if (!existsSync(path)) return false;
+  try {
+    return parseInstalledPlugins(readFileSync(path, "utf8")).includes(name);
+  } catch {
+    return false;
+  }
+}
+
+// Claude Code is usable if an API key is set or a stored credential exists.
+export function hasClaudeAuth(env: NodeJS.ProcessEnv, credsExist: boolean): boolean {
+  return Boolean(env.ANTHROPIC_API_KEY?.trim()) || credsExist;
+}
+
+function claudeAuthenticated(): boolean {
+  return hasClaudeAuth(process.env, existsSync(join(homedir(), ".claude/.credentials.json")));
+}
+
+export function configReferencesFeatureStatus(text: string): boolean {
+  return text.includes("@feature_status");
+}
+
+function tmuxStatusConfigured(): boolean {
+  const paths = [join(homedir(), ".tmux.conf"), join(homedir(), ".config/tmux/tmux.conf")];
+  return paths.some((p) => existsSync(p) && configReferencesFeatureStatus(readFileSync(p, "utf8")));
+}
+
+function gitConfigGet(key: string): string {
+  try {
+    return execFileSync("git", ["config", "--global", "--get", key], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function gitIdentitySet(): boolean {
+  return Boolean(gitConfigGet("user.name")) && Boolean(gitConfigGet("user.email"));
+}
+
+function skillInstalled(name: string): boolean {
+  return existsSync(join(homedir(), ".claude/skills", name, "SKILL.md"));
+}
+
 export function isSatisfied(pr: Prerequisite): boolean {
-  return pr.kind === "auth" ? ghAuthenticated() : commandExists(pr.key);
+  switch (pr.key) {
+    case "gh-auth":
+      return ghAuthenticated();
+    case "gh-scopes":
+      return ghHasScopes(["repo", "workflow"], ghAuthStatusOutput());
+    case "superpowers":
+      return pluginInstalled("superpowers");
+    case "claude-auth":
+      return claudeAuthenticated();
+    case "linear-server":
+      return mcpServers().includes("linear-server");
+    case "shortcut":
+      return mcpServers().includes("shortcut");
+    case "git-identity":
+      return gitIdentitySet();
+    case "merge-main":
+      return skillInstalled("merge-main");
+    case "tmux-status":
+      return tmuxStatusConfigured();
+    default:
+      return commandExists(pr.key);
+  }
 }
 
 // The first system package manager found, or null if none is available.
@@ -153,15 +286,35 @@ const pmPackage: Record<string, Partial<Record<PackageManager, string>> & { defa
 export function installCommand(key: string, pm: PackageManager | null): string[] | null {
   if (key === "claude") return ["npm", "install", "-g", "@anthropic-ai/claude-code"];
   if (key === "pnpm") return ["corepack", "enable", "pnpm"];
+  if (key === "gh-scopes") return ["gh", "auth", "refresh", "-s", "repo,workflow"];
   const pkg = pmPackage[key];
   if (!pkg || !pm) return null;
   return pmInstall[pm](pkg[pm] ?? pkg.default);
 }
 
-// A human-readable manual instruction, used when a fix cannot be run for the
-// user (no package manager detected, or the auth step).
+// A human-readable instruction for a check the wizard cannot run for the user
+// (needs a package manager, a secret, an interactive login, or a manual edit).
 export function installHint(key: string, pm: PackageManager | null): string {
-  if (key === "gh-auth") return "Run: gh auth login";
+  switch (key) {
+    case "gh-auth":
+      return "Run: gh auth login";
+    case "gh-scopes":
+      return "Run: gh auth refresh -s repo,workflow";
+    case "git-identity":
+      return 'Run: git config --global user.name "<you>" && git config --global user.email "<you@example.com>"';
+    case "superpowers":
+      return "Install the superpowers plugin in Claude Code (run /plugin, then add superpowers)";
+    case "claude-auth":
+      return "Authenticate Claude Code: run `claude` and log in, or set ANTHROPIC_API_KEY";
+    case "linear-server":
+      return "Register the Linear MCP under the name 'linear-server' (claude mcp add linear-server ...)";
+    case "shortcut":
+      return "Register the Shortcut MCP under the name 'shortcut' (claude mcp add shortcut -- npx -y @shortcut/mcp@latest)";
+    case "merge-main":
+      return "Create a repo-specific merge-main skill at ~/.claude/skills/merge-main (fix-pr-ci uses it to sync origin/main)";
+    case "tmux-status":
+      return "Add @feature_status to your tmux status line so the ready-to-test flag shows";
+  }
   const cmd = installCommand(key, pm);
   if (cmd) return `Run: ${cmd.join(" ")}`;
   const pkg = pmPackage[key];
@@ -280,6 +433,16 @@ export const hostLinks: HostLink[] = [
     target: join(homedir(), ".claude/skills/fix-pr-ci"),
     label: "fix-pr-ci skill (~/.claude/skills/fix-pr-ci)",
   },
+  {
+    source: join(repoRoot, "skills/fix-pr-conflict"),
+    target: join(homedir(), ".claude/skills/fix-pr-conflict"),
+    label: "fix-pr-conflict skill (~/.claude/skills/fix-pr-conflict)",
+  },
+  {
+    source: join(repoRoot, "settings/session-settings.json"),
+    target: join(homedir(), ".config/yimbot/session-settings.json"),
+    label: "session deny-list (~/.config/yimbot/session-settings.json)",
+  },
 ];
 
 // Whether `target` is already our symlink to `source`, some other existing
@@ -312,19 +475,28 @@ function runFix(cmd: string[]): boolean {
   }
 }
 
-// The argv that satisfies a prerequisite interactively: the auth login for the
+// The argv that satisfies a prerequisite interactively: the gh login for the
 // auth check, otherwise its install command (may be null when unfixable here).
 function fixCommandFor(pr: Prerequisite, pm: PackageManager | null): string[] | null {
-  return pr.kind === "auth" ? ["gh", "auth", "login"] : installCommand(pr.key, pm);
+  if (pr.key === "gh-auth") return ["gh", "auth", "login"];
+  return installCommand(pr.key, pm);
 }
 
-// First step of the wizard: verify every runtime prerequisite and block until
-// all are satisfied. Offers to auto-install what it can, shows manual hints for
-// the rest, and re-checks on each pass. Cancelling exits without writing config.
+// First step of the wizard: verify prerequisites. Required checks block in a
+// loop until satisfied; recommended checks only warn. Cancelling the required
+// loop exits without writing config.
 export async function ensurePrerequisites(): Promise<void> {
+  await ensureRequired();
+  await reviewRecommended();
+}
+
+// Block until every required prerequisite is satisfied. Auto-installs what it
+// can, shows manual hints for the rest, and re-checks on each pass.
+async function ensureRequired(): Promise<void> {
+  const required = PREREQUISITES.filter((pr) => pr.severity === "required");
   while (true) {
-    const checks = PREREQUISITES.map((pr) => ({ pr, ok: isSatisfied(pr) }));
-    p.note(checks.map((c) => `${c.ok ? "[ok]" : "[missing]"} ${c.pr.label}`).join("\n"), "Prerequisites");
+    const checks = required.map((pr) => ({ pr, ok: isSatisfied(pr) }));
+    p.note(checks.map((c) => `${c.ok ? "[ok]" : "[missing]"} ${c.pr.label}`).join("\n"), "Required");
     const missing = checks.filter((c) => !c.ok).map((c) => c.pr);
     if (missing.length === 0) return;
 
@@ -348,13 +520,14 @@ export async function ensurePrerequisites(): Promise<void> {
           p.log.step(`$ ${cmd.join(" ")}`);
           if (!runFix(cmd)) p.log.warn(`${pr.label}: command failed`);
         }
+        mcpServersCache = null; // a fix may have changed MCP config
         continue; // re-check everything from the top
       }
     }
 
     const retry = bail(
       await p.confirm({
-        message: "Prerequisites still missing. Install them in another terminal, then retry the check?",
+        message: "Required prerequisites still missing. Install them in another terminal, then retry?",
         initialValue: true,
       }),
     );
@@ -362,6 +535,49 @@ export async function ensurePrerequisites(): Promise<void> {
       p.cancel("Setup cancelled. Install the missing prerequisites and re-run `pnpm onboard`.");
       process.exit(1);
     }
+    mcpServersCache = null; // the user may have changed config while we waited
+  }
+}
+
+// Report recommended checks and offer the safe fixes, but never block setup.
+async function reviewRecommended(): Promise<void> {
+  const recommended = PREREQUISITES.filter((pr) => pr.severity === "recommended");
+  const checks = recommended.map((pr) => ({ pr, ok: isSatisfied(pr) }));
+  p.note(checks.map((c) => `${c.ok ? "[ok]" : "[warn]"} ${c.pr.label}`).join("\n"), "Recommended");
+  const missing = new Set(checks.filter((c) => !c.ok).map((c) => c.pr.key));
+  if (missing.size === 0) return;
+
+  if (missing.has("git-identity")) {
+    const set = bail(
+      await p.confirm({ message: "git user.name / user.email are not set. Set them now?", initialValue: true }),
+    );
+    if (set) {
+      const name = bail(
+        await p.text({ message: "git user.name", validate: (v) => (v?.trim() ? undefined : "Required") }),
+      ).trim();
+      const email = bail(
+        await p.text({ message: "git user.email", validate: (v) => (v?.trim() ? undefined : "Required") }),
+      ).trim();
+      runFix(["git", "config", "--global", "user.name", name]);
+      runFix(["git", "config", "--global", "user.email", email]);
+    }
+  }
+
+  if (missing.has("gh-scopes")) {
+    const refresh = bail(
+      await p.confirm({
+        message: "gh token is missing repo/workflow scope. Run `gh auth refresh -s repo,workflow` now?",
+        initialValue: true,
+      }),
+    );
+    if (refresh) runFix(["gh", "auth", "refresh", "-s", "repo,workflow"]);
+  }
+
+  const guideOnly = checks
+    .filter((c) => !c.ok && !["git-identity", "gh-scopes"].includes(c.pr.key))
+    .map((c) => `${c.pr.label}: ${installHint(c.pr.key, null)}`);
+  if (guideOnly.length) {
+    p.note(guideOnly.join("\n"), "Optional (set these up when convenient)");
   }
 }
 
@@ -641,6 +857,16 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".claude/skills/fix-pr-ci"),
       label: "~/.claude/skills/fix-pr-ci",
       role: "review step: fix failing PR CI (required for CI handling)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/fix-pr-conflict"),
+      label: "~/.claude/skills/fix-pr-conflict",
+      role: "review step: resolve PR merge conflicts (required for conflict handling)",
+    },
+    {
+      path: join(homedir(), ".config/yimbot/session-settings.json"),
+      label: "~/.config/yimbot/session-settings.json",
+      role: "deny-list safety net for spawned sessions (recommended)",
     },
   ];
   p.note(

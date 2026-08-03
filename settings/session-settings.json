@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push -f:*)",
+      "Bash(git clean:*)",
+      "Bash(git reset --hard origin:*)",
+      "Bash(rm -rf /:*)",
+      "Bash(rm -rf ~:*)",
+      "Bash(terraform destroy:*)",
+      "Bash(kubectl delete:*)",
+      "Bash(docker system prune:*)",
+      "Bash(docker volume rm:*)",
+      "Bash(dropdb:*)"
+    ]
+  }
+}

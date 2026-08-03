@@ -6,15 +6,21 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
   commandExists,
+  configReferencesFeatureStatus,
   configToEnvRecord,
   detectPackageManager,
   expandTilde,
+  ghHasScopes,
+  hasClaudeAuth,
   hostLinks,
   installCommand,
   installHint,
   isConfigured,
   isGitRepo,
   linkState,
+  parseGhScopes,
+  parseInstalledPlugins,
+  parseMcpServers,
   PREREQUISITES,
   serializeEnvFile,
   type YimbotConfig,
@@ -155,9 +161,82 @@ test("PREREQUISITES cover the daemon's runtime tools in a fixable order", () => 
   assert.ok(keys.indexOf("node") < keys.indexOf("claude"), "node before claude");
   // gh authentication needs the gh binary present first.
   assert.ok(keys.indexOf("gh") < keys.indexOf("gh-auth"), "gh before gh-auth");
-  const auth = PREREQUISITES.filter((pr) => pr.kind === "auth");
-  assert.equal(auth.length, 1);
-  assert.equal(auth[0].key, "gh-auth");
+});
+
+test("PREREQUISITES split into blocking required and non-blocking recommended checks", () => {
+  const sev = (k: string) => PREREQUISITES.find((pr) => pr.key === k)?.severity;
+  // Required: the daemon is useless without these.
+  for (const k of ["git", "tmux", "gh", "node", "pnpm", "claude", "gh-auth", "superpowers", "claude-auth"]) {
+    assert.equal(sev(k), "required", `${k} is required`);
+  }
+  // Recommended: warn but never block.
+  for (const k of ["gh-scopes", "git-identity", "linear-server", "shortcut", "merge-main", "tmux-status"]) {
+    assert.equal(sev(k), "recommended", `${k} is recommended`);
+  }
+  // Every prerequisite declares one of the two severities.
+  for (const pr of PREREQUISITES) {
+    assert.ok(pr.severity === "required" || pr.severity === "recommended", `${pr.key} has a severity`);
+  }
+});
+
+test("parseGhScopes pulls the token scopes out of gh auth status", () => {
+  const out = [
+    "github.com",
+    "  ✓ Logged in to github.com account YiminArava4508 (keyring)",
+    "  - Token scopes: 'gist', 'read:org', 'repo', 'workflow'",
+  ].join("\n");
+  assert.deepEqual(parseGhScopes(out), ["gist", "read:org", "repo", "workflow"]);
+  assert.deepEqual(parseGhScopes("no scopes line here"), []);
+});
+
+test("ghHasScopes checks every required scope is present", () => {
+  const out = "  - Token scopes: 'repo', 'workflow', 'read:org'";
+  assert.equal(ghHasScopes(["repo", "workflow"], out), true);
+  assert.equal(ghHasScopes(["repo", "admin:org"], out), false);
+});
+
+test("parseMcpServers extracts server names and skips headers and plugin entries", () => {
+  const out = [
+    "Checking MCP server health…",
+    "",
+    "plugin:figma:figma: https://mcp.figma.com/mcp (HTTP) - ! Needs authentication",
+    "context7: npx -y @upstash/context7-mcp@latest - ✔ Connected",
+    "shortcut: npx -y @shortcut/mcp@latest - ✔ Connected",
+  ].join("\n");
+  const names = parseMcpServers(out);
+  assert.ok(names.includes("context7"));
+  assert.ok(names.includes("shortcut"));
+  assert.ok(!names.includes("Checking MCP server health…"));
+  // A plugin-scoped entry is not a user-configured server name.
+  assert.ok(!names.includes("plugin:figma:figma"));
+});
+
+test("parseInstalledPlugins returns base plugin names from the name@marketplace keys", () => {
+  const json = JSON.stringify({
+    version: 2,
+    plugins: {
+      "superpowers@claude-plugins-official": [{ scope: "user" }],
+      "code-review@claude-plugins-official": [{ scope: "user" }],
+    },
+  });
+  const names = parseInstalledPlugins(json);
+  assert.ok(names.includes("superpowers"));
+  assert.ok(names.includes("code-review"));
+  assert.deepEqual(parseInstalledPlugins("not json"), []);
+  assert.deepEqual(parseInstalledPlugins(JSON.stringify({})), []);
+});
+
+test("hasClaudeAuth is true with an API key or existing credentials", () => {
+  assert.equal(hasClaudeAuth({ ANTHROPIC_API_KEY: "sk-abc" }, false), true);
+  assert.equal(hasClaudeAuth({}, true), true);
+  assert.equal(hasClaudeAuth({ ANTHROPIC_API_KEY: "  " }, false), false);
+  assert.equal(hasClaudeAuth({}, false), false);
+});
+
+test("configReferencesFeatureStatus detects the tmux status flag", () => {
+  assert.equal(configReferencesFeatureStatus('set -g status-right "#{@feature_status}"'), true);
+  assert.equal(configReferencesFeatureStatus("set -g status-right '#{pane_title}'"), false);
+  assert.equal(configReferencesFeatureStatus(""), false);
 });
 
 test("detectPackageManager returns a known manager or null", () => {
@@ -212,4 +291,16 @@ test("hostLinks installs the fix-pr-ci skill", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-ci"));
   assert.ok(link, "fix-pr-ci skill host link is present");
   assert.ok(link!.source.endsWith("skills/fix-pr-ci"), "sourced from skills/fix-pr-ci");
+});
+
+test("hostLinks installs the fix-pr-conflict skill", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-conflict"));
+  assert.ok(link, "fix-pr-conflict skill host link is present");
+  assert.ok(link!.source.endsWith("skills/fix-pr-conflict"), "sourced from skills/fix-pr-conflict");
+});
+
+test("hostLinks installs the session deny-list settings", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/session-settings.json"));
+  assert.ok(link, "session-settings host link is present");
+  assert.ok(link!.source.endsWith("settings/session-settings.json"), "sourced from settings/session-settings.json");
 });

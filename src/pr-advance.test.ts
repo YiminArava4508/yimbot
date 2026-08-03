@@ -21,7 +21,7 @@ function baseDeps(over: Partial<AdvanceDeps>): AdvanceDeps {
     fetchDescription: async () => ({ id: "uuid-949", description: "" }),
     judge: async () => ({ satisfied: ["pdf-1"], skipped: [] }),
     writeAcComment: async () => {},
-    activeCount: () => 0,
+    activeCount: async () => 0,
     maxInProgress: 3,
     maxRounds: 5,
     spawnContinuation: () => {},
@@ -45,7 +45,7 @@ test("advanceOnce spawns a continuation when ACs remain and a slot is free", asy
 test("advanceOnce defers on WIP cap without spawning or bumping round", async () => {
   const spawned: unknown[] = [];
   const state = freshAdvanceState();
-  const deps = baseDeps({ activeCount: () => 3, spawnContinuation: () => spawned.push(1) });
+  const deps = baseDeps({ activeCount: async () => 3, spawnContinuation: () => spawned.push(1) });
   await advanceOnce(state, deps);
   assert.equal(spawned.length, 0);
   assert.equal(state.round.get("ENG-949") ?? 0, 0);

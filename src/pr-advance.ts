@@ -9,8 +9,7 @@ import {
   satisfiedCount,
   selectContinuation,
 } from "./acceptance.ts";
-
-type MergedPR = { number: number; headRefName: string };
+import type { MergedPR } from "./gh.ts";
 
 export type AdvanceState = {
   round: Map<string, number>;
@@ -35,7 +34,7 @@ export type AdvanceDeps = {
   fetchDescription: (identifier: string) => Promise<{ id: string; description: string }>;
   judge: (open: AC[]) => Promise<Judgment>;
   writeAcComment: (issueId: string, body: string) => Promise<void>;
-  activeCount: () => number;
+  activeCount: () => Promise<number>;
   maxInProgress: number;
   maxRounds: number;
   spawnContinuation: (issueNumber: string, round: number) => void;
@@ -83,7 +82,7 @@ export async function advanceOnce(state: AdvanceState, deps: AdvanceDeps): Promi
         deps.log(`${identifier} halted: ${decision.reason}`);
         continue;
       }
-      if (deps.activeCount() >= deps.maxInProgress) {
+      if ((await deps.activeCount()) >= deps.maxInProgress) {
         deps.log(`${identifier} continuation deferred (WIP cap)`);
         continue;
       }

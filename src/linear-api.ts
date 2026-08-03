@@ -335,3 +335,22 @@ export async function upsertAcComment(
   );
   if (!data.commentCreate.success) throw new Error(`commentCreate failed for ${issueId}`);
 }
+
+export async function fetchAcCommentBody(
+  apiKey: string,
+  issueId: string,
+  marker: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  type Data = { issue: { comments: { nodes: { body: string }[] } } };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueAcComment($id: String!) {
+      issue(id: $id) { comments { nodes { body } } }
+    }`,
+    { id: issueId },
+    fetchImpl,
+  );
+  const found = data.issue.comments.nodes.find((c) => c.body.includes(marker));
+  return found ? found.body : "";
+}

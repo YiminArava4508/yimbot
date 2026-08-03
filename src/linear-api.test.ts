@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   countAssignedInState,
+  fetchAcCommentBody,
   fetchCycleTodoIssues,
   fetchIssuesInState,
   fetchIssueByIdentifier,
@@ -195,6 +196,15 @@ test("upsertAcComment updates when a marked comment exists", async () => {
   await upsertAcComment("key", "uuid-1", "MARK", "MARK new", f);
   assert.ok(calls.some((c) => String(c.query).includes("commentUpdate")));
   assert.ok(!calls.some((c) => String(c.query).includes("commentCreate")));
+});
+
+test("fetchAcCommentBody returns the marked comment body or empty string", async () => {
+  const hit = fakeFetch({
+    data: { issue: { comments: { nodes: [{ body: "aa MARK bb" }, { body: "other" }] } } },
+  });
+  assert.equal(await fetchAcCommentBody("key", "id", "MARK", hit), "aa MARK bb");
+  const miss = fakeFetch({ data: { issue: { comments: { nodes: [{ body: "no match" }] } } } });
+  assert.equal(await fetchAcCommentBody("key", "id", "MARK", miss), "");
 });
 
 test("upsertAcComment creates when no marked comment exists", async () => {

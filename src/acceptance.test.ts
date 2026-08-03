@@ -80,6 +80,12 @@ test("applyJudgment marks satisfied and skipped, never un-satisfies", () => {
   );
 });
 
+test("applyJudgment never un-satisfies an already-satisfied AC even if later skipped", () => {
+  const done = applyJudgment(base(), { satisfied: ["pdf-1"], skipped: [] });
+  const after = applyJudgment(done, { satisfied: [], skipped: [{ id: "pdf-1", reason: "oops" }] });
+  assert.equal(after.find((a) => a.id === "pdf-1")?.status, "satisfied");
+});
+
 test("isComplete true when all satisfied or skipped", () => {
   const acs = applyJudgment(base(), { satisfied: ["pdf-1", "pdf-2"], skipped: [{ id: "excel-1", reason: "x" }] });
   assert.equal(isComplete(acs), true);

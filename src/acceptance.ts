@@ -96,8 +96,9 @@ export function applyJudgment(acs: AC[], j: Judgment): AC[] {
   const satisfied = new Set(j.satisfied);
   const skipped = new Map(j.skipped.map((s) => [s.id, s.reason]));
   return acs.map((a) => {
+    if (a.status === "satisfied") return a;
     if (skipped.has(a.id)) return { ...a, status: "skipped" as const, skipReason: skipped.get(a.id) };
-    if (a.status === "satisfied" || satisfied.has(a.id)) return { ...a, status: "satisfied" as const };
+    if (satisfied.has(a.id)) return { ...a, status: "satisfied" as const };
     return a;
   });
 }

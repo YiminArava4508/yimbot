@@ -110,12 +110,17 @@ pnpm install
 pnpm start   # first run walks you through onboarding, writes .env, then starts
 ```
 
-On first launch (no `.env`), `pnpm start` drops into an interactive wizard: it
-authenticates your Linear API key, lets you pick your team and workflow states
-from the real Linear data, validates the codebase path is a git repo, links the session launcher and
-pickup-ticket skill into place — then writes `.env` and continues into the
-daemon. Re-run it anytime with `pnpm onboard` (backs up the old `.env`). You can
-still hand-edit `.env` from `.env.example` if you prefer.
+On first launch (no `.env`), `pnpm start` drops into an interactive wizard. It
+first runs a prerequisite pre-flight that verifies the tools the daemon and
+session launcher shell out to (`git`, `tmux`, `gh`, `claude`, `node`, `pnpm`) and
+that `gh` is authenticated; anything missing blocks setup, and the wizard offers
+to install it for you (via the detected package manager, or `npm`/`corepack` for
+`claude`/`pnpm`, or `gh auth login` for authentication) before re-checking. Then
+it authenticates your Linear API key, lets you pick your team and workflow states
+from the real Linear data, validates the codebase path is a git repo, links the
+session launcher and pickup-ticket skill into place, then writes `.env` and
+continues into the daemon. Re-run it anytime with `pnpm onboard` (backs up the
+old `.env`). You can still hand-edit `.env` from `.env.example` if you prefer.
 
 ## Usage
 

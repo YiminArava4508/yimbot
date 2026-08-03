@@ -5,12 +5,17 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  commandExists,
   configToEnvRecord,
+  detectPackageManager,
   expandTilde,
   hostLinks,
+  installCommand,
+  installHint,
   isConfigured,
   isGitRepo,
   linkState,
+  PREREQUISITES,
   serializeEnvFile,
   type YimbotConfig,
 } from "./setup.ts";
@@ -112,6 +117,67 @@ test("serializeEnvFile round-trips empty risk labels", () => {
   const text = serializeEnvFile({ ...sample, riskLabels: [], autoClaim: true });
   assert.match(text, /^RISK_LABELS=$/m);
   assert.match(text, /^AUTO_CLAIM=true$/m);
+});
+
+test("commandExists is true for a real binary, false for a bogus one", () => {
+  assert.equal(commandExists("git"), true);
+  assert.equal(commandExists("definitely-not-a-real-binary-xyz-123"), false);
+});
+
+test("PREREQUISITES cover the daemon's runtime tools in a fixable order", () => {
+  const keys = PREREQUISITES.map((pr) => pr.key);
+  for (const k of ["git", "tmux", "gh", "claude", "node", "pnpm", "gh-auth"]) {
+    assert.ok(keys.includes(k), `${k} is checked`);
+  }
+  // claude installs via npm, which needs node, so node must be fixed first.
+  assert.ok(keys.indexOf("node") < keys.indexOf("claude"), "node before claude");
+  // gh authentication needs the gh binary present first.
+  assert.ok(keys.indexOf("gh") < keys.indexOf("gh-auth"), "gh before gh-auth");
+  const auth = PREREQUISITES.filter((pr) => pr.kind === "auth");
+  assert.equal(auth.length, 1);
+  assert.equal(auth[0].key, "gh-auth");
+});
+
+test("detectPackageManager returns a known manager or null", () => {
+  const pm = detectPackageManager();
+  assert.ok(pm === null || ["pacman", "apt", "dnf", "brew"].includes(pm));
+});
+
+test("installCommand maps package-manager tools per manager", () => {
+  assert.deepEqual(installCommand("git", "pacman"), ["sudo", "pacman", "-S", "--needed", "git"]);
+  assert.deepEqual(installCommand("git", "apt"), ["sudo", "apt-get", "install", "-y", "git"]);
+  assert.deepEqual(installCommand("git", "dnf"), ["sudo", "dnf", "install", "-y", "git"]);
+  assert.deepEqual(installCommand("git", "brew"), ["brew", "install", "git"]);
+  // gh's package is github-cli on pacman, gh elsewhere.
+  assert.deepEqual(installCommand("gh", "pacman"), ["sudo", "pacman", "-S", "--needed", "github-cli"]);
+  assert.deepEqual(installCommand("gh", "apt"), ["sudo", "apt-get", "install", "-y", "gh"]);
+  // node's package is nodejs except on brew.
+  assert.deepEqual(installCommand("node", "pacman"), ["sudo", "pacman", "-S", "--needed", "nodejs"]);
+  assert.deepEqual(installCommand("node", "brew"), ["brew", "install", "node"]);
+});
+
+test("installCommand routes claude and pnpm around the package manager", () => {
+  assert.deepEqual(installCommand("claude", null), ["npm", "install", "-g", "@anthropic-ai/claude-code"]);
+  assert.deepEqual(installCommand("claude", "brew"), ["npm", "install", "-g", "@anthropic-ai/claude-code"]);
+  assert.deepEqual(installCommand("pnpm", null), ["corepack", "enable", "pnpm"]);
+});
+
+test("installCommand returns null for a pm tool with no package manager", () => {
+  assert.equal(installCommand("git", null), null);
+  assert.equal(installCommand("tmux", null), null);
+});
+
+test("installCommand has no command for gh authentication", () => {
+  assert.equal(installCommand("gh-auth", "pacman"), null);
+  assert.equal(installCommand("gh-auth", null), null);
+});
+
+test("installHint is a non-empty instruction for every prerequisite", () => {
+  for (const pr of PREREQUISITES) {
+    const hint = installHint(pr.key, null);
+    assert.equal(typeof hint, "string");
+    assert.ok(hint.length > 0, `${pr.key} has a hint`);
+  }
 });
 
 test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {

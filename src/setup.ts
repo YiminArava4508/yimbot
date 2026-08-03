@@ -66,6 +66,106 @@ export function isGitRepo(path: string): boolean {
   }
 }
 
+// --- Prerequisite pre-flight ---------------------------------------------
+// The daemon and new-session.sh shell out to these at runtime; the wizard
+// verifies them up front and blocks until each is satisfied. See
+// docs/superpowers/specs/2026-08-03-prereq-preflight-design.md.
+
+export type PackageManager = "pacman" | "apt" | "dnf" | "brew";
+
+export type Prerequisite = {
+  key: string; // command name, or "gh-auth" for the auth check
+  label: string;
+  kind: "binary" | "auth";
+};
+
+// Ordered so that auto-fixes run in a satisfiable sequence: node/pnpm before
+// claude (claude installs via npm), gh before gh-auth (auth needs the binary).
+export const PREREQUISITES: Prerequisite[] = [
+  { key: "git", label: "git", kind: "binary" },
+  { key: "tmux", label: "tmux", kind: "binary" },
+  { key: "gh", label: "GitHub CLI (gh)", kind: "binary" },
+  { key: "node", label: "Node.js (node)", kind: "binary" },
+  { key: "pnpm", label: "pnpm", kind: "binary" },
+  { key: "claude", label: "Claude Code CLI (claude)", kind: "binary" },
+  { key: "gh-auth", label: "gh authenticated", kind: "auth" },
+];
+
+// Whether a command is resolvable on PATH. Name comes from PREREQUISITES, never
+// user input, but it is passed as an argument (not interpolated) regardless.
+export function commandExists(name: string): boolean {
+  try {
+    execFileSync("sh", ["-c", 'command -v "$1" >/dev/null 2>&1', "sh", name], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Whether `gh` has an authenticated account. False if gh is absent.
+export function ghAuthenticated(): boolean {
+  try {
+    execFileSync("gh", ["auth", "status"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isSatisfied(pr: Prerequisite): boolean {
+  return pr.kind === "auth" ? ghAuthenticated() : commandExists(pr.key);
+}
+
+// The first system package manager found, or null if none is available.
+export function detectPackageManager(): PackageManager | null {
+  const managers: [PackageManager, string][] = [
+    ["pacman", "pacman"],
+    ["apt", "apt-get"],
+    ["dnf", "dnf"],
+    ["brew", "brew"],
+  ];
+  for (const [pm, bin] of managers) if (commandExists(bin)) return pm;
+  return null;
+}
+
+const pmInstall: Record<PackageManager, (pkg: string) => string[]> = {
+  pacman: (pkg) => ["sudo", "pacman", "-S", "--needed", pkg],
+  apt: (pkg) => ["sudo", "apt-get", "install", "-y", pkg],
+  dnf: (pkg) => ["sudo", "dnf", "install", "-y", pkg],
+  brew: (pkg) => ["brew", "install", pkg],
+};
+
+// Package name per manager for the tools installed through one, keyed by the
+// default plus any manager that names the package differently.
+const pmPackage: Record<string, Partial<Record<PackageManager, string>> & { default: string }> = {
+  git: { default: "git" },
+  tmux: { default: "tmux" },
+  gh: { default: "gh", pacman: "github-cli" },
+  node: { default: "nodejs", brew: "node" },
+};
+
+// The argv that installs (or authenticates) a prerequisite, or null when there
+// is nothing to run automatically. claude/pnpm route around the package manager
+// (npm / corepack); gh-auth is handled by the interactive step, not here.
+export function installCommand(key: string, pm: PackageManager | null): string[] | null {
+  if (key === "claude") return ["npm", "install", "-g", "@anthropic-ai/claude-code"];
+  if (key === "pnpm") return ["corepack", "enable", "pnpm"];
+  const pkg = pmPackage[key];
+  if (!pkg || !pm) return null;
+  return pmInstall[pm](pkg[pm] ?? pkg.default);
+}
+
+// A human-readable manual instruction, used when a fix cannot be run for the
+// user (no package manager detected, or the auth step).
+export function installHint(key: string, pm: PackageManager | null): string {
+  if (key === "gh-auth") return "Run: gh auth login";
+  const cmd = installCommand(key, pm);
+  if (cmd) return `Run: ${cmd.join(" ")}`;
+  const pkg = pmPackage[key];
+  const name = pkg?.default ?? key;
+  return `Install "${name}" with your system package manager (pacman/apt/dnf/brew)`;
+}
+
 // The config as an ordered KEY→value map. Single source of truth for both the
 // .env file text and the in-process env applied on an auto-run first launch.
 export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
@@ -190,6 +290,70 @@ export function linkState(source: string, target: string): "ours" | "other" | "m
   return "other";
 }
 
+// Run a fix command with the terminal attached so sudo / gh auth login can
+// prompt. Returns whether it exited zero.
+function runFix(cmd: string[]): boolean {
+  try {
+    execFileSync(cmd[0], cmd.slice(1), { stdio: "inherit" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The argv that satisfies a prerequisite interactively: the auth login for the
+// auth check, otherwise its install command (may be null when unfixable here).
+function fixCommandFor(pr: Prerequisite, pm: PackageManager | null): string[] | null {
+  return pr.kind === "auth" ? ["gh", "auth", "login"] : installCommand(pr.key, pm);
+}
+
+// First step of the wizard: verify every runtime prerequisite and block until
+// all are satisfied. Offers to auto-install what it can, shows manual hints for
+// the rest, and re-checks on each pass. Cancelling exits without writing config.
+export async function ensurePrerequisites(): Promise<void> {
+  while (true) {
+    const checks = PREREQUISITES.map((pr) => ({ pr, ok: isSatisfied(pr) }));
+    p.note(checks.map((c) => `${c.ok ? "[ok]" : "[missing]"} ${c.pr.label}`).join("\n"), "Prerequisites");
+    const missing = checks.filter((c) => !c.ok).map((c) => c.pr);
+    if (missing.length === 0) return;
+
+    const pm = detectPackageManager();
+    const fixable = missing.filter((pr) => fixCommandFor(pr, pm) !== null);
+    const manual = missing.filter((pr) => fixCommandFor(pr, pm) === null);
+
+    if (manual.length) {
+      p.note(manual.map((pr) => `${pr.label}: ${installHint(pr.key, pm)}`).join("\n"), "Install manually");
+    }
+
+    if (fixable.length) {
+      p.note(
+        fixable.map((pr) => `${pr.label}: ${fixCommandFor(pr, pm)!.join(" ")}`).join("\n"),
+        pm ? `Auto-install (via ${pm})` : "Auto-install",
+      );
+      const doFix = bail(await p.confirm({ message: "Run these now?", initialValue: true }));
+      if (doFix) {
+        for (const pr of fixable) {
+          const cmd = fixCommandFor(pr, pm)!;
+          p.log.step(`$ ${cmd.join(" ")}`);
+          if (!runFix(cmd)) p.log.warn(`${pr.label}: command failed`);
+        }
+        continue; // re-check everything from the top
+      }
+    }
+
+    const retry = bail(
+      await p.confirm({
+        message: "Prerequisites still missing. Install them in another terminal, then retry the check?",
+        initialValue: true,
+      }),
+    );
+    if (!retry) {
+      p.cancel("Setup cancelled. Install the missing prerequisites and re-run `pnpm onboard`.");
+      process.exit(1);
+    }
+  }
+}
+
 // Symlink the repo's vendored launcher + skill into the places the daemon and
 // Claude Code expect. Idempotent; never clobbers an unrelated existing file
 // without asking (backs it up to .bak if the user agrees).
@@ -268,6 +432,7 @@ async function resolveApiKey(): Promise<{ apiKey: string; viewerName: string }> 
 // start the daemon in the same process.
 export async function runSetup(): Promise<YimbotConfig> {
   p.intro("yimbot setup");
+  await ensurePrerequisites();
   if (isConfigured(process.env)) {
     p.note("Existing .env found — current values are the defaults below; it will be backed up to .env.bak.");
   }

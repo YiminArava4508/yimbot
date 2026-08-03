@@ -60,7 +60,7 @@ export function renderAcComment(acs: AC[]): string {
     "",
   ];
   for (const a of acs) {
-    const reason = a.status === "skipped" && a.skipReason ? ` — skipped: ${a.skipReason}` : "";
+    const reason = a.status === "skipped" && a.skipReason ? ` - skipped: ${a.skipReason}` : "";
     lines.push(`- ${box(a)} \`${a.id}\` ${a.text}${reason}`);
   }
   const nonSkipped = acs.filter((a) => a.status !== "skipped");
@@ -81,7 +81,7 @@ export function parseAcComment(body: string): AC[] {
     const [, mark, id, rest] = m;
     const section = id.split("-")[0];
     if (mark === "~") {
-      const [text, reason] = rest.split(" — skipped: ");
+      const [text, reason] = rest.split(" - skipped: ");
       acs.push({ id, section, text: text.trim(), status: "skipped", skipReason: (reason ?? "").trim() });
     } else {
       acs.push({ id, section, text: rest.trim(), status: mark === "x" ? "satisfied" : "open" });

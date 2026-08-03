@@ -185,6 +185,18 @@ WORKTREE=$WORKTREES_DIR/$WORKTREE_DIR
 # Create or reuse the worktree.
 create_worktree
 
+# Mark this worktree as a launch in progress until the script exits. The tmux
+# session is created only after the (possibly slow) setup hook below, so between
+# now and then the worktree is session-less; without this the daemon's orphan
+# sweep could mistake it for an abandoned worktree and tear it down mid-launch.
+# The EXIT trap clears it on every path: on success a session now exists, and on
+# a failed launch (die) the cleared marker lets the sweep reap the dead worktree.
+LAUNCH_MARKER="$WORKTREE/.yimbot-launching"
+if ! : > "$LAUNCH_MARKER" 2>/dev/null; then
+  log "WARN: could not write launch marker $LAUNCH_MARKER; orphan sweep falls back to the age guard for this launch"
+fi
+trap 'rm -f "$LAUNCH_MARKER"' EXIT
+
 # --- PR fix into the ticket's existing session ---
 # A fix invocation (BRANCH != NAME) whose branch has a live ticket session
 # (named after the sanitized branch, == WORKTREE_DIR) is added as a detached

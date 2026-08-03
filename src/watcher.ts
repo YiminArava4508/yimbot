@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +10,14 @@ import {
   renderAcComment,
 } from "./acceptance.ts";
 import { selectNextClaim } from "./claim.ts";
-import { type CleanupDeps, cleanupOnce, readParentSession, type Worktree } from "./cleanup.ts";
+import {
+  type CleanupDeps,
+  cleanupOnce,
+  type OrphanSweepDeps,
+  readParentSession,
+  sweepOrphanWorktrees,
+  type Worktree,
+} from "./cleanup.ts";
 import type { MergedPR } from "./gh.ts";
 import {
   countAssignedInState,
@@ -88,6 +95,20 @@ export function findExistingSession(
   const prefix = identifierPrefix(identifier);
   const candidates = [...sessions, ...worktrees].filter((name) => name.startsWith(prefix)).sort();
   return candidates[0] ?? null;
+}
+
+// The ticket identifier at the head of a worktree/branch slug (eng-1104, sc-42).
+const WORKTREE_IDENTIFIER_RE = /^[a-z]+-\d+/;
+
+// Whether a live tmux session belongs to the ticket owning this worktree dir.
+// Matches on the identifier prefix, not the exact name, because new-session.sh
+// truncates the worktree dir to 50 chars but keeps the full session name — for a
+// long title the two differ. A dir whose name has no ticket identifier returns
+// true (spare it): the orphan sweep must never reap an unrecognized worktree.
+export function hasSessionForWorktree(worktreeName: string, sessions: string[]): boolean {
+  const m = WORKTREE_IDENTIFIER_RE.exec(worktreeName.toLowerCase());
+  if (!m) return true;
+  return findExistingSession(m[0], sessions, []) !== null;
 }
 
 export type FeatureReadyDeps = {
@@ -486,6 +507,78 @@ export function listGitWorktrees(codebasePath: string): Worktree[] {
   }
 }
 
+// The default-branch ref new worktrees are cut from (origin/main, origin/master,
+// …), read from the codebase repo's origin/HEAD. Falls back to origin/master on
+// any error, so a broken HEAD only ever makes the inert check more conservative.
+export function resolveBaseRef(codebasePath: string): string {
+  try {
+    const ref = execFileSync(
+      "git",
+      ["-C", codebasePath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    return ref || "origin/master";
+  } catch {
+    return "origin/master";
+  }
+}
+
+// Whether a worktree holds no unsaved work: a clean working tree AND no commits
+// ahead of the base ref. Either an uncommitted change or a unique commit makes it
+// non-inert (and so never a sweep target). Any git error → false (never reap).
+export function worktreeIsInert(worktreePath: string, baseRef: string): boolean {
+  try {
+    const dirty = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (dirty) return false;
+    const ahead = execFileSync(
+      "git",
+      ["-C", worktreePath, "rev-list", "--count", `${baseRef}..HEAD`],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    return ahead === "0";
+  } catch {
+    return false;
+  }
+}
+
+// Milliseconds since a worktree dir was last modified. A stat failure returns 0
+// (treated as brand-new → spared), so a vanished dir is never swept.
+export function worktreeAgeMs(worktreePath: string): number {
+  try {
+    return Date.now() - statSync(worktreePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+// How long a .yimbot-launching marker is honored. Well above any realistic setup
+// hook, but finite so a leaked marker (new-session.sh SIGKILL'd / OOM'd / the box
+// rebooted mid-launch) eventually stops protecting a dead worktree, letting the
+// sweep self-heal it instead of blocking it forever.
+export const LAUNCH_MARKER_TTL_MS = 30 * 60 * 1000;
+
+// Whether a launch marker still counts as an in-progress launch: present AND
+// younger than the TTL. `mtimeMs` is null when the marker is absent. A stale
+// marker returns false so the worktree falls back to the normal sweep guards.
+export function isLaunchMarkerActive(mtimeMs: number | null, nowMs: number, ttlMs: number): boolean {
+  return mtimeMs !== null && nowMs - mtimeMs < ttlMs;
+}
+
+// IO wrapper: does this worktree have a live (non-stale) launch marker? A stat
+// error means no readable marker → not launching (fall back to the other guards).
+export function launchMarkerActive(worktreePath: string, ttlMs: number): boolean {
+  let mtimeMs: number | null;
+  try {
+    mtimeMs = statSync(join(worktreePath, ".yimbot-launching")).mtimeMs;
+  } catch {
+    mtimeMs = null;
+  }
+  return isLaunchMarkerActive(mtimeMs, Date.now(), ttlMs);
+}
+
 // Tear down a merged branch's worktree + session via end-session.sh <branch>.
 // The script runs headless (arg given), so it skips the interactive client UI and
 // just kills the session by name. Detached and fire-and-forget, mirroring
@@ -561,6 +654,26 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: cleanupLog,
   };
 
+  // Sweep step: reap inert, session-less orphan worktrees so the deploy step
+  // relaunches a fresh session instead of adopting the leftover forever. Shares
+  // the cleanup step's codebase handle (both are worktree teardown) and is gated
+  // on it. Runs FIRST in the heartbeat, before deploy — see the heartbeat below.
+  const sweepLog = (msg: string) => console.log(`[sweep] ${msg}`);
+  const baseRef = cleanup ? resolveBaseRef(cleanup.codebasePath) : "origin/master";
+  const sweepDeps: OrphanSweepDeps | null = cleanup && {
+    listWorktrees: () => listGitWorktrees(cleanup.codebasePath),
+    listSessions: listTmuxSessions,
+    worktreesDir,
+    readParentSession,
+    hasSessionFor: hasSessionForWorktree,
+    isLaunching: (path) => launchMarkerActive(path, LAUNCH_MARKER_TTL_MS),
+    isInert: (path) => worktreeIsInert(path, baseRef),
+    ageMs: worktreeAgeMs,
+    minAgeMs: config.heartbeatIntervalMinutes * 60 * 1000,
+    teardown: runEndSession,
+    log: sweepLog,
+  };
+
   // Advance step (gh-driven): each heartbeat, judge merged PRs' issues against
   // their AC tracker and spawn a continuation while criteria remain open.
   const advanceLog = (msg: string) => console.log(`[advance] ${msg}`);
@@ -612,6 +725,11 @@ export function startWatcher(config: WatcherConfig): () => void {
     if (running) return;
     running = true;
     try {
+      // The sweep MUST run before deploy: deploy latches every In-Progress ticket
+      // it adopts (by issue id), so an orphan removed after deploy adopted it would
+      // be skipped for the rest of the process. Removing it first lets deploy
+      // launch a fresh session this same tick.
+      if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
       await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
       if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);

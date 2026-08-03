@@ -11,6 +11,8 @@ import {
   detectNewIssues,
   findExistingSession,
   freshDeployState,
+  hasSessionForWorktree,
+  isLaunchMarkerActive,
   markFeatureReady,
   parseWorktreePorcelain,
   pollOnce,
@@ -242,6 +244,40 @@ test("findExistingSession matches despite a title change (identifier prefix only
 
 test("findExistingSession returns null when nothing matches", () => {
   assert.equal(findExistingSession("ENG-42", ["eng-7-a"], ["eng-9-b"]), null);
+});
+
+test("hasSessionForWorktree matches a full-length session against a 50-char-truncated worktree name", () => {
+  // new-session.sh names the session with the full title but truncates the
+  // worktree dir to 50 chars; they must still be recognized as the same ticket.
+  const worktreeName = "eng-1104-spike-validate-data-sources-for-personali"; // 50 chars
+  const session = "eng-1104-spike-validate-data-sources-for-personalized-digest-content";
+  assert.equal(hasSessionForWorktree(worktreeName, [session]), true);
+});
+
+test("hasSessionForWorktree is false when no session shares the ticket", () => {
+  assert.equal(hasSessionForWorktree("eng-42-fix-login", ["eng-7-other"]), false);
+  assert.equal(hasSessionForWorktree("eng-42-fix-login", []), false);
+});
+
+test("hasSessionForWorktree spares (true) a worktree name with no parseable identifier", () => {
+  assert.equal(hasSessionForWorktree("some-random-dir", []), true);
+});
+
+const TTL = 30 * 60_000;
+const NOW = 1_000_000_000_000;
+
+test("isLaunchMarkerActive is true for a marker written within the TTL", () => {
+  assert.equal(isLaunchMarkerActive(NOW - 60_000, NOW, TTL), true);
+});
+
+test("isLaunchMarkerActive is false for a stale (leaked) marker past the TTL", () => {
+  // e.g. new-session.sh was SIGKILL/OOM-killed mid-launch, leaking the marker;
+  // past the ceiling the worktree falls back to the normal sweep guards.
+  assert.equal(isLaunchMarkerActive(NOW - TTL - 1, NOW, TTL), false);
+});
+
+test("isLaunchMarkerActive is false when the marker is absent", () => {
+  assert.equal(isLaunchMarkerActive(null, NOW, TTL), false);
 });
 
 test("parseWorktreePorcelain returns path+branch for each branched worktree", () => {

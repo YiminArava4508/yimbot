@@ -99,6 +99,122 @@ export function selectMergedWorktrees(
   return worktrees.filter((w) => mergedBranches.has(w.branch) && w.path.startsWith(prefix));
 }
 
+// A worktree enriched with the facts the orphan sweep needs to judge it.
+// `hasSession` is whether a live tmux session belongs to its ticket; `inert` is
+// clean working tree AND no commits ahead of base (nothing to lose); `ageMs` is
+// how long since the worktree dir was created.
+export type OrphanFacts = {
+  worktree: Worktree;
+  hasSession: boolean;
+  // A launch is in progress: new-session.sh has created the worktree but not yet
+  // its session (its .yimbot-launching marker is present). Session-less by nature,
+  // so it needs its own guard to avoid being reaped mid-setup.
+  launching: boolean;
+  inert: boolean;
+  ageMs: number;
+};
+
+// Worktrees safe to reap so the deploy step relaunches a fresh session: a
+// session-less, inert worktree older than one heartbeat (past the launch race),
+// with no launch in progress, that is not part of a split group. Any guard
+// failing spares it.
+export function selectOrphanWorktrees(
+  facts: OrphanFacts[],
+  opts: { grouped: Set<string>; minAgeMs: number },
+): Worktree[] {
+  return facts
+    .filter(
+      (f) =>
+        !f.hasSession &&
+        !f.launching &&
+        f.inert &&
+        f.ageMs >= opts.minAgeMs &&
+        !opts.grouped.has(f.worktree.path),
+    )
+    .map((f) => f.worktree);
+}
+
+export type OrphanSweepDeps = {
+  // Live git worktrees (filtered here to the worktrees dir).
+  listWorktrees: () => Worktree[];
+  // Live tmux session names.
+  listSessions: () => string[];
+  // Only worktrees under this dir are considered, never the main checkout.
+  worktreesDir: string;
+  // A worktree's .yimbot-parent-session marker, to exclude split-group members.
+  readParentSession: (worktreePath: string) => string | null;
+  // Whether a live session belongs to the ticket owning this worktree dir name.
+  // Prefix-matched (not exact) so the 50-char worktree/full session-name split
+  // new-session.sh makes for long tickets can't produce a false "session-less".
+  hasSessionFor: (worktreeName: string, sessions: string[]) => boolean;
+  // Whether new-session.sh is still launching this worktree (its .yimbot-launching
+  // marker is present) — spared so a slow setup hook is never reaped mid-launch.
+  isLaunching: (worktreePath: string) => boolean;
+  // Whether a worktree is inert: clean working tree AND no commits ahead of base.
+  isInert: (worktreePath: string) => boolean;
+  // Age of the worktree dir (now - mtime), to clear the launch race.
+  ageMs: (worktreePath: string) => number;
+  minAgeMs: number;
+  // Tear down a worktree by its branch (== its ticket session name). Via end-session.sh.
+  teardown: (branch: string) => void;
+  log: (msg: string) => void;
+};
+
+// One sweep-step tick, run first in the heartbeat (before deploy). Reaps inert,
+// session-less orphan worktrees so the deploy step relaunches a fresh session
+// instead of adopting the leftover forever. The git/mtime checks run only on
+// session-less, non-grouped, in-dir worktrees, so an active worktree costs no IO.
+export async function sweepOrphanWorktrees(deps: OrphanSweepDeps): Promise<void> {
+  let worktrees: Worktree[];
+  try {
+    worktrees = deps.listWorktrees();
+  } catch (err) {
+    deps.log(`orphan sweep: worktree list failed: ${err}`);
+    return;
+  }
+
+  let sessions: string[];
+  try {
+    sessions = deps.listSessions();
+  } catch (err) {
+    deps.log(`orphan sweep: session list failed: ${err}`);
+    return;
+  }
+
+  const prefix = deps.worktreesDir.endsWith("/") ? deps.worktreesDir : `${deps.worktreesDir}/`;
+  const grouped = new Set(
+    buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir).flatMap(
+      (g) => g.worktreePaths,
+    ),
+  );
+
+  const facts: OrphanFacts[] = worktrees
+    .filter((w) => w.path.startsWith(prefix))
+    .map((w) => {
+      const name = w.path.slice(prefix.length);
+      const hasSession = deps.hasSessionFor(name, sessions);
+      const launching = hasSession ? false : deps.isLaunching(w.path);
+      // Skip the git/mtime IO for anything a cheap guard already excludes.
+      const skip = hasSession || launching || grouped.has(w.path);
+      return {
+        worktree: w,
+        hasSession,
+        launching,
+        inert: skip ? false : deps.isInert(w.path),
+        ageMs: skip ? 0 : deps.ageMs(w.path),
+      };
+    });
+
+  for (const w of selectOrphanWorktrees(facts, { grouped, minAgeMs: deps.minAgeMs })) {
+    try {
+      deps.teardown(w.branch);
+      deps.log(`orphan sweep: torn down ${w.branch} (session-less, no unsaved work)`);
+    } catch (err) {
+      deps.log(`orphan sweep: teardown failed for ${w.branch}: ${err}`);
+    }
+  }
+}
+
 const FIX_SESSION_RE = /^pr-(\d+)-(?:fix|ci)$/;
 
 // Live "pr-<n>-fix" / "pr-<n>-ci" sessions whose PR number is in the merged set.

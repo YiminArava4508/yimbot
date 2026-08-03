@@ -10,6 +10,8 @@
 #
 # Config (all overridable via the environment):
 #   CODEBASE_PATH          base git repo to branch from             (~/Work/gemini)
+#   DEFAULT_BRANCH         branch new feature branches are cut from;
+#                          auto-detected from origin/HEAD when unset (main)
 #   WORKTREES_DIR          where worktrees are created              (~/Work/worktrees)
 #   EDITOR                 editor for the optional edit windows     ($EDITOR, else vi)
 #   SESSION_EDIT_DIRS      space-separated subdirs to open, each in
@@ -60,6 +62,25 @@ seed_prompt_for() {
   fi
 }
 
+# Resolve a repo's default branch: honor DEFAULT_BRANCH, else read origin/HEAD
+# (repairing it from the remote when unset), else fall back to "main". Pure
+# w.r.t. env; unit-tested via sourcing (override + fallback paths).
+default_branch_of() {
+  local repo=$1
+  if [ -n "${DEFAULT_BRANCH:-}" ]; then
+    printf '%s' "$DEFAULT_BRANCH"
+    return
+  fi
+  local ref
+  ref=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+  if [ -z "$ref" ]; then
+    git -C "$repo" remote set-head origin --auto >/dev/null 2>&1
+    ref=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+  fi
+  ref=${ref#origin/}
+  printf '%s' "${ref:-main}"
+}
+
 # --- Create or reuse the worktree ---
 # Reuse if fully set up; prune a stale git registration whose dir is gone; remove
 # a leftover dir that git doesn't know about; then add the worktree, checking out
@@ -92,8 +113,15 @@ create_worktree() {
     git -C "$CODEBASE_PATH" worktree add --track -b "$BRANCH" "$WORKTREE" "origin/$BRANCH" ||
       die "git worktree add failed"
   else
-    log "Creating new branch '$BRANCH'"
-    git -C "$CODEBASE_PATH" worktree add "$WORKTREE" -b "$BRANCH" || die "git worktree add failed"
+    git -C "$CODEBASE_PATH" fetch origin "$DEFAULT_BRANCH" >/dev/null 2>&1
+    if git -C "$CODEBASE_PATH" show-ref --verify --quiet "refs/remotes/origin/$DEFAULT_BRANCH"; then
+      log "Creating new branch '$BRANCH' from origin/$DEFAULT_BRANCH"
+      git -C "$CODEBASE_PATH" worktree add "$WORKTREE" -b "$BRANCH" "origin/$DEFAULT_BRANCH" ||
+        die "git worktree add failed"
+    else
+      log "origin/$DEFAULT_BRANCH unavailable; creating '$BRANCH' from current HEAD"
+      git -C "$CODEBASE_PATH" worktree add "$WORKTREE" -b "$BRANCH" || die "git worktree add failed"
+    fi
   fi
 }
 
@@ -145,6 +173,9 @@ BRANCH=${2:-$NAME}
 CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
 git -C "$CODEBASE_PATH" rev-parse --git-dir >/dev/null 2>&1 ||
   die "CODEBASE_PATH is not a git repo: $CODEBASE_PATH"
+
+# The default branch new feature branches are cut from (create_worktree reads it).
+DEFAULT_BRANCH=$(default_branch_of "$CODEBASE_PATH")
 
 # Sanitize the branch into a worktree dir (same rule the daemon's slug uses).
 WORKTREE_DIR=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)

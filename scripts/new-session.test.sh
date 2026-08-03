@@ -13,6 +13,12 @@ assert_defined seed_prompt_for
 assert_defined create_worktree
 assert_defined launch_claude_in
 assert_defined build_claude_cmd
+assert_defined default_branch_of
+
+# default_branch_of: the DEFAULT_BRANCH override wins without reading git, and
+# an unreadable repo falls back to main.
+assert_eq "$(DEFAULT_BRANCH=develop default_branch_of /no/such/repo)" "develop" "DEFAULT_BRANCH override wins"
+assert_eq "$(unset DEFAULT_BRANCH; default_branch_of /no/such/repo)" "main" "falls back to main when git can't resolve"
 
 # Sessions always launch with permissions bypassed so they run unattended.
 assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "1" "always bypasses permission prompts"

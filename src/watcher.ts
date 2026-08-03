@@ -310,6 +310,25 @@ export function spawnFixSession(name: string, branch: string): void {
   });
 }
 
+// The tmux session name for an AC continuation run. Keyed by issue number and
+// round so repeated continuations on the same issue get distinct sessions.
+export function continuationSessionName(issueNumber: string, round: number): string {
+  return `eng-${issueNumber}-cont-${round}`;
+}
+
+// Launch an AC continuation run: new-session.sh eng-<n>-cont-<round>. A fresh
+// branch off main (single arg, no worktree reuse) whose seed routes to the
+// pickup-ticket skill scoped by the issue's open ACs.
+export function spawnContinuationSession(issueNumber: string, round: number): void {
+  const name = continuationSessionName(issueNumber, round);
+  const proc = spawn("bash", [sessionScriptPath, name], { detached: true, stdio: "ignore" });
+  proc.unref();
+  proc.once("error", (err) => console.error(`[advance] new-session.sh for '${name}' failed: ${err}`));
+  proc.once("exit", (code) => {
+    if (code !== 0) console.error(`[advance] new-session.sh for '${name}' exited ${code}`);
+  });
+}
+
 // Whether a tmux session by this name currently exists.
 export function tmuxHasSession(name: string): boolean {
   try {

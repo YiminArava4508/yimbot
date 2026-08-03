@@ -5,6 +5,7 @@ import {
   buildSessionName,
   claimOnce,
   type ClaimDeps,
+  continuationSessionName,
   type DeployDeps,
   deployOnce,
   detectNewIssues,
@@ -33,6 +34,10 @@ test("buildSessionName caps length at 50 with no trailing dash", () => {
   const name = buildSessionName("ENG-123", "a very long title ".repeat(10));
   assert.ok(name.length <= 50);
   assert.match(name, /^[a-z0-9][a-z0-9-]*[a-z0-9]$/);
+});
+
+test("continuationSessionName is keyed by issue number and round", () => {
+  assert.equal(continuationSessionName("949", 2), "eng-949-cont-2");
 });
 
 test("detectNewIssues baselines on first call", () => {

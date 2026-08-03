@@ -15,6 +15,8 @@ assert_defined launch_claude_in
 
 # seed_prompt_for still classifies recognized session names.
 assert_eq "$(seed_prompt_for eng-42-add-widget | grep -c 'pickup-ticket skill')" "1" "eng seed hands off to pickup-ticket"
+assert_eq "$(seed_prompt_for eng-949-cont-2 | grep -c 'acceptance-criteria tracker')" "1" "eng-cont seed is AC-scoped, not the generic eng seed"
+assert_eq "$(seed_prompt_for eng-949-cont-2 | grep -c 'ENG-949')" "1" "eng-cont seed names the issue"
 assert_eq "$(seed_prompt_for sc-7-foo | grep -c 'pickup-ticket skill')" "1" "sc seed hands off to pickup-ticket"
 assert_eq "$(seed_prompt_for pr-9-fix | grep -c 'address-pr-comments skill')" "1" "pr-fix seed hands off to address-pr-comments"
 assert_eq "$(seed_prompt_for pr-9-ci | grep -c 'fix-pr-ci skill')" "1" "pr-ci seed hands off to fix-pr-ci"

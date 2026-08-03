@@ -12,6 +12,12 @@ assert_defined() { if ! declare -F "$1" >/dev/null; then echo "FAIL: $1 not defi
 assert_defined seed_prompt_for
 assert_defined create_worktree
 assert_defined launch_claude_in
+assert_defined build_claude_cmd
+
+# Sessions always launch with permissions bypassed so they run unattended.
+assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "1" "always bypasses permission prompts"
+assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" "honors PLAN_MODEL"
+assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
 
 # seed_prompt_for still classifies recognized session names.
 assert_eq "$(seed_prompt_for eng-42-add-widget | grep -c 'pickup-ticket skill')" "1" "eng seed hands off to pickup-ticket"
@@ -19,6 +25,8 @@ assert_eq "$(seed_prompt_for sc-7-foo | grep -c 'pickup-ticket skill')" "1" "sc 
 assert_eq "$(seed_prompt_for pr-9-fix | grep -c 'address-pr-comments skill')" "1" "pr-fix seed hands off to address-pr-comments"
 assert_eq "$(seed_prompt_for pr-9-ci | grep -c 'fix-pr-ci skill')" "1" "pr-ci seed hands off to fix-pr-ci"
 assert_eq "$(seed_prompt_for pr-9-ci | grep -c '#9')" "1" "pr-ci seed names the PR number"
+assert_eq "$(seed_prompt_for pr-9-conflict | grep -c 'fix-pr-conflict skill')" "1" "pr-conflict seed hands off to fix-pr-conflict"
+assert_eq "$(seed_prompt_for pr-9-conflict | grep -c '#9')" "1" "pr-conflict seed names the PR number"
 assert_eq "$(seed_prompt_for random-name)" "" "unrecognized name yields no seed"
 
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

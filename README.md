@@ -19,7 +19,7 @@ failures are logged and never crash the daemon.
 
 The first time you run it, yimbot asks a few setup questions. After that it
 quietly checks your Linear board and your open PRs every few minutes (its
-**heartbeat**) and can do six things (plus keep your code up to date):
+**heartbeat**) and can do seven things (plus keep your code up to date):
 
 ```mermaid
 flowchart TD
@@ -49,6 +49,10 @@ flowchart TD
     G6 --> T5{"An open PR of yours<br/>with failing CI?"}
     T5 -- yes --> CI["Add a CI-fix window to that ticket's<br/>session (or open a new one) that syncs<br/>main if stale, fixes the build, and pushes"]
 
+    P --> G7["Fix merge conflicts"]
+    G7 --> T6{"An open PR of yours<br/>conflicting with main?"}
+    T6 -- yes --> CF["Add a conflict-fix window to that ticket's<br/>session (or open a new one) that merges main in,<br/>resolves conflicts preserving the feature, and pushes"]
+
     P --> G4["Flag ready to test"]
     G4 --> T3{"Did a card move<br/>to 'In Review'?"}
     T3 -- yes --> F["Mark its session with a<br/>'ready to test' icon"]
@@ -63,11 +67,13 @@ flowchart TD
     classDef ready fill:#e9d8fd,stroke:#6b46c1,color:#1a202c;
     classDef cleanup fill:#fed7d7,stroke:#c53030,color:#1a202c;
     classDef ci fill:#fefcbf,stroke:#b7791f,color:#1a202c;
+    classDef conflict fill:#fbd3e9,stroke:#a61e4d,color:#1a202c;
     classDef sync fill:#e2e8f0,stroke:#718096,color:#1a202c;
     class G1,T1,L deploy;
     class G2,PK,M claim;
     class G3,T2,R review;
     class G6,T5,CI ci;
+    class G7,T6,CF conflict;
     class G4,T3,F ready;
     class G5,T4,CU cleanup;
     class S sync;
@@ -94,6 +100,17 @@ flowchart TD
   are due in the same heartbeat, the comment fix goes first and CI is picked up
   the next tick. Re-triggers only when a push moves the failing commit, so a
   green build never loops. Needs `gh` installed and authenticated.
+- **Fix merge conflicts (pink):** every heartbeat, for each of your open PRs that
+  is conflicting with main, it adds a `pr-<n>-conflict` fix window to that PR's
+  ticket session (or opens a standalone session) that reads the PR to understand
+  its intent, merges `main` in (never a rebase, never a force push), resolves the
+  conflicts in a way that preserves the PR's feature, verifies, and pushes. If it
+  cannot resolve safely without risking the feature, it aborts the merge and
+  leaves the PR untouched for a human. It shares the PR's worktree with the
+  comment and CI fixes and never runs at the same time as either; within a
+  heartbeat the order is comment, then conflict, then CI. Re-triggers only when
+  the PR head moves, so a clean bail never loops. Needs `gh` installed and
+  authenticated.
 - **Flag ready to test (purple):** when a card moves to **In Review**, it marks
   that card's session with a "ready to test" icon so you know you can run local
   dev there to try it. (yimbot no longer starts the dev env for you.)
@@ -139,11 +156,14 @@ by name: ticket sessions (`eng-…` / `sc-…`) hand off to the **pickup-ticket*
 skill (plan, implement, self-review, finish); PR comment fixes (`pr-<n>-fix`,
 launched by the review step with `~/new-session.sh pr-<n>-fix <branch>`) hand off
 to the **address-pr-comments** skill (fix comments, push, resolve threads,
-re-request review); and PR CI fixes (`pr-<n>-ci`, launched the same way) hand off
-to the **fix-pr-ci** skill (sync main if stale, otherwise fix the build, push). A
-PR fix is added as a window inside its branch's ticket session when that session
-is still alive, so a PR and its ticket share one session; if the ticket session
-has ended, it becomes a standalone `pr-<n>-fix` / `pr-<n>-ci` session instead.
+re-request review); PR CI fixes (`pr-<n>-ci`, launched the same way) hand off to
+the **fix-pr-ci** skill (sync main if stale, otherwise fix the build, push); and
+PR conflict fixes (`pr-<n>-conflict`, launched the same way) hand off to the
+**fix-pr-conflict** skill (understand the PR, merge main in, resolve conflicts
+preserving the feature, push). A PR fix is added as a window inside its branch's
+ticket session when that session is still alive, so a PR and its ticket share one
+session; if the ticket session has ended, it becomes a standalone `pr-<n>-fix` /
+`pr-<n>-ci` / `pr-<n>-conflict` session instead.
 
 Teardown is the mirror: once a PR merges, the cleanup step shells out to
 `~/end-session.sh <branch>` (headless), which removes that branch's worktree and
@@ -153,11 +173,13 @@ this repo:
 [`scripts/new-session.sh`](scripts/new-session.sh),
 [`scripts/end-session.sh`](scripts/end-session.sh),
 [`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md),
-[`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md), and
-[`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md). **`pnpm onboard`
+[`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md),
+[`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md), and
+[`skills/fix-pr-conflict`](skills/fix-pr-conflict/SKILL.md). **`pnpm onboard`
 symlinks them into place** (`~/new-session.sh`, `~/end-session.sh`,
 `~/.claude/skills/pickup-ticket`, `~/.claude/skills/address-pr-comments`,
-`~/.claude/skills/fix-pr-ci`), verifying them in its pre-flight. An existing file
+`~/.claude/skills/fix-pr-ci`, `~/.claude/skills/fix-pr-conflict`), verifying them
+in its pre-flight. An existing file
 at any path is never overwritten without asking (it's backed up first).
 
 Nothing project-specific is baked in. Point it at your repo and, if you need

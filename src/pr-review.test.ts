@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ChecksInfo, CiState, OpenPR, UnresolvedInfo } from "./gh.ts";
-import { ciSessionName, fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
+import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
+import {
+  ciSessionName,
+  conflictSessionName,
+  fixSessionName,
+  fixSessionNames,
+  freshReviewState,
+  type PrReviewDeps,
+  reviewOnce,
+} from "./pr-review.ts";
 
 function pr(number: number, overrides: Partial<OpenPR> = {}): OpenPR {
   return { number, headRefName: `eng-${number}-x`, isDraft: false, ...overrides };
@@ -15,27 +23,35 @@ const noComments = info(0, null);
 function ci(state: CiState, headSha = "sha"): ChecksInfo {
   return { state, headSha };
 }
+function merge(state: MergeableState, headSha = "sha"): MergeableInfo {
+  return { state, headSha };
+}
+const noConflict = merge("mergeable");
 
 function deps(overrides: Partial<PrReviewDeps> = {}): {
   deps: PrReviewDeps;
   spawned: { name: string; branch: string }[];
   ciSpawned: { name: string; branch: string }[];
+  conflictSpawned: { name: string; branch: string }[];
   logs: string[];
 } {
   const spawned: { name: string; branch: string }[] = [];
   const ciSpawned: { name: string; branch: string }[] = [];
+  const conflictSpawned: { name: string; branch: string }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
     unresolvedInfo: async () => info(2, 1000),
+    mergeableInfo: async () => noConflict,
     checksInfo: async () => ci("passing"),
     fixInFlight: () => false,
     spawnFix: (name, branch) => void spawned.push({ name, branch }),
     spawnCiFix: (name, branch) => void ciSpawned.push({ name, branch }),
+    spawnConflictFix: (name, branch) => void conflictSpawned.push({ name, branch }),
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, logs };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -150,6 +166,139 @@ test("reviewOnce skips CI when a fix is already in flight", async () => {
   });
   await reviewOnce(freshReviewState(), d);
   assert.equal(ciSpawned.length, 0);
+});
+
+test("conflictSessionName is keyed by PR number", () => {
+  assert.equal(conflictSessionName(4706), "pr-4706-conflict");
+});
+
+test("fixSessionNames lists every fix session kind for the PR (the in-flight guard set)", () => {
+  assert.deepEqual(fixSessionNames(4706), ["pr-4706-fix", "pr-4706-ci", "pr-4706-conflict"]);
+});
+
+test("reviewOnce spawns a conflict fix for a conflicting PR with no comments and passing CI", async () => {
+  const { deps: d, conflictSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.deepEqual(conflictSpawned, [{ name: "pr-4706-conflict", branch: "eng-4706-x" }]);
+  assert.equal(state.lastHandledConflictSha.get(4706), "abc");
+});
+
+test("reviewOnce does not spawn a conflict fix for mergeable or unknown PRs", async () => {
+  for (const s of ["mergeable", "unknown"] as MergeableState[]) {
+    const { deps: d, conflictSpawned } = deps({
+      unresolvedInfo: async () => noComments,
+      mergeableInfo: async () => merge(s),
+    });
+    await reviewOnce(freshReviewState(), d);
+    assert.equal(conflictSpawned.length, 0, `${s} must not spawn`);
+  }
+});
+
+test("reviewOnce does not re-spawn a conflict fix for the same head SHA", async () => {
+  const { deps: d, conflictSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  await reviewOnce(state, d);
+  assert.equal(conflictSpawned.length, 1);
+});
+
+test("reviewOnce re-spawns a conflict fix when the head SHA moves", async () => {
+  let sha = "abc";
+  const { deps: d, conflictSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => merge("conflicting", sha),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  sha = "def"; // a human pushed; still conflicting on the new head
+  await reviewOnce(state, d);
+  assert.equal(conflictSpawned.length, 2);
+  assert.equal(state.lastHandledConflictSha.get(4706), "def");
+});
+
+test("reviewOnce prefers the comment fix and skips the conflict fix the same tick", async () => {
+  const { deps: d, spawned, conflictSpawned } = deps({
+    unresolvedInfo: async () => info(1, 1000),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+  assert.equal(conflictSpawned.length, 0);
+  assert.equal(state.lastHandledConflictSha.has(4706), false, "conflict SHA is not recorded when it was skipped");
+});
+
+test("reviewOnce prefers the conflict fix over the CI fix the same tick", async () => {
+  const { deps: d, conflictSpawned, ciSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    checksInfo: async () => ci("failing", "abc"),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.deepEqual(conflictSpawned.map((s) => s.name), ["pr-4706-conflict"]);
+  assert.equal(ciSpawned.length, 0);
+  assert.equal(state.lastHandledCiSha.has(4706), false, "CI SHA is not recorded when CI was skipped");
+});
+
+test("reviewOnce does not spawn a CI fix while a just-spawned conflict fix is not yet visible", async () => {
+  const { deps: d, conflictSpawned, ciSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    checksInfo: async () => ci("failing", "def"),
+    fixInFlight: () => false,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // spawns the conflict fix (latch = conflict)
+  await reviewOnce(state, d); // must NOT spawn CI while the conflict fix is unobserved
+  assert.equal(conflictSpawned.length, 1);
+  assert.equal(ciSpawned.length, 0);
+});
+
+test("reviewOnce does not spawn a comment fix while a just-spawned conflict fix is not yet visible", async () => {
+  let comments: UnresolvedInfo = noComments;
+  const { deps: d, spawned, conflictSpawned } = deps({
+    unresolvedInfo: async () => comments,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    fixInFlight: () => false,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // conflict-only → spawn conflict fix (latch = conflict)
+  comments = info(1, 2000); // a comment now arrives, conflict fix not yet visible
+  await reviewOnce(state, d); // must NOT spawn the comment fix onto the shared worktree
+  assert.equal(conflictSpawned.length, 1);
+  assert.equal(spawned.length, 0);
+});
+
+test("reviewOnce skips a conflict fix when a fix is already in flight", async () => {
+  const { deps: d, conflictSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    fixInFlight: () => true,
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(conflictSpawned.length, 0);
+});
+
+test("reviewOnce continues to the next PR when one PR's mergeable info throws", async () => {
+  const { deps: d, conflictSpawned, logs } = deps({
+    listOpenPRs: async () => [pr(1), pr(2)],
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async (n) => {
+      if (n === 1) throw new Error("gh mergeable 502");
+      return merge("conflicting", "abc");
+    },
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(conflictSpawned.map((s) => s.name), ["pr-2-conflict"]);
+  assert.ok(logs.some((l) => /gh mergeable 502/.test(l)));
 });
 
 test("reviewOnce spawns a fix for a PR with a new other-authored comment", async () => {

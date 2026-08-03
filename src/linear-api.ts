@@ -274,3 +274,83 @@ export async function moveIssueToState(
     throw new Error(`issueUpdate failed for ${issueId}`);
   }
 }
+
+export type IssueDetail = { id: string; identifier: string; description: string };
+
+export async function fetchIssueByIdentifier(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<IssueDetail> {
+  type Data = { issue: { id: string; identifier: string; description: string | null } };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueDetail($id: String!) {
+      issue(id: $id) { id identifier description }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  return { id: data.issue.id, identifier: data.issue.identifier, description: data.issue.description ?? "" };
+}
+
+export async function upsertAcComment(
+  apiKey: string,
+  issueId: string,
+  marker: string,
+  body: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  type ListData = { issue: { comments: { nodes: { id: string; body: string }[] } } };
+  const list = await gql<ListData>(
+    apiKey,
+    `query IssueComments($id: String!) {
+      issue(id: $id) { comments { nodes { id body } } }
+    }`,
+    { id: issueId },
+    fetchImpl,
+  );
+  const existing = list.issue.comments.nodes.find((c) => c.body.includes(marker));
+  if (existing) {
+    type UpdateData = { commentUpdate: { success: boolean } };
+    const data = await gql<UpdateData>(
+      apiKey,
+      `mutation UpdateComment($id: String!, $body: String!) {
+        commentUpdate(id: $id, input: { body: $body }) { success }
+      }`,
+      { id: existing.id, body },
+      fetchImpl,
+    );
+    if (!data.commentUpdate.success) throw new Error(`commentUpdate failed for ${existing.id}`);
+    return;
+  }
+  type CreateData = { commentCreate: { success: boolean } };
+  const data = await gql<CreateData>(
+    apiKey,
+    `mutation CreateComment($issueId: String!, $body: String!) {
+      commentCreate(input: { issueId: $issueId, body: $body }) { success }
+    }`,
+    { issueId, body },
+    fetchImpl,
+  );
+  if (!data.commentCreate.success) throw new Error(`commentCreate failed for ${issueId}`);
+}
+
+export async function fetchAcCommentBody(
+  apiKey: string,
+  issueId: string,
+  marker: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  type Data = { issue: { comments: { nodes: { body: string }[] } } };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueAcComment($id: String!) {
+      issue(id: $id) { comments { nodes { body } } }
+    }`,
+    { id: issueId },
+    fetchImpl,
+  );
+  const found = data.issue.comments.nodes.find((c) => c.body.includes(marker));
+  return found ? found.body : "";
+}

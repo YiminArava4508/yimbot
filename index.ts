@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { AC_COMMENT_MARKER, type AC } from "./src/acceptance.ts";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
 import {
@@ -14,7 +16,14 @@ import {
   unresolvedThreadInfo,
   viewerLogin,
 } from "./src/gh.ts";
-import { resolveContext } from "./src/linear-api.ts";
+import { judgeAcceptance, type JudgeRunner } from "./src/judge.ts";
+import {
+  countAssignedInState,
+  fetchAcCommentBody,
+  fetchIssueByIdentifier,
+  resolveContext,
+  upsertAcComment,
+} from "./src/linear-api.ts";
 import { configToEnvRecord, isConfigured, runSetup } from "./src/setup.ts";
 import { sessionScriptPath, startWatcher } from "./src/watcher.ts";
 
@@ -127,6 +136,43 @@ console.log(
     : `[yimbot] cleanup step OFF${autoCleanup ? " (gh unavailable)" : ""}`,
 );
 
+const autoContinue = !["false", "off", "no", "0"].includes(envOr("AUTO_CONTINUE", "true").toLowerCase());
+const maxContinuations = Number(envOr("MAX_CONTINUATIONS", "5"));
+if (!Number.isInteger(maxContinuations) || maxContinuations < 1) {
+  throw new Error("MAX_CONTINUATIONS must be a positive integer");
+}
+const judgeModel = envOr("AC_JUDGE_MODEL", "");
+const execFileAsync = promisify(execFile);
+const judgeRun: JudgeRunner = async (prompt) => {
+  const args = ["-p", prompt];
+  if (judgeModel) args.push("--model", judgeModel);
+  const { stdout } = await execFileAsync("claude", args, { cwd: codebasePath, maxBuffer: 10 * 1024 * 1024 });
+  return stdout;
+};
+// Gated on the same gh-availability signal as review/cleanup: if gh is missing,
+// prReview is null and the advance step stays off.
+const advance =
+  autoContinue && prReview
+    ? {
+        listMergedPRs: () => listMyMergedPRs(gh),
+        fetchAcComment: (issueId: string) => fetchAcCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
+        fetchDescription: async (identifier: string) => {
+          const d = await fetchIssueByIdentifier(apiKey, identifier);
+          return { id: d.id, description: d.description };
+        },
+        judge: (open: AC[]) => judgeAcceptance(judgeRun, open),
+        writeAcComment: (issueId: string, body: string) => upsertAcComment(apiKey, issueId, AC_COMMENT_MARKER, body),
+        activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName),
+        maxInProgress,
+        maxRounds: maxContinuations,
+      }
+    : null;
+console.log(
+  advance
+    ? "[yimbot] advance step ON: AC completeness + continuation"
+    : `[yimbot] advance step OFF${autoContinue ? " (gh unavailable)" : ""}`,
+);
+
 console.log(
   `[yimbot] watching "${teamName}": deploy on "${stateName}", ready-to-test flag on "${reviewStateName}", every ${heartbeatIntervalMinutes}m; syncing ${codebasePath}`,
 );
@@ -150,6 +196,7 @@ const stop = startWatcher({
   },
   prReview,
   cleanup,
+  advance,
 });
 
 // Re-entrancy guard: a sync that runs longer than one interval must not overlap

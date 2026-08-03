@@ -15,6 +15,7 @@ import type { MergedPR } from "./gh.ts";
 import {
   countAssignedInState,
   type CycleTodoIssue,
+  fetchAcCommentBody,
   fetchCycleTodoIssues,
   fetchIssueByIdentifier,
   fetchIssuesInState,
@@ -584,6 +585,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (config.advance) {
         try {
           const detail = await fetchIssueByIdentifier(config.apiKey, issue.identifier);
+          // Seed once: a re-claim must not clobber a tracker that already has
+          // satisfied/skipped ACs, so no-op when one is present.
+          const existing = await fetchAcCommentBody(config.apiKey, detail.id, AC_COMMENT_MARKER);
+          if (existing) return;
           const acs = parseAcceptanceCriteria(detail.description);
           if (acs.length > 0) {
             await upsertAcComment(config.apiKey, detail.id, AC_COMMENT_MARKER, renderAcComment(acs));

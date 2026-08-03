@@ -2,6 +2,13 @@ import { execFileSync, spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  type AC,
+  AC_COMMENT_MARKER,
+  type Judgment,
+  parseAcceptanceCriteria,
+  renderAcComment,
+} from "./acceptance.ts";
 import { selectNextClaim } from "./claim.ts";
 import { type CleanupDeps, cleanupOnce, readParentSession, type Worktree } from "./cleanup.ts";
 import type { MergedPR } from "./gh.ts";
@@ -9,11 +16,14 @@ import {
   countAssignedInState,
   type CycleTodoIssue,
   fetchCycleTodoIssues,
+  fetchIssueByIdentifier,
   fetchIssuesInState,
   type LinearContext,
   type LinearIssue,
   moveIssueToState,
+  upsertAcComment,
 } from "./linear-api.ts";
+import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
 import { ciSessionName, fixSessionName, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
@@ -276,6 +286,19 @@ export type WatcherConfig = {
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
   cleanup: { codebasePath: string; listMergedPRs: () => Promise<MergedPR[]> } | null;
+  // gh-backed hooks for the advance step; null disables it (AUTO_CONTINUE off, or
+  // gh unavailable). When set, each heartbeat judges merged PRs' issues against
+  // their AC tracker and spawns a continuation while criteria remain.
+  advance: {
+    listMergedPRs: () => Promise<MergedPR[]>;
+    fetchAcComment: (issueId: string) => Promise<string>;
+    fetchDescription: (identifier: string) => Promise<{ id: string; description: string }>;
+    judge: (open: AC[]) => Promise<Judgment>;
+    writeAcComment: (issueId: string, body: string) => Promise<void>;
+    activeCount: () => Promise<number>;
+    maxInProgress: number;
+    maxRounds: number;
+  } | null;
 };
 
 export function launchSession(name: string): Promise<void> {
@@ -535,6 +558,16 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: cleanupLog,
   };
 
+  // Advance step (gh-driven): each heartbeat, judge merged PRs' issues against
+  // their AC tracker and spawn a continuation while criteria remain open.
+  const advanceLog = (msg: string) => console.log(`[advance] ${msg}`);
+  const advanceState = freshAdvanceState();
+  const advanceDeps: AdvanceDeps | null = config.advance && {
+    ...config.advance,
+    spawnContinuation: spawnContinuationSession,
+    log: advanceLog,
+  };
+
   // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
@@ -546,8 +579,20 @@ export function startWatcher(config: WatcherConfig): () => void {
     maxInProgress: claim.maxInProgress,
     countInProgress: () => countAssignedInState(config.apiKey, viewerId, claim.progressStateName),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
-    moveToInProgress: (issue) =>
-      moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId),
+    moveToInProgress: async (issue) => {
+      await moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId);
+      if (config.advance) {
+        try {
+          const detail = await fetchIssueByIdentifier(config.apiKey, issue.identifier);
+          const acs = parseAcceptanceCriteria(detail.description);
+          if (acs.length > 0) {
+            await upsertAcComment(config.apiKey, detail.id, AC_COMMENT_MARKER, renderAcComment(acs));
+          }
+        } catch (err) {
+          claimLog(`AC seed failed for ${issue.identifier}: ${err}`);
+        }
+      }
+    },
     log: claimLog,
   };
 
@@ -560,6 +605,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       await pollOnce(reviewIconState, reviewIconDeps);
       if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);
       if (cleanupDeps) await cleanupOnce(cleanupDeps);
+      if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

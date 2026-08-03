@@ -271,6 +271,12 @@ test("hostLinks installs the fix-pr-ci skill", () => {
   assert.ok(link!.source.endsWith("skills/fix-pr-ci"), "sourced from skills/fix-pr-ci");
 });
 
+test("hostLinks installs the fix-pr-conflict skill", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-conflict"));
+  assert.ok(link, "fix-pr-conflict skill host link is present");
+  assert.ok(link!.source.endsWith("skills/fix-pr-conflict"), "sourced from skills/fix-pr-conflict");
+});
+
 test("hostLinks installs the session deny-list settings", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/session-settings.json"));
   assert.ok(link, "session-settings host link is present");

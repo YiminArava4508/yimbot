@@ -5,7 +5,9 @@ import {
   type GhRunner,
   listMyMergedPRs,
   listMyOpenPRs,
+  mergeableInfo,
   parseChecksInfo,
+  parseMergeableInfo,
   parseMergedPRs,
   parseOpenPRs,
   repoSlug,
@@ -156,6 +158,38 @@ test("checksInfo requests headRefOid + statusCheckRollup for the PR and parses t
   const { run, calls } = capturingRunner([rollupJson("deadbeef", [checkRun("COMPLETED", "FAILURE")])]);
   assert.deepEqual(await checksInfo(run, 4706), { state: "failing", headSha: "deadbeef" });
   assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "headRefOid,statusCheckRollup"]);
+});
+
+function mergeableJson(mergeable: string, headRefOid: string): string {
+  return JSON.stringify({ mergeable, headRefOid });
+}
+
+test("parseMergeableInfo reports conflicting for CONFLICTING", () => {
+  assert.deepEqual(parseMergeableInfo(mergeableJson("CONFLICTING", "sha1")), {
+    state: "conflicting",
+    headSha: "sha1",
+  });
+});
+
+test("parseMergeableInfo reports mergeable for MERGEABLE", () => {
+  assert.deepEqual(parseMergeableInfo(mergeableJson("MERGEABLE", "sha2")), {
+    state: "mergeable",
+    headSha: "sha2",
+  });
+});
+
+test("parseMergeableInfo reports unknown for UNKNOWN (GitHub still computing)", () => {
+  assert.equal(parseMergeableInfo(mergeableJson("UNKNOWN", "sha3")).state, "unknown");
+});
+
+test("parseMergeableInfo reports unknown for a missing mergeable field", () => {
+  assert.equal(parseMergeableInfo(JSON.stringify({ headRefOid: "sha4" })).state, "unknown");
+});
+
+test("mergeableInfo requests mergeable + headRefOid for the PR and parses them", async () => {
+  const { run, calls } = capturingRunner([mergeableJson("CONFLICTING", "deadbeef")]);
+  assert.deepEqual(await mergeableInfo(run, 4837), { state: "conflicting", headSha: "deadbeef" });
+  assert.deepEqual(calls[0], ["pr", "view", "4837", "--json", "mergeable,headRefOid"]);
 });
 
 test("parseViewerLogin extracts the login", () => {

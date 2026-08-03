@@ -1,4 +1,4 @@
-import type { ChecksInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
 
 // The tmux session name for a PR's fix run. Keyed by PR number (not branch) so
 // the in-flight guard is one-fix-session-per-PR regardless of the branch slug.
@@ -9,6 +9,17 @@ export function fixSessionName(prNumber: number): string {
 // The tmux session name for a PR's CI-fix run (sibling of fixSessionName).
 export function ciSessionName(prNumber: number): string {
   return `pr-${prNumber}-ci`;
+}
+
+// The tmux session name for a PR's merge-conflict-fix run (sibling of the two above).
+export function conflictSessionName(prNumber: number): string {
+  return `pr-${prNumber}-conflict`;
+}
+
+// Every fix session/window name a PR can have — the set the in-flight guard
+// checks so any one fix kind blocks the others on the shared worktree.
+export function fixSessionNames(prNumber: number): string[] {
+  return [fixSessionName(prNumber), ciSessionName(prNumber), conflictSessionName(prNumber)];
 }
 
 // Per-process record of the newest other-authored unresolved comment timestamp
@@ -27,14 +38,22 @@ export function ciSessionName(prNumber: number): string {
 // `fixInFlight` takes over), while still allowing a genuinely newer round of the
 // same kind to re-trigger.
 // In-memory: a restart clears it (at most one already-handled round re-runs).
+export type FixKind = "fix" | "ci" | "conflict";
+
 export type ReviewState = {
   lastHandledAt: Map<number, number>;
   lastHandledCiSha: Map<number, string>;
-  pendingSpawn: Map<number, "fix" | "ci">;
+  lastHandledConflictSha: Map<number, string>;
+  pendingSpawn: Map<number, FixKind>;
 };
 
 export function freshReviewState(): ReviewState {
-  return { lastHandledAt: new Map(), lastHandledCiSha: new Map(), pendingSpawn: new Map() };
+  return {
+    lastHandledAt: new Map(),
+    lastHandledCiSha: new Map(),
+    lastHandledConflictSha: new Map(),
+    pendingSpawn: new Map(),
+  };
 }
 
 export type PrReviewDeps = {
@@ -42,6 +61,8 @@ export type PrReviewDeps = {
   listOpenPRs: () => Promise<OpenPR[]>;
   // Unresolved-thread summary for a PR: count + newest other-authored comment ms.
   unresolvedInfo: (prNumber: number) => Promise<UnresolvedInfo>;
+  // Mergeability summary for a PR: conflicting/mergeable/unknown + head SHA.
+  mergeableInfo: (prNumber: number) => Promise<MergeableInfo>;
   // CI summary for a PR: rollup state + head SHA.
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
   // In-flight guard: a pr-<n>-fix OR pr-<n>-ci session/window exists = a fix is
@@ -52,23 +73,32 @@ export type PrReviewDeps = {
   spawnFix: (sessionName: string, branch: string) => void;
   // Launch a CI-fix session (session name, branch to check out).
   spawnCiFix: (sessionName: string, branch: string) => void;
+  // Launch a merge-conflict-fix session (session name, branch to check out).
+  spawnConflictFix: (sessionName: string, branch: string) => void;
   log: (msg: string) => void;
 };
 
 // One review-step tick, run every heartbeat. For each non-draft open PR, skip if
-// any fix (comment or CI) is actively running, then handle in priority order:
+// any fix (comment, conflict, or CI) is actively running, then handle in priority
+// order — comments, then conflict, then CI. All three fixes share the PR's
+// worktree, so at most one is spawned per PR per tick; the others are picked up a
+// later tick once the running one has ended.
 //
 // Comments first — skip if nothing is unresolved, if only the viewer's own
 // replies remain, or if the newest other-authored comment is not newer than the
 // last one handled (so deliberately-left threads never loop); otherwise spawn a
-// comment fix, record the timestamp, and move on. Because both fixes share the
-// PR's worktree, we never also spawn a CI fix the same tick — it is picked up a
-// later tick once the comment fix has ended.
+// comment fix, record the timestamp, and move on.
 //
-// CI second — only when there is no comment work. Skip unless CI has concluded
-// as failing (passing/pending/none do nothing); skip if we already handled this
-// failing head SHA (so a red build re-triggers only when a fix push moves the
-// head); otherwise spawn a CI fix and record the SHA.
+// Conflict second — only when there is no comment work. Skip unless the PR is
+// conflicting with the base (mergeable/unknown do nothing); skip if we already
+// handled this head SHA (so a clean bail that pushes nothing never loops, and a
+// resolution re-triggers only when the head moves); otherwise spawn a conflict
+// fix and record the SHA.
+//
+// CI last — only when there is no comment or conflict work. Skip unless CI has
+// concluded as failing (passing/pending/none do nothing); skip if we already
+// handled this failing head SHA (so a red build re-triggers only when a fix push
+// moves the head); otherwise spawn a CI fix and record the SHA.
 export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -103,7 +133,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       info.newestOtherCommentAt !== null &&
       (lastHandled === undefined || info.newestOtherCommentAt > lastHandled);
     if (hasNewComment) {
-      if (pending === "ci") continue; // a CI fix is starting on the shared worktree; wait
+      if (pending && pending !== "fix") continue; // another fix kind is starting on the shared worktree; wait
       const name = fixSessionName(pr.number);
       try {
         deps.spawnFix(name, pr.headRefName);
@@ -113,7 +143,34 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       } catch (err) {
         deps.log(`spawn failed for PR #${pr.number}: ${err}`);
       }
-      continue; // one fix per PR per tick — both fixes share the worktree
+      continue; // one fix per PR per tick — all three fixes share the worktree
+    }
+
+    let mergeable: MergeableInfo;
+    try {
+      mergeable = await deps.mergeableInfo(pr.number);
+    } catch (err) {
+      deps.log(`mergeable info failed for PR #${pr.number}: ${err}`);
+      continue;
+    }
+    if (mergeable.state === "conflicting") {
+      // A conflicting PR never falls through to CI: a red build can't be fixed
+      // while the branch won't merge, and a CI fix must not land on a conflicting
+      // worktree. Spawn a conflict fix when it's a head we haven't handled and no
+      // other fix kind is mid-spawn; otherwise just wait.
+      const unhandled = state.lastHandledConflictSha.get(pr.number) !== mergeable.headSha;
+      if (unhandled && !(pending && pending !== "conflict")) {
+        const name = conflictSessionName(pr.number);
+        try {
+          deps.spawnConflictFix(name, pr.headRefName);
+          state.lastHandledConflictSha.set(pr.number, mergeable.headSha);
+          state.pendingSpawn.set(pr.number, "conflict");
+          deps.log(`spawned ${name} for PR #${pr.number} (conflicting @ ${mergeable.headSha})`);
+        } catch (err) {
+          deps.log(`conflict spawn failed for PR #${pr.number}: ${err}`);
+        }
+      }
+      continue; // one fix per PR per tick — all three fixes share the worktree
     }
 
     let checks: ChecksInfo;
@@ -125,7 +182,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     }
     if (checks.state !== "failing") continue; // passing/pending/none — nothing to do
     if (state.lastHandledCiSha.get(pr.number) === checks.headSha) continue; // already handled this red head
-    if (pending === "fix") continue; // a comment fix is starting on the shared worktree; wait
+    if (pending && pending !== "ci") continue; // another fix kind is starting on the shared worktree; wait
 
     const ciName = ciSessionName(pr.number);
     try {

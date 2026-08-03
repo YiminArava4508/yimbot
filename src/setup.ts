@@ -423,6 +423,11 @@ export const hostLinks: HostLink[] = [
     label: "fix-pr-ci skill (~/.claude/skills/fix-pr-ci)",
   },
   {
+    source: join(repoRoot, "skills/fix-pr-conflict"),
+    target: join(homedir(), ".claude/skills/fix-pr-conflict"),
+    label: "fix-pr-conflict skill (~/.claude/skills/fix-pr-conflict)",
+  },
+  {
     source: join(repoRoot, "settings/session-settings.json"),
     target: join(homedir(), ".config/yimbot/session-settings.json"),
     label: "session deny-list (~/.config/yimbot/session-settings.json)",
@@ -811,6 +816,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".claude/skills/fix-pr-ci"),
       label: "~/.claude/skills/fix-pr-ci",
       role: "review step: fix failing PR CI (required for CI handling)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/fix-pr-conflict"),
+      label: "~/.claude/skills/fix-pr-conflict",
+      role: "review step: resolve PR merge conflicts (required for conflict handling)",
     },
     {
       path: join(homedir(), ".config/yimbot/session-settings.json"),

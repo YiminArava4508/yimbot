@@ -125,14 +125,15 @@ create_worktree() {
   fi
 }
 
-# Assemble the claude command. Always bypasses permission prompts so pickup /
-# PR-fix sessions run unattended; loads the deny-list settings when present (a
-# safety net that blocks catastrophic commands without prompting); uses the
-# planning model if set and passes the implementation model through the
-# environment for the pickup-ticket skill (all optional). Pure (reads env +
-# checks one file); unit-tested via sourcing.
+# Assemble the claude command. Runs in acceptEdits mode so pickup / PR-fix
+# sessions auto-apply edits and start without the bypass-mode confirmation
+# screen; loads the deny-list settings when present (a safety net that blocks
+# catastrophic commands without prompting); uses the planning model if set and
+# passes the implementation model through the environment for the pickup-ticket
+# skill (all optional). Pure (reads env + checks one file); unit-tested via
+# sourcing.
 build_claude_cmd() {
-  local cmd="claude --dangerously-skip-permissions"
+  local cmd="claude --permission-mode acceptEdits"
   local settings=${SESSION_SETTINGS:-$HOME/.config/yimbot/session-settings.json}
   [ -f "$settings" ] && cmd="$cmd --settings $settings"
   [ -n "${PLAN_MODEL:-}" ] && cmd="$cmd --model $PLAN_MODEL"

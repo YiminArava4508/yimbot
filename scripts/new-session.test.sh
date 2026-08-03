@@ -20,8 +20,10 @@ assert_defined default_branch_of
 assert_eq "$(DEFAULT_BRANCH=develop default_branch_of /no/such/repo)" "develop" "DEFAULT_BRANCH override wins"
 assert_eq "$(unset DEFAULT_BRANCH; default_branch_of /no/such/repo)" "main" "falls back to main when git can't resolve"
 
-# Sessions always launch with permissions bypassed so they run unattended.
-assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "1" "always bypasses permission prompts"
+# Sessions launch in acceptEdits mode: edits auto-apply and no bypass-mode
+# confirmation screen blocks the unattended start.
+assert_eq "$(build_claude_cmd | grep -c -- '--permission-mode acceptEdits')" "1" "runs in acceptEdits mode"
+assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "0" "no longer bypasses permissions"
 assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" "honors PLAN_MODEL"
 assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
 

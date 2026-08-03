@@ -34,6 +34,9 @@ const sample: YimbotConfig = {
   riskLabels: ["migration", "infra"],
   maxInProgress: 5,
   autoCleanup: true,
+  autoContinue: true,
+  maxContinuations: 5,
+  acJudgeModel: "",
 };
 
 test("isConfigured requires a non-empty API key", () => {
@@ -94,6 +97,9 @@ test("configToEnvRecord maps every setting to its env key", () => {
   assert.equal(r.RISK_LABELS, "migration,infra");
   assert.equal(r.MAX_IN_PROGRESS, "5");
   assert.equal(r.AUTO_CLEANUP, "true");
+  assert.equal(r.AUTO_CONTINUE, "true");
+  assert.equal(r.MAX_CONTINUATIONS, "5");
+  assert.equal(r.AC_JUDGE_MODEL, "");
 });
 
 test("serializeEnvFile emits parseable KEY=value lines with the claim section", () => {
@@ -110,13 +116,29 @@ test("serializeEnvFile emits parseable KEY=value lines with the claim section", 
   assert.equal(kv.RISK_LABELS, "migration,infra");
   assert.equal(kv.MAX_IN_PROGRESS, "5");
   assert.equal(kv.AUTO_CLEANUP, "true");
+  assert.equal(kv.AUTO_CONTINUE, "true");
+  assert.equal(kv.MAX_CONTINUATIONS, "5");
+  assert.equal(kv.AC_JUDGE_MODEL, "");
   assert.ok(text.includes("# --- Autonomous claim step ---"));
+  assert.ok(text.includes("# --- Advance step ---"));
 });
 
 test("serializeEnvFile round-trips empty risk labels", () => {
   const text = serializeEnvFile({ ...sample, riskLabels: [], autoClaim: true });
   assert.match(text, /^RISK_LABELS=$/m);
   assert.match(text, /^AUTO_CLAIM=true$/m);
+});
+
+test("serializeEnvFile round-trips the advance step config", () => {
+  const text = serializeEnvFile({
+    ...sample,
+    autoContinue: false,
+    maxContinuations: 8,
+    acJudgeModel: "haiku",
+  });
+  assert.match(text, /^AUTO_CONTINUE=false$/m);
+  assert.match(text, /^MAX_CONTINUATIONS=8$/m);
+  assert.match(text, /^AC_JUDGE_MODEL=haiku$/m);
 });
 
 test("commandExists is true for a real binary, false for a bogus one", () => {

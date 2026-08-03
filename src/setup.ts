@@ -32,6 +32,9 @@ export type YimbotConfig = {
   riskLabels: string[];
   maxInProgress: number;
   autoCleanup: boolean;
+  autoContinue: boolean;
+  maxContinuations: number;
+  acJudgeModel: string;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -183,6 +186,9 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     RISK_LABELS: c.riskLabels.join(","),
     MAX_IN_PROGRESS: String(c.maxInProgress),
     AUTO_CLEANUP: String(c.autoCleanup),
+    AUTO_CONTINUE: String(c.autoContinue),
+    MAX_CONTINUATIONS: String(c.maxContinuations),
+    AC_JUDGE_MODEL: c.acJudgeModel,
   };
 }
 
@@ -211,6 +217,11 @@ export function serializeEnvFile(c: YimbotConfig): string {
     "",
     "# --- Cleanup step ---",
     `AUTO_CLEANUP=${r.AUTO_CLEANUP}`,
+    "",
+    "# --- Advance step ---",
+    `AUTO_CONTINUE=${r.AUTO_CONTINUE}`,
+    `MAX_CONTINUATIONS=${r.MAX_CONTINUATIONS}`,
+    `AC_JUDGE_MODEL=${r.AC_JUDGE_MODEL}`,
     "",
   ].join("\n");
 }
@@ -572,6 +583,36 @@ export async function runSetup(): Promise<YimbotConfig> {
     }),
   );
 
+  const autoContinueDefault = !["false", "off", "no", "0"].includes(
+    envOr("AUTO_CONTINUE", "true").toLowerCase(),
+  );
+  const autoContinue = bail(
+    await p.confirm({
+      message: "Enable the advance step? (judge merged PRs against issue ACs and auto-continue while criteria remain)",
+      initialValue: autoContinueDefault,
+    }),
+  );
+  let maxContinuations = Number(envOr("MAX_CONTINUATIONS", "5"));
+  if (autoContinue) {
+    const maxContinuationsStr = bail(
+      await p.text({
+        message: "Max continuation rounds per issue",
+        initialValue: String(
+          Number.isInteger(maxContinuations) && maxContinuations >= 1 ? maxContinuations : 5,
+        ),
+        validate: (v) =>
+          Number.isInteger(Number(v)) && Number(v) >= 1 ? undefined : "Enter a positive integer",
+      }),
+    );
+    maxContinuations = Number(maxContinuationsStr);
+  }
+  const acJudgeModel = bail(
+    await p.text({
+      message: "Model for the AC judge (blank = claude default)",
+      initialValue: envOr("AC_JUDGE_MODEL", ""),
+    }),
+  ).trim();
+
   await installHostLinks();
 
   const preflight = [
@@ -633,6 +674,9 @@ export async function runSetup(): Promise<YimbotConfig> {
     riskLabels,
     maxInProgress,
     autoCleanup,
+    autoContinue,
+    maxContinuations,
+    acJudgeModel,
   };
   writeEnvFile(serializeEnvFile(config));
   p.outro(`Saved to .env — signed in as ${viewerName}, watching "${teamName}".`);

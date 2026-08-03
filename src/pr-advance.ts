@@ -39,6 +39,7 @@ export type AdvanceDeps = {
   maxInProgress: number;
   maxRounds: number;
   spawnContinuation: (issueNumber: string, round: number) => void;
+  markReady: (identifier: string) => void;
   log: (msg: string) => void;
 };
 
@@ -94,6 +95,7 @@ export async function advanceOnce(state: AdvanceState, deps: AdvanceDeps): Promi
       const decision = selectContinuation(acs2, prev, round, deps.maxRounds);
 
       if (decision.kind === "complete") {
+        deps.markReady(identifier);
         deps.log(`${identifier} complete`);
         markAll();
         continue;

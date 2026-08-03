@@ -568,6 +568,10 @@ export function startWatcher(config: WatcherConfig): () => void {
   const advanceDeps: AdvanceDeps | null = config.advance && {
     ...config.advance,
     spawnContinuation: spawnContinuationSession,
+    markReady: (identifier: string) => {
+      const match = findExistingSession(identifier, listTmuxSessions(), listWorktreeDirs());
+      if (match) setFeatureReady(match);
+    },
     log: advanceLog,
   };
 

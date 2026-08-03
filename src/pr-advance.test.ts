@@ -25,6 +25,7 @@ function baseDeps(over: Partial<AdvanceDeps>): AdvanceDeps {
     maxInProgress: 3,
     maxRounds: 5,
     spawnContinuation: () => {},
+    markReady: () => {},
     log: () => {},
     ...over,
   };
@@ -54,15 +55,18 @@ test("advanceOnce defers on WIP cap without spawning or bumping round", async ()
   assert.ok(!state.processedPRs.has(10)); // deferred, so it retries next tick
 });
 
-test("advanceOnce marks complete and does not spawn", async () => {
+test("advanceOnce marks complete, flags ready, and does not spawn", async () => {
   const spawned: unknown[] = [];
+  const readied: string[] = [];
   const state = freshAdvanceState();
   const deps = baseDeps({
     judge: async () => ({ satisfied: ["pdf-1", "pdf-2"], skipped: [] }),
     spawnContinuation: () => spawned.push(1),
+    markReady: (identifier) => readied.push(identifier),
   });
   await advanceOnce(state, deps);
   assert.equal(spawned.length, 0);
+  assert.deepEqual(readied, ["ENG-949"]);
   assert.ok(state.processedPRs.has(10));
 });
 

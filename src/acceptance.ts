@@ -42,3 +42,50 @@ export function parseAcceptanceCriteria(description: string): AC[] {
   }
   return acs;
 }
+
+export const AC_COMMENT_MARKER = "<!-- yimbot-ac-tracker -->";
+
+function box(a: AC): string {
+  if (a.status === "satisfied") return "[x]";
+  if (a.status === "skipped") return "[~]";
+  return "[ ]";
+}
+
+export function renderAcComment(acs: AC[]): string {
+  const satisfied = acs.filter((a) => a.status === "satisfied").length;
+  const skipped = acs.filter((a) => a.status === "skipped").length;
+  const lines = [
+    AC_COMMENT_MARKER,
+    `**yimbot acceptance-criteria tracker** (${satisfied}/${acs.length} satisfied, ${skipped} skipped)`,
+    "",
+  ];
+  for (const a of acs) {
+    const reason = a.status === "skipped" && a.skipReason ? ` — skipped: ${a.skipReason}` : "";
+    lines.push(`- ${box(a)} \`${a.id}\` ${a.text}${reason}`);
+  }
+  const nonSkipped = acs.filter((a) => a.status !== "skipped");
+  if (nonSkipped.length > 0 && nonSkipped.every((a) => a.status === "satisfied")) {
+    lines.push("", `**complete (${skipped} skipped)**`);
+  }
+  return lines.join("\n");
+}
+
+const LINE_RE = /^- \[([ x~])\] `([^`]+)` (.*)$/;
+
+export function parseAcComment(body: string): AC[] {
+  if (!body.includes(AC_COMMENT_MARKER)) return [];
+  const acs: AC[] = [];
+  for (const raw of body.split("\n")) {
+    const m = LINE_RE.exec(raw.trim());
+    if (!m) continue;
+    const [, mark, id, rest] = m;
+    const section = id.split("-")[0];
+    if (mark === "~") {
+      const [text, reason] = rest.split(" — skipped: ");
+      acs.push({ id, section, text: text.trim(), status: "skipped", skipReason: (reason ?? "").trim() });
+    } else {
+      acs.push({ id, section, text: rest.trim(), status: mark === "x" ? "satisfied" : "open" });
+    }
+  }
+  return acs;
+}

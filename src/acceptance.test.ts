@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type AC, parseAcceptanceCriteria } from "./acceptance.ts";
+import { type AC, AC_COMMENT_MARKER, parseAcceptanceCriteria, parseAcComment, renderAcComment } from "./acceptance.ts";
 
 const DESC = `User Story blah.
 
@@ -30,4 +30,20 @@ test("parseAcceptanceCriteria assigns section-scoped stable ids", () => {
 
 test("parseAcceptanceCriteria returns [] when no AC heading present", () => {
   assert.deepEqual(parseAcceptanceCriteria("Just a description, no criteria."), []);
+});
+
+test("renderAcComment/parseAcComment round-trip preserves status and reasons", () => {
+  const acs: AC[] = [
+    { id: "pdf-1", section: "pdf", text: "Upload button", status: "satisfied" },
+    { id: "pdf-2", section: "pdf", text: "Validate file", status: "open" },
+    { id: "excel-13", section: "excel", text: "Retain file", status: "skipped", skipReason: "manual" },
+  ];
+  const body = renderAcComment(acs);
+  assert.ok(body.startsWith(AC_COMMENT_MARKER));
+  const back = parseAcComment(body);
+  assert.deepEqual(back, acs);
+});
+
+test("parseAcComment returns [] without the marker", () => {
+  assert.deepEqual(parseAcComment("some human comment"), []);
 });

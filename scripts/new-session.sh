@@ -20,6 +20,9 @@
 #   SESSION_LOCAL_ENV_CMD  command staged into the shell window's
 #                          history (Up then Enter runs it) to start
 #                          the local dev env on demand              (none)
+#   SESSION_SETTINGS       settings JSON passed to `claude --settings`;
+#                          a deny-list safety net. Loaded when the file
+#                          exists.        (~/.config/yimbot/session-settings.json)
 #   PLAN_MODEL             model the Claude session plans on;
 #                          passed to `claude --model`               (Claude default)
 #   IMPL_MODEL             model exported for the implementation
@@ -93,11 +96,15 @@ create_worktree() {
 }
 
 # Assemble the claude command. Always bypasses permission prompts so pickup /
-# PR-fix sessions run unattended; uses the planning model if set and passes the
-# implementation model through the environment for the pickup-ticket skill (both
-# optional). Pure (reads only the environment); unit-tested via sourcing.
+# PR-fix sessions run unattended; loads the deny-list settings when present (a
+# safety net that blocks catastrophic commands without prompting); uses the
+# planning model if set and passes the implementation model through the
+# environment for the pickup-ticket skill (all optional). Pure (reads env +
+# checks one file); unit-tested via sourcing.
 build_claude_cmd() {
   local cmd="claude --dangerously-skip-permissions"
+  local settings=${SESSION_SETTINGS:-$HOME/.config/yimbot/session-settings.json}
+  [ -f "$settings" ] && cmd="$cmd --settings $settings"
   [ -n "${PLAN_MODEL:-}" ] && cmd="$cmd --model $PLAN_MODEL"
   [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
   printf '%s' "$cmd"

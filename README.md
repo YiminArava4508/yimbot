@@ -127,17 +127,36 @@ pnpm install
 pnpm start   # first run walks you through onboarding, writes .env, then starts
 ```
 
-On first launch (no `.env`), `pnpm start` drops into an interactive wizard. It
-first runs a prerequisite pre-flight that verifies the tools the daemon and
-session launcher shell out to (`git`, `tmux`, `gh`, `claude`, `node`, `pnpm`) and
-that `gh` is authenticated; anything missing blocks setup, and the wizard offers
-to install it for you (via the detected package manager, or `npm`/`corepack` for
-`claude`/`pnpm`, or `gh auth login` for authentication) before re-checking. Then
-it authenticates your Linear API key, lets you pick your team and workflow states
-from the real Linear data, validates the codebase path is a git repo, links the
-session launcher and pickup-ticket skill into place, then writes `.env` and
-continues into the daemon. Re-run it anytime with `pnpm onboard` (backs up the
+On first launch (no `.env`), `pnpm start` drops into an interactive wizard that
+begins with a two-tier prerequisite pre-flight:
+
+- **Required (blocks setup until satisfied):** the tools the daemon and session
+  launcher shell out to (`git`, `tmux`, `gh`, `claude`, `node`, `pnpm`), `gh`
+  authentication, the `superpowers` plugin (every skill invokes it), and Claude
+  Code authentication. The wizard offers to install what it can (detected package
+  manager, or `npm`/`corepack` for `claude`/`pnpm`, `gh auth login` for auth) and
+  re-checks; the rest show exact instructions and loop until fixed.
+- **Recommended (warns, never blocks):** `gh` token `repo`+`workflow` scopes and
+  git identity (both offered as one-command fixes), the `linear-server` /
+  `shortcut` MCP servers the ticket sessions fetch through, a repo-specific
+  `merge-main` skill (`fix-pr-ci` uses it to sync `origin/main`), and a tmux
+  status line that shows `@feature_status` (the ready-to-test flag).
+
+Then it authenticates your Linear API key, lets you pick your team and workflow
+states from the real Linear data, validates the codebase path is a git repo,
+links the session launcher and pickup-ticket skill into place, then writes `.env`
+and continues into the daemon. Re-run it anytime with `pnpm onboard` (backs up the
 old `.env`). You can still hand-edit `.env` from `.env.example` if you prefer.
+
+Spawned sessions launch `claude` with `--dangerously-skip-permissions` so the
+pickup / PR-fix flows run unattended (no permission prompt can hang a headless
+session). As a safety net that never prompts, the launcher also passes
+`--settings` a deny-list (`~/.config/yimbot/session-settings.json`, symlinked by
+`pnpm onboard`) that hard-blocks catastrophic commands (force-push, `git clean`,
+`rm -rf /` or `~`, `terraform destroy`, `kubectl delete`, `docker` prune/volume
+rm, `dropdb`); a denied command fails silently rather than prompting, so it adds
+safety without any hang risk. Point `SESSION_SETTINGS` at your own file to extend
+it per repo.
 
 ## Usage
 

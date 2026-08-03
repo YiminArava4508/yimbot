@@ -19,6 +19,12 @@ assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "1
 assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" "honors PLAN_MODEL"
 assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
 
+# A deny-list settings file, when present, is passed to claude via --settings.
+SETTINGS_TMP=$(mktemp)
+assert_eq "$(SESSION_SETTINGS=$SETTINGS_TMP build_claude_cmd | grep -c -- "--settings $SETTINGS_TMP")" "1" "passes --settings when the file exists"
+rm -f "$SETTINGS_TMP"
+assert_eq "$(SESSION_SETTINGS=/no/such/settings.json build_claude_cmd | grep -c -- '--settings')" "0" "omits --settings when the file is absent"
+
 # seed_prompt_for still classifies recognized session names.
 assert_eq "$(seed_prompt_for eng-42-add-widget | grep -c 'pickup-ticket skill')" "1" "eng seed hands off to pickup-ticket"
 assert_eq "$(seed_prompt_for sc-7-foo | grep -c 'pickup-ticket skill')" "1" "sc seed hands off to pickup-ticket"

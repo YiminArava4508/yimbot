@@ -22,60 +22,47 @@ quietly checks your Linear board and your open PRs every few minutes (its
 **heartbeat**) and can do seven things (plus keep your code up to date):
 
 ```mermaid
-flowchart TD
-    A(["Start yimbot"]) --> B{"Is it set up yet?"}
-    B -- no --> W["First-time setup:<br/>answer a few questions,<br/>your answers are saved"]
-    W --> C["yimbot is running,<br/>watching Linear + your PRs"]
-    B -- yes --> C
+flowchart TB
+    P{{"Heartbeat: every few minutes"}}
+    P --> BOARD
+    P --> PRS
+    P --> CODE
 
-    C --> P{{"Heartbeat: every few<br/>minutes, check the board"}}
+    subgraph BOARD["Linear board"]
+        direction TB
+        L["Start new work<br/>card enters In Progress,<br/>open worktree + Claude"]
+        M["Grab next task<br/>under WIP cap,<br/>claim top to-do"]
+        F["Flag ready to test<br/>card enters In Review,<br/>mark session"]
+    end
 
-    P --> S["Keep the code<br/>up to date"]
+    subgraph PRS["Your open PRs"]
+        direction TB
+        R["Review comments<br/>fix, push, resolve threads"]
+        CI["Failing CI<br/>sync or fix, then push"]
+        CF["Conflict with main<br/>merge main in, resolve"]
+        CU["Merged<br/>remove worktree + session"]
+    end
 
-    P --> G1["Start new work"]
-    G1 --> T1{"Did you move a card<br/>to 'In Progress'?"}
-    T1 -- yes --> L["Open a fresh workspace and<br/>let Claude start building it"]
-
-    P --> G2["Grab the next task"]
-    G2 --> PK{"Free to take on more?<br/>under your work-in-progress limit"}
-    PK -- yes --> M["Take the top to-do<br/>and start it"]
-    M -.->|next check| T1
-
-    P --> G3["Handle review comments"]
-    G3 --> T2{"An open PR of yours with<br/>unresolved comments?"}
-    T2 -- yes --> R["Add a fix window to that ticket's<br/>session (or open a new one) that fixes<br/>them, pushes, resolves the threads,<br/>and asks for re-review"]
-
-    P --> G6["Fix failing CI"]
-    G6 --> T5{"An open PR of yours<br/>with failing CI?"}
-    T5 -- yes --> CI["Add a CI-fix window to that ticket's<br/>session (or open a new one) that syncs<br/>main if stale, fixes the build, and pushes"]
-
-    P --> G7["Fix merge conflicts"]
-    G7 --> T6{"An open PR of yours<br/>conflicting with main?"}
-    T6 -- yes --> CF["Add a conflict-fix window to that ticket's<br/>session (or open a new one) that merges main in,<br/>resolves conflicts preserving the feature, and pushes"]
-
-    P --> G4["Flag ready to test"]
-    G4 --> T3{"Did a card move<br/>to 'In Review'?"}
-    T3 -- yes --> F["Mark its session with a<br/>'ready to test' icon"]
-
-    P --> G5["Clean up finished work"]
-    G5 --> T4{"Did one of your<br/>PRs get merged?"}
-    T4 -- yes --> CU["Remove that PR's workspace<br/>and close its session"]
+    subgraph CODE["Codebase"]
+        direction TB
+        S["Keep main fresh<br/>git pull --rebase"]
+    end
 
     classDef deploy fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
     classDef claim fill:#bee3f8,stroke:#2b6cb0,color:#1a202c;
     classDef review fill:#feebc8,stroke:#c05621,color:#1a202c;
-    classDef ready fill:#e9d8fd,stroke:#6b46c1,color:#1a202c;
-    classDef cleanup fill:#fed7d7,stroke:#c53030,color:#1a202c;
     classDef ci fill:#fefcbf,stroke:#b7791f,color:#1a202c;
     classDef conflict fill:#fbd3e9,stroke:#a61e4d,color:#1a202c;
+    classDef ready fill:#e9d8fd,stroke:#6b46c1,color:#1a202c;
+    classDef cleanup fill:#fed7d7,stroke:#c53030,color:#1a202c;
     classDef sync fill:#e2e8f0,stroke:#718096,color:#1a202c;
-    class G1,T1,L deploy;
-    class G2,PK,M claim;
-    class G3,T2,R review;
-    class G6,T5,CI ci;
-    class G7,T6,CF conflict;
-    class G4,T3,F ready;
-    class G5,T4,CU cleanup;
+    class L deploy;
+    class M claim;
+    class F ready;
+    class R review;
+    class CI ci;
+    class CF conflict;
+    class CU cleanup;
     class S sync;
 ```
 
@@ -119,6 +106,48 @@ flowchart TD
   tmux session via `~/end-session.sh`. *(optional; setting: `AUTO_CLEANUP`, on by
   default)* Needs `gh` installed and authenticated; runs against the repo at
   `CODEBASE_PATH`.
+
+### The AI loop
+
+Those heartbeat paths exist to drive one thing: a ticket from board to merged
+without you in the loop. The diagram below is that lifecycle, with the work a
+single Claude session does nested inside it.
+
+There are two loops. The **inner** one is per session: a launched Claude plans on
+`PLAN_MODEL`, implements through `IMPL_MODEL` subagents, and self-reviews,
+cycling back to implementation until the work is green before it opens the PR. The
+**outer** one is the daemon reacting to that PR: each heartbeat it feeds review
+comments, failing CI, and merge conflicts back in as fix windows on the same
+worktree, pushing and re-checking until the PR is green, approved, and mergeable,
+then cleans the workspace up once it merges.
+
+```mermaid
+flowchart TB
+    TODO(["Todo card"]) -->|"claim, under WIP cap"| PROG(["In Progress"])
+    PROG -->|"launch worktree + tmux + Claude"| SESS
+
+    subgraph SESS["Work session: one Claude, one worktree"]
+        direction LR
+        FETCH["fetch ticket"] --> PLAN["plan<br/>PLAN_MODEL"]
+        PLAN --> IMPL["implement<br/>IMPL_MODEL subagents"]
+        IMPL --> REV{"self-review"}
+        REV -->|"needs work"| IMPL
+    end
+
+    REV -->|"green: open PR"| PR(["Open PR"])
+    PR -->|"card enters In Review"| TEST(["flagged ready,<br/>you test locally"])
+    PR -->|"comments, failing CI, or conflict"| FIX["fix window<br/>address-pr-comments,<br/>fix-pr-ci, or fix-pr-conflict"]
+    FIX -->|"push, re-check"| PR
+    PR -->|"approved + green + mergeable"| MERGED(["Merged"])
+    MERGED -->|"cleanup"| GONE(["worktree + session removed"])
+
+    classDef sess fill:#e6fffa,stroke:#2c7a7b,color:#1a202c;
+    classDef fix fill:#fefcbf,stroke:#b7791f,color:#1a202c;
+    classDef done fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
+    class FETCH,PLAN,IMPL,REV sess;
+    class FIX fix;
+    class MERGED,GONE done;
+```
 
 ## Setup
 

@@ -89,3 +89,46 @@ export function parseAcComment(body: string): AC[] {
   }
   return acs;
 }
+
+export type Judgment = { satisfied: string[]; skipped: { id: string; reason: string }[] };
+
+export function applyJudgment(acs: AC[], j: Judgment): AC[] {
+  const satisfied = new Set(j.satisfied);
+  const skipped = new Map(j.skipped.map((s) => [s.id, s.reason]));
+  return acs.map((a) => {
+    if (skipped.has(a.id)) return { ...a, status: "skipped" as const, skipReason: skipped.get(a.id) };
+    if (a.status === "satisfied" || satisfied.has(a.id)) return { ...a, status: "satisfied" as const };
+    return a;
+  });
+}
+
+export function openAcs(acs: AC[]): AC[] {
+  return acs.filter((a) => a.status === "open");
+}
+
+export function satisfiedCount(acs: AC[]): number {
+  return acs.filter((a) => a.status === "satisfied").length;
+}
+
+export function isComplete(acs: AC[]): boolean {
+  return acs.length > 0 && acs.every((a) => a.status !== "open");
+}
+
+export type ContinuationDecision =
+  | { kind: "complete" }
+  | { kind: "halt"; reason: string }
+  | { kind: "continue"; scope: AC[] };
+
+export function selectContinuation(
+  acs: AC[],
+  prevSatisfied: number,
+  round: number,
+  maxRounds: number,
+): ContinuationDecision {
+  if (isComplete(acs)) return { kind: "complete" };
+  if (round >= maxRounds) return { kind: "halt", reason: `max continuation rounds (${maxRounds}) reached` };
+  if (round > 0 && satisfiedCount(acs) <= prevSatisfied) {
+    return { kind: "halt", reason: `no progress: satisfied count stuck at ${satisfiedCount(acs)}` };
+  }
+  return { kind: "continue", scope: openAcs(acs) };
+}

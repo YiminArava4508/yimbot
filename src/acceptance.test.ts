@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type AC, AC_COMMENT_MARKER, parseAcceptanceCriteria, parseAcComment, renderAcComment } from "./acceptance.ts";
+import {
+  type AC,
+  AC_COMMENT_MARKER,
+  applyJudgment,
+  isComplete,
+  type Judgment,
+  openAcs,
+  parseAcceptanceCriteria,
+  parseAcComment,
+  renderAcComment,
+  satisfiedCount,
+  selectContinuation,
+} from "./acceptance.ts";
 
 const DESC = `User Story blah.
 
@@ -46,4 +58,40 @@ test("renderAcComment/parseAcComment round-trip preserves status and reasons", (
 
 test("parseAcComment returns [] without the marker", () => {
   assert.deepEqual(parseAcComment("some human comment"), []);
+});
+
+const base = (): AC[] => [
+  { id: "pdf-1", section: "pdf", text: "a", status: "open" },
+  { id: "pdf-2", section: "pdf", text: "b", status: "open" },
+  { id: "excel-1", section: "excel", text: "c", status: "open" },
+];
+
+test("applyJudgment marks satisfied and skipped, never un-satisfies", () => {
+  const j: Judgment = { satisfied: ["pdf-1"], skipped: [{ id: "excel-1", reason: "manual" }] };
+  const out = applyJudgment(base(), j);
+  assert.equal(out.find((a) => a.id === "pdf-1")?.status, "satisfied");
+  assert.equal(out.find((a) => a.id === "excel-1")?.status, "skipped");
+  assert.equal(out.find((a) => a.id === "excel-1")?.skipReason, "manual");
+  assert.equal(out.find((a) => a.id === "pdf-2")?.status, "open");
+  // re-applying empty judgment keeps pdf-1 satisfied
+  assert.equal(
+    applyJudgment(out, { satisfied: [], skipped: [] }).find((a) => a.id === "pdf-1")?.status,
+    "satisfied",
+  );
+});
+
+test("isComplete true when all satisfied or skipped", () => {
+  const acs = applyJudgment(base(), { satisfied: ["pdf-1", "pdf-2"], skipped: [{ id: "excel-1", reason: "x" }] });
+  assert.equal(isComplete(acs), true);
+  assert.equal(openAcs(acs).length, 0);
+});
+
+test("selectContinuation: complete, halt-no-progress, halt-max, continue", () => {
+  const done = applyJudgment(base(), { satisfied: ["pdf-1", "pdf-2", "excel-1"], skipped: [] });
+  assert.deepEqual(selectContinuation(done, 2, 1, 5), { kind: "complete" });
+
+  const oneDone = applyJudgment(base(), { satisfied: ["pdf-1"], skipped: [] });
+  assert.equal(selectContinuation(oneDone, satisfiedCount(oneDone), 1, 5).kind, "halt"); // 1 <= 1
+  assert.equal(selectContinuation(oneDone, 0, 1, 5).kind, "continue"); // 1 > 0
+  assert.equal(selectContinuation(oneDone, 0, 5, 5).kind, "halt"); // round cap
 });

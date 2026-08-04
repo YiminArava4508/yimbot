@@ -1,10 +1,12 @@
-import { configToEnvRecord, isConfigured, runSetup } from "./src/setup.ts";
+// index.ts
+import { createWriteStream } from "node:fs";
+import { join } from "node:path";
+import { format } from "node:util";
+import { envOr } from "./src/env.ts";
+import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
+import { runTui } from "./src/tui.ts";
 
-// First-run onboarding: with no API key configured (fresh clone, or .env never
-// filled in), walk the user through setup, write .env, and apply the result to
-// this process's env so the daemon starts immediately after. Node loads .env via
-// --env-file-if-exists, so a missing file no longer crashes before we get here.
 if (!isConfigured(process.env)) {
   const config = await runSetup();
   for (const [key, value] of Object.entries(configToEnvRecord(config))) {
@@ -12,18 +14,41 @@ if (!isConfigured(process.env)) {
   }
 }
 
-const stop = await startDaemon();
-
-function shutdown(): void {
-  stop();
-  process.exit(0);
+function redirectConsoleToFile(): void {
+  try {
+    const path = envOr("DAEMON_LOG", join(process.cwd(), "daemon.log"));
+    const stream = createWriteStream(path, { flags: "a" });
+    const write = (...args: unknown[]) => void stream.write(format(...args) + "\n");
+    console.log = write;
+    console.warn = write;
+    console.error = write;
+  } catch {
+    // Keep console.* on stdout if the log stream cannot open; the TUI may show
+    // stray lines but the daemon still runs.
+  }
 }
 
-process.on("SIGINT", () => {
-  console.log("\n[yimbot] shutting down");
-  shutdown();
-});
-process.on("SIGTERM", () => {
-  console.log("[yimbot] shutting down");
-  shutdown();
-});
+if (process.stdout.isTTY) {
+  redirectConsoleToFile();
+  const stop = await startDaemon();
+  runTui({
+    onQuit: () => {
+      stop();
+      process.exit(0);
+    },
+  });
+} else {
+  const stop = await startDaemon();
+  const shutdown = () => {
+    stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => {
+    console.log("\n[yimbot] shutting down");
+    shutdown();
+  });
+  process.on("SIGTERM", () => {
+    console.log("[yimbot] shutting down");
+    shutdown();
+  });
+}

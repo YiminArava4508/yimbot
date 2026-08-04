@@ -159,6 +159,7 @@ export function reduceRows(
   rows.sort((a, b) => b.ts - a.ts);
 
   while (rows.length > maxRows) {
+    if (rows.length === 0) break;
     let idx = -1;
     for (let i = rows.length - 1; i >= 0; i--) {
       if (rows[i].terminal) {

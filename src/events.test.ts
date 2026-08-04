@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, readEvents, eventsLogPath, type YimbotEvent } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, readEvents, eventsLogPath, reduceRows, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,8 +108,6 @@ test("readEvents: missing file -> [] and malformed lines skipped", () => {
   });
 });
 
-import { reduceRows } from "./events.ts";
-
 const ev = (over: Partial<YimbotEvent>): YimbotEvent => ({
   ts: 0,
   kind: "task_started",
@@ -163,4 +161,13 @@ test("reduceRows: maxRows drops oldest terminal first", () => {
   ];
   const rows = reduceRows(events, 3, { keepMergedMs: 1_000_000, maxRows: 2 });
   assert.deepEqual(rows.map((r) => r.key).sort(), ["NEW", "OLD-WORK"]);
+});
+
+test("reduceRows: maxRows of 0 returns empty and does not hang", () => {
+  const rows = reduceRows(
+    [ev({ key: "A", label: "A", ts: 1 }), ev({ key: "B", label: "B", ts: 2 })],
+    100,
+    { keepMergedMs: 1_000_000, maxRows: 0 },
+  );
+  assert.deepEqual(rows, []);
 });

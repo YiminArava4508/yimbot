@@ -30,21 +30,35 @@ export function fixSessionNames(prNumber: number): string[] {
 // fix push) and a green build never does.
 //
 // `pendingSpawn` records a fixer we spawned but have not yet seen live via
-// `fixInFlight`. Spawns are detached, so a session/window is invisible for a tick
-// or two after `spawnFix`/`spawnCiFix` returns (slow standalone setup hook). The
-// tmux-visibility guard alone would then let the *other* fix kind (a different
-// session name) spawn onto the PR's shared worktree in that window. The latch
-// blocks the other kind until the first becomes visible (then it clears and
-// `fixInFlight` takes over), while still allowing a genuinely newer round of the
-// same kind to re-trigger.
+// `inFlightFixKinds`. Spawns are detached, so a session/window is invisible for a
+// tick or two after `spawnFix`/`spawnCiFix` returns (slow standalone setup hook).
+// The tmux-visibility guard alone would then let the *other* fix kind (a
+// different session name) spawn onto the PR's shared worktree in that window.
+// The latch blocks the other kind until the first becomes visible (then it
+// clears and `inFlightFixKinds` takes over), while still allowing a genuinely
+// newer round of the same kind to re-trigger.
 // In-memory: a restart clears it (at most one already-handled round re-runs).
 export type FixKind = "fix" | "ci" | "conflict";
+
+export const ALL_FIX_KINDS: FixKind[] = ["fix", "ci", "conflict"];
+
+// The session/window name for a PR's fix of a given kind.
+export function sessionNameFor(kind: FixKind, prNumber: number): string {
+  return kind === "fix"
+    ? fixSessionName(prNumber)
+    : kind === "ci"
+      ? ciSessionName(prNumber)
+      : conflictSessionName(prNumber);
+}
 
 export type ReviewState = {
   lastHandledAt: Map<number, number>;
   lastHandledCiSha: Map<number, string>;
   lastHandledConflictSha: Map<number, string>;
   pendingSpawn: Map<number, FixKind>;
+  // "<prNumber>:<kind>" -> epoch ms the fix was first seen in flight. Drives the
+  // stale reap backstop. In-memory: a restart resets the timers.
+  fixSeenAt: Map<string, number>;
 };
 
 export function freshReviewState(): ReviewState {
@@ -53,6 +67,7 @@ export function freshReviewState(): ReviewState {
     lastHandledCiSha: new Map(),
     lastHandledConflictSha: new Map(),
     pendingSpawn: new Map(),
+    fixSeenAt: new Map(),
   };
 }
 
@@ -65,10 +80,16 @@ export type PrReviewDeps = {
   mergeableInfo: (prNumber: number) => Promise<MergeableInfo>;
   // CI summary for a PR: rollup state + head SHA.
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
-  // In-flight guard: a pr-<n>-fix OR pr-<n>-ci session/window exists = a fix is
-  // actively running on this PR's (shared) worktree. Serializes both fix kinds
-  // onto one worktree so they never edit/push the same branch concurrently.
-  fixInFlight: (prNumber: number, branch: string) => boolean;
+  // Which fix kinds are currently in flight for a PR (comment/ci/conflict).
+  // Empty means no fixer is on the shared worktree. Replaces the old boolean
+  // guard so the reaper can act per kind.
+  inFlightFixKinds: (prNumber: number, branch: string) => FixKind[];
+  // Tear down a PR's fix of a kind (tmux session/window only, never the worktree).
+  reapFix: (prNumber: number, branch: string, kind: FixKind) => void;
+  // Injected clock (epoch ms) for the stale-reap timer; Date.now in production.
+  now: () => number;
+  // Stale-reap threshold: reap a fix in flight longer than this regardless of state.
+  reapStaleMs: number;
   // Launch a comment-fix session (session name, branch to check out).
   spawnFix: (sessionName: string, branch: string) => void;
   // Launch a CI-fix session (session name, branch to check out).
@@ -99,6 +120,18 @@ export type PrReviewDeps = {
 // concluded as failing (passing/pending/none do nothing); skip if we already
 // handled this failing head SHA (so a red build re-triggers only when a fix push
 // moves the head); otherwise spawn a CI fix and record the SHA.
+//
+// Whether a fix's remit is definitively complete, per PR state. Strict on
+// purpose: conflict waits out GitHub's post-push UNKNOWN window (only MERGEABLE
+// counts), CI waits out a re-running suite (only passing counts), and a comment
+// fix has no crisp signal so it relies on the stale backstop. A gh read error is
+// "not met" (never reap on a failed read); the caller logs it.
+async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewDeps): Promise<boolean> {
+  if (kind === "conflict") return (await deps.mergeableInfo(prNumber)).state === "mergeable";
+  if (kind === "ci") return (await deps.checksInfo(prNumber)).state === "passing";
+  return false;
+}
+
 export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -110,8 +143,33 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
 
   for (const pr of prs) {
     if (pr.isDraft) continue;
-    if (deps.fixInFlight(pr.number, pr.headRefName)) {
-      state.pendingSpawn.delete(pr.number); // a fixer is visibly running; fixInFlight is now the guard
+    const running = deps.inFlightFixKinds(pr.number, pr.headRefName);
+    // Prune timers for kinds no longer in flight so a future fix of that kind
+    // starts a fresh stale clock (runs even when nothing is in flight now).
+    for (const kind of ALL_FIX_KINDS) {
+      if (!running.includes(kind)) state.fixSeenAt.delete(`${pr.number}:${kind}`);
+    }
+    if (running.length > 0) {
+      const now = deps.now();
+      for (const kind of running) {
+        const key = `${pr.number}:${kind}`;
+        if (!state.fixSeenAt.has(key)) state.fixSeenAt.set(key, now);
+        const stale = now - (state.fixSeenAt.get(key) as number) >= deps.reapStaleMs;
+        let done = false;
+        if (!stale) {
+          try {
+            done = await reapObjectiveMet(kind, pr.number, deps);
+          } catch (err) {
+            deps.log(`reap check failed for PR #${pr.number} (${kind}): ${err}`);
+          }
+        }
+        if (stale || done) {
+          deps.reapFix(pr.number, pr.headRefName, kind);
+          state.fixSeenAt.delete(key);
+          deps.log(`reaped ${sessionNameFor(kind, pr.number)} for PR #${pr.number} (${stale ? "stale" : "objective met"})`);
+        }
+      }
+      state.pendingSpawn.delete(pr.number); // a fixer is (or was) running; do not spawn this tick
       continue;
     }
     // A fixer we spawned but have not yet seen live: blocks the *other* kind

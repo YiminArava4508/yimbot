@@ -4,6 +4,7 @@ import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, Unreso
 import {
   ciSessionName,
   conflictSessionName,
+  type FixKind,
   fixSessionName,
   fixSessionNames,
   freshReviewState,
@@ -33,25 +34,30 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   spawned: { name: string; branch: string }[];
   ciSpawned: { name: string; branch: string }[];
   conflictSpawned: { name: string; branch: string }[];
+  reaped: { prNumber: number; branch: string; kind: string }[];
   logs: string[];
 } {
   const spawned: { name: string; branch: string }[] = [];
   const ciSpawned: { name: string; branch: string }[] = [];
   const conflictSpawned: { name: string; branch: string }[] = [];
+  const reaped: { prNumber: number; branch: string; kind: string }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
     unresolvedInfo: async () => info(2, 1000),
     mergeableInfo: async () => noConflict,
     checksInfo: async () => ci("passing"),
-    fixInFlight: () => false,
+    inFlightFixKinds: () => [],
+    reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
+    now: () => 0,
+    reapStaleMs: 90 * 60 * 1000,
     spawnFix: (name, branch) => void spawned.push({ name, branch }),
     spawnCiFix: (name, branch) => void ciSpawned.push({ name, branch }),
     spawnConflictFix: (name, branch) => void conflictSpawned.push({ name, branch }),
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, reaped, logs };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -110,12 +116,11 @@ test("reviewOnce prefers the comment fix and skips CI the same tick when both ar
 });
 
 test("reviewOnce does not spawn a CI fix while a just-spawned comment fix is not yet visible", async () => {
-  // Comment fix spawned tick 1; fixInFlight still false (session/window starting).
+  // Comment fix spawned tick 1; not yet in flight (session/window starting).
   // The cross-kind latch must suppress the CI spawn onto the shared worktree.
   const { deps: d, spawned, ciSpawned } = deps({
     unresolvedInfo: async () => info(1, 1000),
     checksInfo: async () => ci("failing", "abc"),
-    fixInFlight: () => false,
   });
   const state = freshReviewState();
   await reviewOnce(state, d); // spawns the comment fix
@@ -129,7 +134,7 @@ test("reviewOnce spawns the CI fix after the comment fix has been seen live and 
   const { deps: d, spawned, ciSpawned } = deps({
     unresolvedInfo: async () => info(1, 1000),
     checksInfo: async () => ci("failing", "abc"),
-    fixInFlight: () => inFlight,
+    inFlightFixKinds: () => (inFlight ? ["fix"] : []),
   });
   const state = freshReviewState();
   await reviewOnce(state, d); // tick 1: spawn comment fix (latch = fix)
@@ -148,7 +153,6 @@ test("reviewOnce does not spawn a comment fix while a just-spawned CI fix is not
   const { deps: d, spawned, ciSpawned } = deps({
     unresolvedInfo: async () => comments,
     checksInfo: async () => ci("failing", "abc"),
-    fixInFlight: () => false,
   });
   const state = freshReviewState();
   await reviewOnce(state, d); // CI-only failure → spawn CI fix (latch = ci)
@@ -162,7 +166,7 @@ test("reviewOnce skips CI when a fix is already in flight", async () => {
   const { deps: d, ciSpawned } = deps({
     unresolvedInfo: async () => noComments,
     checksInfo: async () => ci("failing", "abc"),
-    fixInFlight: () => true,
+    inFlightFixKinds: () => ["fix"],
   });
   await reviewOnce(freshReviewState(), d);
   assert.equal(ciSpawned.length, 0);
@@ -253,7 +257,6 @@ test("reviewOnce does not spawn a CI fix while a just-spawned conflict fix is no
     unresolvedInfo: async () => noComments,
     mergeableInfo: async () => merge("conflicting", "abc"),
     checksInfo: async () => ci("failing", "def"),
-    fixInFlight: () => false,
   });
   const state = freshReviewState();
   await reviewOnce(state, d); // spawns the conflict fix (latch = conflict)
@@ -267,7 +270,6 @@ test("reviewOnce does not spawn a comment fix while a just-spawned conflict fix 
   const { deps: d, spawned, conflictSpawned } = deps({
     unresolvedInfo: async () => comments,
     mergeableInfo: async () => merge("conflicting", "abc"),
-    fixInFlight: () => false,
   });
   const state = freshReviewState();
   await reviewOnce(state, d); // conflict-only → spawn conflict fix (latch = conflict)
@@ -281,7 +283,7 @@ test("reviewOnce skips a conflict fix when a fix is already in flight", async ()
   const { deps: d, conflictSpawned } = deps({
     unresolvedInfo: async () => noComments,
     mergeableInfo: async () => merge("conflicting", "abc"),
-    fixInFlight: () => true,
+    inFlightFixKinds: () => ["fix"],
   });
   await reviewOnce(freshReviewState(), d);
   assert.equal(conflictSpawned.length, 0);
@@ -354,7 +356,7 @@ test("reviewOnce skips a PR with no unresolved threads", async () => {
 });
 
 test("reviewOnce skips a PR whose fix is already in flight", async () => {
-  const { deps: d, spawned } = deps({ fixInFlight: (n) => n === 4706 });
+  const { deps: d, spawned } = deps({ inFlightFixKinds: (n) => (n === 4706 ? ["fix"] : []) });
   await reviewOnce(freshReviewState(), d);
   assert.equal(spawned.length, 0);
 });
@@ -381,4 +383,115 @@ test("reviewOnce continues to the next PR when one PR's thread info throws", asy
   await reviewOnce(freshReviewState(), d);
   assert.deepEqual(spawned.map((s) => s.name), ["pr-2-fix"]);
   assert.ok(logs.some((l) => /graphql 502/.test(l)));
+});
+
+test("reviewOnce reaps a conflict fix once the PR is mergeable", async () => {
+  const { deps: d, reaped } = deps({
+    inFlightFixKinds: () => ["conflict"],
+    mergeableInfo: async () => merge("mergeable", "abc"),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(reaped, [{ prNumber: 4706, branch: "eng-4706-x", kind: "conflict" }]);
+});
+
+test("reviewOnce does not reap a conflict fix while still conflicting or unknown", async () => {
+  for (const state of ["conflicting", "unknown"] as const) {
+    const { deps: d, reaped } = deps({
+      inFlightFixKinds: () => ["conflict"],
+      mergeableInfo: async () => merge(state, "abc"),
+    });
+    await reviewOnce(freshReviewState(), d);
+    assert.equal(reaped.length, 0, `state ${state} must not reap`);
+  }
+});
+
+test("reviewOnce reaps a CI fix once checks are passing", async () => {
+  const { deps: d, reaped } = deps({
+    inFlightFixKinds: () => ["ci"],
+    checksInfo: async () => ci("passing", "abc"),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(reaped.map((r) => r.kind), ["ci"]);
+});
+
+test("reviewOnce does not reap a CI fix while failing or pending", async () => {
+  for (const state of ["failing", "pending"] as const) {
+    const { deps: d, reaped } = deps({
+      inFlightFixKinds: () => ["ci"],
+      checksInfo: async () => ci(state, "abc"),
+    });
+    await reviewOnce(freshReviewState(), d);
+    assert.equal(reaped.length, 0, `state ${state} must not reap`);
+  }
+});
+
+test("reviewOnce never objective-reaps a comment fix (backstop only)", async () => {
+  const { deps: d, reaped } = deps({ inFlightFixKinds: () => ["fix"] });
+  await reviewOnce(freshReviewState(), d); // mergeable + passing by default, but kind is comment
+  assert.equal(reaped.length, 0);
+});
+
+test("reviewOnce reaps any in-flight fix once it has been in flight past reapStaleMs", async () => {
+  let clock = 0;
+  const { deps: d, reaped } = deps({
+    inFlightFixKinds: () => ["fix"],
+    mergeableInfo: async () => merge("conflicting", "abc"), // objective NOT met
+    checksInfo: async () => ci("failing", "abc"),
+    now: () => clock,
+    reapStaleMs: 1000,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // clock=0: first sighting, timer starts, not stale
+  assert.equal(reaped.length, 0);
+  clock = 1000; // exactly reapStaleMs later
+  await reviewOnce(state, d);
+  assert.deepEqual(reaped.map((r) => r.kind), ["fix"]);
+});
+
+test("reviewOnce does not reap on the tick a fix is first seen", async () => {
+  const { deps: d, reaped } = deps({
+    inFlightFixKinds: () => ["fix"],
+    now: () => 5_000_000,
+    reapStaleMs: 1000,
+  });
+  await reviewOnce(freshReviewState(), d); // fresh state: firstSeen = now, elapsed 0
+  assert.equal(reaped.length, 0);
+});
+
+test("reviewOnce does not reap when the objective read throws", async () => {
+  const { deps: d, reaped, logs } = deps({
+    inFlightFixKinds: () => ["conflict"],
+    mergeableInfo: async () => {
+      throw new Error("gh mergeable 502");
+    },
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(reaped.length, 0);
+  assert.ok(logs.some((l) => /gh mergeable 502/.test(l)));
+});
+
+test("reviewOnce reap does not clear the handled-SHA maps (anti-loop preserved)", async () => {
+  const { deps: d } = deps({
+    inFlightFixKinds: () => ["conflict"],
+    mergeableInfo: async () => merge("mergeable", "abc"),
+  });
+  const state = freshReviewState();
+  state.lastHandledConflictSha.set(4706, "old");
+  await reviewOnce(state, d);
+  assert.equal(state.lastHandledConflictSha.get(4706), "old");
+});
+
+test("reviewOnce prunes a fix timer once the kind is no longer in flight", async () => {
+  let kinds: FixKind[] = ["fix"];
+  const { deps: d } = deps({
+    inFlightFixKinds: () => kinds,
+    now: () => 0,
+    reapStaleMs: 1000,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // records fixSeenAt "4706:fix" = 0
+  assert.equal(state.fixSeenAt.get("4706:fix"), 0);
+  kinds = [];
+  await reviewOnce(state, d); // no longer in flight -> pruned
+  assert.equal(state.fixSeenAt.has("4706:fix"), false);
 });

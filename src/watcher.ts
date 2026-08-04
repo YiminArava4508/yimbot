@@ -33,7 +33,15 @@ import {
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
 import { type PrReadyDeps, readyOnce } from "./pr-ready.ts";
-import { fixSessionNames, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
+import {
+  ciSessionName,
+  conflictSessionName,
+  type FixKind,
+  fixSessionName,
+  freshReviewState,
+  type PrReviewDeps,
+  reviewOnce,
+} from "./pr-review.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
@@ -301,6 +309,10 @@ export type WatcherConfig = {
   // Context for the In-Review Linear poll that flags a session ready-to-test.
   reviewContext: LinearContext;
   heartbeatIntervalMinutes: number;
+  // How long a fix session may stay in flight before the reaper tears it down as
+  // stale, regardless of PR state (backstop for bailed/crashed/stuck sessions and
+  // for comment fixes, which have no crisp PR-state objective).
+  reapStaleMs: number;
   claim: ClaimConfig;
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
@@ -409,6 +421,17 @@ export function killTmuxSession(name: string): void {
   }
 }
 
+// Kill a single tmux window by "session:window". Best-effort: no-op if tmux is
+// not running or the window is already gone. Used by the reaper to end a fix that
+// runs as a window inside the branch's ticket session, leaving the session alive.
+export function killTmuxWindow(session: string, window: string): void {
+  try {
+    execFileSync("tmux", ["kill-window", "-t", `=${session}:${window}`], { stdio: "ignore" });
+  } catch {
+    /* tmux not running or window already gone */
+  }
+}
+
 // Whether a window by this name exists in the given tmux session. False when the
 // session or the tmux server is absent.
 export function tmuxWindowExists(session: string, window: string): boolean {
@@ -423,18 +446,40 @@ export function tmuxWindowExists(session: string, window: string): boolean {
   }
 }
 
-// In-flight guard for a PR's fix runs. A fix (comment `pr-<n>-fix`, CI
-// `pr-<n>-ci`, or conflict `pr-<n>-conflict`) lives either as a standalone
+// The session/window name for a PR's fix of a given kind.
+function fixNameForKind(prNumber: number, kind: FixKind): string {
+  return kind === "fix"
+    ? fixSessionName(prNumber)
+    : kind === "ci"
+      ? ciSessionName(prNumber)
+      : conflictSessionName(prNumber);
+}
+
+// Which fix kinds are currently in flight for a PR. A fix (comment `pr-<n>-fix`,
+// CI `pr-<n>-ci`, or conflict `pr-<n>-conflict`) lives either as a standalone
 // session (when the ticket session was gone) or as a window inside the branch's
-// ticket session. Any of the three names present, in either form, means a fixer
-// is already on this PR's shared worktree — don't spawn another (of any kind).
-export function fixInFlight(prNumber: number, branch: string): boolean {
+// ticket session. Any present kind means a fixer is on this PR's shared worktree.
+export function inFlightFixKinds(prNumber: number, branch: string): FixKind[] {
   const ticketSession = sanitizeBranchToSession(branch);
-  for (const name of fixSessionNames(prNumber)) {
-    if (tmuxHasSession(name)) return true;
-    if (tmuxWindowExists(ticketSession, name)) return true;
+  const kinds: FixKind[] = [];
+  for (const kind of ["fix", "ci", "conflict"] as FixKind[]) {
+    const name = fixNameForKind(prNumber, kind);
+    if (tmuxHasSession(name) || tmuxWindowExists(ticketSession, name)) kinds.push(kind);
   }
-  return false;
+  return kinds;
+}
+
+// Tear down a PR's fix of a given kind: kill the standalone `pr-<n>-<kind>`
+// session if it exists, otherwise the same-named window inside the ticket
+// session. Never touches the worktree (shared with the ticket session).
+export function reapFix(prNumber: number, branch: string, kind: FixKind): void {
+  const name = fixNameForKind(prNumber, kind);
+  if (tmuxHasSession(name)) {
+    killTmuxSession(name);
+    return;
+  }
+  const ticketSession = sanitizeBranchToSession(branch);
+  if (tmuxWindowExists(ticketSession, name)) killTmuxWindow(ticketSession, name);
 }
 
 // Flag a tmux session's feature as ready to test by setting the session-scoped
@@ -647,7 +692,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     unresolvedInfo: config.prReview.unresolvedInfo,
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
-    fixInFlight,
+    fixInFlight: (prNumber, branch) => inFlightFixKinds(prNumber, branch).length > 0,
     spawnFix: spawnFixSession,
     spawnCiFix: spawnFixSession,
     spawnConflictFix: spawnFixSession,

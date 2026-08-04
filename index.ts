@@ -80,6 +80,10 @@ if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
 if (!Number.isFinite(heartbeatIntervalMinutes) || heartbeatIntervalMinutes <= 0) {
   throw new Error("HEARTBEAT_INTERVAL_MINUTES must be a positive number");
 }
+const reapStaleMinutes = Number(envOr("YIMBOT_FIX_REAP_STALE_MINUTES", "90"));
+if (!Number.isFinite(reapStaleMinutes) || reapStaleMinutes <= 0) {
+  throw new Error("YIMBOT_FIX_REAP_STALE_MINUTES must be a positive number");
+}
 if (!existsSync(sessionScriptPath)) {
   throw new Error(`new-session.sh not found at ${sessionScriptPath}`);
 }
@@ -214,6 +218,7 @@ const stop = startWatcher({
   progressContext,
   reviewContext,
   heartbeatIntervalMinutes,
+  reapStaleMs: reapStaleMinutes * 60 * 1000,
   claim: {
     autoClaim,
     riskLabels,

@@ -122,7 +122,9 @@ flowchart TD
   comment and CI fixes and never runs at the same time as either; within a
   heartbeat the order is comment, then conflict, then CI. Re-triggers only when
   the PR head moves, so a clean bail never loops. Needs `gh` installed and
-  authenticated.
+  authenticated. Any fix session (comment, CI, or conflict) that lingers too
+  long is torn down as a backstop, regardless of PR state. *(setting:
+  `YIMBOT_FIX_REAP_STALE_MINUTES`, defaults to 90)*
 - **Flag ready to test (purple):** when a card moves to **In Review**, it marks
   that card's session with a "ready to test" icon so you know you can run local
   dev there to try it. (yimbot no longer starts the dev env for you.)

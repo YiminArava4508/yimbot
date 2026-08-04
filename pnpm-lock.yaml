@@ -11,6 +11,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.7.0
         version: 1.7.0
+      neo-blessed:
+        specifier: ^0.2.0
+        version: 0.2.0
       tsx:
         specifier: ^4.19.2
         version: 4.23.1
@@ -210,6 +213,11 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  neo-blessed@0.2.0:
+    resolution: {integrity: sha512-C2kC4K+G2QnNQFXUIxTQvqmrdSIzGTX1ZRKeDW6ChmvPRw8rTkTEJzbEQHiHy06d36PCl/yMOCjquCRV8SpSQw==}
+    engines: {node: '>= 8.0.0'}
+    hasBin: true
+
   sisteransi@1.0.5:
     resolution: {integrity: sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg==}
 
@@ -363,6 +371,8 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  neo-blessed@0.2.0: {}
 
   sisteransi@1.0.5: {}
 

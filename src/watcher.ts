@@ -18,6 +18,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
+import { deriveKey, emitEvent, titleFromBranch } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
 import {
   countAssignedInState,
@@ -664,7 +665,11 @@ export function startWatcher(config: WatcherConfig): () => void {
     fetchIssues: () => fetchIssuesInState(config.apiKey, config.progressContext),
     listSessions: listTmuxSessions,
     listWorktrees: listWorktreeDirs,
-    launch: (name) => launchSession(name),
+    launch: (name) => {
+      const { key, label } = deriveKey({ branch: name });
+      emitEvent({ kind: "task_started", key, label, title: titleFromBranch(name) });
+      return launchSession(name);
+    },
     log,
   };
 
@@ -675,13 +680,16 @@ export function startWatcher(config: WatcherConfig): () => void {
   const reviewIconState: WatchState = { seen: new Set(), initialized: false };
   const reviewIconDeps: WatcherDeps = {
     fetchIssues: () => fetchIssuesInState(config.apiKey, config.reviewContext),
-    launch: (_name, issue) =>
-      markFeatureReady(issue, {
+    launch: (_name, issue) => {
+      const { key, label } = deriveKey({ identifier: issue.identifier });
+      emitEvent({ kind: "ready_to_test", key, label, title: issue.title });
+      return markFeatureReady(issue, {
         listSessions: listTmuxSessions,
         listWorktrees: listWorktreeDirs,
         markReady: setFeatureReady,
         log: reviewIconLog,
-      }),
+      });
+    },
     log: reviewIconLog,
   };
 
@@ -696,9 +704,21 @@ export function startWatcher(config: WatcherConfig): () => void {
     reapFix,
     now: Date.now,
     reapStaleMs: config.reapStaleMs,
-    spawnFix: spawnFixSession,
-    spawnCiFix: spawnFixSession,
-    spawnConflictFix: spawnFixSession,
+    spawnFix: (name, branch) => {
+      const { key, label } = deriveKey({ branch });
+      emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch) });
+      spawnFixSession(name, branch);
+    },
+    spawnCiFix: (name, branch) => {
+      const { key, label } = deriveKey({ branch });
+      emitEvent({ kind: "ci_fix_started", key, label, title: titleFromBranch(branch) });
+      spawnFixSession(name, branch);
+    },
+    spawnConflictFix: (name, branch) => {
+      const { key, label } = deriveKey({ branch });
+      emitEvent({ kind: "conflict_fix_started", key, label, title: titleFromBranch(branch) });
+      spawnFixSession(name, branch);
+    },
     log: reviewIconLog,
   };
 
@@ -710,7 +730,11 @@ export function startWatcher(config: WatcherConfig): () => void {
     listWorktrees: () => listGitWorktrees(cleanup.codebasePath),
     listMergedPRs: cleanup.listMergedPRs,
     worktreesDir,
-    teardown: runEndSession,
+    teardown: (branch) => {
+      const { key, label } = deriveKey({ branch });
+      emitEvent({ kind: "merged", key, label, title: titleFromBranch(branch) });
+      runEndSession(branch);
+    },
     listSessions: listTmuxSessions,
     killSession: killTmuxSession,
     readParentSession,
@@ -743,7 +767,11 @@ export function startWatcher(config: WatcherConfig): () => void {
   const advanceState = freshAdvanceState();
   const advanceDeps: AdvanceDeps | null = config.advance && {
     ...config.advance,
-    spawnContinuation: spawnContinuationSession,
+    spawnContinuation: (issueNumber, round) => {
+      const { key, label } = deriveKey({ branch: `eng-${issueNumber}` });
+      emitEvent({ kind: "task_started", key, label });
+      spawnContinuationSession(issueNumber, round);
+    },
     markReady: (identifier: string) => {
       const match = findExistingSession(identifier, listTmuxSessions(), listWorktreeDirs());
       if (match) setFeatureReady(match);
@@ -756,8 +784,31 @@ export function startWatcher(config: WatcherConfig): () => void {
   // every open PR, so a labeled PR that regresses is still fixed and just loses the
   // label until it is clean again.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
+  // Rebuilt from scratch by listOpenPRs each tick, before addLabel/removeLabel
+  // run (see readyOnce), so the wraps below can key events by branch like every
+  // other step instead of by PR number, letting them unify with the ticket's
+  // row. Cleared each tick so closed/merged PRs do not accumulate forever.
+  const prBranchByNumber = new Map<number, string>();
   const readyDeps: PrReadyDeps | null = config.ready && {
     ...config.ready,
+    listOpenPRs: async () => {
+      const prs = await config.ready!.listOpenPRs();
+      prBranchByNumber.clear();
+      for (const pr of prs) prBranchByNumber.set(pr.number, pr.headRefName);
+      return prs;
+    },
+    addLabel: (n: number, label: string) => {
+      const branch = prBranchByNumber.get(n);
+      const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
+      emitEvent({ kind: "ready_to_merge", key: k.key, label: k.label });
+      return config.ready!.addLabel(n, label);
+    },
+    removeLabel: (n: number, label: string) => {
+      const branch = prBranchByNumber.get(n);
+      const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
+      emitEvent({ kind: "ready_regressed", key: k.key, label: k.label });
+      return config.ready!.removeLabel(n, label);
+    },
     log: readyLog,
   };
 
@@ -774,6 +825,8 @@ export function startWatcher(config: WatcherConfig): () => void {
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     moveToInProgress: async (issue) => {
       await moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId);
+      const { key, label } = deriveKey({ identifier: issue.identifier });
+      emitEvent({ kind: "task_started", key, label, title: issue.title });
       if (config.advance) {
         try {
           const detail = await fetchIssueByIdentifier(config.apiKey, issue.identifier);

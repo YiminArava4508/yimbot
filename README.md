@@ -166,8 +166,7 @@ begins with a two-tier prerequisite pre-flight:
   re-checks; the rest show exact instructions and loop until fixed.
 - **Recommended (warns, never blocks):** `gh` token `repo`+`workflow` scopes and
   git identity (both offered as one-command fixes), the `linear-server` /
-  `shortcut` MCP servers the ticket sessions fetch through, a repo-specific
-  `merge-main` skill (`fix-pr-ci` uses it to sync `origin/main`), and a tmux
+  `shortcut` MCP servers the ticket sessions fetch through, and a tmux
   status line that shows `@feature_status` (the ready-to-test flag).
 
 Then it authenticates your Linear API key, lets you pick your team and workflow
@@ -221,11 +220,13 @@ this repo:
 [`scripts/end-session.sh`](scripts/end-session.sh),
 [`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md),
 [`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md),
-[`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md), and
-[`skills/fix-pr-conflict`](skills/fix-pr-conflict/SKILL.md). **`pnpm onboard`
+[`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md),
+[`skills/fix-pr-conflict`](skills/fix-pr-conflict/SKILL.md), and
+[`skills/merge-main`](skills/merge-main/SKILL.md). **`pnpm onboard`
 symlinks them into place** (`~/new-session.sh`, `~/end-session.sh`,
 `~/.claude/skills/pickup-ticket`, `~/.claude/skills/address-pr-comments`,
-`~/.claude/skills/fix-pr-ci`, `~/.claude/skills/fix-pr-conflict`), verifying them
+`~/.claude/skills/fix-pr-ci`, `~/.claude/skills/fix-pr-conflict`,
+`~/.claude/skills/merge-main`), verifying them
 in its pre-flight. An existing file
 at any path is never overwritten without asking (it's backed up first).
 

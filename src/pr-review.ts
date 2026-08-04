@@ -99,6 +99,17 @@ export type PrReviewDeps = {
   log: (msg: string) => void;
 };
 
+// Whether a fix's remit is definitively complete, per PR state. Strict on
+// purpose: conflict waits out GitHub's post-push UNKNOWN window (only MERGEABLE
+// counts), CI waits out a re-running suite (only passing counts), and a comment
+// fix has no crisp signal so it relies on the stale backstop. A gh read error is
+// "not met" (never reap on a failed read); the caller logs it.
+async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewDeps): Promise<boolean> {
+  if (kind === "conflict") return (await deps.mergeableInfo(prNumber)).state === "mergeable";
+  if (kind === "ci") return (await deps.checksInfo(prNumber)).state === "passing";
+  return false;
+}
+
 // One review-step tick, run every heartbeat. For each non-draft open PR, skip if
 // any fix (comment, conflict, or CI) is actively running, then handle in priority
 // order — comments, then conflict, then CI. All three fixes share the PR's
@@ -120,18 +131,6 @@ export type PrReviewDeps = {
 // concluded as failing (passing/pending/none do nothing); skip if we already
 // handled this failing head SHA (so a red build re-triggers only when a fix push
 // moves the head); otherwise spawn a CI fix and record the SHA.
-//
-// Whether a fix's remit is definitively complete, per PR state. Strict on
-// purpose: conflict waits out GitHub's post-push UNKNOWN window (only MERGEABLE
-// counts), CI waits out a re-running suite (only passing counts), and a comment
-// fix has no crisp signal so it relies on the stale backstop. A gh read error is
-// "not met" (never reap on a failed read); the caller logs it.
-async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewDeps): Promise<boolean> {
-  if (kind === "conflict") return (await deps.mergeableInfo(prNumber)).state === "mergeable";
-  if (kind === "ci") return (await deps.checksInfo(prNumber)).state === "passing";
-  return false;
-}
-
 export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promise<void> {
   let prs: OpenPR[];
   try {

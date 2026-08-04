@@ -18,12 +18,20 @@ function redirectConsoleToFile(): void {
   try {
     const path = envOr("DAEMON_LOG", join(process.cwd(), "daemon.log"));
     const stream = createWriteStream(path, { flags: "a" });
+    const original = { log: console.log, warn: console.warn, error: console.error };
+    stream.on("error", () => {
+      // Stream failed to open or write (bad path, permissions): restore console so the
+      // daemon keeps logging and the unhandled 'error' event cannot crash the process.
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
+    });
     const write = (...args: unknown[]) => void stream.write(format(...args) + "\n");
     console.log = write;
     console.warn = write;
     console.error = write;
   } catch {
-    // Keep console.* on stdout if the log stream cannot open; the TUI may show
+    // Keep console.* on stdout if the redirect cannot be set up; the TUI may show
     // stray lines but the daemon still runs.
   }
 }

@@ -100,6 +100,19 @@ const progressContext = await resolveContext(apiKey, teamName, stateName);
 const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
 const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 
+// Checks to drop from every CI rollup read, by CheckRun name or StatusContext
+// context (comma-separated, case-insensitive). A merge queue's own gating check
+// (e.g. Aviator's "aviator/checks") only completes once the ready label queues
+// the PR, so counting it would keep CI perpetually pending and deadlock both the
+// ready label and the CI-fix step. Empty by default (ignore nothing).
+const ignoreCheckNames = new Set(
+  envOr("IGNORE_CHECKS", "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+const ignoreChecks = ignoreCheckNames.size ? (name: string) => ignoreCheckNames.has(name.toLowerCase()) : undefined;
+
 // Review step: address comments on the viewer's open PRs. gh resolves the repo
 // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
 // disabled (null) rather than crashing the daemon.
@@ -119,7 +132,7 @@ try {
     listOpenPRs: () => listMyOpenPRs(gh),
     unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
     mergeableInfo: (n) => mergeableInfo(gh, n),
-    checksInfo: (n) => checksInfo(gh, n),
+    checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
   };
   console.log(
     `[yimbot] review step ON: addressing PR comments + conflicts + failing CI in ${slug.owner}/${slug.name} as ${viewer}`,

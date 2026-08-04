@@ -142,11 +142,16 @@ flowchart TD
   non-draft PRs that is clean on all three signals (no unresolved review threads,
   no merge conflicts, and CI passing or no CI at all), it adds a `ready-to-merge`
   label so you or an automerge system can see at a glance that it's mergeable. The
-  label is kept in sync: if the PR later regresses (a new comment, a broken build,
-  a conflict) the fixers handle it and the label is removed until it's clean
-  again. *(optional; settings: `AUTO_READY_LABEL`, on by default;
-  `READY_MERGE_LABEL`, defaults to `ready-to-merge` and must already exist in the
-  repo)* Needs `gh` installed and authenticated.
+  label is removed again only on a hard regression (a new comment, a broken build,
+  a conflict), which the fixers then handle; a merely in-flight state (CI still
+  running, mergeability not yet computed) holds the label as-is, so a merge queue
+  that queues on the label is never yanked back out mid-merge. If your merge queue
+  posts its own gating check that only completes once the PR is queued (e.g.
+  Aviator's `aviator/checks`), list it in `IGNORE_CHECKS` so it isn't counted as
+  perpetually-pending CI and deadlock the label. *(optional; settings:
+  `AUTO_READY_LABEL`, on by default; `READY_MERGE_LABEL`, defaults to
+  `ready-to-merge` and must already exist in the repo; `IGNORE_CHECKS`, empty by
+  default)* Needs `gh` installed and authenticated.
 
 ## Setup
 

@@ -75,12 +75,10 @@ test("readyOnce does not re-add the label to an already-labeled ready PR", async
   assert.equal(h.removed.length, 0);
 });
 
-test("readyOnce removes the label from a PR that is no longer ready", async () => {
+test("readyOnce removes the label on a hard regression", async () => {
   const cases: Partial<PrReadyDeps>[] = [
     { unresolvedInfo: async () => info(1) },
     { mergeableInfo: async () => merge("conflicting") },
-    { mergeableInfo: async () => merge("unknown") },
-    { checksInfo: async () => ci("pending") },
     { checksInfo: async () => ci("failing") },
   ];
   for (const c of cases) {
@@ -91,11 +89,29 @@ test("readyOnce removes the label from a PR that is no longer ready", async () =
   }
 });
 
+// A merge queue rebasing the branch briefly makes CI pending / mergeable unknown.
+// Those transient states must not yank a queued PR's label out from under it.
+test("readyOnce holds the label through a transient not-ready state", async () => {
+  const cases: Partial<PrReadyDeps>[] = [
+    { mergeableInfo: async () => merge("unknown") },
+    { checksInfo: async () => ci("pending") },
+  ];
+  for (const c of cases) {
+    const h = harness(c, [LABEL]);
+    await readyOnce(h.deps);
+    assert.equal(h.removed.length, 0);
+    assert.equal(h.added.length, 0);
+    assert.equal(h.calls.labels, 0); // a hold never reads or writes labels
+  }
+});
+
 test("readyOnce leaves an unlabeled not-ready PR alone", async () => {
-  const h = harness({ checksInfo: async () => ci("failing") }, []);
-  await readyOnce(h.deps);
-  assert.equal(h.added.length, 0);
-  assert.equal(h.removed.length, 0);
+  for (const c of [{ checksInfo: async () => ci("failing") }, { checksInfo: async () => ci("pending") }] as Partial<PrReadyDeps>[]) {
+    const h = harness(c, []);
+    await readyOnce(h.deps);
+    assert.equal(h.added.length, 0);
+    assert.equal(h.removed.length, 0);
+  }
 });
 
 test("readyOnce treats no CI (none) as passing", async () => {

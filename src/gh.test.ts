@@ -158,10 +158,33 @@ test("parseChecksInfo reports none for an empty rollup", () => {
   assert.deepEqual(parseChecksInfo(rollupJson("sha5", [])), { state: "none", headSha: "sha5" });
 });
 
+test("parseChecksInfo excludes checks matched by the ignore predicate", () => {
+  const aviator = { __typename: "StatusContext", context: "aviator/checks", state: "PENDING" };
+  const json = rollupJson("sha6", [checkRun("COMPLETED", "SUCCESS"), aviator]);
+  assert.equal(parseChecksInfo(json).state, "pending"); // aviator/checks keeps it pending
+  assert.equal(parseChecksInfo(json, (n) => n === "aviator/checks").state, "passing"); // excluded → green
+});
+
+test("parseChecksInfo matches the ignore predicate on a CheckRun name too", () => {
+  const json = rollupJson("s", [{ __typename: "CheckRun", name: "mergequeue", status: "IN_PROGRESS", conclusion: null }]);
+  assert.equal(parseChecksInfo(json, (n) => n === "mergequeue").state, "none");
+});
+
+test("parseChecksInfo reports none when the only check is ignored", () => {
+  const aviator = { __typename: "StatusContext", context: "aviator/checks", state: "PENDING" };
+  assert.equal(parseChecksInfo(rollupJson("s", [aviator]), (n) => n === "aviator/checks").state, "none");
+});
+
 test("checksInfo requests headRefOid + statusCheckRollup for the PR and parses them", async () => {
   const { run, calls } = capturingRunner([rollupJson("deadbeef", [checkRun("COMPLETED", "FAILURE")])]);
   assert.deepEqual(await checksInfo(run, 4706), { state: "failing", headSha: "deadbeef" });
   assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "headRefOid,statusCheckRollup"]);
+});
+
+test("checksInfo forwards the ignore predicate to the parse", async () => {
+  const aviator = { __typename: "StatusContext", context: "aviator/checks", state: "PENDING" };
+  const { run } = capturingRunner([rollupJson("sha", [checkRun("COMPLETED", "SUCCESS"), aviator])]);
+  assert.equal((await checksInfo(run, 4706, (n) => n === "aviator/checks")).state, "passing");
 });
 
 function mergeableJson(mergeable: string, headRefOid: string): string {

@@ -19,9 +19,10 @@
 #   SESSION_SETUP_HOOK     script run once after the worktree is
 #                          created; receives "<worktree_path> <name>".
 #                          Put project-specific port/env/dep setup here.  (none)
-#   SESSION_LOCAL_ENV_CMD  command staged into the shell window's
+#   SESSION_LOCAL_ENV_CMD  command staged into a dedicated shell window's
 #                          history (Up then Enter runs it) to start
-#                          the local dev env on demand              (none)
+#                          the local dev env on demand; the window is
+#                          created only when this is set             (none)
 #   SESSION_SETTINGS       settings JSON passed to `claude --settings`;
 #                          a deny-list safety net. Loaded when the file
 #                          exists.        (~/.config/yimbot/session-settings.json)
@@ -240,11 +241,17 @@ FIRST_INFO=$(tmux new-session -d -s "$NAME" -c "$WORKTREE" -P -F '#{window_id} #
 read -r FIRST_WINDOW _FIRST_PANE <<<"$FIRST_INFO"
 log "Tmux session created"
 
-# Window 0: a shell in the worktree. If a local-env command is configured, stage
-# it in shell history (Up + Enter) rather than auto-starting it (memory cost).
+# Window 0 is the Claude AI window: the session is a single window by default.
+# Ticket sessions (sc-<id>-… / eng-<id>-…) are seeded to fetch the ticket and hand
+# off to the pickup-ticket skill; any other name gets a bare claude.
+tmux rename-window -t "$FIRST_WINDOW" Claude
+
+# Optional shell window: created only when a local-env command is configured, so
+# it can be staged in that window's history (Up + Enter) rather than auto-started.
 if [ -n "${SESSION_LOCAL_ENV_CMD:-}" ]; then
-  tmux send-keys -t "$NAME" "echo 'Local dev not started. Press Up then Enter to run: $SESSION_LOCAL_ENV_CMD'" C-m
-  tmux send-keys -t "$NAME" "history -s '$SESSION_LOCAL_ENV_CMD'" C-m
+  tmux new-window -t "$NAME" -n shell -c "$WORKTREE"
+  tmux send-keys -t "$NAME:shell" "echo 'Local dev not started. Press Up then Enter to run: $SESSION_LOCAL_ENV_CMD'" C-m
+  tmux send-keys -t "$NAME:shell" "history -s '$SESSION_LOCAL_ENV_CMD'" C-m
 fi
 
 # Optional editor windows, one per configured subdir.
@@ -253,9 +260,6 @@ for dir in ${SESSION_EDIT_DIRS:-}; do
   tmux send-keys -t "$NAME:$dir" "$EDITOR" C-m
 done
 
-# Claude window. Ticket sessions (sc-<id>-… / eng-<id>-…) are seeded to fetch the
-# ticket and hand off to the pickup-ticket skill; any other name gets a bare claude.
-tmux new-window -t "$NAME" -n Claude -c "$WORKTREE"
 launch_claude_in "$NAME:Claude"
 
 log "All windows set up. Switching to session '$NAME'"

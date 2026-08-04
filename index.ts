@@ -27,7 +27,7 @@ import {
   resolveContext,
   upsertAcComment,
 } from "./src/linear-api.ts";
-import { configToEnvRecord, isConfigured, runSetup } from "./src/setup.ts";
+import { configToEnvRecord, ensureHostLinks, isConfigured, runSetup } from "./src/setup.ts";
 import { sessionScriptPath, startWatcher } from "./src/watcher.ts";
 
 // First-run onboarding: with no API key configured (fresh clone, or .env never
@@ -95,6 +95,7 @@ try {
 } catch {
   throw new Error(`CODEBASE_PATH is not a git repository: ${codebasePath}`);
 }
+for (const line of ensureHostLinks()) console.log(`[yimbot] link: ${line}`);
 
 const progressContext = await resolveContext(apiKey, teamName, stateName);
 const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);

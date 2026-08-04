@@ -63,6 +63,25 @@ seed_prompt_for() {
   fi
 }
 
+# Echo the skill a seed prompt hands off to, or nothing. Every seed prompt uses
+# the phrasing "the <name> skill", so one pattern covers all recognized sessions.
+skill_in_prompt() {
+  local prompt=$1
+  [[ "$prompt" =~ the\ ([a-z0-9-]+)\ skill ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# Fail fast if this session hands off to a skill that isn't installed, rather than
+# launching a session that will stall on an unknown skill. No skill named: no-op.
+verify_seed_skill() {
+  local name=$1 prompt skill dir
+  prompt=$(seed_prompt_for "$name")
+  skill=$(skill_in_prompt "$prompt")
+  [ -n "$skill" ] || return 0
+  dir=${SKILLS_DIR:-$HOME/.claude/skills}
+  [ -f "$dir/$skill/SKILL.md" ] ||
+    die "skill '$skill' not installed at $dir/$skill (run 'pnpm onboard' in the yimbot repo, or restart the daemon to self-heal links)"
+}
+
 # Resolve a repo's default branch: honor DEFAULT_BRANCH, else read origin/HEAD
 # (repairing it from the remote when unset), else fall back to "main". Pure
 # w.r.t. env; unit-tested via sourcing (override + fallback paths).
@@ -182,6 +201,10 @@ DEFAULT_BRANCH=$(default_branch_of "$CODEBASE_PATH")
 # Sanitize the branch into a worktree dir (same rule the daemon's slug uses).
 WORKTREE_DIR=$(echo "$BRANCH" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)
 WORKTREE=$WORKTREES_DIR/$WORKTREE_DIR
+
+# Fail before creating any worktree/session if the seed hands off to a skill that
+# isn't installed on this host.
+verify_seed_skill "$NAME"
 
 # Create or reuse the worktree.
 create_worktree

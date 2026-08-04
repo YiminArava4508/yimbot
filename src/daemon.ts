@@ -27,6 +27,7 @@ import {
   resolveContext,
   upsertAcComment,
 } from "./linear-api.ts";
+import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
 
 export async function startDaemon(): Promise<() => void> {
@@ -84,6 +85,8 @@ export async function startDaemon(): Promise<() => void> {
   } catch {
     throw new Error(`CODEBASE_PATH is not a git repository: ${codebasePath}`);
   }
+
+  for (const line of ensureHostLinks()) console.log(`[yimbot] link: ${line}`);
 
   const progressContext = await resolveContext(apiKey, teamName, stateName);
   const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);

@@ -7,11 +7,14 @@ import { AC_COMMENT_MARKER, type AC } from "./src/acceptance.ts";
 import { pullCodebase } from "./src/codebase-sync.ts";
 import { envOr } from "./src/env.ts";
 import {
+  addLabel,
   checksInfo,
   ghRunner,
   listMyMergedPRs,
   listMyOpenPRs,
   mergeableInfo,
+  prLabels,
+  removeLabel,
   repoSlug,
   unresolvedThreadInfo,
   viewerLogin,
@@ -173,6 +176,30 @@ console.log(
     : `[yimbot] advance step OFF${autoContinue ? " (gh unavailable)" : ""}`,
 );
 
+// Ready step config. AUTO_READY_LABEL is on unless explicitly disabled with a
+// recognized off-value. Gated on the same gh-availability signal as
+// review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
+const autoReadyLabel = !["false", "off", "no", "0"].includes(envOr("AUTO_READY_LABEL", "true").toLowerCase());
+const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
+const ready =
+  autoReadyLabel && prReview
+    ? {
+        listOpenPRs: prReview.listOpenPRs,
+        unresolvedInfo: prReview.unresolvedInfo,
+        mergeableInfo: prReview.mergeableInfo,
+        checksInfo: prReview.checksInfo,
+        prLabels: (n: number) => prLabels(gh, n),
+        addLabel: (n: number, label: string) => addLabel(gh, n, label),
+        removeLabel: (n: number, label: string) => removeLabel(gh, n, label),
+        label: readyLabelName,
+      }
+    : null;
+console.log(
+  ready
+    ? `[yimbot] ready step ON: syncing "${readyLabelName}" label on clean PRs`
+    : `[yimbot] ready step OFF${autoReadyLabel ? " (gh unavailable)" : ""}`,
+);
+
 console.log(
   `[yimbot] watching "${teamName}": deploy on "${stateName}", ready-to-test flag on "${reviewStateName}", every ${heartbeatIntervalMinutes}m; syncing ${codebasePath}`,
 );
@@ -197,6 +224,7 @@ const stop = startWatcher({
   prReview,
   cleanup,
   advance,
+  ready,
 });
 
 // Re-entrancy guard: a sync that runs longer than one interval must not overlap

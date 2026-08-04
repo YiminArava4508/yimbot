@@ -162,6 +162,27 @@ export async function mergeableInfo(run: GhRunner, prNumber: number): Promise<Me
   return parseMergeableInfo(await run(["pr", "view", String(prNumber), "--json", "mergeable,headRefOid"]));
 }
 
+// The label names currently on a PR from `gh pr view <n> --json labels`.
+export function parseLabels(json: string): string[] {
+  const data = JSON.parse(json) as { labels?: { name: string }[] };
+  return (data.labels ?? []).map((l) => l.name);
+}
+
+export async function prLabels(run: GhRunner, prNumber: number): Promise<string[]> {
+  return parseLabels(await run(["pr", "view", String(prNumber), "--json", "labels"]));
+}
+
+// Add / remove a single label on a PR. The gh stdout is discarded; a non-zero
+// exit rejects (e.g. --add-label with a label that doesn't exist in the repo),
+// which the caller catches and logs.
+export async function addLabel(run: GhRunner, prNumber: number, label: string): Promise<void> {
+  await run(["pr", "edit", String(prNumber), "--add-label", label]);
+}
+
+export async function removeLabel(run: GhRunner, prNumber: number, label: string): Promise<void> {
+  await run(["pr", "edit", String(prNumber), "--remove-label", label]);
+}
+
 export function parseViewerLogin(json: string): string {
   return (JSON.parse(json) as { data: { viewer: { login: string } } }).data.viewer.login;
 }

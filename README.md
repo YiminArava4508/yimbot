@@ -19,7 +19,7 @@ failures are logged and never crash the daemon.
 
 The first time you run it, yimbot asks a few setup questions. After that it
 quietly checks your Linear board and your open PRs every few minutes (its
-**heartbeat**) and can do seven things (plus keep your code up to date):
+**heartbeat**) and can do eight things (plus keep your code up to date):
 
 ```mermaid
 flowchart TD
@@ -65,6 +65,10 @@ flowchart TD
     G7 --> T6{"Did one of your<br/>PRs just merge?"}
     T6 -- yes --> AD["Judge the issue's acceptance<br/>criteria and spawn a continuation<br/>session while any remain"]
 
+    P --> G8["Flag ready to merge"]
+    G8 --> T7{"An open PR of yours that's clean?<br/>green CI, comments resolved,<br/>no conflicts"}
+    T7 -- yes --> RM["Add the 'ready-to-merge' label<br/>(and remove it again if the<br/>PR later regresses)"]
+
     classDef deploy fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
     classDef claim fill:#bee3f8,stroke:#2b6cb0,color:#1a202c;
     classDef review fill:#feebc8,stroke:#c05621,color:#1a202c;
@@ -74,6 +78,7 @@ flowchart TD
     classDef conflict fill:#fbd3e9,stroke:#a61e4d,color:#1a202c;
     classDef sync fill:#e2e8f0,stroke:#718096,color:#1a202c;
     classDef advance fill:#c4f1f9,stroke:#0987a0,color:#1a202c;
+    classDef readymerge fill:#d9f99d,stroke:#65a30d,color:#1a202c;
     class G1,T1,L deploy;
     class G2,PK,M claim;
     class G3,T2,R review;
@@ -83,6 +88,7 @@ flowchart TD
     class G5,T4,CU cleanup;
     class S sync;
     class G7,T6,AD advance;
+    class G8,T7,RM readymerge;
 ```
 
 - **Start new work (green):** when you move a card to **In Progress**, yimbot
@@ -130,6 +136,15 @@ flowchart TD
   remain unmet, spawns a continuation session to keep working the issue.
   *(optional; settings: `AUTO_CONTINUE`, on by default; `MAX_CONTINUATIONS`,
   defaults to 5; `AC_JUDGE_MODEL`, blank uses the claude default)*
+- **Flag ready to merge (lime):** every heartbeat, for each of your open
+  non-draft PRs that is clean on all three signals (no unresolved review threads,
+  no merge conflicts, and CI passing or no CI at all), it adds a `ready-to-merge`
+  label so you or an automerge system can see at a glance that it's mergeable. The
+  label is kept in sync: if the PR later regresses (a new comment, a broken build,
+  a conflict) the fixers handle it and the label is removed until it's clean
+  again. *(optional; settings: `AUTO_READY_LABEL`, on by default;
+  `READY_MERGE_LABEL`, defaults to `ready-to-merge` and must already exist in the
+  repo)* Needs `gh` installed and authenticated.
 
 ## Setup
 

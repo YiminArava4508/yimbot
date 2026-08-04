@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  addLabel,
   checksInfo,
   type GhRunner,
   listMyMergedPRs,
   listMyOpenPRs,
   mergeableInfo,
   parseChecksInfo,
+  parseLabels,
   parseMergeableInfo,
   parseMergedPRs,
   parseOpenPRs,
+  prLabels,
+  removeLabel,
   repoSlug,
   parseUnresolvedInfo,
   parseViewerLogin,
@@ -190,6 +194,35 @@ test("mergeableInfo requests mergeable + headRefOid for the PR and parses them",
   const { run, calls } = capturingRunner([mergeableJson("CONFLICTING", "deadbeef")]);
   assert.deepEqual(await mergeableInfo(run, 4837), { state: "conflicting", headSha: "deadbeef" });
   assert.deepEqual(calls[0], ["pr", "view", "4837", "--json", "mergeable,headRefOid"]);
+});
+
+test("parseLabels extracts label names", () => {
+  assert.deepEqual(
+    parseLabels(JSON.stringify({ labels: [{ name: "bug" }, { name: "ready-to-merge" }] })),
+    ["bug", "ready-to-merge"],
+  );
+});
+
+test("parseLabels returns [] for a PR with no labels", () => {
+  assert.deepEqual(parseLabels(JSON.stringify({ labels: [] })), []);
+});
+
+test("prLabels requests the labels field and parses names", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify({ labels: [{ name: "ready-to-merge" }] })]);
+  assert.deepEqual(await prLabels(run, 4706), ["ready-to-merge"]);
+  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels"]);
+});
+
+test("addLabel runs pr edit --add-label for the PR", async () => {
+  const { run, calls } = capturingRunner([""]);
+  await addLabel(run, 4706, "ready-to-merge");
+  assert.deepEqual(calls[0], ["pr", "edit", "4706", "--add-label", "ready-to-merge"]);
+});
+
+test("removeLabel runs pr edit --remove-label for the PR", async () => {
+  const { run, calls } = capturingRunner([""]);
+  await removeLabel(run, 4706, "ready-to-merge");
+  assert.deepEqual(calls[0], ["pr", "edit", "4706", "--remove-label", "ready-to-merge"]);
 });
 
 test("parseViewerLogin extracts the login", () => {

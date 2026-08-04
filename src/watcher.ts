@@ -18,7 +18,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import type { MergedPR } from "./gh.ts";
+import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
 import {
   countAssignedInState,
   type CycleTodoIssue,
@@ -32,6 +32,7 @@ import {
   upsertAcComment,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
+import { type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 import { fixSessionNames, freshReviewState, type PrReviewDeps, reviewOnce } from "./pr-review.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
@@ -320,6 +321,20 @@ export type WatcherConfig = {
     activeCount: () => Promise<number>;
     maxInProgress: number;
     maxRounds: number;
+  } | null;
+  // gh-backed hooks for the ready step; null disables it (AUTO_READY_LABEL off, or
+  // gh unavailable). When set, each heartbeat keeps the ready label in sync on
+  // each non-draft open PR: present when the PR is clean on all three signals
+  // (no unresolved threads, mergeable, CI passing/none), absent otherwise.
+  ready: {
+    listOpenPRs: () => Promise<OpenPR[]>;
+    unresolvedInfo: (n: number) => Promise<UnresolvedInfo>;
+    mergeableInfo: (n: number) => Promise<MergeableInfo>;
+    checksInfo: (n: number) => Promise<ChecksInfo>;
+    prLabels: (n: number) => Promise<string[]>;
+    addLabel: (n: number, label: string) => Promise<void>;
+    removeLabel: (n: number, label: string) => Promise<void>;
+    label: string;
   } | null;
 };
 
@@ -688,6 +703,16 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: advanceLog,
   };
 
+  // Ready step (gh-driven): each heartbeat, keep the ready-to-merge label in sync
+  // on each non-draft open PR. Independent of the fixers, which keep running on
+  // every open PR, so a labeled PR that regresses is still fixed and just loses the
+  // label until it is clean again.
+  const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
+  const readyDeps: PrReadyDeps | null = config.ready && {
+    ...config.ready,
+    log: readyLog,
+  };
+
   // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
@@ -735,6 +760,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);
       if (cleanupDeps) await cleanupOnce(cleanupDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
+      if (readyDeps) await readyOnce(readyDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

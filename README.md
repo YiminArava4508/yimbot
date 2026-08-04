@@ -148,6 +148,28 @@ flowchart TD
   `READY_MERGE_LABEL`, defaults to `ready-to-merge` and must already exist in the
   repo)* Needs `gh` installed and authenticated.
 
+## TUI
+
+Running `pnpm start` from a terminal shows a live ticket board instead of a
+scrolling log: one row per ticket, updating in place as the daemon works. A
+row's status moves through its lifecycle as work progresses, starting at
+**working**, then **addressing review** / **fixing CI** / **resolving
+conflict** as those steps kick in, then **ready to test**, then **ready to
+merge**, then **merged**. Merged rows stay on the board for a while so you can
+see recent completions, then age out. Press `q` to quit the board; it also
+stops the daemon.
+
+When stdout is not a TTY (for example `pnpm start > daemon.log 2>&1 &`), the
+board is skipped and yimbot runs headless as before.
+
+The board reads a structured event stream and can be tuned with the env vars
+in `.env.example`: `EVENTS_LOG` (the event stream file, default
+`events.jsonl`), `EVENTS_LOG_MAX_LINES` (max lines kept before it
+self-truncates, default `500`), `TUI_KEEP_MERGED_MS` (how long a merged row
+stays before it ages out, in ms, default `300000`), `TUI_MAX_ROWS` (hard cap
+on rows shown, default `100`), and `DAEMON_LOG` (where daemon logs go when the
+board owns the terminal, default `daemon.log`).
+
 ## Setup
 
 ```bash

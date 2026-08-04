@@ -102,7 +102,6 @@ export const PREREQUISITES: Prerequisite[] = [
   { key: "git-identity", label: "git identity (user.name, user.email)", severity: "recommended" },
   { key: "linear-server", label: "Linear MCP server (linear-server)", severity: "recommended" },
   { key: "shortcut", label: "Shortcut MCP server (shortcut)", severity: "recommended" },
-  { key: "merge-main", label: "merge-main skill (repo-specific)", severity: "recommended" },
   { key: "tmux-status", label: "tmux @feature_status in status line", severity: "recommended" },
 ];
 
@@ -223,10 +222,6 @@ function gitIdentitySet(): boolean {
   return Boolean(gitConfigGet("user.name")) && Boolean(gitConfigGet("user.email"));
 }
 
-function skillInstalled(name: string): boolean {
-  return existsSync(join(homedir(), ".claude/skills", name, "SKILL.md"));
-}
-
 export function isSatisfied(pr: Prerequisite): boolean {
   switch (pr.key) {
     case "gh-auth":
@@ -243,8 +238,6 @@ export function isSatisfied(pr: Prerequisite): boolean {
       return mcpServers().includes("shortcut");
     case "git-identity":
       return gitIdentitySet();
-    case "merge-main":
-      return skillInstalled("merge-main");
     case "tmux-status":
       return tmuxStatusConfigured();
     default:
@@ -310,8 +303,6 @@ export function installHint(key: string, pm: PackageManager | null): string {
       return "Register the Linear MCP under the name 'linear-server' (claude mcp add linear-server ...)";
     case "shortcut":
       return "Register the Shortcut MCP under the name 'shortcut' (claude mcp add shortcut -- npx -y @shortcut/mcp@latest)";
-    case "merge-main":
-      return "Create a repo-specific merge-main skill at ~/.claude/skills/merge-main (fix-pr-ci uses it to sync origin/main)";
     case "tmux-status":
       return "Add @feature_status to your tmux status line so the ready-to-test flag shows";
   }
@@ -437,6 +428,11 @@ export const hostLinks: HostLink[] = [
     source: join(repoRoot, "skills/fix-pr-conflict"),
     target: join(homedir(), ".claude/skills/fix-pr-conflict"),
     label: "fix-pr-conflict skill (~/.claude/skills/fix-pr-conflict)",
+  },
+  {
+    source: join(repoRoot, "skills/merge-main"),
+    target: join(homedir(), ".claude/skills/merge-main"),
+    label: "merge-main skill (~/.claude/skills/merge-main)",
   },
   {
     source: join(repoRoot, "settings/session-settings.json"),
@@ -862,6 +858,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".claude/skills/fix-pr-conflict"),
       label: "~/.claude/skills/fix-pr-conflict",
       role: "review step: resolve PR merge conflicts (required for conflict handling)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/merge-main"),
+      label: "~/.claude/skills/merge-main",
+      role: "sync branch with origin/main during CI/conflict fixes (required for PR handling)",
     },
     {
       path: join(homedir(), ".config/yimbot/session-settings.json"),

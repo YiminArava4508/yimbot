@@ -115,16 +115,20 @@ export type ChecksInfo = { state: CiState; headSha: string };
 // are not failures. A null conclusion means the run hasn't finished (pending).
 const FAILING_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED"]);
 
-type RollupNode = { status?: string; conclusion?: string | null; state?: string };
+type RollupNode = { name?: string; context?: string; status?: string; conclusion?: string | null; state?: string };
 
 // CI summary for a PR from `gh pr view --json headRefOid,statusCheckRollup`.
 // `pending` takes precedence over `failing`: while any check is still running we
 // wait rather than act on a half-finished run. A rollup node is a CheckRun
 // (status + conclusion) or a StatusContext (state); classify off whichever fields
-// are present so a missing __typename never misreads a node.
-export function parseChecksInfo(json: string): ChecksInfo {
+// are present so a missing __typename never misreads a node. `ignore` drops
+// matching checks (by CheckRun name or StatusContext context) before classifying,
+// so a merge-queue bot's own gating check — which only completes once the PR is
+// queued to merge — never counts as pending and deadlocks the readiness signal.
+export function parseChecksInfo(json: string, ignore?: (name: string) => boolean): ChecksInfo {
   const data = JSON.parse(json) as { headRefOid: string; statusCheckRollup: RollupNode[] };
-  const nodes = data.statusCheckRollup ?? [];
+  const all = data.statusCheckRollup ?? [];
+  const nodes = ignore ? all.filter((n) => !ignore(n.name ?? n.context ?? "")) : all;
   let pending = false;
   let failing = false;
   for (const n of nodes) {
@@ -139,8 +143,12 @@ export function parseChecksInfo(json: string): ChecksInfo {
   return { state, headSha: data.headRefOid };
 }
 
-export async function checksInfo(run: GhRunner, prNumber: number): Promise<ChecksInfo> {
-  return parseChecksInfo(await run(["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup"]));
+export async function checksInfo(
+  run: GhRunner,
+  prNumber: number,
+  ignore?: (name: string) => boolean,
+): Promise<ChecksInfo> {
+  return parseChecksInfo(await run(["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup"]), ignore);
 }
 
 export type MergeableState = "mergeable" | "conflicting" | "unknown";

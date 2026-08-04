@@ -142,11 +142,16 @@ flowchart TD
   non-draft PRs that is clean on all three signals (no unresolved review threads,
   no merge conflicts, and CI passing or no CI at all), it adds a `ready-to-merge`
   label so you or an automerge system can see at a glance that it's mergeable. The
-  label is kept in sync: if the PR later regresses (a new comment, a broken build,
-  a conflict) the fixers handle it and the label is removed until it's clean
-  again. *(optional; settings: `AUTO_READY_LABEL`, on by default;
-  `READY_MERGE_LABEL`, defaults to `ready-to-merge` and must already exist in the
-  repo)* Needs `gh` installed and authenticated.
+  label is removed again only on a hard regression (a new comment, a broken build,
+  a conflict), which the fixers then handle; a merely in-flight state (CI still
+  running, mergeability not yet computed) holds the label as-is, so a merge queue
+  that queues on the label is never yanked back out mid-merge. If your merge queue
+  posts its own gating check that only completes once the PR is queued (e.g.
+  Aviator's `aviator/checks`), list it in `IGNORE_CHECKS` so it isn't counted as
+  perpetually-pending CI and deadlock the label. *(optional; settings:
+  `AUTO_READY_LABEL`, on by default; `READY_MERGE_LABEL`, defaults to
+  `ready-to-merge` and must already exist in the repo; `IGNORE_CHECKS`, empty by
+  default)* Needs `gh` installed and authenticated.
 
 ## TUI
 
@@ -188,8 +193,7 @@ begins with a two-tier prerequisite pre-flight:
   re-checks; the rest show exact instructions and loop until fixed.
 - **Recommended (warns, never blocks):** `gh` token `repo`+`workflow` scopes and
   git identity (both offered as one-command fixes), the `linear-server` /
-  `shortcut` MCP servers the ticket sessions fetch through, a repo-specific
-  `merge-main` skill (`fix-pr-ci` uses it to sync `origin/main`), and a tmux
+  `shortcut` MCP servers the ticket sessions fetch through, and a tmux
   status line that shows `@feature_status` (the ready-to-test flag).
 
 Then it authenticates your Linear API key, lets you pick your team and workflow
@@ -243,11 +247,13 @@ this repo:
 [`scripts/end-session.sh`](scripts/end-session.sh),
 [`skills/pickup-ticket`](skills/pickup-ticket/SKILL.md),
 [`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md),
-[`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md), and
-[`skills/fix-pr-conflict`](skills/fix-pr-conflict/SKILL.md). **`pnpm onboard`
+[`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md),
+[`skills/fix-pr-conflict`](skills/fix-pr-conflict/SKILL.md), and
+[`skills/merge-main`](skills/merge-main/SKILL.md). **`pnpm onboard`
 symlinks them into place** (`~/new-session.sh`, `~/end-session.sh`,
 `~/.claude/skills/pickup-ticket`, `~/.claude/skills/address-pr-comments`,
-`~/.claude/skills/fix-pr-ci`, `~/.claude/skills/fix-pr-conflict`), verifying them
+`~/.claude/skills/fix-pr-ci`, `~/.claude/skills/fix-pr-conflict`,
+`~/.claude/skills/merge-main`), verifying them
 in its pre-flight. An existing file
 at any path is never overwritten without asking (it's backed up first).
 

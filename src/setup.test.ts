@@ -170,7 +170,7 @@ test("PREREQUISITES split into blocking required and non-blocking recommended ch
     assert.equal(sev(k), "required", `${k} is required`);
   }
   // Recommended: warn but never block.
-  for (const k of ["gh-scopes", "git-identity", "linear-server", "shortcut", "merge-main", "tmux-status"]) {
+  for (const k of ["gh-scopes", "git-identity", "linear-server", "shortcut", "tmux-status"]) {
     assert.equal(sev(k), "recommended", `${k} is recommended`);
   }
   // Every prerequisite declares one of the two severities.
@@ -297,6 +297,12 @@ test("hostLinks installs the fix-pr-conflict skill", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-conflict"));
   assert.ok(link, "fix-pr-conflict skill host link is present");
   assert.ok(link!.source.endsWith("skills/fix-pr-conflict"), "sourced from skills/fix-pr-conflict");
+});
+
+test("hostLinks installs the merge-main skill", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/merge-main"));
+  assert.ok(link, "merge-main skill host link is present");
+  assert.ok(link!.source.endsWith("skills/merge-main"), "sourced from skills/merge-main");
 });
 
 test("hostLinks installs the session deny-list settings", () => {

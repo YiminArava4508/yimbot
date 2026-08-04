@@ -113,3 +113,60 @@ export function readEvents(path: string = eventsLogPath()): YimbotEvent[] {
   }
   return out;
 }
+
+export type BoardRow = {
+  key: string;
+  label: string;
+  title?: string;
+  status: string;
+  terminal: boolean;
+  ts: number;
+};
+
+function keepMergedMsDefault(): number {
+  const n = Number(envOr("TUI_KEEP_MERGED_MS", "300000"));
+  return Number.isFinite(n) && n >= 0 ? n : 300000;
+}
+
+function maxRowsDefault(): number {
+  const n = Number(envOr("TUI_MAX_ROWS", "100"));
+  return Number.isInteger(n) && n > 0 ? n : 100;
+}
+
+export function reduceRows(
+  events: YimbotEvent[],
+  now: number,
+  opts: { keepMergedMs?: number; maxRows?: number } = {},
+): BoardRow[] {
+  const keepMergedMs = opts.keepMergedMs ?? keepMergedMsDefault();
+  const maxRows = opts.maxRows ?? maxRowsDefault();
+
+  const byKey = new Map<string, BoardRow>();
+  for (const e of events) {
+    const { status, terminal } = statusFor(e.kind);
+    const prev = byKey.get(e.key);
+    byKey.set(e.key, {
+      key: e.key,
+      label: e.label,
+      title: e.title ?? prev?.title,
+      status,
+      terminal,
+      ts: e.ts,
+    });
+  }
+
+  let rows = [...byKey.values()].filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
+  rows.sort((a, b) => b.ts - a.ts);
+
+  while (rows.length > maxRows) {
+    let idx = -1;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].terminal) {
+        idx = i;
+        break;
+      }
+    }
+    rows.splice(idx >= 0 ? idx : rows.length - 1, 1);
+  }
+  return rows;
+}

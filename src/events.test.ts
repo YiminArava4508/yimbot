@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, readEvents, eventsLogPath } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, readEvents, eventsLogPath, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,4 +106,61 @@ test("readEvents: missing file -> [] and malformed lines skipped", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].key, "A");
   });
+});
+
+import { reduceRows } from "./events.ts";
+
+const ev = (over: Partial<YimbotEvent>): YimbotEvent => ({
+  ts: 0,
+  kind: "task_started",
+  key: "ENG-1",
+  label: "ENG-1",
+  ...over,
+});
+
+test("reduceRows: last-write-wins per key, keeps prior title", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", title: "auth guard" }),
+      ev({ ts: 2, kind: "review_started" }),
+    ],
+    100,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "addressing review");
+  assert.equal(rows[0].title, "auth guard");
+  assert.equal(rows[0].ts, 2);
+});
+
+test("reduceRows: sorts newest activity first", () => {
+  const rows = reduceRows(
+    [ev({ key: "A", label: "A", ts: 1 }), ev({ key: "B", label: "B", ts: 5 })],
+    100,
+  );
+  assert.deepEqual(rows.map((r) => r.key), ["B", "A"]);
+});
+
+test("reduceRows: terminal rows age out past keepMergedMs", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "merged", ts: 10 })], 1000, {
+    keepMergedMs: 100,
+  });
+  assert.equal(rows.length, 0);
+});
+
+test("reduceRows: non-terminal rows never age out", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "task_started", ts: 10 })], 1_000_000, {
+    keepMergedMs: 100,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "working");
+});
+
+test("reduceRows: maxRows drops oldest terminal first", () => {
+  const events = [
+    ev({ key: "OLD-MERGED", label: "OLD-MERGED", kind: "merged", ts: 1 }),
+    ev({ key: "OLD-WORK", label: "OLD-WORK", kind: "task_started", ts: 2 }),
+    ev({ key: "NEW", label: "NEW", kind: "task_started", ts: 3 }),
+  ];
+  const rows = reduceRows(events, 3, { keepMergedMs: 1_000_000, maxRows: 2 });
+  assert.deepEqual(rows.map((r) => r.key).sort(), ["NEW", "OLD-WORK"]);
 });

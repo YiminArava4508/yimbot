@@ -784,14 +784,16 @@ export function startWatcher(config: WatcherConfig): () => void {
   // every open PR, so a labeled PR that regresses is still fixed and just loses the
   // label until it is clean again.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
-  // Populated by listOpenPRs each tick, before addLabel/removeLabel run (see
-  // readyOnce), so the wraps below can key events by branch like every other
-  // step instead of by PR number, letting them unify with the ticket's row.
+  // Rebuilt from scratch by listOpenPRs each tick, before addLabel/removeLabel
+  // run (see readyOnce), so the wraps below can key events by branch like every
+  // other step instead of by PR number, letting them unify with the ticket's
+  // row. Cleared each tick so closed/merged PRs do not accumulate forever.
   const prBranchByNumber = new Map<number, string>();
   const readyDeps: PrReadyDeps | null = config.ready && {
     ...config.ready,
     listOpenPRs: async () => {
       const prs = await config.ready!.listOpenPRs();
+      prBranchByNumber.clear();
       for (const pr of prs) prBranchByNumber.set(pr.number, pr.headRefName);
       return prs;
     },

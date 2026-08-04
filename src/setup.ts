@@ -577,6 +577,40 @@ async function reviewRecommended(): Promise<void> {
   }
 }
 
+// Create target as a symlink to source, making parent dirs as needed. Shared by
+// the interactive installer and the non-interactive startup healer so the two
+// cannot drift.
+function createLink(source: string, target: string): void {
+  mkdirSync(dirname(target), { recursive: true });
+  symlinkSync(source, target);
+}
+
+// Non-interactive host-link healer: create only missing links, never prompting
+// and never touching a pre-existing non-symlink. Returns one result line per
+// link. Called on daemon startup so a removed or never-installed link repairs
+// itself. `links` is injectable for tests.
+export function ensureHostLinks(links: HostLink[] = hostLinks): string[] {
+  const results: string[] = [];
+  for (const { source, target, label } of links) {
+    try {
+      const state = linkState(source, target);
+      if (state === "ours") {
+        results.push(`[ok] ${label} already linked`);
+      } else if (state === "other") {
+        results.push(`[warn] ${label}: ${target} exists and isn't a yimbot link; left as-is`);
+      } else if (!existsSync(source)) {
+        results.push(`[fail] ${label}: source missing ${source}`);
+      } else {
+        createLink(source, target);
+        results.push(`[ok] ${label} linked`);
+      }
+    } catch (err) {
+      results.push(`[fail] ${label}: ${errMsg(err)}`);
+    }
+  }
+  return results;
+}
+
 // Symlink the repo's vendored launcher + skill into the places the daemon and
 // Claude Code expect. Idempotent; never clobbers an unrelated existing file
 // without asking (backs it up to .bak if the user agrees).
@@ -609,8 +643,7 @@ async function installHostLinks(): Promise<void> {
         }
         renameSync(target, `${target}.bak`);
       }
-      mkdirSync(dirname(target), { recursive: true });
-      symlinkSync(source, target);
+      createLink(source, target);
       results.push(`[ok] ${label} linked`);
     } catch (err) {
       results.push(`[fail] ${label}: ${errMsg(err)}`);

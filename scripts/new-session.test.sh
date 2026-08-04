@@ -45,4 +45,31 @@ assert_eq "$(seed_prompt_for pr-9-conflict | grep -c 'fix-pr-conflict skill')" "
 assert_eq "$(seed_prompt_for pr-9-conflict | grep -c '#9')" "1" "pr-conflict seed names the PR number"
 assert_eq "$(seed_prompt_for random-name)" "" "unrecognized name yields no seed"
 
+# Preflight helpers survive sourcing.
+assert_defined skill_in_prompt
+assert_defined verify_seed_skill
+
+# skill_in_prompt extracts the handed-off skill from each recognized seed prompt.
+assert_eq "$(skill_in_prompt "$(seed_prompt_for pr-9-ci)")" "fix-pr-ci" "extracts fix-pr-ci"
+assert_eq "$(skill_in_prompt "$(seed_prompt_for pr-9-conflict)")" "fix-pr-conflict" "extracts fix-pr-conflict"
+assert_eq "$(skill_in_prompt "$(seed_prompt_for pr-9-fix)")" "address-pr-comments" "extracts address-pr-comments"
+assert_eq "$(skill_in_prompt "$(seed_prompt_for sc-7-foo)")" "pickup-ticket" "extracts pickup-ticket"
+assert_eq "$(skill_in_prompt "$(seed_prompt_for random-name)")" "" "no skill in a bare prompt"
+
+# verify_seed_skill passes when the named skill is installed under SKILLS_DIR.
+SK_TMP=$(mktemp -d)
+mkdir -p "$SK_TMP/fix-pr-ci"; : > "$SK_TMP/fix-pr-ci/SKILL.md"
+assert_eq "$(SKILLS_DIR=$SK_TMP verify_seed_skill pr-9-ci >/dev/null 2>&1; echo $?)" "0" "passes when skill present"
+
+# verify_seed_skill dies (non-zero) when the named skill is absent. die() calls
+# exit, which would terminate this test script if run inline; wrap the call in
+# a subshell so only that subshell exits, and capture its status via $?.
+SK_EMPTY=$(mktemp -d)
+( SKILLS_DIR=$SK_EMPTY verify_seed_skill pr-9-ci >/dev/null 2>&1 )
+assert_eq "$?" "1" "dies when skill missing"
+
+# A bare/unrecognized name is a no-op regardless of SKILLS_DIR.
+assert_eq "$(SKILLS_DIR=$SK_EMPTY verify_seed_skill random-name >/dev/null 2>&1; echo $?)" "0" "no-op for bare name"
+rm -rf "$SK_TMP" "$SK_EMPTY"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

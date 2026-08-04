@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import {
   configReferencesFeatureStatus,
   configToEnvRecord,
   detectPackageManager,
+  ensureHostLinks,
   expandTilde,
   ghHasScopes,
   hasClaudeAuth,
@@ -86,6 +87,47 @@ test("linkState detects our symlink vs other vs missing", () => {
   const regular = join(dir, "regular");
   writeFileSync(regular, "x");
   assert.equal(linkState(source, regular), "other");
+});
+
+test("ensureHostLinks creates a missing link when the source exists", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-"));
+  const source = join(dir, "skill");
+  mkdirSync(source);
+  const target = join(dir, "home", ".claude", "skills", "skill");
+  const results = ensureHostLinks([{ source, target, label: "skill" }]);
+  assert.equal(lstatSync(target).isSymbolicLink(), true);
+  assert.equal(readlinkSync(target), source);
+  assert.ok(results.some((r) => r.includes("[ok]") && r.includes("linked")));
+});
+
+test("ensureHostLinks skips a link that is already ours", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-ours-"));
+  const source = join(dir, "skill");
+  mkdirSync(source);
+  const target = join(dir, "ours");
+  symlinkSync(source, target);
+  const results = ensureHostLinks([{ source, target, label: "skill" }]);
+  assert.ok(results.some((r) => r.includes("already linked")));
+});
+
+test("ensureHostLinks leaves a non-yimbot target untouched and warns", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-other-"));
+  const source = join(dir, "skill");
+  mkdirSync(source);
+  const target = join(dir, "other");
+  mkdirSync(target); // a plain directory, like the merge-main copy
+  const results = ensureHostLinks([{ source, target, label: "skill" }]);
+  assert.equal(lstatSync(target).isSymbolicLink(), false);
+  assert.ok(results.some((r) => r.includes("[warn]")));
+});
+
+test("ensureHostLinks reports a missing source and creates nothing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-nosrc-"));
+  const source = join(dir, "absent");
+  const target = join(dir, "home", "skills", "absent");
+  const results = ensureHostLinks([{ source, target, label: "absent" }]);
+  assert.throws(() => lstatSync(target));
+  assert.ok(results.some((r) => r.includes("[fail]") && r.includes("source missing")));
 });
 
 test("configToEnvRecord maps every setting to its env key", () => {

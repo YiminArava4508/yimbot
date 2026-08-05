@@ -22,6 +22,10 @@ export type CleanupDeps = {
   // Tear down a worktree by its branch (== its ticket session name): docker down,
   // worktree remove, branch delete, kill the branch-named session. Via end-session.sh.
   teardown: (branch: string) => void;
+  // Reconcile the board against the full merged-branch set each tick. Called even
+  // when a merged PR has no worktree left to tear down, so a row stuck on a stale
+  // action status (e.g. "fixing CI") still transitions to merged.
+  reconcileMerged?: (mergedBranches: Set<string>) => void;
   // Live tmux session names, for the pr-<n>-fix session scan below.
   listSessions: () => string[];
   // Kill a tmux session by exact name (a merged PR's fix session).
@@ -253,6 +257,8 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
 
   const mergedBranches = new Set(merged.map((p) => p.headRefName));
   const mergedNumbers = new Set(merged.map((p) => p.number));
+
+  deps.reconcileMerged?.(mergedBranches);
 
   // Split groups: slices marked with a parent session are torn down only as a
   // whole, once every slice PR has merged. Both the integration worktree and its

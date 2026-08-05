@@ -19,6 +19,11 @@ export type PrReadyDeps = {
   // The merge-queue "blocked" label. A PR carrying it is owned by the blocked-fix
   // flow, so the ready step leaves its labels untouched (never re-queues it).
   blockedLabel: string;
+  // Report the classified verdict each tick, for a PR the ready step owns (never a
+  // hold, never a blocked PR). Lets the board reflect observed readiness independent
+  // of whether a label write happened, so a PR that is ready but already labeled
+  // still surfaces as ready-to-merge.
+  onVerdict?: (prNumber: number, verdict: ReadyVerdict) => void;
   log: (msg: string) => void;
 };
 
@@ -34,7 +39,7 @@ export type PrReadyDeps = {
 // `regressed`) keeps the label on, so the PR is never yanked back out of the
 // queue mid-merge. The queue's own gating check is excluded upstream in
 // `checksInfo`, so it never keeps CI perpetually pending here.
-type ReadyVerdict = "ready" | "regressed" | "hold";
+export type ReadyVerdict = "ready" | "regressed" | "hold";
 
 // Reads short-circuit in cheap-first order (an unresolved thread returns before
 // the mergeable/CI reads), so a regressed PR costs the fewest gh calls. A read
@@ -86,6 +91,7 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
       continue;
     }
     if (labels.includes(deps.blockedLabel)) continue; // blocked-fix flow owns this PR's labels
+    deps.onVerdict?.(pr.number, verdict);
     const hasLabel = labels.includes(deps.label);
 
     if (verdict === "ready" && !hasLabel) {

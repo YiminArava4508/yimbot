@@ -274,6 +274,30 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
   return { deps: d, torn, killed, logs };
 }
 
+test("cleanupOnce hands the merged branch set to reconcileMerged, even with no worktree present", async () => {
+  let seen: Set<string> | null = null;
+  const { deps: d } = deps({
+    listWorktrees: () => [], // worktree already gone
+    listMergedPRs: async () => [mpr(2, "eng-2-b"), mpr(3, "eng-3-c")],
+    reconcileMerged: (branches) => void (seen = branches),
+  });
+  await cleanupOnce(d);
+  assert.ok(seen, "reconcileMerged was called");
+  assert.deepEqual([...(seen as unknown as Set<string>)].sort(), ["eng-2-b", "eng-3-c"]);
+});
+
+test("cleanupOnce still reconciles merged branches when a later teardown throws", async () => {
+  let seen: Set<string> | null = null;
+  const { deps: d } = deps({
+    reconcileMerged: (branches) => void (seen = branches),
+    teardown: () => {
+      throw new Error("boom");
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual([...(seen as unknown as Set<string>)], ["eng-2-b"]);
+});
+
 test("cleanupOnce tears down each merged worktree", async () => {
   const { deps: d, torn } = deps();
   await cleanupOnce(d);

@@ -18,7 +18,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { deriveKey, emitEvent, titleFromBranch } from "./events.ts";
+import { deriveKey, emitEvent, emitStatus, readEvents, reduceRows, titleFromBranch } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
 import {
   countAssignedInState,
@@ -743,8 +743,23 @@ export function startWatcher(config: WatcherConfig): () => void {
     worktreesDir,
     teardown: (branch) => {
       const { key, label } = deriveKey({ branch });
-      emitEvent({ kind: "merged", key, label, title: titleFromBranch(branch) });
+      emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
       runEndSession(branch);
+    },
+    // Every tick, transition any board row still shown as active to merged once its
+    // PR has merged, even with no worktree left for teardown to emit against (the
+    // worktree was reaped, or cleaned up out of band). Scoped to keys already on the
+    // board so a backlog of old merges never spawns fresh rows.
+    reconcileMerged: (mergedBranches) => {
+      const active = new Set(
+        reduceRows(readEvents(), Date.now())
+          .filter((r) => !r.terminal)
+          .map((r) => r.key),
+      );
+      for (const branch of mergedBranches) {
+        const { key, label } = deriveKey({ branch });
+        if (active.has(key)) emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
+      }
     },
     listSessions: listTmuxSessions,
     killSession: killTmuxSession,
@@ -808,16 +823,20 @@ export function startWatcher(config: WatcherConfig): () => void {
       for (const pr of prs) prBranchByNumber.set(pr.number, pr.headRefName);
       return prs;
     },
-    addLabel: (n: number, label: string) => {
+    // Board emission is owned by onVerdict below (fires whether or not a label
+    // write happens), so a PR that is ready but already carries the label still
+    // shows ready-to-merge. The label writers stay pure GitHub side effects.
+    onVerdict: (n: number, verdict) => {
+      if (verdict !== "ready") return;
       const branch = prBranchByNumber.get(n);
       const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-      emitEvent({ kind: "ready_to_merge", key: k.key, label: k.label });
-      return config.ready!.addLabel(n, label);
+      emitStatus({ kind: "ready_to_merge", key: k.key, label: k.label });
     },
+    addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     removeLabel: (n: number, label: string) => {
       const branch = prBranchByNumber.get(n);
       const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-      emitEvent({ kind: "ready_regressed", key: k.key, label: k.label });
+      emitStatus({ kind: "ready_regressed", key: k.key, label: k.label });
       return config.ready!.removeLabel(n, label);
     },
     log: readyLog,

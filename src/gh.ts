@@ -136,7 +136,38 @@ export type ChecksInfo = { state: CiState; headSha: string };
 // are not failures. A null conclusion means the run hasn't finished (pending).
 const FAILING_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ACTION_REQUIRED"]);
 
-type RollupNode = { name?: string; context?: string; status?: string; conclusion?: string | null; state?: string };
+type RollupNode = {
+  name?: string;
+  context?: string;
+  status?: string;
+  conclusion?: string | null;
+  state?: string;
+  workflowName?: string;
+  startedAt?: string;
+  completedAt?: string;
+};
+
+// GitHub keeps every historical run of a check in the rollup, so a check that was
+// cancelled and later reran to green appears twice. Only the latest run per check
+// reflects the PR's real state (it's what the GitHub UI shows), so collapse each
+// check to its most recent run before classifying. A stale CANCELLED/FAILURE run
+// would otherwise flip the whole rollup to failing. CheckRuns are keyed by
+// workflow + name and ordered by startedAt (fallback completedAt); StatusContexts
+// carry no timestamps but the API already returns one row per context, so they key
+// by context and never collide. A freshly queued rerun reports no timestamps at
+// all; rank it as newest (not oldest) so it wins over the prior completed run and
+// the rollup reads pending, preserving the "pending takes precedence" contract.
+function latestPerCheck(nodes: RollupNode[]): RollupNode[] {
+  const rank = (n: RollupNode) => n.startedAt ?? n.completedAt ?? "￿";
+  const latest = new Map<string, RollupNode>();
+  for (const n of nodes) {
+    const key =
+      n.context !== undefined ? `ctx:${n.context}` : `run:${n.workflowName ?? ""}::${n.name ?? ""}`;
+    const prev = latest.get(key);
+    if (!prev || rank(n) >= rank(prev)) latest.set(key, n);
+  }
+  return [...latest.values()];
+}
 
 // CI summary for a PR from `gh pr view --json headRefOid,statusCheckRollup`.
 // `pending` takes precedence over `failing`: while any check is still running we
@@ -148,7 +179,7 @@ type RollupNode = { name?: string; context?: string; status?: string; conclusion
 // queued to merge — never counts as pending and deadlocks the readiness signal.
 export function parseChecksInfo(json: string, ignore?: (name: string) => boolean): ChecksInfo {
   const data = JSON.parse(json) as { headRefOid: string; statusCheckRollup: RollupNode[] };
-  const all = data.statusCheckRollup ?? [];
+  const all = latestPerCheck(data.statusCheckRollup ?? []);
   const nodes = ignore ? all.filter((n) => !ignore(n.name ?? n.context ?? "")) : all;
   let pending = false;
   let failing = false;

@@ -84,8 +84,10 @@ before you touch any code.
    gh pr edit <number> --remove-label "blocked" --add-label "ready-to-merge"
    ```
 
-   Re-adding `ready-to-merge` is how this repo re-queues a PR. (If your setup uses
-   a different queue label, the daemon's `READY_MERGE_LABEL` names it.)
+   `blocked` and `ready-to-merge` are the daemon's DEFAULT label names
+   (`BLOCKED_LABEL` and `READY_MERGE_LABEL`). If those env vars have been
+   customized in the daemon config, use those exact names here instead: remove
+   the block label this PR actually carries, and add the queue's ready label.
 
 7. **Bail cleanly when uncertain.** If you cannot determine the cause, or a fix
    would be risky, or you could not make the build green: leave the `blocked` label

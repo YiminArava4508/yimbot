@@ -195,3 +195,13 @@ test("readyOnce still labels a clean PR that is not blocked", async () => {
   await readyOnce(h.deps);
   assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
 });
+
+test("readyOnce does not remove ready-to-merge from a blocked PR that regressed", async () => {
+  // Failing CI => verdict "regressed"; the PR carries both the ready label and the
+  // blocked label. Without the blocked guard, readyOnce would strip the ready label;
+  // the guard must leave both labels untouched (Aviator owns this PR now).
+  const h = harness({ checksInfo: async () => ci("failing") }, [LABEL, "blocked"]);
+  await readyOnce(h.deps);
+  assert.equal(h.removed.length, 0);
+  assert.equal(h.added.length, 0);
+});

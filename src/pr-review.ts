@@ -218,7 +218,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       } catch (err) {
         deps.log(`spawn failed for PR #${pr.number}: ${err}`);
       }
-      continue; // one fix per PR per tick — all three fixes share the worktree
+      continue; // one fix per PR per tick, all four fixes share the worktree
     }
 
     let mergeable: MergeableInfo;
@@ -245,7 +245,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
           deps.log(`conflict spawn failed for PR #${pr.number}: ${err}`);
         }
       }
-      continue; // one fix per PR per tick — all three fixes share the worktree
+      continue; // one fix per PR per tick, all four fixes share the worktree
     }
 
     let blocked: BlockedInfo;

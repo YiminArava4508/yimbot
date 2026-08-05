@@ -106,6 +106,11 @@ export async function startDaemon(): Promise<() => void> {
   );
   const ignoreChecks = ignoreCheckNames.size ? (name: string) => ignoreCheckNames.has(name.toLowerCase()) : undefined;
 
+  // The merge queue's "blocked" label. Aviator adds it (and removes the ready
+  // label) when its combined-CI batch fails; the review step's blocked-fix kind
+  // triggers on it and re-queues by removing it and re-adding the ready label.
+  const blockedLabelName = envOr("BLOCKED_LABEL", "blocked");
+
   // Review step: address comments on the viewer's open PRs. gh resolves the repo
   // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
   // disabled (null) rather than crashing the daemon.
@@ -193,10 +198,6 @@ export async function startDaemon(): Promise<() => void> {
   // review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
   const autoReadyLabel = !["false", "off", "no", "0"].includes(envOr("AUTO_READY_LABEL", "true").toLowerCase());
   const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
-  // The merge queue's "blocked" label. Aviator adds it (and removes the ready
-  // label) when its combined-CI batch fails; the review step's blocked-fix kind
-  // triggers on it and re-queues by removing it and re-adding the ready label.
-  const blockedLabelName = envOr("BLOCKED_LABEL", "blocked");
   const ready =
     autoReadyLabel && prReview
       ? {

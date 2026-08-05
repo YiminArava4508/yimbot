@@ -53,6 +53,10 @@ flowchart TD
     G7 --> T6{"An open PR of yours<br/>conflicting with main?"}
     T6 -- yes --> CF["Add a conflict-fix window to that ticket's<br/>session (or open a new one) that merges main in,<br/>resolves conflicts preserving the feature, and pushes"]
 
+    P --> G9["Handle queue blocks"]
+    G9 --> T8{"An open PR of yours the<br/>merge queue blocked?"}
+    T8 -- yes --> BL["Investigate the combined-CI<br/>failure, fix if at fault, then<br/>unblock and re-queue"]
+
     P --> G4["Flag ready to test"]
     G4 --> T3{"Did a card move<br/>to 'In Review'?"}
     T3 -- yes --> F["Mark its session with a<br/>'ready to test' icon"]
@@ -79,11 +83,13 @@ flowchart TD
     classDef sync fill:#e2e8f0,stroke:#718096,color:#1a202c;
     classDef advance fill:#c4f1f9,stroke:#0987a0,color:#1a202c;
     classDef readymerge fill:#d9f99d,stroke:#65a30d,color:#1a202c;
+    classDef blocked fill:#fed7aa,stroke:#c2410c,color:#1a202c;
     class G1,T1,L deploy;
     class G2,PK,M claim;
     class G3,T2,R review;
     class G6,T5,CI ci;
     class G7,T6,CF conflict;
+    class G9,T8,BL blocked;
     class G4,T3,F ready;
     class G5,T4,CU cleanup;
     class S sync;
@@ -125,6 +131,17 @@ flowchart TD
   authenticated. Any fix session (comment, CI, or conflict) that lingers too
   long is torn down as a backstop, regardless of PR state. *(setting:
   `YIMBOT_FIX_REAP_STALE_MINUTES`, defaults to 90)*
+- **Handle queue blocks (orange):** every heartbeat, for each of your open PRs
+  the merge queue (Aviator) kicked out after its combined-CI batch failed (it
+  carries the `blocked` label), it adds a `pr-<n>-blocked` fix window to that
+  PR's ticket session (or a standalone session) that reads Aviator's comment
+  for the failed checks and the associated draft PR, investigates the combined
+  failure, fixes this PR's code when it is at fault, then unblocks and
+  re-queues by removing the `blocked` label and re-adding `ready-to-merge`. If
+  it cannot determine or safely fix the cause, it leaves the PR blocked for a
+  human. Re-triggers only when the head moves, so a re-block caused by another
+  PR in the batch never loops. Settings: `BLOCKED_LABEL` (defaults to
+  `blocked`); re-queue reuses `READY_MERGE_LABEL`.
 - **Flag ready to test (purple):** when a card moves to **In Review**, it marks
   that card's session with a "ready to test" icon so you know you can run local
   dev there to try it. (yimbot no longer starts the dev env for you.)

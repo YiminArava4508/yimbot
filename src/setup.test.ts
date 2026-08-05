@@ -341,6 +341,12 @@ test("hostLinks installs the fix-pr-conflict skill", () => {
   assert.ok(link!.source.endsWith("skills/fix-pr-conflict"), "sourced from skills/fix-pr-conflict");
 });
 
+test("hostLinks installs the fix-pr-blocked skill", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-blocked"));
+  assert.ok(link, "fix-pr-blocked skill host link is present");
+  assert.ok(link!.source.endsWith("skills/fix-pr-blocked"), "sourced from skills/fix-pr-blocked");
+});
+
 test("hostLinks installs the merge-main skill", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/merge-main"));
   assert.ok(link, "merge-main skill host link is present");

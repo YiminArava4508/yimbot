@@ -9,12 +9,13 @@ function fmtTime(ts: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function rowsToTable(rows: BoardRow[]): string[][] {
-  const header = ["TIME", "STATUS", "TICKET", "TITLE"];
+export function rowsToTable(rows: BoardRow[]): string[][] {
+  const header = ["TIME", "STATUS", "TICKET", "PR", "TITLE"];
   const body = rows.map((r) => [
     fmtTime(r.ts),
     r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
     r.label,
+    r.pr != null ? `#${r.pr}` : "",
     r.title ?? "",
   ]);
   return [header, ...body];

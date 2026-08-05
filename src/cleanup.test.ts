@@ -263,6 +263,8 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
   const d: CleanupDeps = {
     listWorktrees: () => [wt("eng-1-a"), wt("eng-2-b")],
     listMergedPRs: async () => [mpr(2, "eng-2-b")],
+    listClosedUnmergedPRs: async () => [],
+    hasNoUnpushedWork: () => true,
     worktreesDir: WT,
     teardown: (branch) => void torn.push(branch),
     listSessions: () => [],
@@ -405,6 +407,72 @@ test("cleanupOnce continues to other fix sessions when one kill throws", async (
   assert.ok(logs.some((l) => /kill failed/.test(l)));
 });
 
+test("cleanupOnce tears down a closed-unmerged worktree when it is fully pushed", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["eng-1104-spike"]);
+});
+
+test("cleanupOnce keeps a closed-unmerged worktree that has unpushed work", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    hasNoUnpushedWork: () => false,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-1104-spike/.test(l) && /unsaved work/.test(l)));
+});
+
+test("cleanupOnce only runs the unpushed-work check on closed-unmerged branches", async () => {
+  const checked: string[] = [];
+  const { deps: d } = deps({
+    listWorktrees: () => [wt("eng-1-a"), wt("eng-2-b"), wt("eng-1104-spike")],
+    listMergedPRs: async () => [mpr(2, "eng-2-b")],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    hasNoUnpushedWork: (path) => {
+      checked.push(path.slice(path.lastIndexOf("/") + 1));
+      return true;
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(checked, ["eng-1104-spike"]);
+});
+
+test("cleanupOnce leaves a closed-unmerged slice of a split group alone", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+    ],
+    readParentSession: (p) => (p === `${WT}/eng-1-p1` ? "eng-1" : null),
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1-p1")],
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+});
+
+test("cleanupOnce still reaps merged worktrees when the closed-PR list fails", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-2-b")],
+    listMergedPRs: async () => [mpr(2, "eng-2-b")],
+    listClosedUnmergedPRs: async () => {
+      throw new Error("gh 503");
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["eng-2-b"]);
+  assert.ok(logs.some((l) => /gh 503/.test(l)));
+});
+
 // parentOf map helper: slice worktree path -> parent session name.
 function parentOfMap(m: Record<string, string>) {
   return (path: string): string | null => m[path] ?? null;
@@ -468,6 +536,8 @@ function recorderDeps(over: Partial<CleanupDeps> & {
   const deps: CleanupDeps = {
     listWorktrees: () => over.worktrees,
     listMergedPRs: async () => over.merged,
+    listClosedUnmergedPRs: async () => [],
+    hasNoUnpushedWork: () => true,
     worktreesDir: WT,
     teardown: (b) => tornDown.push(b),
     listSessions: () => over.sessions ?? [],

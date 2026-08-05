@@ -20,6 +20,7 @@ export type YimbotEvent = {
   key: string;
   label: string;
   title?: string;
+  pr?: number;
 };
 
 const TICKET = /^(eng|sc)-(\d+)/i;
@@ -132,6 +133,7 @@ export type BoardRow = {
   key: string;
   label: string;
   title?: string;
+  pr?: number;
   status: string;
   terminal: boolean;
   ts: number;
@@ -163,6 +165,7 @@ export function reduceRows(
       key: e.key,
       label: e.label,
       title: e.title ?? prev?.title,
+      pr: e.pr ?? prev?.pr,
       status,
       terminal,
       ts: e.ts,

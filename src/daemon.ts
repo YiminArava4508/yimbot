@@ -11,6 +11,7 @@ import {
   blockedInfo,
   checksInfo,
   ghRunner,
+  listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
   mergeableInfo,
@@ -148,6 +149,7 @@ export async function startDaemon(): Promise<() => void> {
       ? {
           codebasePath,
           listMergedPRs: () => listMyMergedPRs(gh),
+          listClosedUnmergedPRs: () => listMyClosedUnmergedPRs(gh),
         }
       : null;
   console.log(

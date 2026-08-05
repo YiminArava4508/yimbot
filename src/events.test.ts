@@ -175,6 +175,34 @@ test("reduceRows: last-write-wins per key, keeps prior title", () => {
   assert.equal(rows[0].ts, 2);
 });
 
+test("reduceRows: carries pr forward when a later event omits it", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "ci_fix_started", pr: 481 }),
+      ev({ ts: 2, kind: "merged" }),
+    ],
+    100,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].pr, 481);
+});
+
+test("reduceRows: a later event with a new pr overwrites the earlier one", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", pr: 100 }),
+      ev({ ts: 2, kind: "review_started", pr: 200 }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].pr, 200);
+});
+
+test("reduceRows: pr is undefined for a key that never carried one", () => {
+  const rows = reduceRows([ev({ ts: 1, kind: "task_started" })], 100);
+  assert.equal(rows[0].pr, undefined);
+});
+
 test("reduceRows: sorts newest activity first", () => {
   const rows = reduceRows(
     [ev({ key: "A", label: "A", ts: 1 }), ev({ key: "B", label: "B", ts: 5 })],

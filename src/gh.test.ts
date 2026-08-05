@@ -5,6 +5,7 @@ import {
   blockedInfo,
   checksInfo,
   type GhRunner,
+  listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
   mergeableInfo,
@@ -12,6 +13,7 @@ import {
   parseChecksInfo,
   parseLabels,
   parseMergeableInfo,
+  parseClosedUnmergedPRs,
   parseMergedPRs,
   parseOpenPRs,
   prLabels,
@@ -64,6 +66,28 @@ test("listMyMergedPRs requests author=@me merged PRs and parses them", async () 
   const prs = await listMyMergedPRs(run);
   assert.deepEqual(prs, [{ number: 2, headRefName: "eng-2-b" }]);
   assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "merged"]);
+});
+
+test("parseClosedUnmergedPRs drops merged rows and keeps only closed-unmerged", () => {
+  const prs = parseClosedUnmergedPRs(
+    JSON.stringify([
+      { number: 4880, headRefName: "eng-1104-spike", mergedAt: null, state: "CLOSED" },
+      { number: 4881, headRefName: "eng-950-merged", mergedAt: "2026-08-04T19:36:02Z", state: "MERGED" },
+    ]),
+  );
+  assert.deepEqual(prs, [{ number: 4880, headRefName: "eng-1104-spike" }]);
+});
+
+test("listMyClosedUnmergedPRs requests author=@me closed PRs and filters out merged", async () => {
+  const { run, calls } = capturingRunner([
+    JSON.stringify([
+      { number: 4880, headRefName: "eng-1104-spike", mergedAt: null },
+      { number: 4881, headRefName: "eng-950-merged", mergedAt: "2026-08-04T19:36:02Z" },
+    ]),
+  ]);
+  const prs = await listMyClosedUnmergedPRs(run);
+  assert.deepEqual(prs, [{ number: 4880, headRefName: "eng-1104-spike" }]);
+  assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "closed"]);
 });
 
 test("repoSlug flattens owner.login and name", async () => {

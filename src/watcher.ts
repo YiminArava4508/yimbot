@@ -322,7 +322,11 @@ export type WatcherConfig = {
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
-  cleanup: { codebasePath: string; listMergedPRs: () => Promise<MergedPR[]> } | null;
+  cleanup: {
+    codebasePath: string;
+    listMergedPRs: () => Promise<MergedPR[]>;
+    listClosedUnmergedPRs: () => Promise<MergedPR[]>;
+  } | null;
   // gh-backed hooks for the advance step; null disables it (AUTO_CONTINUE off, or
   // gh unavailable). When set, each heartbeat judges merged PRs' issues against
   // their AC tracker and spawns a continuation while criteria remain.
@@ -610,6 +614,30 @@ export function worktreeIsInert(worktreePath: string, baseRef: string): boolean 
   }
 }
 
+// Whether a worktree holds no work teardown would destroy: a clean working tree
+// AND no commits ahead of its own upstream branch (everything is pushed to origin,
+// so the branch survives there and is recoverable). Unlike worktreeIsInert, this
+// spares only genuinely local work — the right test for a closed PR, whose commits
+// never reach the base ref but are safely on its origin branch. No upstream set, or
+// any git error → false (never reap).
+export function worktreeFullyPushed(worktreePath: string): boolean {
+  try {
+    const dirty = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (dirty) return false;
+    const ahead = execFileSync(
+      "git",
+      ["-C", worktreePath, "rev-list", "--count", "@{upstream}..HEAD"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    return ahead === "0";
+  } catch {
+    return false;
+  }
+}
+
 // Milliseconds since a worktree dir was last modified. A stat failure returns 0
 // (treated as brand-new → spared), so a vanished dir is never swept.
 export function worktreeAgeMs(worktreePath: string): number {
@@ -710,24 +738,24 @@ export function startWatcher(config: WatcherConfig): () => void {
     reapFix,
     now: Date.now,
     reapStaleMs: config.reapStaleMs,
-    spawnFix: (name, branch) => {
+    spawnFix: (name, branch, prNumber) => {
       const { key, label } = deriveKey({ branch });
-      emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch) });
+      emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
-    spawnCiFix: (name, branch) => {
+    spawnCiFix: (name, branch, prNumber) => {
       const { key, label } = deriveKey({ branch });
-      emitEvent({ kind: "ci_fix_started", key, label, title: titleFromBranch(branch) });
+      emitEvent({ kind: "ci_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
-    spawnConflictFix: (name, branch) => {
+    spawnConflictFix: (name, branch, prNumber) => {
       const { key, label } = deriveKey({ branch });
-      emitEvent({ kind: "conflict_fix_started", key, label, title: titleFromBranch(branch) });
+      emitEvent({ kind: "conflict_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
-    spawnBlockedFix: (name, branch) => {
+    spawnBlockedFix: (name, branch, prNumber) => {
       const { key, label } = deriveKey({ branch });
-      emitEvent({ kind: "blocked_fix_started", key, label, title: titleFromBranch(branch) });
+      emitEvent({ kind: "blocked_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
     log: reviewIconLog,
@@ -740,6 +768,8 @@ export function startWatcher(config: WatcherConfig): () => void {
   const cleanupDeps: CleanupDeps | null = cleanup && {
     listWorktrees: () => listGitWorktrees(cleanup.codebasePath),
     listMergedPRs: cleanup.listMergedPRs,
+    listClosedUnmergedPRs: cleanup.listClosedUnmergedPRs,
+    hasNoUnpushedWork: worktreeFullyPushed,
     worktreesDir,
     teardown: (branch) => {
       const { key, label } = deriveKey({ branch });
@@ -830,13 +860,13 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (verdict !== "ready") return;
       const branch = prBranchByNumber.get(n);
       const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-      emitStatus({ kind: "ready_to_merge", key: k.key, label: k.label });
+      emitStatus({ kind: "ready_to_merge", key: k.key, label: k.label, pr: n });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     removeLabel: (n: number, label: string) => {
       const branch = prBranchByNumber.get(n);
       const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-      emitStatus({ kind: "ready_regressed", key: k.key, label: k.label });
+      emitStatus({ kind: "ready_regressed", key: k.key, label: k.label, pr: n });
       return config.ready!.removeLabel(n, label);
     },
     log: readyLog,

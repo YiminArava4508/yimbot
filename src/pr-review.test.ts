@@ -571,13 +571,30 @@ test("a conflicting blocked PR resolves the conflict first (no blocked fix this 
   assert.equal(blockedSpawned.length, 0);
 });
 
-test("reviewOnce reaps a blocked fix once the label is gone", async () => {
+test("reviewOnce never reaps a blocked fix, even once the label is gone", async () => {
+  // The fix-pr-blocked skill owns the blocked lifecycle (fix, relabel, self-close).
+  // The daemon must not reap it even when its objective looks met.
   const { deps: d, reaped } = deps({
     inFlightFixKinds: () => ["blocked"] as FixKind[],
     blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
   });
   await reviewOnce(freshReviewState(), d);
-  assert.deepEqual(reaped, [{ prNumber: 4706, branch: "eng-4706-x", kind: "blocked" }]);
+  assert.equal(reaped.length, 0);
+});
+
+test("reviewOnce never reaps a blocked fix, even past reapStaleMs", async () => {
+  let clock = 0;
+  const { deps: d, reaped } = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
+    now: () => clock,
+    reapStaleMs: 1000,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  clock = 1_000_000; // far past the stale threshold
+  await reviewOnce(state, d);
+  assert.equal(reaped.length, 0);
 });
 
 test("reviewOnce does not reap a blocked fix while the label remains", async () => {
@@ -587,4 +604,16 @@ test("reviewOnce does not reap a blocked fix while the label remains", async () 
   });
   await reviewOnce(freshReviewState(), d);
   assert.equal(reaped.length, 0);
+});
+
+test("reviewOnce keeps a running blocked fix from spawning other fix kinds", async () => {
+  const { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned } = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    unresolvedInfo: async () => info(2, 5000),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    checksInfo: async () => ci("failing", "abc"),
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(spawned.length + ciSpawned.length + conflictSpawned.length + blockedSpawned.length, 0);
 });

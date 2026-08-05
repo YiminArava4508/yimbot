@@ -8,6 +8,7 @@ import { pullCodebase } from "./codebase-sync.ts";
 import { envOr } from "./env.ts";
 import {
   addLabel,
+  blockedInfo,
   checksInfo,
   ghRunner,
   listMyClosedUnmergedPRs,
@@ -106,6 +107,11 @@ export async function startDaemon(): Promise<() => void> {
   );
   const ignoreChecks = ignoreCheckNames.size ? (name: string) => ignoreCheckNames.has(name.toLowerCase()) : undefined;
 
+  // The merge queue's "blocked" label. Aviator adds it (and removes the ready
+  // label) when its combined-CI batch fails; the review step's blocked-fix kind
+  // triggers on it and re-queues by removing it and re-adding the ready label.
+  const blockedLabelName = envOr("BLOCKED_LABEL", "blocked");
+
   // Review step: address comments on the viewer's open PRs. gh resolves the repo
   // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
   // disabled (null) rather than crashing the daemon.
@@ -116,6 +122,7 @@ export async function startDaemon(): Promise<() => void> {
         unresolvedInfo: (n: number) => ReturnType<typeof unresolvedThreadInfo>;
         mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
         checksInfo: (n: number) => ReturnType<typeof checksInfo>;
+        blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
       }
     | null = null;
   try {
@@ -126,9 +133,10 @@ export async function startDaemon(): Promise<() => void> {
       unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
       mergeableInfo: (n) => mergeableInfo(gh, n),
       checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
+      blockedInfo: (n) => blockedInfo(gh, n, blockedLabelName),
     };
     console.log(
-      `[yimbot] review step ON: addressing PR comments + conflicts + failing CI in ${slug.owner}/${slug.name} as ${viewer}`,
+      `[yimbot] review step ON: addressing PR comments + conflicts + failing CI + queue blocks in ${slug.owner}/${slug.name} as ${viewer}`,
     );
   } catch (err) {
     console.log(`[yimbot] review step OFF: gh unavailable or repo/viewer unresolved (${err})`);
@@ -203,6 +211,7 @@ export async function startDaemon(): Promise<() => void> {
           addLabel: (n: number, label: string) => addLabel(gh, n, label),
           removeLabel: (n: number, label: string) => removeLabel(gh, n, label),
           label: readyLabelName,
+          blockedLabel: blockedLabelName,
         }
       : null;
   console.log(

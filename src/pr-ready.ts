@@ -14,12 +14,16 @@ export type PrReadyDeps = {
   // Add / remove the ready label on a PR.
   addLabel: (prNumber: number, label: string) => Promise<void>;
   removeLabel: (prNumber: number, label: string) => Promise<void>;
-  // Report the classified verdict each tick (never for a hold). Lets the board
-  // reflect observed readiness independent of whether a label write happened, so
-  // a PR that is ready but already labeled still surfaces as ready-to-merge.
-  onVerdict?: (prNumber: number, verdict: ReadyVerdict) => void;
   // The label name to keep in sync (e.g. "ready-to-merge").
   label: string;
+  // The merge-queue "blocked" label. A PR carrying it is owned by the blocked-fix
+  // flow, so the ready step leaves its labels untouched (never re-queues it).
+  blockedLabel: string;
+  // Report the classified verdict each tick, for a PR the ready step owns (never a
+  // hold, never a blocked PR). Lets the board reflect observed readiness independent
+  // of whether a label write happened, so a PR that is ready but already labeled
+  // still surfaces as ready-to-merge.
+  onVerdict?: (prNumber: number, verdict: ReadyVerdict) => void;
   log: (msg: string) => void;
 };
 
@@ -78,7 +82,6 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
       continue;
     }
     if (verdict === "hold") continue; // neither add nor remove: skip the label read entirely
-    deps.onVerdict?.(pr.number, verdict);
 
     let labels: string[];
     try {
@@ -87,6 +90,8 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
       deps.log(`label read failed for PR #${pr.number}: ${err}`);
       continue;
     }
+    if (labels.includes(deps.blockedLabel)) continue; // blocked-fix flow owns this PR's labels
+    deps.onVerdict?.(pr.number, verdict);
     const hasLabel = labels.includes(deps.label);
 
     if (verdict === "ready" && !hasLabel) {

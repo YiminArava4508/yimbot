@@ -55,6 +55,7 @@ function harness(overrides: Partial<PrReadyDeps> = {}, currentLabels: string[] =
     addLabel: async (n, label) => void added.push({ n, label }),
     removeLabel: async (n, label) => void removed.push({ n, label }),
     label: LABEL,
+    blockedLabel: "blocked",
     log: (m) => void logs.push(m),
     ...overrides,
   };
@@ -171,6 +172,40 @@ test("readyOnce short-circuits: an unresolved comment skips the mergeable and CI
   assert.deepEqual(h.removed, [{ n: 4706, label: LABEL }]);
 });
 
+test("readyOnce survives a pr list failure without throwing", async () => {
+  const h = harness({
+    listOpenPRs: async () => {
+      throw new Error("gh down");
+    },
+  });
+  await readyOnce(h.deps);
+  assert.equal(h.added.length, 0);
+  assert.equal(h.removed.length, 0);
+});
+
+test("readyOnce does not re-add the ready label to a blocked PR (green own CI)", async () => {
+  const h = harness({}, ["blocked"]);
+  await readyOnce(h.deps);
+  assert.equal(h.added.length, 0);
+  assert.equal(h.removed.length, 0);
+});
+
+test("readyOnce still labels a clean PR that is not blocked", async () => {
+  const h = harness({}, []);
+  await readyOnce(h.deps);
+  assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
+});
+
+test("readyOnce does not remove ready-to-merge from a blocked PR that regressed", async () => {
+  // Failing CI => verdict "regressed"; the PR carries both the ready label and the
+  // blocked label. Without the blocked guard, readyOnce would strip the ready label;
+  // the guard must leave both labels untouched (Aviator owns this PR now).
+  const h = harness({ checksInfo: async () => ci("failing") }, [LABEL, "blocked"]);
+  await readyOnce(h.deps);
+  assert.equal(h.removed.length, 0);
+  assert.equal(h.added.length, 0);
+});
+
 test("readyOnce reports a ready verdict via onVerdict even when the label is already present", async () => {
   const verdicts: { n: number; v: string }[] = [];
   const h = harness({ onVerdict: (n, v) => void verdicts.push({ n, v }) }, [LABEL]);
@@ -199,13 +234,9 @@ test("readyOnce does not report a verdict for a held PR", async () => {
   assert.deepEqual(verdicts, []);
 });
 
-test("readyOnce survives a pr list failure without throwing", async () => {
-  const h = harness({
-    listOpenPRs: async () => {
-      throw new Error("gh down");
-    },
-  });
+test("readyOnce does not report a verdict for a blocked PR", async () => {
+  const verdicts: string[] = [];
+  const h = harness({ onVerdict: (_n, v) => void verdicts.push(v) }, ["blocked"]);
   await readyOnce(h.deps);
-  assert.equal(h.added.length, 0);
-  assert.equal(h.removed.length, 0);
+  assert.deepEqual(verdicts, []);
 });

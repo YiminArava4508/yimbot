@@ -35,6 +35,7 @@ import {
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
 import { type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 import {
+  blockedSessionName,
   ciSessionName,
   conflictSessionName,
   type FixKind,
@@ -317,7 +318,7 @@ export type WatcherConfig = {
   claim: ClaimConfig;
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
-  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo"> | null;
+  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo"> | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
@@ -352,6 +353,7 @@ export type WatcherConfig = {
     addLabel: (n: number, label: string) => Promise<void>;
     removeLabel: (n: number, label: string) => Promise<void>;
     label: string;
+    blockedLabel: string;
   } | null;
 };
 
@@ -457,17 +459,20 @@ function fixNameForKind(prNumber: number, kind: FixKind): string {
     ? fixSessionName(prNumber)
     : kind === "ci"
       ? ciSessionName(prNumber)
-      : conflictSessionName(prNumber);
+      : kind === "conflict"
+        ? conflictSessionName(prNumber)
+        : blockedSessionName(prNumber);
 }
 
 // Which fix kinds are currently in flight for a PR. A fix (comment `pr-<n>-fix`,
-// CI `pr-<n>-ci`, or conflict `pr-<n>-conflict`) lives either as a standalone
-// session (when the ticket session was gone) or as a window inside the branch's
-// ticket session. Any present kind means a fixer is on this PR's shared worktree.
+// CI `pr-<n>-ci`, conflict `pr-<n>-conflict`, or blocked `pr-<n>-blocked`) lives
+// either as a standalone session (when the ticket session was gone) or as a
+// window inside the branch's ticket session. Any present kind means a fixer is
+// on this PR's shared worktree.
 export function inFlightFixKinds(prNumber: number, branch: string): FixKind[] {
   const ticketSession = sanitizeBranchToSession(branch);
   const kinds: FixKind[] = [];
-  for (const kind of ["fix", "ci", "conflict"] as FixKind[]) {
+  for (const kind of ["fix", "ci", "conflict", "blocked"] as FixKind[]) {
     const name = fixNameForKind(prNumber, kind);
     if (tmuxHasSession(name) || tmuxWindowExists(ticketSession, name)) kinds.push(kind);
   }
@@ -728,6 +733,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     unresolvedInfo: config.prReview.unresolvedInfo,
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
+    blockedInfo: config.prReview.blockedInfo,
     inFlightFixKinds,
     reapFix,
     now: Date.now,
@@ -745,6 +751,11 @@ export function startWatcher(config: WatcherConfig): () => void {
     spawnConflictFix: (name, branch, prNumber) => {
       const { key, label } = deriveKey({ branch });
       emitEvent({ kind: "conflict_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      spawnFixSession(name, branch);
+    },
+    spawnBlockedFix: (name, branch, prNumber) => {
+      const { key, label } = deriveKey({ branch });
+      emitEvent({ kind: "blocked_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
     log: reviewIconLog,

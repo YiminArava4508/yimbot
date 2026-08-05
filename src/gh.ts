@@ -191,6 +191,23 @@ export async function mergeableInfo(run: GhRunner, prNumber: number): Promise<Me
   return parseMergeableInfo(await run(["pr", "view", String(prNumber), "--json", "mergeable,headRefOid"]));
 }
 
+export type BlockedInfo = { blocked: boolean; headSha: string };
+
+// Whether a PR carries the merge-queue's "blocked" label, from
+// `gh pr view <n> --json labels,headRefOid`. The queue (Aviator) adds the label
+// when its combined-CI batch fails, so it is the trigger for the blocked-fix step.
+// The match is exact on the configured name; `headSha` (from headRefOid) keys the
+// per-head re-trigger dedup, the same discipline the CI and conflict steps use.
+export function parseBlockedInfo(json: string, label: string): BlockedInfo {
+  const data = JSON.parse(json) as { labels?: { name: string }[]; headRefOid: string };
+  const blocked = (data.labels ?? []).some((l) => l.name === label);
+  return { blocked, headSha: data.headRefOid };
+}
+
+export async function blockedInfo(run: GhRunner, prNumber: number, label: string): Promise<BlockedInfo> {
+  return parseBlockedInfo(await run(["pr", "view", String(prNumber), "--json", "labels,headRefOid"]), label);
+}
+
 // The label names currently on a PR from `gh pr view <n> --json labels`.
 export function parseLabels(json: string): string[] {
   const data = JSON.parse(json) as { labels?: { name: string }[] };

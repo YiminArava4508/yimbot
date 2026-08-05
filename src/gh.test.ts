@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   addLabel,
+  blockedInfo,
   checksInfo,
   type GhRunner,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
   mergeableInfo,
+  parseBlockedInfo,
   parseChecksInfo,
   parseLabels,
   parseMergeableInfo,
@@ -241,6 +243,42 @@ test("mergeableInfo requests mergeable + headRefOid for the PR and parses them",
   const { run, calls } = capturingRunner([mergeableJson("CONFLICTING", "deadbeef")]);
   assert.deepEqual(await mergeableInfo(run, 4837), { state: "conflicting", headSha: "deadbeef" });
   assert.deepEqual(calls[0], ["pr", "view", "4837", "--json", "mergeable,headRefOid"]);
+});
+
+function blockedJson(labelNames: string[], headRefOid: string): string {
+  return JSON.stringify({ labels: labelNames.map((name) => ({ name })), headRefOid });
+}
+
+test("parseBlockedInfo reports blocked when the configured label is present", () => {
+  assert.deepEqual(parseBlockedInfo(blockedJson(["bug", "blocked"], "sha1"), "blocked"), {
+    blocked: true,
+    headSha: "sha1",
+  });
+});
+
+test("parseBlockedInfo reports not blocked when the label is absent", () => {
+  assert.deepEqual(parseBlockedInfo(blockedJson(["bug", "ready-to-merge"], "sha2"), "blocked"), {
+    blocked: false,
+    headSha: "sha2",
+  });
+});
+
+test("parseBlockedInfo matches the configured label name exactly", () => {
+  assert.equal(parseBlockedInfo(blockedJson(["Blocked"], "sha3"), "blocked").blocked, false);
+  assert.equal(parseBlockedInfo(blockedJson(["queue-blocked"], "sha4"), "blocked").blocked, false);
+});
+
+test("parseBlockedInfo treats a missing labels field as not blocked", () => {
+  assert.deepEqual(parseBlockedInfo(JSON.stringify({ headRefOid: "sha5" }), "blocked"), {
+    blocked: false,
+    headSha: "sha5",
+  });
+});
+
+test("blockedInfo requests labels + headRefOid for the PR and parses them", async () => {
+  const { run, calls } = capturingRunner([blockedJson(["blocked"], "deadbeef")]);
+  assert.deepEqual(await blockedInfo(run, 4929, "blocked"), { blocked: true, headSha: "deadbeef" });
+  assert.deepEqual(calls[0], ["pr", "view", "4929", "--json", "labels,headRefOid"]);
 });
 
 test("parseLabels extracts label names", () => {

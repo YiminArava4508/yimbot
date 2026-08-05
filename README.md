@@ -19,7 +19,7 @@ failures are logged and never crash the daemon.
 
 The first time you run it, yimbot asks a few setup questions. After that it
 quietly checks your Linear board and your open PRs every few minutes (its
-**heartbeat**) and can do eight things (plus keep your code up to date):
+**heartbeat**) and can do several things (plus keep your code up to date):
 
 ```mermaid
 flowchart TD

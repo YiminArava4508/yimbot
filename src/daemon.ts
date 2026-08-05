@@ -8,6 +8,7 @@ import { pullCodebase } from "./codebase-sync.ts";
 import { envOr } from "./env.ts";
 import {
   addLabel,
+  blockedInfo,
   checksInfo,
   ghRunner,
   listMyMergedPRs,
@@ -115,6 +116,7 @@ export async function startDaemon(): Promise<() => void> {
         unresolvedInfo: (n: number) => ReturnType<typeof unresolvedThreadInfo>;
         mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
         checksInfo: (n: number) => ReturnType<typeof checksInfo>;
+        blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
       }
     | null = null;
   try {
@@ -125,9 +127,10 @@ export async function startDaemon(): Promise<() => void> {
       unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
       mergeableInfo: (n) => mergeableInfo(gh, n),
       checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
+      blockedInfo: (n) => blockedInfo(gh, n, blockedLabelName),
     };
     console.log(
-      `[yimbot] review step ON: addressing PR comments + conflicts + failing CI in ${slug.owner}/${slug.name} as ${viewer}`,
+      `[yimbot] review step ON: addressing PR comments + conflicts + failing CI + queue blocks in ${slug.owner}/${slug.name} as ${viewer}`,
     );
   } catch (err) {
     console.log(`[yimbot] review step OFF: gh unavailable or repo/viewer unresolved (${err})`);
@@ -190,6 +193,10 @@ export async function startDaemon(): Promise<() => void> {
   // review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
   const autoReadyLabel = !["false", "off", "no", "0"].includes(envOr("AUTO_READY_LABEL", "true").toLowerCase());
   const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
+  // The merge queue's "blocked" label. Aviator adds it (and removes the ready
+  // label) when its combined-CI batch fails; the review step's blocked-fix kind
+  // triggers on it and re-queues by removing it and re-adding the ready label.
+  const blockedLabelName = envOr("BLOCKED_LABEL", "blocked");
   const ready =
     autoReadyLabel && prReview
       ? {
@@ -201,6 +208,7 @@ export async function startDaemon(): Promise<() => void> {
           addLabel: (n: number, label: string) => addLabel(gh, n, label),
           removeLabel: (n: number, label: string) => removeLabel(gh, n, label),
           label: readyLabelName,
+          blockedLabel: blockedLabelName,
         }
       : null;
   console.log(

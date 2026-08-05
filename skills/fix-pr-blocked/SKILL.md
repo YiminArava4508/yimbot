@@ -1,6 +1,6 @@
 ---
 name: fix-pr-blocked
-description: Use when a yimbot review session opens on an existing PR branch the merge queue (Aviator) blocked after its combined-CI batch failed, to investigate the failure, fix this PR if it is at fault, then unblock and re-queue it.
+description: Use when a yimbot review session opens on an existing PR branch that the merge queue (Aviator) blocked after its combined-CI batch failed, to investigate the failure, fix this PR if it is at fault, then unblock and re-queue it.
 user-invocable: true
 ---
 
@@ -37,7 +37,8 @@ before you touch any code.
    Find the most recent "This pull request failed to merge" comment. Note the
    "Failed checks:" list and the "Associated Draft PR #<n>" number. If there is no
    such comment (a stray `blocked` label with no queue failure), stop: leave the
-   label alone and report that there is nothing to unblock.
+   label alone and report that there is nothing to unblock. Do not proceed to flag
+   ready-to-test or close the session, just report and stop.
 
 3. **Investigate the combined failure.** Read the associated draft PR's failing
    logs:
@@ -110,5 +111,5 @@ before you touch any code.
      ```bash
      tmux kill-window -t "$(tmux display-message -p '#{session_name}'):pr-<number>-blocked"
      ```
-   Only close on the success path. If you bailed at step 5 or step 7, leave the
+   Only close on the success path. If you bailed at step 2, step 5, or step 7, leave the
    session open.

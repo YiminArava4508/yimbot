@@ -45,6 +45,27 @@ export async function listMyMergedPRs(run: GhRunner): Promise<MergedPR[]> {
   );
 }
 
+// A closed PR row: `--state closed` returns merged PRs too, so `mergedAt`
+// distinguishes a truly closed-unmerged PR (null) from a merged one (a timestamp).
+type ClosedPRRow = { number: number; headRefName: string; mergedAt: string | null };
+
+export function parseClosedUnmergedPRs(json: string): MergedPR[] {
+  const rows = JSON.parse(json) as ClosedPRRow[];
+  return rows
+    .filter((r) => r.mergedAt === null)
+    .map((r) => ({ number: r.number, headRefName: r.headRefName }));
+}
+
+// The viewer's CLOSED-but-not-merged PRs (spikes, abandoned or superseded work):
+// their worktree/session is never caught by the merged-PR reaper. gh's
+// `--state closed` also returns merged PRs, hence the mergedAt filter above.
+// Bounded to the 100 most recent, matching listMyMergedPRs.
+export async function listMyClosedUnmergedPRs(run: GhRunner): Promise<MergedPR[]> {
+  return parseClosedUnmergedPRs(
+    await run(["pr", "list", "--author", "@me", "--state", "closed", "--json", "number,headRefName,mergedAt", "--limit", "100"]),
+  );
+}
+
 // owner/name of the repo gh resolves in the runner's cwd — needed as GraphQL
 // variables for the review-thread query below.
 export async function repoSlug(run: GhRunner): Promise<RepoSlug> {

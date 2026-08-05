@@ -31,15 +31,15 @@ const noConflict = merge("mergeable");
 
 function deps(overrides: Partial<PrReviewDeps> = {}): {
   deps: PrReviewDeps;
-  spawned: { name: string; branch: string }[];
-  ciSpawned: { name: string; branch: string }[];
-  conflictSpawned: { name: string; branch: string }[];
+  spawned: { name: string; branch: string; prNumber: number }[];
+  ciSpawned: { name: string; branch: string; prNumber: number }[];
+  conflictSpawned: { name: string; branch: string; prNumber: number }[];
   reaped: { prNumber: number; branch: string; kind: string }[];
   logs: string[];
 } {
-  const spawned: { name: string; branch: string }[] = [];
-  const ciSpawned: { name: string; branch: string }[] = [];
-  const conflictSpawned: { name: string; branch: string }[] = [];
+  const spawned: { name: string; branch: string; prNumber: number }[] = [];
+  const ciSpawned: { name: string; branch: string; prNumber: number }[] = [];
+  const conflictSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const reaped: { prNumber: number; branch: string; kind: string }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
@@ -51,9 +51,9 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     now: () => 0,
     reapStaleMs: 90 * 60 * 1000,
-    spawnFix: (name, branch) => void spawned.push({ name, branch }),
-    spawnCiFix: (name, branch) => void ciSpawned.push({ name, branch }),
-    spawnConflictFix: (name, branch) => void conflictSpawned.push({ name, branch }),
+    spawnFix: (name, branch, prNumber) => void spawned.push({ name, branch, prNumber }),
+    spawnCiFix: (name, branch, prNumber) => void ciSpawned.push({ name, branch, prNumber }),
+    spawnConflictFix: (name, branch, prNumber) => void conflictSpawned.push({ name, branch, prNumber }),
     log: (m) => void logs.push(m),
     ...overrides,
   };
@@ -72,7 +72,7 @@ test("reviewOnce spawns a CI fix for a PR with failing CI and no comments", asyn
   const { deps: d, ciSpawned } = deps({ unresolvedInfo: async () => noComments, checksInfo: async () => ci("failing", "abc") });
   const state = freshReviewState();
   await reviewOnce(state, d);
-  assert.deepEqual(ciSpawned, [{ name: "pr-4706-ci", branch: "eng-4706-x" }]);
+  assert.deepEqual(ciSpawned, [{ name: "pr-4706-ci", branch: "eng-4706-x", prNumber: 4706 }]);
   assert.equal(state.lastHandledCiSha.get(4706), "abc");
 });
 
@@ -187,7 +187,7 @@ test("reviewOnce spawns a conflict fix for a conflicting PR with no comments and
   });
   const state = freshReviewState();
   await reviewOnce(state, d);
-  assert.deepEqual(conflictSpawned, [{ name: "pr-4706-conflict", branch: "eng-4706-x" }]);
+  assert.deepEqual(conflictSpawned, [{ name: "pr-4706-conflict", branch: "eng-4706-x", prNumber: 4706 }]);
   assert.equal(state.lastHandledConflictSha.get(4706), "abc");
 });
 
@@ -306,7 +306,7 @@ test("reviewOnce continues to the next PR when one PR's mergeable info throws", 
 test("reviewOnce spawns a fix for a PR with a new other-authored comment", async () => {
   const { deps: d, spawned } = deps();
   await reviewOnce(freshReviewState(), d);
-  assert.deepEqual(spawned, [{ name: "pr-4706-fix", branch: "eng-4706-x" }]);
+  assert.deepEqual(spawned, [{ name: "pr-4706-fix", branch: "eng-4706-x", prNumber: 4706 }]);
 });
 
 test("reviewOnce records the handled timestamp so the same round does not re-spawn", async () => {

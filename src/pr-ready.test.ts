@@ -171,6 +171,34 @@ test("readyOnce short-circuits: an unresolved comment skips the mergeable and CI
   assert.deepEqual(h.removed, [{ n: 4706, label: LABEL }]);
 });
 
+test("readyOnce reports a ready verdict via onVerdict even when the label is already present", async () => {
+  const verdicts: { n: number; v: string }[] = [];
+  const h = harness({ onVerdict: (n, v) => void verdicts.push({ n, v }) }, [LABEL]);
+  await readyOnce(h.deps);
+  assert.equal(h.added.length, 0); // label already there: no write
+  assert.deepEqual(verdicts, [{ n: 4706, v: "ready" }]);
+});
+
+test("readyOnce reports a regressed verdict via onVerdict", async () => {
+  const verdicts: string[] = [];
+  const h = harness(
+    { checksInfo: async () => ci("failing"), onVerdict: (_n, v) => void verdicts.push(v) },
+    [LABEL],
+  );
+  await readyOnce(h.deps);
+  assert.deepEqual(verdicts, ["regressed"]);
+});
+
+test("readyOnce does not report a verdict for a held PR", async () => {
+  const verdicts: string[] = [];
+  const h = harness(
+    { checksInfo: async () => ci("pending"), onVerdict: (_n, v) => void verdicts.push(v) },
+    [LABEL],
+  );
+  await readyOnce(h.deps);
+  assert.deepEqual(verdicts, []);
+});
+
 test("readyOnce survives a pr list failure without throwing", async () => {
   const h = harness({
     listOpenPRs: async () => {

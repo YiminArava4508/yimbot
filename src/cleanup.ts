@@ -16,12 +16,27 @@ export type CleanupDeps = {
   listWorktrees: () => Worktree[];
   // The viewer's merged PRs (number + head branch), gh-backed hence async.
   listMergedPRs: () => Promise<MergedPR[]>;
+  // The viewer's closed-but-not-merged PRs (spikes, abandoned work). Their
+  // worktree keeps a live session, so the orphan sweep spares it, and its PR
+  // never merges, so the merged path ignores it; this reaps it when nothing
+  // would be lost.
+  listClosedUnmergedPRs: () => Promise<MergedPR[]>;
+  // Whether a closed PR's worktree holds no work teardown would destroy: a clean
+  // tree AND every commit pushed to its own origin branch (the branch survives on
+  // origin, recoverable). Gates the closed-unmerged teardown. Not the base-ref
+  // "inert" check: a closed PR's commits never reach main, so comparing against
+  // base would spare every spike that produced a commit.
+  hasNoUnpushedWork: (worktreePath: string) => boolean;
   // Only worktrees under this directory are torn down, so the main checkout is
   // never touched even if a branch name somehow collides.
   worktreesDir: string;
   // Tear down a worktree by its branch (== its ticket session name): docker down,
   // worktree remove, branch delete, kill the branch-named session. Via end-session.sh.
   teardown: (branch: string) => void;
+  // Reconcile the board against the full merged-branch set each tick. Called even
+  // when a merged PR has no worktree left to tear down, so a row stuck on a stale
+  // action status (e.g. "fixing CI") still transitions to merged.
+  reconcileMerged?: (mergedBranches: Set<string>) => void;
   // Live tmux session names, for the pr-<n>-fix session scan below.
   listSessions: () => string[];
   // Kill a tmux session by exact name (a merged PR's fix session).
@@ -228,12 +243,14 @@ export function selectMergedFixSessions(sessions: string[], mergedPrNumbers: Set
   });
 }
 
-// One cleanup-step tick, run every heartbeat. Two independent reconciliations
-// against the viewer's merged PRs: (a) tear down each merged worktree (removes the
-// worktree + its branch-named ticket session), and (b) kill each live pr-<n>-fix
-// / pr-<n>-ci session whose PR merged. Both are self-deduping (a removed worktree / killed
-// session is simply gone next tick), so there is no seen-set. Every external call
-// is wrapped so a failure logs and continues, never crashing the heartbeat.
+// One cleanup-step tick, run every heartbeat. Independent reconciliations against
+// the viewer's PRs: (a) tear down each merged worktree (removes the worktree + its
+// branch-named ticket session); (a2) tear down each closed-unmerged worktree that
+// is inert (a spike's session-backed worktree the merged path and orphan sweep both
+// miss); and (b) kill each live pr-<n>-fix / pr-<n>-ci session whose PR merged. All
+// are self-deduping (a removed worktree / killed session is simply gone next tick),
+// so there is no seen-set. Every external call is wrapped so a failure logs and
+// continues, never crashing the heartbeat.
 export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   let worktrees: Worktree[];
   try {
@@ -253,6 +270,8 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
 
   const mergedBranches = new Set(merged.map((p) => p.headRefName));
   const mergedNumbers = new Set(merged.map((p) => p.number));
+
+  deps.reconcileMerged?.(mergedBranches);
 
   // Split groups: slices marked with a parent session are torn down only as a
   // whole, once every slice PR has merged. Both the integration worktree and its
@@ -280,6 +299,32 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
     try {
       deps.teardown(w.branch);
       deps.log(`torn down ${w.branch} (PR merged)`);
+    } catch (err) {
+      deps.log(`teardown failed for ${w.branch}: ${err}`);
+    }
+  }
+
+  // (a2) closed-but-not-merged PRs (spikes, abandoned/superseded work): tear down
+  // worktree + branch-named session, but only when no unpushed work would be lost
+  // (clean tree, everything on origin). A live session does NOT spare it (unlike
+  // the orphan sweep) — the teardown kills it. A failure to list is non-fatal so
+  // the merged reaping above and the fix-session kills below still run.
+  let closed: MergedPR[] = [];
+  try {
+    closed = await deps.listClosedUnmergedPRs();
+  } catch (err) {
+    deps.log(`closed PR list failed: ${err}`);
+  }
+  const closedBranches = new Set(closed.map((p) => p.headRefName));
+  for (const w of selectMergedWorktrees(worktrees, closedBranches, deps.worktreesDir)) {
+    if (groupedPaths.has(w.path)) continue;
+    if (!deps.hasNoUnpushedWork(w.path)) {
+      deps.log(`kept ${w.branch} (PR closed unmerged but worktree has unsaved work)`);
+      continue;
+    }
+    try {
+      deps.teardown(w.branch);
+      deps.log(`torn down ${w.branch} (PR closed unmerged, no unsaved work)`);
     } catch (err) {
       deps.log(`teardown failed for ${w.branch}: ${err}`);
     }

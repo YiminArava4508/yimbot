@@ -19,6 +19,7 @@ export type YimbotEvent = {
   key: string;
   label: string;
   title?: string;
+  pr?: number;
 };
 
 const TICKET = /^(eng|sc)-(\d+)/i;
@@ -95,6 +96,18 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
   }
 }
 
+// Emit an OBSERVED status, deduped against the log: append only when the derived
+// status for this key differs from the last one already recorded for it. Steps
+// that reconcile against live state every tick use this to reflect what they SEE
+// (a PR gone green, a merged worktree) without bloating the log or the board, so
+// a row transitions off a stale action status even when no write drove it.
+export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
+  let lastKind: EventKind | undefined;
+  for (const e of readEvents()) if (e.key === ev.key) lastKind = e.kind;
+  if (lastKind !== undefined && statusFor(lastKind).status === statusFor(ev.kind).status) return;
+  emitEvent(ev);
+}
+
 export function readEvents(path: string = eventsLogPath()): YimbotEvent[] {
   let raw: string;
   try {
@@ -118,6 +131,7 @@ export type BoardRow = {
   key: string;
   label: string;
   title?: string;
+  pr?: number;
   status: string;
   terminal: boolean;
   ts: number;
@@ -149,6 +163,7 @@ export function reduceRows(
       key: e.key,
       label: e.label,
       title: e.title ?? prev?.title,
+      pr: e.pr ?? prev?.pr,
       status,
       terminal,
       ts: e.ts,

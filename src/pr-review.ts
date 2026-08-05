@@ -90,12 +90,12 @@ export type PrReviewDeps = {
   now: () => number;
   // Stale-reap threshold: reap a fix in flight longer than this regardless of state.
   reapStaleMs: number;
-  // Launch a comment-fix session (session name, branch to check out).
-  spawnFix: (sessionName: string, branch: string) => void;
-  // Launch a CI-fix session (session name, branch to check out).
-  spawnCiFix: (sessionName: string, branch: string) => void;
-  // Launch a merge-conflict-fix session (session name, branch to check out).
-  spawnConflictFix: (sessionName: string, branch: string) => void;
+  // Launch a comment-fix session (session name, branch to check out, PR number).
+  spawnFix: (sessionName: string, branch: string, prNumber: number) => void;
+  // Launch a CI-fix session (session name, branch to check out, PR number).
+  spawnCiFix: (sessionName: string, branch: string, prNumber: number) => void;
+  // Launch a merge-conflict-fix session (session name, branch to check out, PR number).
+  spawnConflictFix: (sessionName: string, branch: string, prNumber: number) => void;
   log: (msg: string) => void;
 };
 
@@ -193,7 +193,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       if (pending && pending !== "fix") continue; // another fix kind is starting on the shared worktree; wait
       const name = fixSessionName(pr.number);
       try {
-        deps.spawnFix(name, pr.headRefName);
+        deps.spawnFix(name, pr.headRefName, pr.number);
         state.lastHandledAt.set(pr.number, info.newestOtherCommentAt as number);
         state.pendingSpawn.set(pr.number, "fix");
         deps.log(`spawned ${name} for PR #${pr.number} (${info.count} unresolved, new comment)`);
@@ -219,7 +219,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       if (unhandled && !(pending && pending !== "conflict")) {
         const name = conflictSessionName(pr.number);
         try {
-          deps.spawnConflictFix(name, pr.headRefName);
+          deps.spawnConflictFix(name, pr.headRefName, pr.number);
           state.lastHandledConflictSha.set(pr.number, mergeable.headSha);
           state.pendingSpawn.set(pr.number, "conflict");
           deps.log(`spawned ${name} for PR #${pr.number} (conflicting @ ${mergeable.headSha})`);
@@ -243,7 +243,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
 
     const ciName = ciSessionName(pr.number);
     try {
-      deps.spawnCiFix(ciName, pr.headRefName);
+      deps.spawnCiFix(ciName, pr.headRefName, pr.number);
       state.lastHandledCiSha.set(pr.number, checks.headSha);
       state.pendingSpawn.set(pr.number, "ci");
       deps.log(`spawned ${ciName} for PR #${pr.number} (CI failing @ ${checks.headSha})`);

@@ -8,6 +8,7 @@ export type EventKind =
   | "review_started"
   | "ci_fix_started"
   | "conflict_fix_started"
+  | "blocked_fix_started"
   | "ready_to_test"
   | "ready_to_merge"
   | "ready_regressed"
@@ -55,6 +56,7 @@ const STATUS: Record<EventKind, { status: string; terminal: boolean }> = {
   review_started: { status: "addressing review", terminal: false },
   ci_fix_started: { status: "fixing CI", terminal: false },
   conflict_fix_started: { status: "resolving conflict", terminal: false },
+  blocked_fix_started: { status: "unblocking", terminal: false },
   ready_to_test: { status: "ready to test", terminal: false },
   ready_to_merge: { status: "ready to merge", terminal: false },
   ready_regressed: { status: "working", terminal: false },

@@ -43,6 +43,9 @@ assert_eq "$(seed_prompt_for pr-9-ci | grep -c 'fix-pr-ci skill')" "1" "pr-ci se
 assert_eq "$(seed_prompt_for pr-9-ci | grep -c '#9')" "1" "pr-ci seed names the PR number"
 assert_eq "$(seed_prompt_for pr-9-conflict | grep -c 'fix-pr-conflict skill')" "1" "pr-conflict seed hands off to fix-pr-conflict"
 assert_eq "$(seed_prompt_for pr-9-conflict | grep -c '#9')" "1" "pr-conflict seed names the PR number"
+assert_eq "$(seed_prompt_for pr-9-blocked | grep -c 'fix-pr-blocked skill')" "1" "pr-blocked seed hands off to fix-pr-blocked"
+assert_eq "$(seed_prompt_for pr-9-blocked | grep -c '#9')" "1" "pr-blocked seed names the PR number"
+assert_eq "$(skill_in_prompt "$(seed_prompt_for pr-9-blocked)")" "fix-pr-blocked" "extracts fix-pr-blocked"
 assert_eq "$(seed_prompt_for random-name)" "" "unrecognized name yields no seed"
 
 # Preflight helpers survive sourcing.

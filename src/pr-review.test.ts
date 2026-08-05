@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { BlockedInfo, ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
 import {
+  blockedSessionName,
   ciSessionName,
   conflictSessionName,
   type FixKind,
@@ -34,12 +35,14 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   spawned: { name: string; branch: string }[];
   ciSpawned: { name: string; branch: string }[];
   conflictSpawned: { name: string; branch: string }[];
+  blockedSpawned: { name: string; branch: string }[];
   reaped: { prNumber: number; branch: string; kind: string }[];
   logs: string[];
 } {
   const spawned: { name: string; branch: string }[] = [];
   const ciSpawned: { name: string; branch: string }[] = [];
   const conflictSpawned: { name: string; branch: string }[] = [];
+  const blockedSpawned: { name: string; branch: string }[] = [];
   const reaped: { prNumber: number; branch: string; kind: string }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
@@ -47,6 +50,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     unresolvedInfo: async () => info(2, 1000),
     mergeableInfo: async () => noConflict,
     checksInfo: async () => ci("passing"),
+    blockedInfo: async () => ({ blocked: false, headSha: "sha" }),
     inFlightFixKinds: () => [],
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     now: () => 0,
@@ -54,10 +58,11 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     spawnFix: (name, branch) => void spawned.push({ name, branch }),
     spawnCiFix: (name, branch) => void ciSpawned.push({ name, branch }),
     spawnConflictFix: (name, branch) => void conflictSpawned.push({ name, branch }),
+    spawnBlockedFix: (name, branch) => void blockedSpawned.push({ name, branch }),
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, reaped, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, logs };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -177,7 +182,7 @@ test("conflictSessionName is keyed by PR number", () => {
 });
 
 test("fixSessionNames lists every fix session kind for the PR (the in-flight guard set)", () => {
-  assert.deepEqual(fixSessionNames(4706), ["pr-4706-fix", "pr-4706-ci", "pr-4706-conflict"]);
+  assert.deepEqual(fixSessionNames(4706), ["pr-4706-fix", "pr-4706-ci", "pr-4706-conflict", "pr-4706-blocked"]);
 });
 
 test("reviewOnce spawns a conflict fix for a conflicting PR with no comments and passing CI", async () => {
@@ -494,4 +499,92 @@ test("reviewOnce prunes a fix timer once the kind is no longer in flight", async
   kinds = [];
   await reviewOnce(state, d); // no longer in flight -> pruned
   assert.equal(state.fixSeenAt.has("4706:fix"), false);
+});
+
+test("blockedSessionName is keyed by PR number", () => {
+  assert.equal(blockedSessionName(4929), "pr-4929-blocked");
+});
+
+test("reviewOnce spawns a blocked fix for a blocked PR with no comments/conflict/CI work", async () => {
+  const { deps: d, blockedSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.deepEqual(blockedSpawned, [{ name: "pr-4706-blocked", branch: "eng-4706-x" }]);
+  assert.equal(state.lastHandledBlockedSha.get(4706), "abc");
+});
+
+test("reviewOnce does not spawn a blocked fix when the PR is not blocked", async () => {
+  const { deps: d, blockedSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(blockedSpawned.length, 0);
+});
+
+test("reviewOnce does not re-spawn a blocked fix for the same blocked SHA", async () => {
+  const { deps: d, blockedSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  await reviewOnce(state, d);
+  assert.equal(blockedSpawned.length, 1);
+});
+
+test("reviewOnce re-spawns a blocked fix when the blocked SHA changes", async () => {
+  let sha = "abc";
+  const { deps: d, blockedSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    blockedInfo: async () => ({ blocked: true, headSha: sha }),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  sha = "def";
+  await reviewOnce(state, d);
+  assert.equal(blockedSpawned.length, 2);
+});
+
+test("a blocked PR takes precedence over its own failing CI (no CI fix spawned)", async () => {
+  const { deps: d, blockedSpawned, ciSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    checksInfo: async () => ci("failing", "abc"),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(blockedSpawned.length, 1);
+  assert.equal(ciSpawned.length, 0);
+});
+
+test("a conflicting blocked PR resolves the conflict first (no blocked fix this tick)", async () => {
+  const { deps: d, blockedSpawned, conflictSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(conflictSpawned.length, 1);
+  assert.equal(blockedSpawned.length, 0);
+});
+
+test("reviewOnce reaps a blocked fix once the label is gone", async () => {
+  const { deps: d, reaped } = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(reaped, [{ prNumber: 4706, branch: "eng-4706-x", kind: "blocked" }]);
+});
+
+test("reviewOnce does not reap a blocked fix while the label remains", async () => {
+  const { deps: d, reaped } = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(reaped.length, 0);
 });

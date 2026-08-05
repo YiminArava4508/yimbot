@@ -16,6 +16,9 @@ export type PrReadyDeps = {
   removeLabel: (prNumber: number, label: string) => Promise<void>;
   // The label name to keep in sync (e.g. "ready-to-merge").
   label: string;
+  // The merge-queue "blocked" label. A PR carrying it is owned by the blocked-fix
+  // flow, so the ready step leaves its labels untouched (never re-queues it).
+  blockedLabel: string;
   log: (msg: string) => void;
 };
 
@@ -82,6 +85,7 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
       deps.log(`label read failed for PR #${pr.number}: ${err}`);
       continue;
     }
+    if (labels.includes(deps.blockedLabel)) continue; // blocked-fix flow owns this PR's labels
     const hasLabel = labels.includes(deps.label);
 
     if (verdict === "ready" && !hasLabel) {

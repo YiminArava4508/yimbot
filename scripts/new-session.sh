@@ -54,6 +54,8 @@ seed_prompt_for() {
     printf 'You are fixing failing CI on pull request #%s, checked out in this worktree. Invoke the fix-pr-ci skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^pr-([0-9]+)-conflict$ ]]; then
     printf 'You are resolving a merge conflict with main on pull request #%s, checked out in this worktree. Invoke the fix-pr-conflict skill and follow it exactly.' "${BASH_REMATCH[1]}"
+  elif [[ "$name" =~ ^pr-([0-9]+)-blocked$ ]]; then
+    printf 'You are unblocking pull request #%s, which the merge queue kicked out after its combined-CI batch failed, checked out in this worktree. Invoke the fix-pr-blocked skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^sc-([0-9]+)- ]]; then
     printf 'Fetch Shortcut story %s via the Shortcut MCP (mcp__shortcut__stories-get-by-id) and read its description, acceptance criteria, and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^eng-([0-9]+)-cont-[0-9]+$ ]]; then

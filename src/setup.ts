@@ -430,6 +430,11 @@ export const hostLinks: HostLink[] = [
     label: "fix-pr-conflict skill (~/.claude/skills/fix-pr-conflict)",
   },
   {
+    source: join(repoRoot, "skills/fix-pr-blocked"),
+    target: join(homedir(), ".claude/skills/fix-pr-blocked"),
+    label: "fix-pr-blocked skill (~/.claude/skills/fix-pr-blocked)",
+  },
+  {
     source: join(repoRoot, "skills/merge-main"),
     target: join(homedir(), ".claude/skills/merge-main"),
     label: "merge-main skill (~/.claude/skills/merge-main)",
@@ -891,6 +896,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".claude/skills/fix-pr-conflict"),
       label: "~/.claude/skills/fix-pr-conflict",
       role: "review step: resolve PR merge conflicts (required for conflict handling)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/fix-pr-blocked"),
+      label: "~/.claude/skills/fix-pr-blocked",
+      role: "review step: unblock a PR kicked out of the merge queue (required for blocked handling)",
     },
     {
       path: join(homedir(), ".claude/skills/merge-main"),

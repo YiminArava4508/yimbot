@@ -1,4 +1,4 @@
-import type { ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { BlockedInfo, ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
 
 // The tmux session name for a PR's fix run. Keyed by PR number (not branch) so
 // the in-flight guard is one-fix-session-per-PR regardless of the branch slug.
@@ -16,10 +16,15 @@ export function conflictSessionName(prNumber: number): string {
   return `pr-${prNumber}-conflict`;
 }
 
+// The tmux session name for a PR's merge-queue-blocked fix (sibling of the others).
+export function blockedSessionName(prNumber: number): string {
+  return `pr-${prNumber}-blocked`;
+}
+
 // Every fix session/window name a PR can have — the set the in-flight guard
 // checks so any one fix kind blocks the others on the shared worktree.
 export function fixSessionNames(prNumber: number): string[] {
-  return [fixSessionName(prNumber), ciSessionName(prNumber), conflictSessionName(prNumber)];
+  return [fixSessionName(prNumber), ciSessionName(prNumber), conflictSessionName(prNumber), blockedSessionName(prNumber)];
 }
 
 // Per-process record of the newest other-authored unresolved comment timestamp
@@ -38,9 +43,9 @@ export function fixSessionNames(prNumber: number): string[] {
 // clears and `inFlightFixKinds` takes over), while still allowing a genuinely
 // newer round of the same kind to re-trigger.
 // In-memory: a restart clears it (at most one already-handled round re-runs).
-export type FixKind = "fix" | "ci" | "conflict";
+export type FixKind = "fix" | "ci" | "conflict" | "blocked";
 
-export const ALL_FIX_KINDS: FixKind[] = ["fix", "ci", "conflict"];
+export const ALL_FIX_KINDS: FixKind[] = ["fix", "ci", "conflict", "blocked"];
 
 // The session/window name for a PR's fix of a given kind.
 export function sessionNameFor(kind: FixKind, prNumber: number): string {
@@ -48,13 +53,16 @@ export function sessionNameFor(kind: FixKind, prNumber: number): string {
     ? fixSessionName(prNumber)
     : kind === "ci"
       ? ciSessionName(prNumber)
-      : conflictSessionName(prNumber);
+      : kind === "conflict"
+        ? conflictSessionName(prNumber)
+        : blockedSessionName(prNumber);
 }
 
 export type ReviewState = {
   lastHandledAt: Map<number, number>;
   lastHandledCiSha: Map<number, string>;
   lastHandledConflictSha: Map<number, string>;
+  lastHandledBlockedSha: Map<number, string>;
   pendingSpawn: Map<number, FixKind>;
   // "<prNumber>:<kind>" -> epoch ms the fix was first seen in flight. Drives the
   // stale reap backstop. In-memory: a restart resets the timers.
@@ -66,6 +74,7 @@ export function freshReviewState(): ReviewState {
     lastHandledAt: new Map(),
     lastHandledCiSha: new Map(),
     lastHandledConflictSha: new Map(),
+    lastHandledBlockedSha: new Map(),
     pendingSpawn: new Map(),
     fixSeenAt: new Map(),
   };
@@ -80,6 +89,8 @@ export type PrReviewDeps = {
   mergeableInfo: (prNumber: number) => Promise<MergeableInfo>;
   // CI summary for a PR: rollup state + head SHA.
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
+  // Blocked summary for a PR: carries the merge-queue "blocked" label + head SHA.
+  blockedInfo: (prNumber: number) => Promise<BlockedInfo>;
   // Which fix kinds are currently in flight for a PR (comment/ci/conflict).
   // Empty means no fixer is on the shared worktree. Replaces the old boolean
   // guard so the reaper can act per kind.
@@ -96,6 +107,8 @@ export type PrReviewDeps = {
   spawnCiFix: (sessionName: string, branch: string) => void;
   // Launch a merge-conflict-fix session (session name, branch to check out).
   spawnConflictFix: (sessionName: string, branch: string) => void;
+  // Launch a merge-queue-blocked fix session (session name, branch to check out).
+  spawnBlockedFix: (sessionName: string, branch: string) => void;
   log: (msg: string) => void;
 };
 
@@ -107,14 +120,15 @@ export type PrReviewDeps = {
 async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewDeps): Promise<boolean> {
   if (kind === "conflict") return (await deps.mergeableInfo(prNumber)).state === "mergeable";
   if (kind === "ci") return (await deps.checksInfo(prNumber)).state === "passing";
+  if (kind === "blocked") return !(await deps.blockedInfo(prNumber)).blocked;
   return false;
 }
 
 // One review-step tick, run every heartbeat. For each non-draft open PR, skip if
-// any fix (comment, conflict, or CI) is actively running, then handle in priority
-// order — comments, then conflict, then CI. All three fixes share the PR's
-// worktree, so at most one is spawned per PR per tick; the others are picked up a
-// later tick once the running one has ended.
+// any fix (comment, conflict, blocked, or CI) is actively running, then handle in
+// priority order: comments, then conflict, then blocked, then CI. All four fixes
+// share the PR's worktree, so at most one is spawned per PR per tick; the others
+// are picked up a later tick once the running one has ended.
 //
 // Comments first — skip if nothing is unresolved, if only the viewer's own
 // replies remain, or if the newest other-authored comment is not newer than the
@@ -127,10 +141,14 @@ async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewD
 // resolution re-triggers only when the head moves); otherwise spawn a conflict
 // fix and record the SHA.
 //
-// CI last — only when there is no comment or conflict work. Skip unless CI has
-// concluded as failing (passing/pending/none do nothing); skip if we already
-// handled this failing head SHA (so a red build re-triggers only when a fix push
-// moves the head); otherwise spawn a CI fix and record the SHA.
+// Blocked third, only when there is no comment or conflict work. Skip unless
+// the merge queue has the PR's blocked label set; skip if we already handled this
+// head SHA; otherwise spawn a blocked fix and record the SHA.
+//
+// CI last, only when there is no comment, conflict, or blocked work. Skip unless
+// CI has concluded as failing (passing/pending/none do nothing); skip if we
+// already handled this failing head SHA (so a red build re-triggers only when a
+// fix push moves the head); otherwise spawn a CI fix and record the SHA.
 export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -200,7 +218,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       } catch (err) {
         deps.log(`spawn failed for PR #${pr.number}: ${err}`);
       }
-      continue; // one fix per PR per tick — all three fixes share the worktree
+      continue; // one fix per PR per tick, all four fixes share the worktree
     }
 
     let mergeable: MergeableInfo;
@@ -227,7 +245,36 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
           deps.log(`conflict spawn failed for PR #${pr.number}: ${err}`);
         }
       }
-      continue; // one fix per PR per tick — all three fixes share the worktree
+      continue; // one fix per PR per tick, all four fixes share the worktree
+    }
+
+    let blocked: BlockedInfo;
+    try {
+      blocked = await deps.blockedInfo(pr.number);
+    } catch (err) {
+      deps.log(`blocked info failed for PR #${pr.number}: ${err}`);
+      continue;
+    }
+    if (blocked.blocked) {
+      // The merge queue kicked this PR out after its combined-CI batch failed.
+      // Its own CI is usually green (the failure was in the combined draft PR),
+      // so this never reaches the CI block. Spawn a blocked fix on an unhandled
+      // head and when no other fix kind is mid-spawn; otherwise just wait. Dedup
+      // by head SHA bounds it to one automated attempt per head, so a re-block at
+      // the same SHA (another PR in the batch is the culprit) does not loop.
+      const unhandled = state.lastHandledBlockedSha.get(pr.number) !== blocked.headSha;
+      if (unhandled && !(pending && pending !== "blocked")) {
+        const name = blockedSessionName(pr.number);
+        try {
+          deps.spawnBlockedFix(name, pr.headRefName);
+          state.lastHandledBlockedSha.set(pr.number, blocked.headSha);
+          state.pendingSpawn.set(pr.number, "blocked");
+          deps.log(`spawned ${name} for PR #${pr.number} (blocked @ ${blocked.headSha})`);
+        } catch (err) {
+          deps.log(`blocked spawn failed for PR #${pr.number}: ${err}`);
+        }
+      }
+      continue; // one fix per PR per tick, all four fixes share the worktree
     }
 
     let checks: ChecksInfo;

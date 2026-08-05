@@ -120,7 +120,6 @@ export type PrReviewDeps = {
 async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewDeps): Promise<boolean> {
   if (kind === "conflict") return (await deps.mergeableInfo(prNumber)).state === "mergeable";
   if (kind === "ci") return (await deps.checksInfo(prNumber)).state === "passing";
-  if (kind === "blocked") return !(await deps.blockedInfo(prNumber)).blocked;
   return false;
 }
 
@@ -169,6 +168,13 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     if (running.length > 0) {
       const now = deps.now();
       for (const kind of running) {
+        // A blocked fix owns its whole lifecycle: the fix-pr-blocked skill fixes the
+        // Aviator combined-CI failure, swaps blocked -> ready-to-merge, then closes its
+        // own session. The daemon must never reap it, or it races that work -- the label
+        // clears mid-investigation (another PR in the batch was the culprit) or right
+        // after the skill's own relabel, before it finishes cleaning up. It still counts
+        // as in flight, so it keeps the other fix kinds off the shared worktree below.
+        if (kind === "blocked") continue;
         const key = `${pr.number}:${kind}`;
         if (!state.fixSeenAt.has(key)) state.fixSeenAt.set(key, now);
         const stale = now - (state.fixSeenAt.get(key) as number) >= deps.reapStaleMs;

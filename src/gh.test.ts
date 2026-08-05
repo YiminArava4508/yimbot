@@ -144,15 +144,22 @@ test("unresolvedThreadInfo passes owner/name/number and parses with the viewer l
 function rollupJson(headRefOid: string, nodes: unknown[]): string {
   return JSON.stringify({ headRefOid, statusCheckRollup: nodes });
 }
-function checkRun(status: string, conclusion: string | null) {
-  return { __typename: "CheckRun", name: "test", status, conclusion };
+function checkRun(status: string, conclusion: string | null, name = "test", startedAt?: string, workflowName?: string) {
+  return {
+    __typename: "CheckRun",
+    name,
+    status,
+    conclusion,
+    ...(startedAt ? { startedAt } : {}),
+    ...(workflowName ? { workflowName } : {}),
+  };
 }
 function statusContext(state: string) {
   return { __typename: "StatusContext", context: "ci", state };
 }
 
 test("parseChecksInfo reports failing on a failed CheckRun conclusion", () => {
-  const json = rollupJson("sha1", [checkRun("COMPLETED", "SUCCESS"), checkRun("COMPLETED", "FAILURE")]);
+  const json = rollupJson("sha1", [checkRun("COMPLETED", "SUCCESS", "a"), checkRun("COMPLETED", "FAILURE", "b")]);
   assert.deepEqual(parseChecksInfo(json), { state: "failing", headSha: "sha1" });
 });
 
@@ -162,7 +169,7 @@ test("parseChecksInfo reports failing on a failed StatusContext state", () => {
 });
 
 test("parseChecksInfo treats an unfinished check as pending, even alongside a failure", () => {
-  const json = rollupJson("sha3", [checkRun("COMPLETED", "FAILURE"), checkRun("IN_PROGRESS", null)]);
+  const json = rollupJson("sha3", [checkRun("COMPLETED", "FAILURE", "a"), checkRun("IN_PROGRESS", null, "b")]);
   assert.equal(parseChecksInfo(json).state, "pending");
 });
 
@@ -176,12 +183,64 @@ test("parseChecksInfo reports passing when every check succeeded", () => {
 });
 
 test("parseChecksInfo treats NEUTRAL/SKIPPED conclusions as non-failing", () => {
-  const json = rollupJson("s", [checkRun("COMPLETED", "NEUTRAL"), checkRun("COMPLETED", "SKIPPED")]);
+  const json = rollupJson("s", [checkRun("COMPLETED", "NEUTRAL", "a"), checkRun("COMPLETED", "SKIPPED", "b")]);
   assert.equal(parseChecksInfo(json).state, "passing");
 });
 
 test("parseChecksInfo reports none for an empty rollup", () => {
   assert.deepEqual(parseChecksInfo(rollupJson("sha5", [])), { state: "none", headSha: "sha5" });
+});
+
+test("parseChecksInfo dedupes reruns by name, keeping the latest by startedAt", () => {
+  // A stale CANCELLED run of a check that later reran to SUCCESS must not count:
+  // GitHub keys the rollup by the latest run per check, so the PR reads green.
+  const json = rollupJson("sha", [
+    checkRun("COMPLETED", "CANCELLED", "pr-size", "2026-08-05T00:19:35Z"),
+    checkRun("COMPLETED", "SUCCESS", "pr-size", "2026-08-05T17:36:21Z"),
+  ]);
+  assert.equal(parseChecksInfo(json).state, "passing");
+});
+
+test("parseChecksInfo dedupes reruns by name, surfacing a latest failure", () => {
+  const json = rollupJson("sha", [
+    checkRun("COMPLETED", "SUCCESS", "build", "2026-08-05T00:00:00Z"),
+    checkRun("COMPLETED", "FAILURE", "build", "2026-08-05T01:00:00Z"),
+  ]);
+  assert.equal(parseChecksInfo(json).state, "failing");
+});
+
+test("parseChecksInfo dedupes reruns by name, holding when the latest is still running", () => {
+  const json = rollupJson("sha", [
+    checkRun("COMPLETED", "FAILURE", "build", "2026-08-05T00:00:00Z"),
+    checkRun("IN_PROGRESS", null, "build", "2026-08-05T01:00:00Z"),
+  ]);
+  assert.equal(parseChecksInfo(json).state, "pending");
+});
+
+test("parseChecksInfo ranks a timestampless queued rerun as the newest run (pending)", () => {
+  // A freshly queued rerun reports no startedAt/completedAt; it must beat the prior
+  // completed run so the still-running rerun keeps the rollup pending.
+  const json = rollupJson("sha", [
+    checkRun("COMPLETED", "SUCCESS", "build", "2026-08-05T00:00:00Z"),
+    checkRun("QUEUED", null, "build"),
+  ]);
+  assert.equal(parseChecksInfo(json).state, "pending");
+});
+
+test("parseChecksInfo keys CheckRuns by workflow, so same-named jobs stay distinct", () => {
+  const json = rollupJson("sha", [
+    checkRun("COMPLETED", "SUCCESS", "build", "2026-08-05T00:00:00Z", "wf-a"),
+    checkRun("COMPLETED", "FAILURE", "build", "2026-08-05T00:00:00Z", "wf-b"),
+  ]);
+  assert.equal(parseChecksInfo(json).state, "failing"); // both kept, not collapsed
+});
+
+test("parseChecksInfo keys a StatusContext by context, distinct from a same-named CheckRun", () => {
+  const json = rollupJson("sha", [
+    statusContext("ERROR"), // context "ci"
+    checkRun("COMPLETED", "SUCCESS", "ci", "2026-08-05T00:00:00Z"),
+  ]);
+  assert.equal(parseChecksInfo(json).state, "failing"); // ctx:ci and run:::ci don't collide
 });
 
 test("parseChecksInfo excludes checks matched by the ignore predicate", () => {

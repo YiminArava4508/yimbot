@@ -139,6 +139,10 @@ the reuse audit above), and only then decide how to slice it into PRs.
 
 **The split flow, driven by `~/split-pr.sh`:**
 
+- **First, before anything else,** flag the ticket's own worktree as a split
+  parent so cleanup never reaps it mid-split (this covers the window before the
+  first slice exists, and the case where the ticket already has a PR you are
+  about to close): `touch .yimbot-split-parent` from the ticket worktree root.
 - The **original ticket branch keeps every change and gets no PR of its
   own.** Leave it up as a local integration branch: it is the only place the
   whole app can be run and tested locally, end to end.

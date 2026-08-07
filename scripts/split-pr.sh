@@ -56,6 +56,12 @@ fi
 # Back-pointer so the cleanup step groups this slice under its parent session.
 printf '%s\n' "$SESSION" > "$(parent_marker_path "$WORKTREE")"
 
+# Flag the ticket's integration worktree as a split parent (idempotent) so the
+# cleanup step spares it for the whole split. A backstop: the split flow also
+# writes this before closing the ticket PR, which covers the pre-first-slice race.
+INTEGRATION_WT="$WORKTREES_DIR/$(echo "$SESSION" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)"
+[ -d "$INTEGRATION_WT" ] && : > "$INTEGRATION_WT/.yimbot-split-parent"
+
 # Add the detached window and launch Claude in it. Capture the window id so the
 # "PR (i/n)" display name (spaces/slashes) never has to be used as a target.
 WIN_NAME=$(pr_window_name "$INDEX" "$TOTAL")

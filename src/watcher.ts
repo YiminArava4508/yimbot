@@ -14,6 +14,7 @@ import { selectNextClaim } from "./claim.ts";
 import {
   type CleanupDeps,
   cleanupOnce,
+  isSplitParentWorktree,
   isSplitSliceWindow,
   type OrphanSweepDeps,
   readParentSession,
@@ -685,6 +686,18 @@ export function resolveBaseRef(codebasePath: string): string {
   }
 }
 
+// Whether `git status --porcelain` output holds any change other than yimbot's own
+// marker files (.yimbot-parent-session, .yimbot-launching, .yimbot-split-parent).
+// Those are daemon metadata written into the worktree, not user work, so a worktree
+// dirty only with markers must still count as clean for reap decisions — otherwise a
+// split parent or slice, which always carries a marker, would look permanently dirty.
+export function porcelainHasNonMarkerChanges(porcelain: string): boolean {
+  return porcelain
+    .split("\n")
+    .filter((l) => l.length > 3)
+    .some((l) => !/(^|\/)\.yimbot-[^/]*$/.test(l.slice(3)));
+}
+
 // Whether a worktree holds no unsaved work: a clean working tree AND no commits
 // ahead of the base ref. Either an uncommitted change or a unique commit makes it
 // non-inert (and so never a sweep target). Any git error → false (never reap).
@@ -693,8 +706,8 @@ export function worktreeIsInert(worktreePath: string, baseRef: string): boolean 
     const dirty = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (dirty) return false;
+    });
+    if (porcelainHasNonMarkerChanges(dirty)) return false;
     const ahead = execFileSync(
       "git",
       ["-C", worktreePath, "rev-list", "--count", `${baseRef}..HEAD`],
@@ -717,8 +730,8 @@ export function worktreeFullyPushed(worktreePath: string): boolean {
     const dirty = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (dirty) return false;
+    });
+    if (porcelainHasNonMarkerChanges(dirty)) return false;
     const ahead = execFileSync(
       "git",
       ["-C", worktreePath, "rev-list", "--count", "@{upstream}..HEAD"],
@@ -896,6 +909,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       const session = listTmuxSessions().find((s) => sanitizeBranchToSession(s) === dir);
       return session != null && listTmuxWindows(session).some(isSplitSliceWindow);
     },
+    isSplitParent: isSplitParentWorktree,
     log: cleanupLog,
   };
 

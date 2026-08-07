@@ -16,6 +16,7 @@ import {
   markFeatureReady,
   parseWorktreePorcelain,
   pollOnce,
+  porcelainHasNonMarkerChanges,
   reconcileBlockedInProgress,
   type ReconcileDeps,
   sanitizeBranchToSession,
@@ -347,6 +348,19 @@ test("sanitizeBranchToSession matches new-session.sh's rule (no-op on a clean sl
 test("sanitizeBranchToSession replaces disallowed chars and caps at 50", () => {
   assert.equal(sanitizeBranchToSession("feat/ENG-42_fix bar"), "feat-ENG-42-fix-bar");
   assert.equal(sanitizeBranchToSession("x".repeat(60)).length, 50);
+});
+
+test("porcelainHasNonMarkerChanges ignores yimbot marker files", () => {
+  // A worktree dirty only with its own daemon markers is clean for reap purposes.
+  assert.equal(porcelainHasNonMarkerChanges("?? .yimbot-parent-session\n"), false);
+  assert.equal(porcelainHasNonMarkerChanges("?? .yimbot-split-parent\n?? .yimbot-launching\n"), false);
+  assert.equal(porcelainHasNonMarkerChanges(""), false);
+});
+
+test("porcelainHasNonMarkerChanges reports real changes even alongside markers", () => {
+  assert.equal(porcelainHasNonMarkerChanges("?? .yimbot-split-parent\n M src/foo.ts\n"), true);
+  assert.equal(porcelainHasNonMarkerChanges("?? newfile.txt\n"), true);
+  assert.equal(porcelainHasNonMarkerChanges(" M src/a.ts\n"), true);
 });
 
 test("findExistingSession does not match a numeric-prefix neighbour", () => {

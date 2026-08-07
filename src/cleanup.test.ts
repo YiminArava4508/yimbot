@@ -273,6 +273,7 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
     killSession: (s) => void killed.push(s),
     readParentSession: () => null,
     hasActiveSplitWindows: () => false,
+    isSplitParent: () => false,
     log: (m) => void logs.push(m),
     ...overrides,
   };
@@ -500,6 +501,23 @@ test("cleanupOnce keeps a closed-unmerged worktree whose session still has activ
   assert.ok(logs.some((l) => /eng-1/.test(l) && /split/.test(l)));
 });
 
+test("cleanupOnce keeps a closed-unmerged worktree flagged as a split parent", async () => {
+  // The ticket branch had a PR that was closed to start a split, but no slice
+  // worktrees/windows exist yet (the pre-first-slice race). The durable
+  // .yimbot-split-parent marker, written before the PR is closed, spares it.
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(10, "eng-1")],
+    hasNoUnpushedWork: () => true,
+    hasActiveSplitWindows: () => false,
+    isSplitParent: (p) => p === `${WT}/eng-1`,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-1/.test(l) && /split/.test(l)));
+});
+
 test("cleanupOnce still reaps a plain closed-unmerged spike (no split windows)", async () => {
   const { deps: d, torn } = deps({
     listWorktrees: () => [wt("eng-1104-spike")],
@@ -653,6 +671,7 @@ function recorderDeps(over: Partial<CleanupDeps> & {
     killSession: (s) => killed.push(s),
     readParentSession: (p) => over.parents?.[p] ?? null,
     hasActiveSplitWindows: over.hasActiveSplitWindows ?? (() => false),
+    isSplitParent: over.isSplitParent ?? (() => false),
     log: () => {},
   };
   return { deps, tornDown, killed };

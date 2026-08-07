@@ -52,6 +52,11 @@ export type CleanupDeps = {
   // written (or during a transient marker-read failure) can't tear down the split
   // parent and kill its slice windows.
   hasActiveSplitWindows: (worktree: Worktree) => boolean;
+  // Whether this worktree is flagged as a split integration parent (its
+  // .yimbot-split-parent marker is present). Written before the ticket's PR is
+  // closed to start a split, so it spares the parent through the whole split even
+  // in the pre-first-slice window where no slice worktree/window exists yet.
+  isSplitParent: (worktreePath: string) => boolean;
   log: (msg: string) => void;
 };
 
@@ -84,6 +89,16 @@ export function readParentSession(worktreePath: string): string | null {
   } catch {
     return null;
   }
+}
+
+// The marker a split drops on its integration worktree at the start of the flow,
+// before the ticket's PR (if any) is closed. Its presence tells the closed-unmerged
+// reaper "a split is in progress here" even before the first slice exists.
+export const SPLIT_PARENT_MARKER = ".yimbot-split-parent";
+
+// Whether a worktree carries the split-parent marker.
+export function isSplitParentWorktree(worktreePath: string): boolean {
+  return existsSync(join(worktreePath, SPLIT_PARENT_MARKER));
 }
 
 // Assemble split groups from live worktrees. A worktree with a non-null parent
@@ -383,8 +398,13 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
     if (groupedPaths.has(w.path)) continue;
     // A split parent whose original PR was just closed but whose slice markers
     // aren't visible yet (race, or a transient marker-read failure) would fall
-    // through groupedPaths; its live "PR (i/n)" windows still spare it, so the
-    // reaper never kills a split in progress.
+    // through groupedPaths. Two marker-independent guards spare it: the durable
+    // split-parent marker (written before the PR is closed, so it covers even the
+    // pre-first-slice window) and live "PR (i/n)" slice windows.
+    if (deps.isSplitParent(w.path)) {
+      deps.log(`kept ${w.branch} (PR closed unmerged but worktree is a split parent)`);
+      continue;
+    }
     if (deps.hasActiveSplitWindows(w)) {
       deps.log(`kept ${w.branch} (PR closed unmerged but session has an active split in progress)`);
       continue;

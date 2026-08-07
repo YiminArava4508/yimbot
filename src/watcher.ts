@@ -9,7 +9,7 @@ import {
   parseAcceptanceCriteria,
   renderAcComment,
 } from "./acceptance.ts";
-import { isBlocked } from "./blocked.ts";
+import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
 import {
   type CleanupDeps,
@@ -428,6 +428,11 @@ export type WatcherConfig = {
     removeLabel: (n: number, label: string) => Promise<void>;
     label: string;
     blockedLabel: string;
+  } | null;
+  // gh-backed source for the blocked-by handling (claim deferral + reconcile
+  // move-back); null disables both (gh unavailable). Reuses listMyMergedPRs.
+  blocked: {
+    listMergedPRs: () => Promise<MergedPR[]>;
   } | null;
 };
 
@@ -949,12 +954,16 @@ export function startWatcher(config: WatcherConfig): () => void {
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
   const { claim } = config;
   const viewerId = config.progressContext.viewerId;
+  const fetchMergedIdentifiers = config.blocked
+    ? async () => mergedIdentifierSet(await config.blocked!.listMergedPRs())
+    : undefined;
   const claimDeps: ClaimDeps = {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
     maxInProgress: claim.maxInProgress,
     countInProgress: () => countAssignedInState(config.apiKey, viewerId, claim.progressStateName),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
+    fetchMergedIdentifiers,
     moveToInProgress: async (issue) => {
       await moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId);
       const { key, label } = deriveKey({ identifier: issue.identifier });
@@ -978,6 +987,20 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: claimLog,
   };
 
+  // Reconcile step: on each heartbeat, move any In-Progress ticket whose blocker
+  // has no merged PR back to Todo, tearing down its session and clearing the
+  // deploy latch so a later re-claim relaunches it once unblocked.
+  const reconcileLog = (msg: string) => console.log(`[reconcile] ${msg}`);
+  const reconcileDeps: ReconcileDeps | null = config.blocked && {
+    fetchInProgress: () => fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
+    fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
+    moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
+    findSession: (identifier) => findExistingSession(identifier, listTmuxSessions(), listWorktreeDirs()),
+    teardown: runEndSession,
+    unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
+    log: reconcileLog,
+  };
+
   let running = false;
   const heartbeat = async () => {
     if (running) return;
@@ -988,6 +1011,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       // be skipped for the rest of the process. Removing it first lets deploy
       // launch a fresh session this same tick.
       if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
+      if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
       if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);

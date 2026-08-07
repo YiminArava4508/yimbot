@@ -220,6 +220,16 @@ export async function startDaemon(): Promise<() => void> {
       : `[yimbot] ready step OFF${autoReadyLabel ? " (gh unavailable)" : ""}`,
   );
 
+  // Blocked-by handling: defer claiming and move back In-Progress tickets whose
+  // blocker has no merged PR. Gated on the same gh-availability signal as the
+  // other gh-backed steps; reuses listMyMergedPRs.
+  const blocked = prReview ? { listMergedPRs: () => listMyMergedPRs(gh) } : null;
+  console.log(
+    blocked
+      ? "[yimbot] blocked-by handling ON: deferring + moving back tickets blocked by an unmerged PR"
+      : "[yimbot] blocked-by handling OFF (gh unavailable)",
+  );
+
   console.log(
     `[yimbot] watching "${teamName}": deploy on "${stateName}", ready-to-test flag on "${reviewStateName}", every ${heartbeatIntervalMinutes}m; syncing ${codebasePath}`,
   );
@@ -246,6 +256,7 @@ export async function startDaemon(): Promise<() => void> {
     cleanup,
     advance,
     ready,
+    blocked,
   });
 
   // Re-entrancy guard: a sync that runs longer than one interval must not overlap

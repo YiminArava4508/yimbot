@@ -324,20 +324,19 @@ export type ReconcileDeps = {
   fetchMergedIdentifiers: () => Promise<Set<string>>;
   // Move a blocked issue back to Todo.
   moveToTodo: (issueId: string) => Promise<void>;
-  // The worktree/session name for an issue, or null if none exists.
-  findSession: (identifier: string) => string | null;
-  // Tear down a worktree + session by branch/name.
-  teardown: (branch: string) => void;
   // Drop an issue id from the deploy latch so it relaunches once unblocked.
   unlatchDeploy: (issueId: string) => void;
   log: (msg: string) => void;
 };
 
 // One tick of the reconcile step. Moves every In-Progress ticket whose blocker
-// has no merged PR back to Todo, tears down any session it launched, and clears
-// the deploy latch so a later re-claim relaunches it. Runs before deploy so a
-// just-moved-back ticket is already Todo when deploy looks. Each ticket is
-// isolated: one failure does not abort the rest.
+// has no merged PR back to Todo and clears the deploy latch, so it is out of the
+// deploy poll's In-Progress set before deploy runs (a blocked ticket never gets
+// launched) and a later re-claim relaunches it once unblocked. It never tears the
+// worktree/session down: a worktree lives until its PR resolves, so a ticket that
+// was already launched before it became blocked keeps its in-progress work. Runs
+// before deploy so a just-moved-back ticket is already Todo when deploy looks.
+// Each ticket is isolated: one failure does not abort the rest.
 export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<void> {
   let issues: IssueWithBlockers[];
   try {
@@ -360,8 +359,6 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
     const unmerged = issue.blockedBy.filter((id) => !merged.has(id.toUpperCase())).join(", ");
     try {
       await deps.moveToTodo(issue.id);
-      const session = deps.findSession(issue.identifier);
-      if (session) deps.teardown(session);
       deps.unlatchDeploy(issue.id);
       deps.log(`moved ${issue.identifier} back to Todo: blocked by ${unmerged} (unmerged)`);
     } catch (err) {
@@ -453,6 +450,26 @@ export function launchSession(name: string): Promise<void> {
     if (code !== 0) console.error(`[watcher] new-session.sh for '${name}' exited ${code}`);
   });
   return result;
+}
+
+// Re-couple a session-less worktree to a fresh tmux session on the EXISTING
+// worktree, resuming its prior conversation (SESSION_RESUME=1 → claude --continue)
+// so in-progress work is never re-run from the seed. new-session.sh reuses the
+// registered worktree and names the session after the branch. Detached and
+// fire-and-forget, mirroring launchSession: a failure is logged and the next
+// heartbeat retries (nothing was created, so the guard won't block).
+export function reattachSession(branch: string): void {
+  console.log(`[reattach] re-coupling session to worktree '${branch}' (resume)`);
+  const proc = spawn("bash", [sessionScriptPath, branch], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, SESSION_RESUME: "1" },
+  });
+  proc.unref();
+  proc.once("error", (err) => console.error(`[reattach] new-session.sh for '${branch}' failed: ${err}`));
+  proc.once("exit", (code) => {
+    if (code !== 0) console.error(`[reattach] new-session.sh for '${branch}' exited ${code}`);
+  });
 }
 
 // Launch a PR fix run: new-session.sh <pr-<n>-fix> <branch>. The script reuses
@@ -670,20 +687,22 @@ export function listGitWorktrees(codebasePath: string): Worktree[] {
   }
 }
 
-// The default-branch ref new worktrees are cut from (origin/main, origin/master,
-// …), read from the codebase repo's origin/HEAD. Falls back to origin/master on
-// any error, so a broken HEAD only ever makes the inert check more conservative.
-export function resolveBaseRef(codebasePath: string): string {
-  try {
-    const ref = execFileSync(
-      "git",
-      ["-C", codebasePath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-    return ref || "origin/master";
-  } catch {
-    return "origin/master";
+// The deriveKey() keys of the codebase's worktrees under `dir` — the set the TUI
+// intersects its event rows against so the board shows exactly the live worktrees.
+// Filtered to `dir` so the main checkout and unrelated worktrees are excluded;
+// each branch maps through deriveKey, matching how every step keys its events.
+export function worktreeKeysUnder(worktrees: Worktree[], dir: string): Set<string> {
+  const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+  const keys = new Set<string>();
+  for (const w of worktrees) {
+    if (!w.path.startsWith(prefix)) continue;
+    keys.add(deriveKey({ branch: w.branch }).key);
   }
+  return keys;
+}
+
+export function liveWorktreeKeys(codebasePath: string, dir: string = worktreesDir): Set<string> {
+  return worktreeKeysUnder(listGitWorktrees(codebasePath), dir);
 }
 
 // Whether `git status --porcelain` output holds any change other than yimbot's own
@@ -698,33 +717,12 @@ export function porcelainHasNonMarkerChanges(porcelain: string): boolean {
     .some((l) => !/(^|\/)\.yimbot-[^/]*$/.test(l.slice(3)));
 }
 
-// Whether a worktree holds no unsaved work: a clean working tree AND no commits
-// ahead of the base ref. Either an uncommitted change or a unique commit makes it
-// non-inert (and so never a sweep target). Any git error → false (never reap).
-export function worktreeIsInert(worktreePath: string, baseRef: string): boolean {
-  try {
-    const dirty = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    if (porcelainHasNonMarkerChanges(dirty)) return false;
-    const ahead = execFileSync(
-      "git",
-      ["-C", worktreePath, "rev-list", "--count", `${baseRef}..HEAD`],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-    return ahead === "0";
-  } catch {
-    return false;
-  }
-}
-
 // Whether a worktree holds no work teardown would destroy: a clean working tree
 // AND no commits ahead of its own upstream branch (everything is pushed to origin,
-// so the branch survives there and is recoverable). Unlike worktreeIsInert, this
-// spares only genuinely local work — the right test for a closed PR, whose commits
-// never reach the base ref but are safely on its origin branch. No upstream set, or
-// any git error → false (never reap).
+// so the branch survives there and is recoverable). Spares only genuinely local
+// work — the right test for a closed PR, whose commits never reach the base ref but
+// are safely on its origin branch. No upstream set, or any git error → false (the
+// closed-unmerged reaper then keeps the worktree rather than risk losing work).
 export function worktreeFullyPushed(worktreePath: string): boolean {
   try {
     const dirty = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
@@ -913,24 +911,31 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: cleanupLog,
   };
 
-  // Sweep step: reap inert, session-less orphan worktrees so the deploy step
-  // relaunches a fresh session instead of adopting the leftover forever. Shares
-  // the cleanup step's codebase handle (both are worktree teardown) and is gated
-  // on it. Runs FIRST in the heartbeat, before deploy — see the heartbeat below.
-  const sweepLog = (msg: string) => console.log(`[sweep] ${msg}`);
-  const baseRef = cleanup ? resolveBaseRef(cleanup.codebasePath) : "origin/master";
+  // Reattach step: re-couple a session-less worktree to a fresh session on the
+  // existing worktree (resuming its prior conversation) instead of reaping it, so a
+  // session that died while its PR is still open comes back with its work intact.
+  // Shares the cleanup step's codebase handle and merged/closed PR sources (a
+  // resolved worktree is cleanup's to tear down) and is gated on it. Runs AFTER
+  // cleanup in the heartbeat — see the heartbeat below.
+  const reattachLog = (msg: string) => console.log(`[reattach] ${msg}`);
   const sweepDeps: OrphanSweepDeps | null = cleanup && {
     listWorktrees: () => listGitWorktrees(cleanup.codebasePath),
     listSessions: listTmuxSessions,
     worktreesDir,
+    resolvedBranches: async () => {
+      const [merged, closed] = await Promise.all([
+        cleanup.listMergedPRs(),
+        cleanup.listClosedUnmergedPRs(),
+      ]);
+      return new Set([...merged, ...closed].map((p) => p.headRefName));
+    },
     readParentSession,
     hasSessionFor: hasSessionForWorktree,
     isLaunching: (path) => launchMarkerActive(path, LAUNCH_MARKER_TTL_MS),
-    isInert: (path) => worktreeIsInert(path, baseRef),
     ageMs: worktreeAgeMs,
     minAgeMs: config.heartbeatIntervalMinutes * 60 * 1000,
-    teardown: (branch) => runEndSession(branch, "orphan sweep (inert, session-less)"),
-    log: sweepLog,
+    reattach: reattachSession,
+    log: reattachLog,
   };
 
   // Advance step (gh-driven): each heartbeat, judge merged PRs' issues against
@@ -1028,15 +1033,15 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   // Reconcile step: on each heartbeat, move any In-Progress ticket whose blocker
-  // has no merged PR back to Todo, tearing down its session and clearing the
-  // deploy latch so a later re-claim relaunches it once unblocked.
+  // has no merged PR back to Todo and clear the deploy latch, so it is out of the
+  // In-Progress set before deploy runs and a later re-claim relaunches it once
+  // unblocked. It never tears the worktree/session down — a worktree lives until
+  // its PR resolves.
   const reconcileLog = (msg: string) => console.log(`[reconcile] ${msg}`);
   const reconcileDeps: ReconcileDeps | null = config.blocked && {
     fetchInProgress: () => fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
-    findSession: (identifier) => findExistingSession(identifier, listTmuxSessions(), listWorktreeDirs()),
-    teardown: (branch) => runEndSession(branch, "blocked-by move-back"),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,
   };
@@ -1046,16 +1051,19 @@ export function startWatcher(config: WatcherConfig): () => void {
     if (running) return;
     running = true;
     try {
-      // The sweep MUST run before deploy: deploy latches every In-Progress ticket
-      // it adopts (by issue id), so an orphan removed after deploy adopted it would
-      // be skipped for the rest of the process. Removing it first lets deploy
-      // launch a fresh session this same tick.
-      if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
       if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);
       if (cleanupDeps) await cleanupOnce(cleanupDeps);
+      // The reattach step MUST run after cleanup: cleanup tears down resolved
+      // (merged/closed) worktrees, and reattach re-couples the rest. Running it
+      // last means its own merged/closed fetch sees any PR that resolved this tick
+      // and skips that worktree, so reattach never spawns a session on a worktree
+      // cleanup is concurrently tearing down. (deploy adopts a re-coupled worktree
+      // on the next tick regardless of order — it matches on the worktree dir,
+      // which reattach reuses rather than creates.)
+      if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
       if (readyDeps) await readyOnce(readyDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket

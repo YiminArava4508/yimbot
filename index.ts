@@ -1,11 +1,13 @@
 // index.ts
 import { createWriteStream } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { format } from "node:util";
 import { envOr } from "./src/env.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { runTui } from "./src/tui.ts";
+import { liveWorktreeKeys } from "./src/watcher.ts";
 
 if (!isConfigured(process.env)) {
   const config = await runSetup();
@@ -38,12 +40,14 @@ function redirectConsoleToFile(): void {
 
 if (process.stdout.isTTY) {
   redirectConsoleToFile();
+  const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
   const stop = await startDaemon();
   runTui({
     onQuit: () => {
       stop();
       process.exit(0);
     },
+    liveKeys: () => liveWorktreeKeys(codebasePath),
   });
 } else {
   const stop = await startDaemon();

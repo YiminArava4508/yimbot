@@ -159,18 +159,22 @@ build_claude_cmd() {
   local settings=${SESSION_SETTINGS:-$HOME/.config/yimbot/session-settings.json}
   [ -f "$settings" ] && cmd="$cmd --settings $settings"
   [ -n "${PLAN_MODEL:-}" ] && cmd="$cmd --model $PLAN_MODEL"
+  # Resume mode: reattach to the worktree's prior conversation instead of a fresh
+  # start, so a re-couple (session died, worktree lives) never re-runs the seed.
+  [ -n "${SESSION_RESUME:-}" ] && cmd="$cmd --continue"
   [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
   printf '%s' "$cmd"
 }
 
 # Launch Claude in a tmux target (session:window), seeding the ticket/PR prompt
-# when the session name is recognized.
+# when the session name is recognized. In resume mode no seed is sent: --continue
+# reopens the prior conversation and a fresh prompt would restart the work.
 launch_claude_in() {
   local target=$1
   local cmd
   cmd=$(build_claude_cmd)
-  local prompt
-  prompt=$(seed_prompt_for "$NAME")
+  local prompt=""
+  [ -z "${SESSION_RESUME:-}" ] && prompt=$(seed_prompt_for "$NAME")
   if [ -n "$prompt" ]; then
     tmux send-keys -t "$target" "$cmd \"$prompt\"" C-m
   else

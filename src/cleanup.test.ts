@@ -70,12 +70,11 @@ test("selectMergedFixSessions also reaps merged pr-<n>-ci sessions", () => {
   assert.deepEqual(selectMergedFixSessions(sessions, new Set([4730])), ["pr-4730-ci", "pr-4730-fix"]);
 });
 
-// A sweepable orphan: session-less, inert, old enough. Overrides flip one guard.
+// A reattachable orphan: session-less, old enough. Overrides flip one guard.
 function facts(over: Partial<OrphanFacts> & { branch: string }): OrphanFacts {
   return {
     worktree: wt(over.branch),
     hasSession: false,
-    inert: true,
     launching: false,
     ageMs: 10 * 60_000,
     ...over,
@@ -83,9 +82,9 @@ function facts(over: Partial<OrphanFacts> & { branch: string }): OrphanFacts {
   };
 }
 
-const SWEEP_OPTS = { grouped: new Set<string>(), minAgeMs: 5 * 60_000 };
+const SWEEP_OPTS = { grouped: new Set<string>(), resolved: new Set<string>(), minAgeMs: 5 * 60_000 };
 
-test("selectOrphanWorktrees returns a session-less, inert, old worktree", () => {
+test("selectOrphanWorktrees returns a session-less, old worktree", () => {
   const result = selectOrphanWorktrees([facts({ branch: "eng-1-a" })], SWEEP_OPTS);
   assert.deepEqual(result.map((w) => w.branch), ["eng-1-a"]);
 });
@@ -95,9 +94,11 @@ test("selectOrphanWorktrees spares a worktree that has a live session", () => {
   assert.deepEqual(result, []);
 });
 
-test("selectOrphanWorktrees spares a non-inert worktree (dirty or commits ahead)", () => {
-  const result = selectOrphanWorktrees([facts({ branch: "eng-1-a", inert: false })], SWEEP_OPTS);
-  assert.deepEqual(result, []);
+test("selectOrphanWorktrees reattaches a worktree with unsaved work (no inert gate)", () => {
+  // A dirty / commits-ahead worktree is exactly the one we want re-coupled so its
+  // in-progress work resumes; it is no longer spared.
+  const result = selectOrphanWorktrees([facts({ branch: "eng-1-a" })], SWEEP_OPTS);
+  assert.deepEqual(result.map((w) => w.branch), ["eng-1-a"]);
 });
 
 test("selectOrphanWorktrees spares a worktree younger than minAgeMs", () => {
@@ -112,8 +113,13 @@ test("selectOrphanWorktrees spares a worktree with a launch in progress", () => 
 
 test("selectOrphanWorktrees spares a worktree in a split group", () => {
   const f = facts({ branch: "eng-1-a" });
-  const opts = { grouped: new Set([f.worktree.path]), minAgeMs: 5 * 60_000 };
+  const opts = { ...SWEEP_OPTS, grouped: new Set([f.worktree.path]) };
   assert.deepEqual(selectOrphanWorktrees([f], opts), []);
+});
+
+test("selectOrphanWorktrees spares a resolved (merged/closed) worktree", () => {
+  const opts = { ...SWEEP_OPTS, resolved: new Set(["eng-1-a"]) };
+  assert.deepEqual(selectOrphanWorktrees([facts({ branch: "eng-1-a" })], opts), []);
 });
 
 test("selectOrphanWorktrees keeps only the orphans out of a mixed list", () => {
@@ -121,132 +127,148 @@ test("selectOrphanWorktrees keeps only the orphans out of a mixed list", () => {
     [
       facts({ branch: "eng-1-orphan" }),
       facts({ branch: "eng-2-active", hasSession: true }),
-      facts({ branch: "eng-3-work", inert: false }),
+      facts({ branch: "eng-3-resolved" }),
       facts({ branch: "eng-4-orphan" }),
     ],
-    SWEEP_OPTS,
+    { ...SWEEP_OPTS, resolved: new Set(["eng-3-resolved"]) },
   );
   assert.deepEqual(result.map((w) => w.branch), ["eng-1-orphan", "eng-4-orphan"]);
 });
 
-// Orchestrator deps: an inert, session-less, old set of worktrees by default.
-// `sessioned`/`dirty`/`young` name branches that flip one guard.
+// Orchestrator deps: a session-less, old, unresolved set of worktrees by default.
+// `sessioned`/`young`/`launching`/`resolved` name branches that flip one guard.
 function sweepDeps(over: {
   worktrees: Worktree[];
   sessioned?: Set<string>;
-  dirty?: Set<string>;
   young?: Set<string>;
   launching?: Set<string>;
+  resolved?: Set<string>;
+  resolvedBranches?: () => Promise<Set<string>>;
   parents?: Record<string, string>;
   minAgeMs?: number;
-  teardown?: (branch: string) => void;
-}): { deps: OrphanSweepDeps; torn: string[]; inertChecked: string[]; logs: string[] } {
-  const torn: string[] = [];
-  const inertChecked: string[] = [];
+  reattach?: (branch: string) => void;
+}): { deps: OrphanSweepDeps; reattached: string[]; ageChecked: string[]; logs: string[] } {
+  const reattached: string[] = [];
+  const ageChecked: string[] = [];
   const logs: string[] = [];
   const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
   const deps: OrphanSweepDeps = {
     listWorktrees: () => over.worktrees,
     listSessions: () => [],
     worktreesDir: WT,
+    resolvedBranches: over.resolvedBranches ?? (async () => over.resolved ?? new Set<string>()),
     readParentSession: (p) => over.parents?.[p] ?? null,
     hasSessionFor: (name) => over.sessioned?.has(name) ?? false,
     isLaunching: (p) => over.launching?.has(base(p)) ?? false,
-    isInert: (p) => {
-      inertChecked.push(base(p));
-      return !(over.dirty?.has(base(p)) ?? false);
+    ageMs: (p) => {
+      ageChecked.push(base(p));
+      return (over.young?.has(base(p)) ?? false) ? 60_000 : 10 * 60_000;
     },
-    ageMs: (p) => ((over.young?.has(base(p)) ?? false) ? 60_000 : 10 * 60_000),
     minAgeMs: over.minAgeMs ?? 5 * 60_000,
-    teardown: over.teardown ?? ((b) => void torn.push(b)),
+    reattach: over.reattach ?? ((b) => void reattached.push(b)),
     log: (m) => void logs.push(m),
   };
-  return { deps, torn, inertChecked, logs };
+  return { deps, reattached, ageChecked, logs };
 }
 
-test("sweepOrphanWorktrees tears down a true orphan", async () => {
-  const { deps, torn } = sweepDeps({ worktrees: [wt("eng-1-a")] });
+test("sweepOrphanWorktrees re-couples a true orphan", async () => {
+  const { deps, reattached } = sweepDeps({ worktrees: [wt("eng-1-a")] });
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, ["eng-1-a"]);
+  assert.deepEqual(reattached, ["eng-1-a"]);
 });
 
-test("sweepOrphanWorktrees spares a worktree with a live session (and skips the git check)", async () => {
-  const { deps, torn, inertChecked } = sweepDeps({
+test("sweepOrphanWorktrees spares a worktree with a live session (and skips the age check)", async () => {
+  const { deps, reattached, ageChecked } = sweepDeps({
     worktrees: [wt("eng-1-a")],
     sessioned: new Set(["eng-1-a"]),
   });
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, []);
-  assert.deepEqual(inertChecked, [], "no git status on a session-backed worktree");
+  assert.deepEqual(reattached, []);
+  assert.deepEqual(ageChecked, [], "no mtime stat on a session-backed worktree");
 });
 
-test("sweepOrphanWorktrees spares a worktree with a launch in progress (and skips the git check)", async () => {
-  const { deps, torn, inertChecked } = sweepDeps({
+test("sweepOrphanWorktrees spares a worktree with a launch in progress (and skips the age check)", async () => {
+  const { deps, reattached, ageChecked } = sweepDeps({
     worktrees: [wt("eng-1-a")],
     launching: new Set(["eng-1-a"]),
   });
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, []);
-  assert.deepEqual(inertChecked, [], "no git status on a launching worktree");
+  assert.deepEqual(reattached, []);
+  assert.deepEqual(ageChecked, [], "no mtime stat on a launching worktree");
 });
 
-test("sweepOrphanWorktrees spares a dirty / commits-ahead worktree", async () => {
-  const { deps, torn } = sweepDeps({ worktrees: [wt("eng-1-a")], dirty: new Set(["eng-1-a"]) });
+test("sweepOrphanWorktrees spares a resolved (merged/closed) worktree", async () => {
+  const { deps, reattached } = sweepDeps({
+    worktrees: [wt("eng-1-a")],
+    resolved: new Set(["eng-1-a"]),
+  });
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, []);
+  assert.deepEqual(reattached, []);
 });
 
 test("sweepOrphanWorktrees spares a worktree younger than minAgeMs", async () => {
-  const { deps, torn } = sweepDeps({ worktrees: [wt("eng-1-a")], young: new Set(["eng-1-a"]) });
+  const { deps, reattached } = sweepDeps({ worktrees: [wt("eng-1-a")], young: new Set(["eng-1-a"]) });
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, []);
+  assert.deepEqual(reattached, []);
 });
 
 test("sweepOrphanWorktrees spares a split-group slice", async () => {
-  const { deps, torn } = sweepDeps({
+  const { deps, reattached } = sweepDeps({
     worktrees: [wt("eng-1"), wt("eng-1-p1")],
     parents: { [`${WT}/eng-1-p1`]: "eng-1" },
   });
   await sweepOrphanWorktrees(deps);
-  assert.equal(torn.includes("eng-1-p1"), false, "the slice is spared");
+  assert.equal(reattached.includes("eng-1-p1"), false, "the slice is spared");
 });
 
 test("sweepOrphanWorktrees ignores worktrees outside the worktrees dir", async () => {
-  const { deps, torn } = sweepDeps({
+  const { deps, reattached } = sweepDeps({
     worktrees: [{ path: "/home/ymbo/Work/gemini", branch: "main" }],
   });
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, []);
+  assert.deepEqual(reattached, []);
 });
 
-test("sweepOrphanWorktrees continues to other worktrees when one teardown throws", async () => {
+test("sweepOrphanWorktrees continues to other worktrees when one relaunch throws", async () => {
   const attempted: string[] = [];
   const { deps, logs } = sweepDeps({
     worktrees: [wt("eng-1-a"), wt("eng-2-b")],
-    teardown: (b) => {
+    reattach: (b) => {
       attempted.push(b);
-      if (b === "eng-1-a") throw new Error("worktree remove failed");
+      if (b === "eng-1-a") throw new Error("relaunch failed");
     },
   });
   await sweepOrphanWorktrees(deps);
   assert.deepEqual(attempted, ["eng-1-a", "eng-2-b"]);
-  assert.ok(logs.some((l) => /worktree remove failed/.test(l)));
+  assert.ok(logs.some((l) => /relaunch failed/.test(l)));
 });
 
-test("sweepOrphanWorktrees swallows a listWorktrees failure without tearing down", async () => {
-  const { deps, torn, logs } = sweepDeps({ worktrees: [] });
+test("sweepOrphanWorktrees swallows a listWorktrees failure without reattaching", async () => {
+  const { deps, reattached, logs } = sweepDeps({ worktrees: [] });
   deps.listWorktrees = () => {
     throw new Error("git 128");
   };
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, []);
+  assert.deepEqual(reattached, []);
   assert.ok(logs.some((l) => /git 128/.test(l)));
 });
 
-test("sweepOrphanWorktrees is a no-op on an empty worktree list", async () => {
-  const { deps, torn } = sweepDeps({ worktrees: [] });
+test("sweepOrphanWorktrees defers (no reattach) when the resolved-PR fetch fails", async () => {
+  const { deps, reattached, logs } = sweepDeps({
+    worktrees: [wt("eng-1-a")],
+    resolvedBranches: async () => {
+      throw new Error("gh down");
+    },
+  });
   await sweepOrphanWorktrees(deps);
-  assert.deepEqual(torn, []);
+  assert.deepEqual(reattached, [], "a resolved worktree must never be resurrected on a fetch error");
+  assert.ok(logs.some((l) => /gh down/.test(l)));
+});
+
+test("sweepOrphanWorktrees is a no-op on an empty worktree list", async () => {
+  const { deps, reattached } = sweepDeps({ worktrees: [] });
+  await sweepOrphanWorktrees(deps);
+  assert.deepEqual(reattached, []);
 });
 
 function mpr(number: number, headRefName = `eng-${number}-x`): MergedPR {

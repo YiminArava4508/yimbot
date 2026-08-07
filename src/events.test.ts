@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, type YimbotEvent } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -268,6 +268,31 @@ test("reduceRows: maxRows drops oldest terminal first", () => {
   ];
   const rows = reduceRows(events, 3, { keepMergedMs: 1_000_000, maxRows: 2 });
   assert.deepEqual(rows.map((r) => r.key).sort(), ["NEW", "OLD-WORK"]);
+});
+
+test("filterToLiveWorktrees: non-terminal row kept only when its key is live", () => {
+  const row = (over: Partial<BoardRow>): BoardRow => ({
+    key: "ENG-1",
+    label: "ENG-1",
+    status: "working",
+    terminal: false,
+    ts: 0,
+    ...over,
+  });
+  const rows = [row({ key: "ENG-1" }), row({ key: "ENG-2" })];
+  const kept = filterToLiveWorktrees(rows, new Set(["ENG-1"]));
+  assert.deepEqual(kept.map((r) => r.key), ["ENG-1"]);
+});
+
+test("filterToLiveWorktrees: terminal row kept even with no live worktree", () => {
+  const merged: BoardRow = {
+    key: "ENG-9",
+    label: "ENG-9",
+    status: "merged",
+    terminal: true,
+    ts: 0,
+  };
+  assert.deepEqual(filterToLiveWorktrees([merged], new Set()), [merged]);
 });
 
 test("reduceRows: maxRows of 0 returns empty and does not hang", () => {

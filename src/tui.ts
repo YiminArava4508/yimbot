@@ -47,7 +47,11 @@ export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[
   return [header, ...body];
 }
 
-export function runTui(opts: { onQuit: () => void; liveKeys: () => Set<string> }): void {
+export function runTui(opts: {
+  onQuit: () => void;
+  liveKeys: () => Set<string>;
+  onToggleFlag: (key: string, label: string, flagged: boolean) => void;
+}): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
 
   const table = blessed.listtable({
@@ -55,19 +59,32 @@ export function runTui(opts: { onQuit: () => void; liveKeys: () => Set<string> }
     top: 1,
     left: 0,
     right: 0,
-    bottom: 0,
+    bottom: 1,
     tags: true,
     align: "left",
-    style: { header: { bold: true }, cell: {} },
+    keys: true,
+    vi: true,
+    mouse: true,
+    style: { header: { bold: true }, cell: { selected: { inverse: true } } },
   });
+  table.focus();
 
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
   const status = blessed.text({ parent: screen, top: 0, right: 0, content: "live" });
+  const footer = blessed.text({
+    parent: screen,
+    bottom: 0,
+    left: 0,
+    content: "j/k move   g/G top/bottom   f flag/unflag   q quit",
+    style: { fg: "grey" },
+  });
+  void footer;
 
+  let currentRows: BoardRow[] = [];
   const render = () => {
-    const rows = filterToLiveWorktrees(reduceRows(readEvents(), Date.now()), opts.liveKeys());
-    table.setData(rowsToTable(rows));
-    const active = rows.filter((r) => !r.terminal).length;
+    currentRows = filterToLiveWorktrees(reduceRows(readEvents(), Date.now()), opts.liveKeys());
+    table.setData(rowsToTable(currentRows, Date.now()));
+    const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(`live | ${active} active`);
     screen.render();
   };
@@ -83,6 +100,12 @@ export function runTui(opts: { onQuit: () => void; liveKeys: () => Set<string> }
     opts.onQuit();
   };
   screen.key(["q", "escape", "C-c"], quit);
+
+  screen.key(["f"], () => {
+    const r = currentRows[table.selected - 1];
+    if (!r) return;
+    opts.onToggleFlag(r.key, r.label, isFlagged(r, Date.now()));
+  });
 
   render();
 }

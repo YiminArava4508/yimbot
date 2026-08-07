@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { format } from "node:util";
 import { envOr } from "./src/env.ts";
+import { emitEvent } from "./src/events.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { runTui } from "./src/tui.ts";
@@ -48,6 +49,8 @@ if (process.stdout.isTTY) {
       process.exit(0);
     },
     liveKeys: () => liveWorktreeKeys(codebasePath),
+    onToggleFlag: (key, label, flagged) =>
+      emitEvent({ kind: flagged ? "unflagged" : "flagged", key, label }),
   });
 } else {
   const stop = await startDaemon();

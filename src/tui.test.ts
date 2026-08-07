@@ -59,4 +59,5 @@ test("fmtDuration formats seconds, minutes, and hours", () => {
   assert.equal(fmtDuration(45_000), "45s");
   assert.equal(fmtDuration(18 * 60_000), "18m");
   assert.equal(fmtDuration((6 * 60 + 40) * 60_000), "6h 40m");
+  assert.equal(fmtDuration(6 * 60 * 60_000), "6h");
 });

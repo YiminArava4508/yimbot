@@ -556,38 +556,32 @@ test("claimOnce swallows a fetchCycleTodos failure without throwing or moving", 
 function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
   deps: ReconcileDeps;
   movedBack: string[];
-  tornDown: string[];
   unlatched: string[];
   logs: string[];
 } {
   const movedBack: string[] = [];
-  const tornDown: string[] = [];
   const unlatched: string[] = [];
   const logs: string[] = [];
   const deps: ReconcileDeps = {
     fetchInProgress: async () => [],
     fetchMergedIdentifiers: async () => new Set<string>(),
     moveToTodo: async (id) => void movedBack.push(id),
-    findSession: () => null,
-    teardown: (branch) => void tornDown.push(branch),
     unlatchDeploy: (id) => void unlatched.push(id),
     log: (msg) => void logs.push(msg),
     ...overrides,
   };
-  return { deps, movedBack, tornDown, unlatched, logs };
+  return { deps, movedBack, unlatched, logs };
 }
 
-test("reconcile moves a blocked In-Progress ticket back, tears it down, and unlatches", async () => {
-  const { deps, movedBack, tornDown, unlatched, logs } = reconcileDeps({
+test("reconcile moves a blocked In-Progress ticket back and unlatches, never tearing down", async () => {
+  const { deps, movedBack, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
       { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
     ],
     fetchMergedIdentifiers: async () => new Set<string>(),
-    findSession: () => "eng-5-t",
   });
   await reconcileBlockedInProgress(deps);
   assert.deepEqual(movedBack, ["i-5"]);
-  assert.deepEqual(tornDown, ["eng-5-t"]);
   assert.deepEqual(unlatched, ["i-5"]);
   assert.ok(logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4")));
 });
@@ -604,19 +598,6 @@ test("reconcile leaves unblocked and no-blocker tickets alone", async () => {
   assert.equal(movedBack.length, 0);
 });
 
-test("reconcile still moves back a blocked ticket with no session (skips teardown)", async () => {
-  const { deps, movedBack, tornDown, unlatched } = reconcileDeps({
-    fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
-    ],
-    findSession: () => null,
-  });
-  await reconcileBlockedInProgress(deps);
-  assert.deepEqual(movedBack, ["i-5"]);
-  assert.equal(tornDown.length, 0);
-  assert.deepEqual(unlatched, ["i-5"]);
-});
-
 test("reconcile swallows a fetch failure without throwing", async () => {
   const { deps, movedBack, logs } = reconcileDeps({
     fetchInProgress: async () => {
@@ -628,18 +609,16 @@ test("reconcile swallows a fetch failure without throwing", async () => {
   assert.ok(logs.some((l) => l.includes("reconcile failed")));
 });
 
-test("reconcile does not tear down or unlatch when the move fails", async () => {
-  const { deps, tornDown, unlatched, logs } = reconcileDeps({
+test("reconcile does not unlatch when the move fails", async () => {
+  const { deps, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
       { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
     ],
-    findSession: () => "eng-5-t",
     moveToTodo: async () => {
       throw new Error("move boom");
     },
   });
   await reconcileBlockedInProgress(deps);
-  assert.equal(tornDown.length, 0);
   assert.equal(unlatched.length, 0);
   assert.ok(logs.some((l) => l.includes("failed to move ENG-5 back")));
 });

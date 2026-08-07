@@ -324,20 +324,19 @@ export type ReconcileDeps = {
   fetchMergedIdentifiers: () => Promise<Set<string>>;
   // Move a blocked issue back to Todo.
   moveToTodo: (issueId: string) => Promise<void>;
-  // The worktree/session name for an issue, or null if none exists.
-  findSession: (identifier: string) => string | null;
-  // Tear down a worktree + session by branch/name.
-  teardown: (branch: string) => void;
   // Drop an issue id from the deploy latch so it relaunches once unblocked.
   unlatchDeploy: (issueId: string) => void;
   log: (msg: string) => void;
 };
 
 // One tick of the reconcile step. Moves every In-Progress ticket whose blocker
-// has no merged PR back to Todo, tears down any session it launched, and clears
-// the deploy latch so a later re-claim relaunches it. Runs before deploy so a
-// just-moved-back ticket is already Todo when deploy looks. Each ticket is
-// isolated: one failure does not abort the rest.
+// has no merged PR back to Todo and clears the deploy latch, so it is out of the
+// deploy poll's In-Progress set before deploy runs (a blocked ticket never gets
+// launched) and a later re-claim relaunches it once unblocked. It never tears the
+// worktree/session down: a worktree lives until its PR resolves, so a ticket that
+// was already launched before it became blocked keeps its in-progress work. Runs
+// before deploy so a just-moved-back ticket is already Todo when deploy looks.
+// Each ticket is isolated: one failure does not abort the rest.
 export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<void> {
   let issues: IssueWithBlockers[];
   try {
@@ -360,8 +359,6 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
     const unmerged = issue.blockedBy.filter((id) => !merged.has(id.toUpperCase())).join(", ");
     try {
       await deps.moveToTodo(issue.id);
-      const session = deps.findSession(issue.identifier);
-      if (session) deps.teardown(session);
       deps.unlatchDeploy(issue.id);
       deps.log(`moved ${issue.identifier} back to Todo: blocked by ${unmerged} (unmerged)`);
     } catch (err) {
@@ -1046,15 +1043,15 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   // Reconcile step: on each heartbeat, move any In-Progress ticket whose blocker
-  // has no merged PR back to Todo, tearing down its session and clearing the
-  // deploy latch so a later re-claim relaunches it once unblocked.
+  // has no merged PR back to Todo and clear the deploy latch, so it is out of the
+  // In-Progress set before deploy runs and a later re-claim relaunches it once
+  // unblocked. It never tears the worktree/session down — a worktree lives until
+  // its PR resolves.
   const reconcileLog = (msg: string) => console.log(`[reconcile] ${msg}`);
   const reconcileDeps: ReconcileDeps | null = config.blocked && {
     fetchInProgress: () => fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
-    findSession: (identifier) => findExistingSession(identifier, listTmuxSessions(), listWorktreeDirs()),
-    teardown: (branch) => runEndSession(branch, "blocked-by move-back"),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,
   };

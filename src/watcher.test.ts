@@ -21,6 +21,7 @@ import {
   type ReconcileDeps,
   sanitizeBranchToSession,
   type WatchState,
+  worktreeKeysUnder,
 } from "./watcher.ts";
 
 function issue(id: string, identifier: string, title: string): LinearIssue {
@@ -59,6 +60,19 @@ test("detectNewIssues returns only unseen issues after baseline", () => {
   const result = detectNewIssues(state, [issue("a", "ENG-1", "One"), issue("b", "ENG-2", "Two")]);
   assert.deepEqual(result.map((i) => i.id), ["b"]);
   assert.ok(!state.seen.has("b"), "detectNewIssues must not mark seen; pollOnce does after launch");
+});
+
+test("worktreeKeysUnder derives ticket keys for worktrees under the dir only", () => {
+  const keys = worktreeKeysUnder(
+    [
+      { path: "/home/u/Work/worktrees/eng-1417-polish", branch: "eng-1417-polish" },
+      { path: "/home/u/Work/worktrees/release-thing", branch: "release-thing" },
+      { path: "/home/u/Work/gemini", branch: "main" }, // main checkout, outside dir
+      { path: "/home/u/Work/worktrees/readme-diagrams", branch: "docs/readme-diagrams" },
+    ],
+    "/home/u/Work/worktrees",
+  );
+  assert.deepEqual([...keys].sort(), ["ENG-1417", "docs/readme-diagrams", "release-thing"]);
 });
 
 test("pollOnce launches new issues and marks them seen", async () => {

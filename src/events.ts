@@ -191,3 +191,12 @@ export function reduceRows(
   }
   return rows;
 }
+
+// Keep only rows the live worktrees back: a non-terminal row survives iff a
+// worktree exists for its key, so a session/worktree reaped before merge stops
+// showing as active. Terminal (merged) rows are kept regardless — their worktree
+// is already gone by design, and reduceRows still ages them out past the linger
+// window. `liveKeys` is the set of deriveKey() keys of the codebase's worktrees.
+export function filterToLiveWorktrees(rows: BoardRow[], liveKeys: Set<string>): BoardRow[] {
+  return rows.filter((r) => r.terminal || liveKeys.has(r.key));
+}

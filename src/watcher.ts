@@ -670,6 +670,24 @@ export function listGitWorktrees(codebasePath: string): Worktree[] {
   }
 }
 
+// The deriveKey() keys of the codebase's worktrees under `dir` — the set the TUI
+// intersects its event rows against so the board shows exactly the live worktrees.
+// Filtered to `dir` so the main checkout and unrelated worktrees are excluded;
+// each branch maps through deriveKey, matching how every step keys its events.
+export function worktreeKeysUnder(worktrees: Worktree[], dir: string): Set<string> {
+  const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+  const keys = new Set<string>();
+  for (const w of worktrees) {
+    if (!w.path.startsWith(prefix)) continue;
+    keys.add(deriveKey({ branch: w.branch }).key);
+  }
+  return keys;
+}
+
+export function liveWorktreeKeys(codebasePath: string, dir: string = worktreesDir): Set<string> {
+  return worktreeKeysUnder(listGitWorktrees(codebasePath), dir);
+}
+
 // The default-branch ref new worktrees are cut from (origin/main, origin/master,
 // …), read from the codebase repo's origin/HEAD. Falls back to origin/master on
 // any error, so a broken HEAD only ever makes the inert check more conservative.

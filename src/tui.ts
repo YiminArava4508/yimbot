@@ -2,7 +2,7 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
-import { bus, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveWorktrees, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 
 // How often the board repaints on its own, independent of daemon events. Without
 // it the TUI freezes on its last paint between events: time-based row pruning
@@ -32,7 +32,7 @@ export function rowsToTable(rows: BoardRow[]): string[][] {
   return [header, ...body];
 }
 
-export function runTui(opts: { onQuit: () => void }): void {
+export function runTui(opts: { onQuit: () => void; liveKeys: () => Set<string> }): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
 
   const table = blessed.listtable({
@@ -50,7 +50,7 @@ export function runTui(opts: { onQuit: () => void }): void {
   const status = blessed.text({ parent: screen, top: 0, right: 0, content: "live" });
 
   const render = () => {
-    const rows = reduceRows(readEvents(), Date.now());
+    const rows = filterToLiveWorktrees(reduceRows(readEvents(), Date.now()), opts.liveKeys());
     table.setData(rowsToTable(rows));
     const active = rows.filter((r) => !r.terminal).length;
     status.setContent(`live | ${active} active`);

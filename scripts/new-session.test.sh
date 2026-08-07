@@ -27,6 +27,11 @@ assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "0
 assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" "honors PLAN_MODEL"
 assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
 
+# Resume mode (SESSION_RESUME) reattaches to the prior conversation with
+# --continue and, in launch_claude_in, sends no seed prompt.
+assert_eq "$(SESSION_RESUME=1 build_claude_cmd | grep -c -- '--continue')" "1" "resume mode adds --continue"
+assert_eq "$(build_claude_cmd | grep -c -- '--continue')" "0" "no --continue without resume mode"
+
 # A deny-list settings file, when present, is passed to claude via --settings.
 SETTINGS_TMP=$(mktemp)
 assert_eq "$(SESSION_SETTINGS=$SETTINGS_TMP build_claude_cmd | grep -c -- "--settings $SETTINGS_TMP")" "1" "passes --settings when the file exists"

@@ -175,37 +175,38 @@ export function selectMergedWorktrees(
   return worktrees.filter((w) => mergedBranches.has(w.branch) && w.path.startsWith(prefix));
 }
 
-// A worktree enriched with the facts the orphan sweep needs to judge it.
-// `hasSession` is whether a live tmux session belongs to its ticket; `inert` is
-// clean working tree AND no commits ahead of base (nothing to lose); `ageMs` is
-// how long since the worktree dir was created.
+// A worktree enriched with the facts the reattach step needs to judge it.
+// `hasSession` is whether a live tmux session belongs to its ticket; `ageMs` is
+// how long since the worktree dir was created (to clear the launch race).
 export type OrphanFacts = {
   worktree: Worktree;
   hasSession: boolean;
   // A launch is in progress: new-session.sh has created the worktree but not yet
   // its session (its .yimbot-launching marker is present). Session-less by nature,
-  // so it needs its own guard to avoid being reaped mid-setup.
+  // so it needs its own guard to avoid being reattached mid-setup.
   launching: boolean;
-  inert: boolean;
   ageMs: number;
 };
 
-// Worktrees safe to reap so the deploy step relaunches a fresh session: a
-// session-less, inert worktree older than one heartbeat (past the launch race),
-// with no launch in progress, that is not part of a split group. Any guard
-// failing spares it.
+// Worktrees to re-couple with a session: a session-less worktree older than one
+// heartbeat (past the launch race), with no launch in progress, that is not part
+// of a split group and whose PR has not resolved (merged/closed — those are the
+// cleanup step's to tear down, and reattaching one would race that teardown).
+// No inert gate: reattaching never destroys work, and the tmux session persists
+// even if the resume finds no prior conversation, so an empty worktree is
+// re-coupled once, not looped over. Any guard failing spares it.
 export function selectOrphanWorktrees(
   facts: OrphanFacts[],
-  opts: { grouped: Set<string>; minAgeMs: number },
+  opts: { grouped: Set<string>; resolved: Set<string>; minAgeMs: number },
 ): Worktree[] {
   return facts
     .filter(
       (f) =>
         !f.hasSession &&
         !f.launching &&
-        f.inert &&
         f.ageMs >= opts.minAgeMs &&
-        !opts.grouped.has(f.worktree.path),
+        !opts.grouped.has(f.worktree.path) &&
+        !opts.resolved.has(f.worktree.branch),
     )
     .map((f) => f.worktree);
 }
@@ -217,6 +218,11 @@ export type OrphanSweepDeps = {
   listSessions: () => string[];
   // Only worktrees under this dir are considered, never the main checkout.
   worktreesDir: string;
+  // Branches of the viewer's resolved (merged + closed) PRs. A resolved worktree
+  // belongs to the cleanup step; excluding it here keeps reattach from racing the
+  // teardown. Empty on a fetch failure, so a transient gh error only defers a
+  // re-couple, never resurrects a resolved worktree.
+  resolvedBranches: () => Promise<Set<string>>;
   // A worktree's .yimbot-parent-session marker, to exclude split-group members.
   readParentSession: (worktreePath: string) => string | null;
   // Whether a live session belongs to the ticket owning this worktree dir name.
@@ -224,28 +230,28 @@ export type OrphanSweepDeps = {
   // new-session.sh makes for long tickets can't produce a false "session-less".
   hasSessionFor: (worktreeName: string, sessions: string[]) => boolean;
   // Whether new-session.sh is still launching this worktree (its .yimbot-launching
-  // marker is present) — spared so a slow setup hook is never reaped mid-launch.
+  // marker is present) — spared so a slow setup hook is never reattached mid-launch.
   isLaunching: (worktreePath: string) => boolean;
-  // Whether a worktree is inert: clean working tree AND no commits ahead of base.
-  isInert: (worktreePath: string) => boolean;
   // Age of the worktree dir (now - mtime), to clear the launch race.
   ageMs: (worktreePath: string) => number;
   minAgeMs: number;
-  // Tear down a worktree by its branch (== its ticket session name). Via end-session.sh.
-  teardown: (branch: string) => void;
+  // Re-couple a worktree to a session by its branch, resuming the prior
+  // conversation. Via new-session.sh with SESSION_RESUME.
+  reattach: (branch: string) => void;
   log: (msg: string) => void;
 };
 
-// One sweep-step tick, run first in the heartbeat (before deploy). Reaps inert,
-// session-less orphan worktrees so the deploy step relaunches a fresh session
-// instead of adopting the leftover forever. The git/mtime checks run only on
-// session-less, non-grouped, in-dir worktrees, so an active worktree costs no IO.
+// One reattach-step tick. Re-couples each session-less, unresolved worktree to a
+// fresh session on the existing worktree instead of reaping it, so a session that
+// died (crash, manual kill, reboot) while its PR is still open comes back with its
+// work intact. The mtime check runs only on session-less, non-grouped, in-dir
+// worktrees, so an active worktree costs no IO.
 export async function sweepOrphanWorktrees(deps: OrphanSweepDeps): Promise<void> {
   let worktrees: Worktree[];
   try {
     worktrees = deps.listWorktrees();
   } catch (err) {
-    deps.log(`orphan sweep: worktree list failed: ${err}`);
+    deps.log(`reattach: worktree list failed: ${err}`);
     return;
   }
 
@@ -253,7 +259,16 @@ export async function sweepOrphanWorktrees(deps: OrphanSweepDeps): Promise<void>
   try {
     sessions = deps.listSessions();
   } catch (err) {
-    deps.log(`orphan sweep: session list failed: ${err}`);
+    deps.log(`reattach: session list failed: ${err}`);
+    return;
+  }
+
+  let resolved: Set<string>;
+  try {
+    resolved = await deps.resolvedBranches();
+  } catch (err) {
+    // A fetch failure must not resurrect a resolved worktree; defer this tick.
+    deps.log(`reattach: resolved PR list failed: ${err}`);
     return;
   }
 
@@ -270,23 +285,17 @@ export async function sweepOrphanWorktrees(deps: OrphanSweepDeps): Promise<void>
       const name = w.path.slice(prefix.length);
       const hasSession = deps.hasSessionFor(name, sessions);
       const launching = hasSession ? false : deps.isLaunching(w.path);
-      // Skip the git/mtime IO for anything a cheap guard already excludes.
+      // Skip the mtime IO for anything a cheap guard already excludes.
       const skip = hasSession || launching || grouped.has(w.path);
-      return {
-        worktree: w,
-        hasSession,
-        launching,
-        inert: skip ? false : deps.isInert(w.path),
-        ageMs: skip ? 0 : deps.ageMs(w.path),
-      };
+      return { worktree: w, hasSession, launching, ageMs: skip ? 0 : deps.ageMs(w.path) };
     });
 
-  for (const w of selectOrphanWorktrees(facts, { grouped, minAgeMs: deps.minAgeMs })) {
+  for (const w of selectOrphanWorktrees(facts, { grouped, resolved, minAgeMs: deps.minAgeMs })) {
     try {
-      deps.teardown(w.branch);
-      deps.log(`orphan sweep: torn down ${w.branch} (session-less, no unsaved work)`);
+      deps.reattach(w.branch);
+      deps.log(`reattach: re-coupled ${w.branch} (session-less, PR still open)`);
     } catch (err) {
-      deps.log(`orphan sweep: teardown failed for ${w.branch}: ${err}`);
+      deps.log(`reattach: relaunch failed for ${w.branch}: ${err}`);
     }
   }
 }

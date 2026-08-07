@@ -1,8 +1,12 @@
+import { isBlocked } from "./blocked.ts";
 import type { CycleTodoIssue } from "./linear-api.ts";
 
 export type SelectOptions = {
   // Label names (any casing) that disqualify a ticket from being claimed.
   riskLabels: string[];
+  // Merged ticket identifiers. When non-null, todos blocked by an unmerged
+  // ticket are dropped; null skips the blocked filter (gh unavailable).
+  merged: Set<string> | null;
 };
 
 // Linear's `priority` is inverted (0=None, 1=Urgent … 4=Low). Rank it so
@@ -20,7 +24,9 @@ export function selectNextClaim(
 ): CycleTodoIssue | null {
   const risky = new Set(opts.riskLabels.map((l) => l.toLowerCase()));
   const eligible = todos.filter(
-    (t) => !t.labels.some((label) => risky.has(label.toLowerCase())),
+    (t) =>
+      !t.labels.some((label) => risky.has(label.toLowerCase())) &&
+      !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged)),
   );
   eligible.sort(
     (a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.sortOrder - b.sortOrder,

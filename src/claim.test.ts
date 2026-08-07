@@ -17,10 +17,12 @@ function todo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIss
 
 const riskLabels = ["migration", "infra", "security", "breaking"];
 
+const opts = (merged: Set<string> | null = null) => ({ riskLabels, merged });
+
 test("selectNextClaim picks the highest Linear priority (Urgent=1 before High=2)", () => {
   const picked = selectNextClaim(
     [todo({ id: "a", priority: 2 }), todo({ id: "b", priority: 1 })],
-    { riskLabels },
+    opts(),
   );
   assert.equal(picked?.id, "b");
 });
@@ -28,7 +30,7 @@ test("selectNextClaim picks the highest Linear priority (Urgent=1 before High=2)
 test("selectNextClaim treats priority 0 (None) as lowest, not highest", () => {
   const picked = selectNextClaim(
     [todo({ id: "none", priority: 0 }), todo({ id: "low", priority: 4 })],
-    { riskLabels },
+    opts(),
   );
   assert.equal(picked?.id, "low");
 });
@@ -39,7 +41,7 @@ test("selectNextClaim breaks priority ties by sortOrder ascending", () => {
       todo({ id: "later", priority: 2, sortOrder: 10 }),
       todo({ id: "earlier", priority: 2, sortOrder: 3 }),
     ],
-    { riskLabels },
+    opts(),
   );
   assert.equal(picked?.id, "earlier");
 });
@@ -50,16 +52,51 @@ test("selectNextClaim drops risk-labeled tickets (case-insensitive)", () => {
       todo({ id: "risky", priority: 1, labels: ["Migration"] }),
       todo({ id: "safe", priority: 3 }),
     ],
-    { riskLabels },
+    opts(),
   );
   assert.equal(picked?.id, "safe");
 });
 
 test("selectNextClaim returns null when every candidate is filtered out", () => {
-  const picked = selectNextClaim([todo({ id: "risky", labels: ["security"] })], { riskLabels });
+  const picked = selectNextClaim([todo({ id: "risky", labels: ["security"] })], opts());
   assert.equal(picked, null);
 });
 
 test("selectNextClaim returns null for an empty list", () => {
-  assert.equal(selectNextClaim([], { riskLabels }), null);
+  assert.equal(selectNextClaim([], opts()), null);
+});
+
+test("selectNextClaim defers a todo whose blocker is unmerged", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "blocked", priority: 1, blockedBy: ["ENG-4"] })],
+    opts(new Set()),
+  );
+  assert.equal(picked, null);
+});
+
+test("selectNextClaim claims a todo whose blockers are all merged", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "ok", priority: 1, blockedBy: ["ENG-4"] })],
+    opts(new Set(["ENG-4"])),
+  );
+  assert.equal(picked?.id, "ok");
+});
+
+test("selectNextClaim prefers the unblocked lower-priority todo over a blocked urgent one", () => {
+  const picked = selectNextClaim(
+    [
+      todo({ id: "urgent-blocked", priority: 1, blockedBy: ["ENG-4"] }),
+      todo({ id: "low-free", priority: 3 }),
+    ],
+    opts(new Set()),
+  );
+  assert.equal(picked?.id, "low-free");
+});
+
+test("selectNextClaim ignores blockers when merged is null (gh unavailable)", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "blocked", priority: 1, blockedBy: ["ENG-4"] })],
+    opts(null),
+  );
+  assert.equal(picked?.id, "blocked");
 });

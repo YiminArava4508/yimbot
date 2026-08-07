@@ -8,9 +8,11 @@ import {
   type CleanupDeps,
   cleanupOnce,
   groupReady,
+  isSplitSliceWindow,
   type OrphanFacts,
   type OrphanSweepDeps,
   readParentSession,
+  sanitizeBranchToSession,
   selectMergedFixSessions,
   selectMergedWorktrees,
   selectOrphanWorktrees,
@@ -270,6 +272,7 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
     listSessions: () => [],
     killSession: (s) => void killed.push(s),
     readParentSession: () => null,
+    hasActiveSplitWindows: () => false,
     log: (m) => void logs.push(m),
     ...overrides,
   };
@@ -460,6 +463,55 @@ test("cleanupOnce leaves a closed-unmerged slice of a split group alone", async 
   assert.deepEqual(torn, []);
 });
 
+test("cleanupOnce does not reap a split's integration worktree when its dir differs from the session name", async () => {
+  // The original ticket PR is closed after the split. The integration worktree
+  // dir is the sanitized session name, while the slice marker holds the full one.
+  // It must still be grouped (and so spared), not torn down by the closed path.
+  const session = "eng-1104-a-really-long-descriptive-ticket-title-exceeding-fifty";
+  const dir = sanitizeBranchToSession(session);
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/${dir}`, branch: dir },
+      { path: `${WT}/eng-1104-p1`, branch: "eng-1104-p1" },
+    ],
+    readParentSession: (p) => (p === `${WT}/eng-1104-p1` ? session : null),
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, dir)],
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.equal(torn.includes(dir), false, "integration worktree is spared");
+});
+
+test("cleanupOnce keeps a closed-unmerged worktree whose session still has active split slice windows", async () => {
+  // A heartbeat lands while a split is in progress but the slice markers are not
+  // yet visible (race or transient marker-read failure): the split parent's PR is
+  // closed and ungrouped, but its live "PR (i/n)" windows must still spare it.
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(10, "eng-1")],
+    hasNoUnpushedWork: () => true,
+    readParentSession: () => null,
+    hasActiveSplitWindows: (w) => w.branch === "eng-1",
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-1/.test(l) && /split/.test(l)));
+});
+
+test("cleanupOnce still reaps a plain closed-unmerged spike (no split windows)", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    hasNoUnpushedWork: () => true,
+    hasActiveSplitWindows: () => false,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["eng-1104-spike"]);
+});
+
 test("cleanupOnce still reaps merged worktrees when the closed-PR list fails", async () => {
   const { deps: d, torn, logs } = deps({
     listWorktrees: () => [wt("eng-2-b")],
@@ -471,6 +523,19 @@ test("cleanupOnce still reaps merged worktrees when the closed-PR list fails", a
   await cleanupOnce(d);
   assert.deepEqual(torn, ["eng-2-b"]);
   assert.ok(logs.some((l) => /gh 503/.test(l)));
+});
+
+test("isSplitSliceWindow recognizes the 'PR (i/n)' window split-pr.sh creates", () => {
+  assert.equal(isSplitSliceWindow("PR (1/2)"), true);
+  assert.equal(isSplitSliceWindow("PR (10/12)"), true);
+  assert.equal(isSplitSliceWindow(" PR (1/2) "), true);
+});
+
+test("isSplitSliceWindow rejects ordinary window names", () => {
+  assert.equal(isSplitSliceWindow("Claude"), false);
+  assert.equal(isSplitSliceWindow("pr-4730-fix"), false);
+  assert.equal(isSplitSliceWindow("PR"), false);
+  assert.equal(isSplitSliceWindow("PR (a/b)"), false);
 });
 
 // parentOf map helper: slice worktree path -> parent session name.
@@ -498,6 +563,24 @@ test("buildSplitGroups groups slices with their integration worktree", () => {
   assert.equal(g.worktreePaths.length, 3);
 });
 
+test("buildSplitGroups matches the integration worktree when the session name differs from its truncated dir", () => {
+  // A long/special session name: the tmux session keeps the full name while the
+  // worktree dir is the sanitized, 50-char form. The slice marker holds the full
+  // session name, so an exact-path lookup would miss the integration worktree.
+  const session = "eng-1104-a-really-long-descriptive-ticket-title-exceeding-fifty";
+  const dir = sanitizeBranchToSession(session);
+  assert.notEqual(dir, session, "precondition: dir differs from the raw session name");
+  const worktrees: Worktree[] = [
+    { path: `${WT}/${dir}`, branch: dir }, // integration (no marker)
+    { path: `${WT}/eng-1104-p1`, branch: "eng-1104-p1" },
+  ];
+  const parentOf = parentOfMap({ [`${WT}/eng-1104-p1`]: session });
+  const groups = buildSplitGroups(worktrees, parentOf, WT);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].integrationBranch, dir);
+  assert.equal(groups[0].worktreePaths.length, 2);
+});
+
 test("buildSplitGroups tolerates a missing integration worktree", () => {
   const worktrees: Worktree[] = [{ path: `${WT}/eng-1-part-1`, branch: "eng-1-part-1" }];
   const parentOf = parentOfMap({ [`${WT}/eng-1-part-1`]: "eng-1" });
@@ -511,7 +594,9 @@ test("groupReady is true only when every slice branch is merged", () => {
   const g: SplitGroup = {
     session: "eng-1",
     integrationBranch: "eng-1",
+    integration: null,
     sliceBranches: ["eng-1-part-1", "eng-1-part-2"],
+    slices: [],
     worktreePaths: [],
   };
   assert.equal(groupReady(g, new Set(["eng-1-part-1"])), false);
@@ -520,8 +605,32 @@ test("groupReady is true only when every slice branch is merged", () => {
   assert.equal(groupReady(g, new Set(["eng-1"])), false);
 });
 
+test("groupReady is ready when every slice is merged OR closed-unmerged", () => {
+  const g: SplitGroup = {
+    session: "eng-1",
+    integrationBranch: "eng-1",
+    integration: null,
+    sliceBranches: ["eng-1-p1", "eng-1-p2"],
+    slices: [],
+    worktreePaths: [],
+  };
+  // one merged, one closed → resolved → ready
+  assert.equal(groupReady(g, new Set(["eng-1-p1"]), new Set(["eng-1-p2"])), true);
+  // one merged, one still open → not ready
+  assert.equal(groupReady(g, new Set(["eng-1-p1"]), new Set()), false);
+  // all closed, none merged → mid-split or abandoned → left alone, not ready
+  assert.equal(groupReady(g, new Set(), new Set(["eng-1-p1", "eng-1-p2"])), false);
+});
+
 test("groupReady is false for a group with no slices", () => {
-  const g: SplitGroup = { session: "x", integrationBranch: "x", sliceBranches: [], worktreePaths: [] };
+  const g: SplitGroup = {
+    session: "x",
+    integrationBranch: "x",
+    integration: null,
+    sliceBranches: [],
+    slices: [],
+    worktreePaths: [],
+  };
   assert.equal(groupReady(g, new Set()), false);
 });
 
@@ -543,6 +652,7 @@ function recorderDeps(over: Partial<CleanupDeps> & {
     listSessions: () => over.sessions ?? [],
     killSession: (s) => killed.push(s),
     readParentSession: (p) => over.parents?.[p] ?? null,
+    hasActiveSplitWindows: over.hasActiveSplitWindows ?? (() => false),
     log: () => {},
   };
   return { deps, tornDown, killed };
@@ -594,6 +704,78 @@ test("cleanupOnce kills the session directly when the integration worktree is go
   await cleanupOnce(deps);
   assert.deepEqual(tornDown, ["eng-1-p1"]);
   assert.deepEqual(killed, ["eng-1"]);
+});
+
+test("cleanupOnce tears down a split group when one slice merged and the other was closed unmerged", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    readParentSession: (p) =>
+      p === `${WT}/eng-1-p1` || p === `${WT}/eng-1-p2` ? "eng-1" : null,
+    listMergedPRs: async () => [mpr(1, "eng-1-p1")],
+    listClosedUnmergedPRs: async () => [mpr(2, "eng-1-p2")],
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual([...torn].sort(), ["eng-1", "eng-1-p1", "eng-1-p2"]);
+});
+
+test("cleanupOnce keeps the whole group when a closed slice has unsaved work", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    readParentSession: (p) =>
+      p === `${WT}/eng-1-p1` || p === `${WT}/eng-1-p2` ? "eng-1" : null,
+    listMergedPRs: async () => [mpr(1, "eng-1-p1")],
+    listClosedUnmergedPRs: async () => [mpr(2, "eng-1-p2")],
+    hasNoUnpushedWork: (p) => p !== `${WT}/eng-1-p2`, // the closed slice has local work
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-1/.test(l) && /unsaved/.test(l)));
+});
+
+test("cleanupOnce keeps the whole group when the integration worktree has unsaved work", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    readParentSession: (p) =>
+      p === `${WT}/eng-1-p1` || p === `${WT}/eng-1-p2` ? "eng-1" : null,
+    listMergedPRs: async () => [mpr(1, "eng-1-p1")],
+    listClosedUnmergedPRs: async () => [mpr(2, "eng-1-p2")],
+    hasNoUnpushedWork: (p) => p !== `${WT}/eng-1`, // integration worktree has local work
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+});
+
+test("cleanupOnce does not gate a merged slice whose upstream is gone (branch deleted on merge)", async () => {
+  // A fully-merged group must still tear down even if a merged slice reports "not
+  // fully pushed" — its origin branch was deleted on merge, so @{upstream} fails.
+  // Only closed slices and the integration worktree are gated.
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    readParentSession: (p) =>
+      p === `${WT}/eng-1-p1` || p === `${WT}/eng-1-p2` ? "eng-1" : null,
+    listMergedPRs: async () => [mpr(1, "eng-1-p1"), mpr(2, "eng-1-p2")],
+    listClosedUnmergedPRs: async () => [],
+    hasNoUnpushedWork: (p) => p !== `${WT}/eng-1-p1`, // merged slice's branch gone
+  });
+  await cleanupOnce(d);
+  assert.deepEqual([...torn].sort(), ["eng-1", "eng-1-p1", "eng-1-p2"]);
 });
 
 test("readParentSession returns null when marker file is missing", () => {

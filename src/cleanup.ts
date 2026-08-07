@@ -7,7 +7,9 @@ export type Worktree = { path: string; branch: string };
 export type SplitGroup = {
   session: string;
   integrationBranch: string | null;
+  integration: Worktree | null;
   sliceBranches: string[];
+  slices: Worktree[];
   worktreePaths: string[];
 };
 
@@ -44,8 +46,30 @@ export type CleanupDeps = {
   // Read a worktree's .yimbot-parent-session marker (its parent tmux session),
   // or null if it has none. Marks a worktree as a slice of a split group.
   readParentSession: (worktreePath: string) => string | null;
+  // Whether this worktree's tmux session still hosts live "PR (i/n)" split slice
+  // windows — a marker-independent signal that a split is in progress. Guards the
+  // closed-unmerged reaper so a heartbeat landing before the slice markers are
+  // written (or during a transient marker-read failure) can't tear down the split
+  // parent and kill its slice windows.
+  hasActiveSplitWindows: (worktree: Worktree) => boolean;
   log: (msg: string) => void;
 };
+
+// The tmux session / worktree dir a branch (or session name) maps to, mirroring
+// new-session.sh's rule exactly (`sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50`). The
+// tmux session keeps the full name while the worktree dir is this sanitized form,
+// so for a long or special-char name the two differ.
+export function sanitizeBranchToSession(branch: string): string {
+  return branch.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 50);
+}
+
+// A "PR (i/n)" window is what split-pr.sh names each slice window (pr_window_name),
+// so a session with one is actively hosting a split. Marker-independent, hence a
+// safety net the closed-unmerged reaper leans on when the markers aren't visible.
+const SPLIT_SLICE_WINDOW_RE = /^PR \(\d+\/\d+\)$/;
+export function isSplitSliceWindow(windowName: string): boolean {
+  return SPLIT_SLICE_WINDOW_RE.test(windowName.trim());
+}
 
 // Read a worktree's .yimbot-parent-session marker, written by split-pr.sh when
 // it carves a slice worktree out of an integration branch. Returns null when
@@ -83,23 +107,45 @@ export function buildSplitGroups(
   }
   const groups: SplitGroup[] = [];
   for (const [session, { slices }] of bySession) {
-    const integration = worktrees.find((w) => w.path === `${prefix}${session}`) ?? null;
+    // The marker holds the full tmux session name; the integration worktree dir is
+    // its sanitized/50-char form (new-session.sh's rule), so match on the sanitized
+    // name, not the raw one — otherwise a long/special session name never resolves
+    // its integration worktree and it drops out of every split-group protection.
+    const integrationDir = sanitizeBranchToSession(session);
+    const integration = worktrees.find((w) => w.path === `${prefix}${integrationDir}`) ?? null;
     const worktreePaths = slices.map((s) => s.path);
     if (integration) worktreePaths.push(integration.path);
     groups.push({
       session,
       integrationBranch: integration ? integration.branch : null,
+      integration,
       sliceBranches: slices.map((s) => s.branch),
+      slices,
       worktreePaths,
     });
   }
   return groups;
 }
 
-// A group is ready to tear down only when every slice PR has merged. The
-// integration branch has no PR, so it is never part of the check.
-export function groupReady(group: SplitGroup, mergedBranches: Set<string>): boolean {
-  return group.sliceBranches.length > 0 && group.sliceBranches.every((b) => mergedBranches.has(b));
+// A group is ready to tear down once at least one slice merged AND no slice PR is
+// still open (every remaining slice was closed unmerged — folded into a sibling or
+// abandoned). Waiting for *every* slice to merge would wedge the whole group
+// forever on one never-merging slice; but a group where nothing has merged is
+// either mid-split (slices still being carved) or fully abandoned, so it is left
+// alone rather than reaped out from under in-progress work. The integration branch
+// has no PR, so it is never part of the check. Whether a closed slice's (or the
+// integration worktree's) work is safe to destroy is a separate gate the teardown
+// applies via hasNoUnpushedWork.
+export function groupReady(
+  group: SplitGroup,
+  mergedBranches: Set<string>,
+  closedBranches: Set<string> = new Set(),
+): boolean {
+  return (
+    group.sliceBranches.length > 0 &&
+    group.sliceBranches.some((b) => mergedBranches.has(b)) &&
+    group.sliceBranches.every((b) => mergedBranches.has(b) || closedBranches.has(b))
+  );
 }
 
 // Worktrees to tear down: branch is in the merged set AND the worktree lives
@@ -273,20 +319,45 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
 
   deps.reconcileMerged?.(mergedBranches);
 
+  // Closed-but-not-merged PRs (spikes, abandoned/superseded work). Fetched up front
+  // because both the split-group readiness below and path (a2) need it. A failure to
+  // list is non-fatal: closedBranches stays empty, so the group path falls back to
+  // merged-only readiness and path (a2) reaps nothing this tick.
+  let closed: MergedPR[] = [];
+  try {
+    closed = await deps.listClosedUnmergedPRs();
+  } catch (err) {
+    deps.log(`closed PR list failed: ${err}`);
+  }
+  const closedBranches = new Set(closed.map((p) => p.headRefName));
+
   // Split groups: slices marked with a parent session are torn down only as a
-  // whole, once every slice PR has merged. Both the integration worktree and its
-  // slices are excluded from the per-branch path below so a single slice merging
-  // never tears the group (or the session) down early.
+  // whole, once at least one slice merged and no slice PR is still open (see
+  // groupReady). Both the integration worktree and its slices are excluded from the
+  // per-branch paths below so a single slice resolving never tears the group down early.
   const groups = buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir);
   const groupedPaths = new Set(groups.flatMap((g) => g.worktreePaths));
 
   for (const g of groups) {
-    if (!groupReady(g, mergedBranches)) continue; // partial group → wait indefinitely
+    if (!groupReady(g, mergedBranches, closedBranches)) continue; // not resolved yet → wait
+    // Gate only the members not backed by a merged PR — the integration worktree
+    // and any closed slice — on having no unpushed work, so an abandoned slice
+    // never destroys local-only work. Merged members are always safe to reap and
+    // are never gated (their origin branch may already be deleted, which would
+    // fail the check and wedge the group).
+    const guarded = [
+      ...g.slices.filter((s) => !mergedBranches.has(s.branch)),
+      ...(g.integration ? [g.integration] : []),
+    ];
+    if (!guarded.every((w) => deps.hasNoUnpushedWork(w.path))) {
+      deps.log(`kept split group ${g.session} (a closed slice or integration worktree has unsaved work)`);
+      continue;
+    }
     try {
       if (g.integrationBranch) deps.teardown(g.integrationBranch);
       else deps.killSession(g.session);
       for (const slice of g.sliceBranches) deps.teardown(slice);
-      deps.log(`torn down split group ${g.session} (${g.sliceBranches.length} slice PRs merged)`);
+      deps.log(`torn down split group ${g.session} (${g.sliceBranches.length} slice PRs resolved)`);
     } catch (err) {
       deps.log(`split-group teardown failed for ${g.session}: ${err}`);
     }
@@ -307,17 +378,17 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   // (a2) closed-but-not-merged PRs (spikes, abandoned/superseded work): tear down
   // worktree + branch-named session, but only when no unpushed work would be lost
   // (clean tree, everything on origin). A live session does NOT spare it (unlike
-  // the orphan sweep) — the teardown kills it. A failure to list is non-fatal so
-  // the merged reaping above and the fix-session kills below still run.
-  let closed: MergedPR[] = [];
-  try {
-    closed = await deps.listClosedUnmergedPRs();
-  } catch (err) {
-    deps.log(`closed PR list failed: ${err}`);
-  }
-  const closedBranches = new Set(closed.map((p) => p.headRefName));
+  // the orphan sweep) — the teardown kills it. The closed-PR set was fetched above.
   for (const w of selectMergedWorktrees(worktrees, closedBranches, deps.worktreesDir)) {
     if (groupedPaths.has(w.path)) continue;
+    // A split parent whose original PR was just closed but whose slice markers
+    // aren't visible yet (race, or a transient marker-read failure) would fall
+    // through groupedPaths; its live "PR (i/n)" windows still spare it, so the
+    // reaper never kills a split in progress.
+    if (deps.hasActiveSplitWindows(w)) {
+      deps.log(`kept ${w.branch} (PR closed unmerged but session has an active split in progress)`);
+      continue;
+    }
     if (!deps.hasNoUnpushedWork(w.path)) {
       deps.log(`kept ${w.branch} (PR closed unmerged but worktree has unsaved work)`);
       continue;

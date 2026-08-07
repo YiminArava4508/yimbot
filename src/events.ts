@@ -139,6 +139,7 @@ export type BoardRow = {
   status: string;
   terminal: boolean;
   ts: number;
+  startTs: number;
 };
 
 function keepMergedMsDefault(): number {
@@ -164,6 +165,7 @@ export function reduceRows(
     const mapped = statusFor(e.kind);
     if (!mapped) continue; // a kind retired in a newer build but still in the persisted log
     const prev = byKey.get(e.key);
+    const startTs = prev ? (prev.terminal ? e.ts : prev.startTs) : e.ts;
     byKey.set(e.key, {
       key: e.key,
       label: e.label,
@@ -172,6 +174,7 @@ export function reduceRows(
       status: mapped.status,
       terminal: mapped.terminal,
       ts: e.ts,
+      startTs,
     });
   }
 

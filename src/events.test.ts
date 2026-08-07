@@ -303,3 +303,30 @@ test("reduceRows: maxRows of 0 returns empty and does not hang", () => {
   );
   assert.deepEqual(rows, []);
 });
+
+test("reduceRows sets startTs to the earliest event of the spell", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 5000, kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" },
+    ],
+    9000,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].startTs, 1000);
+  assert.equal(rows[0].ts, 5000);
+});
+
+test("reduceRows resets startTs after a merged event", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "merged", key: "ENG-1", label: "ENG-1" },
+      { ts: 8000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+    ],
+    9000,
+    { keepMergedMs: 0 },
+  );
+  assert.equal(rows[0].startTs, 8000);
+  assert.equal(rows[0].terminal, false);
+});

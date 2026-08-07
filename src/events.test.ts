@@ -45,6 +45,28 @@ test("statusFor maps kinds; only merged is terminal", () => {
   assert.deepEqual(statusFor("merged"), { status: "merged", terminal: true });
 });
 
+test("statusFor returns undefined for a kind retired in a newer build", () => {
+  // events.jsonl persists across versions, so it can hold kinds this build no
+  // longer knows (e.g. the removed ready_to_test). statusFor must not throw.
+  assert.equal(statusFor("ready_to_test"), undefined);
+  assert.equal(statusFor("totally_unknown"), undefined);
+});
+
+test("reduceRows skips a retired-kind event instead of crashing on it", () => {
+  const ev = (kind: string, ts: number): YimbotEvent => ({
+    ts,
+    kind: kind as YimbotEvent["kind"],
+    key: "ENG-9",
+    label: "ENG-9",
+  });
+  // A known event alongside a retired one: the known status wins, no crash.
+  const rows = reduceRows([ev("ready_to_test", 1), ev("task_started", 2)], 1000);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "working");
+  // A lone retired-kind event yields no row at all.
+  assert.deepEqual(reduceRows([ev("ready_to_test", 1)], 1000), []);
+});
+
 function withTmpLog(fn: (path: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "yimbot-events-"));
   const path = join(dir, "events.jsonl");
@@ -106,6 +128,19 @@ test("emitStatus dedupes by derived status string, not by kind", () => {
     emitStatus({ kind: "task_started", key: "ENG-1", label: "ENG-1" });
     emitStatus({ kind: "ready_regressed", key: "ENG-1", label: "ENG-1" });
     assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitStatus emits when the last logged kind is one this build no longer knows", () => {
+  withTmpLog((path) => {
+    // A retired kind persisted by an older build must not make the dedupe throw
+    // or wrongly suppress the new observation.
+    writeFileSync(path, JSON.stringify({ ts: 1, kind: "ready_to_test", key: "ENG-9", label: "ENG-9" }) + "\n");
+    emitStatus({ kind: "ready_to_merge", key: "ENG-9", label: "ENG-9" });
+    assert.deepEqual(
+      readEvents(path).map((e) => e.kind),
+      ["ready_to_test", "ready_to_merge"],
+    );
   });
 });
 

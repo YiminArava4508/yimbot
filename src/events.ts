@@ -62,8 +62,11 @@ const STATUS: Record<EventKind, { status: string; terminal: boolean }> = {
   merged: { status: "merged", terminal: true },
 };
 
-export function statusFor(kind: EventKind): { status: string; terminal: boolean } {
-  return STATUS[kind];
+// Takes a plain string, not EventKind: the log persists across versions, so a
+// read can surface a kind this build has retired. Returns undefined for any
+// kind not in STATUS; callers skip those rather than crash.
+export function statusFor(kind: string): { status: string; terminal: boolean } | undefined {
+  return STATUS[kind as EventKind];
 }
 
 export const bus = new EventEmitter();
@@ -104,7 +107,8 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
 export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
   let lastKind: EventKind | undefined;
   for (const e of readEvents()) if (e.key === ev.key) lastKind = e.kind;
-  if (lastKind !== undefined && statusFor(lastKind).status === statusFor(ev.kind).status) return;
+  const lastStatus = lastKind !== undefined ? statusFor(lastKind)?.status : undefined;
+  if (lastStatus !== undefined && lastStatus === statusFor(ev.kind)?.status) return;
   emitEvent(ev);
 }
 
@@ -157,15 +161,16 @@ export function reduceRows(
 
   const byKey = new Map<string, BoardRow>();
   for (const e of events) {
-    const { status, terminal } = statusFor(e.kind);
+    const mapped = statusFor(e.kind);
+    if (!mapped) continue; // a kind retired in a newer build but still in the persisted log
     const prev = byKey.get(e.key);
     byKey.set(e.key, {
       key: e.key,
       label: e.label,
       title: e.title ?? prev?.title,
       pr: e.pr ?? prev?.pr,
-      status,
-      terminal,
+      status: mapped.status,
+      terminal: mapped.terminal,
       ts: e.ts,
     });
   }

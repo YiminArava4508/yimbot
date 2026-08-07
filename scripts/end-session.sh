@@ -51,6 +51,17 @@ branch_delete_flag() {
   [ "$1" = true ] && echo "-D" || echo "-d"
 }
 
+# Teardown steps in execution order. Headless (the daemon) kills the tmux session
+# FIRST: it stops the dev server (or any process) writing into the worktree, so
+# the subsequent removal doesn't race a live writer regenerating files and wedge
+# the whole teardown. Interactive keeps the session LAST - the script runs inside
+# that session, so killing it earlier would abort before the worktree is removed.
+# Pure; unit-tested via sourcing.
+teardown_steps() {
+  [ "$1" = true ] && echo "kill_session remove_worktree delete_branch" \
+                   || echo "remove_worktree delete_branch kill_session"
+}
+
 # When sourced (e.g. by a test) load the functions above and stop; only run
 # teardown when the script is executed directly.
 (return 0 2>/dev/null) && return 0
@@ -88,41 +99,59 @@ if [ -n "${SESSION_TEARDOWN_HOOK:-}" ]; then
 fi
 
 # Remove the worktree (force: the branch's work has landed), pruning a stale
-# registration or a leftover directory git no longer tracks.
-if git -C "$CODEBASE_PATH" worktree remove "$WORKTREE" --force 2>/dev/null; then
-  log "Worktree removed"
-elif [ -d "$WORKTREE" ]; then
-  log "Not a registered git worktree - removing directory manually"
-  rm -rf "$WORKTREE" || die "Failed to remove worktree directory '$WORKTREE'"
-  git -C "$CODEBASE_PATH" worktree prune
-  log "Worktree directory removed"
-fi
+# registration or a leftover directory git no longer tracks. Returns non-zero on
+# a genuine removal failure without aborting: the remaining steps (branch delete)
+# must still run, and headless callers surface the failure via the exit code.
+remove_worktree() {
+  if git -C "$CODEBASE_PATH" worktree remove "$WORKTREE" --force 2>/dev/null; then
+    log "Worktree removed"
+  elif [ -d "$WORKTREE" ]; then
+    log "Not a registered git worktree - removing directory manually"
+    if rm -rf "$WORKTREE"; then
+      git -C "$CODEBASE_PATH" worktree prune
+      log "Worktree directory removed"
+    else
+      log "ERROR: Failed to remove worktree directory '$WORKTREE'"
+      return 1
+    fi
+  fi
+}
 
-if git -C "$CODEBASE_PATH" branch "$(branch_delete_flag "$HEADLESS")" "$NAME" 2>/dev/null; then
-  log "Branch '$NAME' deleted"
-elif $HEADLESS; then
-  log "Branch '$NAME' not deleted (already gone)"
-else
-  log "Branch '$NAME' not deleted (already gone, or unmerged: skipping)"
-fi
+delete_branch() {
+  if git -C "$CODEBASE_PATH" branch "$(branch_delete_flag "$HEADLESS")" "$NAME" 2>/dev/null; then
+    log "Branch '$NAME' deleted"
+  elif $HEADLESS; then
+    log "Branch '$NAME' not deleted (already gone)"
+  else
+    log "Branch '$NAME' not deleted (already gone, or unmerged: skipping)"
+  fi
+}
 
 # Kill the tmux session if it exists. Interactive teardown first moves the
 # attached client to another session and opens the chooser (the pane running
 # this script is in the session being killed, so this must happen before the
 # kill); headless teardown just kills it by name.
-if tmux has-session -t "=$NAME" 2>/dev/null; then
-  if ! $HEADLESS; then
-    CLIENT=$(tmux display-message -p '#{client_name}' 2>/dev/null)
-    tmux switch-client -n 2>/dev/null || true
-    if [ -n "$CLIENT" ]; then
-      DEST=$(tmux display-message -t "$CLIENT" -p '#{client_session}' 2>/dev/null)
-      [ -n "$DEST" ] && [ "$DEST" != "$NAME" ] && tmux choose-tree -Zs -t "$DEST" 2>/dev/null
+kill_session() {
+  if tmux has-session -t "=$NAME" 2>/dev/null; then
+    if ! $HEADLESS; then
+      CLIENT=$(tmux display-message -p '#{client_name}' 2>/dev/null)
+      tmux switch-client -n 2>/dev/null || true
+      if [ -n "$CLIENT" ]; then
+        DEST=$(tmux display-message -t "$CLIENT" -p '#{client_session}' 2>/dev/null)
+        [ -n "$DEST" ] && [ "$DEST" != "$NAME" ] && tmux choose-tree -Zs -t "$DEST" 2>/dev/null
+      fi
     fi
+    log "Killing session '$NAME'"
+    tmux kill-session -t "$NAME" 2>/dev/null || true
+  else
+    log "No tmux session '$NAME' to kill"
   fi
-  log "Killing session '$NAME'"
-  tmux kill-session -t "$NAME" 2>/dev/null || true
-else
-  log "No tmux session '$NAME' to kill"
-fi
+}
+
+rc=0
+for step in $(teardown_steps "$HEADLESS"); do
+  "$step" || rc=1
+done
 
 log "Done"
+exit "$rc"

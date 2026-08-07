@@ -24,4 +24,11 @@ assert_eq "$(branch_delete_flag false)" "-d" "interactive safe delete"
 assert_eq "$(CODEBASE_PATH=/tmp/repo codebase_path)" "/tmp/repo" "honors CODEBASE_PATH override"
 assert_eq "$(unset CODEBASE_PATH; codebase_path)" "$HOME/Work/gemini" "defaults to ~/Work/gemini when unset"
 
+# Teardown step order. Headless (the daemon) kills the tmux session FIRST so a
+# dev server (or anything) writing into the worktree stops before removal - else
+# it races rm -rf and wedges the whole teardown. Interactive keeps the session
+# LAST: the script runs inside that session, so killing it first would abort.
+assert_eq "$(teardown_steps true)" "kill_session remove_worktree delete_branch" "headless kills session first"
+assert_eq "$(teardown_steps false)" "remove_worktree delete_branch kill_session" "interactive kills session last"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: end-session.sh helper tests"; else exit 1; fi

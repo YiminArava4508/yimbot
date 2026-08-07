@@ -27,7 +27,9 @@ import {
   fetchAcCommentBody,
   fetchCycleTodoIssues,
   fetchIssueByIdentifier,
+  fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
+  type IssueWithBlockers,
   type LinearContext,
   type LinearIssue,
   moveIssueToState,
@@ -311,6 +313,59 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
     deps.log(`claimed ${next.identifier} → In Progress`);
   } catch (err) {
     deps.log(`failed to move ${next.identifier}: ${err}`);
+  }
+}
+
+export type ReconcileDeps = {
+  // The viewer's In-Progress issues in the watched team, with their blockers.
+  fetchInProgress: () => Promise<IssueWithBlockers[]>;
+  // Merged ticket identifiers, for the blocked check.
+  fetchMergedIdentifiers: () => Promise<Set<string>>;
+  // Move a blocked issue back to Todo.
+  moveToTodo: (issueId: string) => Promise<void>;
+  // The worktree/session name for an issue, or null if none exists.
+  findSession: (identifier: string) => string | null;
+  // Tear down a worktree + session by branch/name.
+  teardown: (branch: string) => void;
+  // Drop an issue id from the deploy latch so it relaunches once unblocked.
+  unlatchDeploy: (issueId: string) => void;
+  log: (msg: string) => void;
+};
+
+// One tick of the reconcile step. Moves every In-Progress ticket whose blocker
+// has no merged PR back to Todo, tears down any session it launched, and clears
+// the deploy latch so a later re-claim relaunches it. Runs before deploy so a
+// just-moved-back ticket is already Todo when deploy looks. Each ticket is
+// isolated: one failure does not abort the rest.
+export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<void> {
+  let issues: IssueWithBlockers[];
+  try {
+    issues = await deps.fetchInProgress();
+  } catch (err) {
+    deps.log(`reconcile failed: ${err}`);
+    return;
+  }
+
+  let merged: Set<string>;
+  try {
+    merged = await deps.fetchMergedIdentifiers();
+  } catch (err) {
+    deps.log(`reconcile failed: ${err}`);
+    return;
+  }
+
+  for (const issue of issues) {
+    if (!isBlocked(issue.blockedBy, merged)) continue;
+    const unmerged = issue.blockedBy.filter((id) => !merged.has(id.toUpperCase())).join(", ");
+    try {
+      await deps.moveToTodo(issue.id);
+      const session = deps.findSession(issue.identifier);
+      if (session) deps.teardown(session);
+      deps.unlatchDeploy(issue.id);
+      deps.log(`moved ${issue.identifier} back to Todo: blocked by ${unmerged} (unmerged)`);
+    } catch (err) {
+      deps.log(`failed to move ${issue.identifier} back: ${err}`);
+    }
   }
 }
 

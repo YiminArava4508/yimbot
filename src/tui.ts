@@ -1,7 +1,18 @@
 // src/tui.ts
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
+import { envOr } from "./env.ts";
 import { bus, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+
+// How often the board repaints on its own, independent of daemon events. Without
+// it the TUI freezes on its last paint between events: time-based row pruning
+// never advances, and after the machine sleeps the whole board stays stale until
+// the next event fires (which can be a full heartbeat away). A wall-clock timer
+// also catches up on wake, so the board refreshes within seconds of resuming.
+function refreshMs(): number {
+  const n = Number(envOr("TUI_REFRESH_MS", "5000"));
+  return Number.isFinite(n) && n > 0 ? n : 5000;
+}
 
 function fmtTime(ts: number): string {
   const d = new Date(ts);
@@ -48,8 +59,10 @@ export function runTui(opts: { onQuit: () => void }): void {
 
   const onEvent = (_ev: YimbotEvent) => render();
   bus.on("event", onEvent);
+  const refreshTimer = setInterval(render, refreshMs());
 
   const quit = () => {
+    clearInterval(refreshTimer);
     bus.off("event", onEvent);
     screen.destroy();
     opts.onQuit();

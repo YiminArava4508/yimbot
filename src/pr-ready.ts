@@ -19,11 +19,14 @@ export type PrReadyDeps = {
   // The merge-queue "blocked" label. A PR carrying it is owned by the blocked-fix
   // flow, so the ready step leaves its labels untouched (never re-queues it).
   blockedLabel: string;
-  // Report the classified verdict each tick, for a PR the ready step owns (never a
-  // hold, never a blocked PR). Lets the board reflect observed readiness independent
-  // of whether a label write happened, so a PR that is ready but already labeled
-  // still surfaces as ready-to-merge.
-  onVerdict?: (prNumber: number, verdict: ReadyVerdict) => void;
+  // Report the classified verdict each tick, for a PR the ready step owns (any
+  // verdict except a blocked PR, whose labels the blocked-fix flow owns). Carries
+  // `hasLabel` (does the PR already carry the ready label) so the board can reflect
+  // observed readiness independent of whether a label write happened: a PR that is
+  // ready but already labeled still surfaces as ready-to-merge, and a queued PR
+  // sitting in `hold` with the label surfaces as ready-to-merge too (rather than
+  // stalling on whatever fix status last touched its row).
+  onVerdict?: (prNumber: number, verdict: ReadyVerdict, hasLabel: boolean) => void;
   log: (msg: string) => void;
 };
 
@@ -40,6 +43,15 @@ export type PrReadyDeps = {
 // queue mid-merge. The queue's own gating check is excluded upstream in
 // `checksInfo`, so it never keeps CI perpetually pending here.
 export type ReadyVerdict = "ready" | "regressed" | "hold";
+
+// Whether the board should show a PR as ready-to-merge for a given verdict. True
+// when it is ready, or when it is held but already carries the ready label -- a
+// PR queued to merge (labeled, CI re-running under the queue) reads back as
+// `hold`, and we want the board to say "ready to merge", not stay stuck on the
+// last fix status that touched the row.
+export function boardReadyToMerge(verdict: ReadyVerdict, hasLabel: boolean): boolean {
+  return verdict === "ready" || (verdict === "hold" && hasLabel);
+}
 
 // Reads short-circuit in cheap-first order (an unresolved thread returns before
 // the mergeable/CI reads), so a regressed PR costs the fewest gh calls. A read
@@ -81,8 +93,10 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
       deps.log(`readiness check failed for PR #${pr.number}: ${err}`);
       continue;
     }
-    if (verdict === "hold") continue; // neither add nor remove: skip the label read entirely
 
+    // Read labels for every verdict (holds included) so the board can reconcile a
+    // queued PR off a stale fix status. The label read is the only added cost of a
+    // hold; it still writes nothing.
     let labels: string[];
     try {
       labels = await deps.prLabels(pr.number);
@@ -91,8 +105,9 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
       continue;
     }
     if (labels.includes(deps.blockedLabel)) continue; // blocked-fix flow owns this PR's labels
-    deps.onVerdict?.(pr.number, verdict);
     const hasLabel = labels.includes(deps.label);
+    deps.onVerdict?.(pr.number, verdict, hasLabel);
+    if (verdict === "hold") continue; // board reconciled above; neither add nor remove the label
 
     if (verdict === "ready" && !hasLabel) {
       try {

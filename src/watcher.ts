@@ -33,7 +33,7 @@ import {
   upsertAcComment,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
-import { type PrReadyDeps, readyOnce } from "./pr-ready.ts";
+import { boardReadyToMerge, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 import {
   blockedSessionName,
   ciSessionName,
@@ -713,16 +713,13 @@ export function startWatcher(config: WatcherConfig): () => void {
   const reviewIconState: WatchState = { seen: new Set(), initialized: false };
   const reviewIconDeps: WatcherDeps = {
     fetchIssues: () => fetchIssuesInState(config.apiKey, config.reviewContext),
-    launch: (_name, issue) => {
-      const { key, label } = deriveKey({ identifier: issue.identifier });
-      emitEvent({ kind: "ready_to_test", key, label, title: issue.title });
-      return markFeatureReady(issue, {
+    launch: (_name, issue) =>
+      markFeatureReady(issue, {
         listSessions: listTmuxSessions,
         listWorktrees: listWorktreeDirs,
         markReady: setFeatureReady,
         log: reviewIconLog,
-      });
-    },
+      }),
     log: reviewIconLog,
   };
 
@@ -855,9 +852,10 @@ export function startWatcher(config: WatcherConfig): () => void {
     },
     // Board emission is owned by onVerdict below (fires whether or not a label
     // write happens), so a PR that is ready but already carries the label still
-    // shows ready-to-merge. The label writers stay pure GitHub side effects.
-    onVerdict: (n: number, verdict) => {
-      if (verdict !== "ready") return;
+    // shows ready-to-merge, and a queued PR held with the label reconciles off a
+    // stale fix status. The label writers stay pure GitHub side effects.
+    onVerdict: (n: number, verdict, hasLabel) => {
+      if (!boardReadyToMerge(verdict, hasLabel)) return;
       const branch = prBranchByNumber.get(n);
       const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
       emitStatus({ kind: "ready_to_merge", key: k.key, label: k.label, pr: n });

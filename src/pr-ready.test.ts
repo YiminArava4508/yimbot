@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
-import { type PrReadyDeps, readyOnce } from "./pr-ready.ts";
+import { boardReadyToMerge, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 
 const LABEL = "ready-to-merge";
 
@@ -102,7 +102,7 @@ test("readyOnce holds the label through a transient not-ready state", async () =
     await readyOnce(h.deps);
     assert.equal(h.removed.length, 0);
     assert.equal(h.added.length, 0);
-    assert.equal(h.calls.labels, 0); // a hold never reads or writes labels
+    assert.equal(h.calls.labels, 1); // a hold reads labels to reconcile the board but never writes
   }
 });
 
@@ -224,14 +224,24 @@ test("readyOnce reports a regressed verdict via onVerdict", async () => {
   assert.deepEqual(verdicts, ["regressed"]);
 });
 
-test("readyOnce does not report a verdict for a held PR", async () => {
-  const verdicts: string[] = [];
+test("readyOnce reports the hold verdict for a labeled held PR so the board reconciles", async () => {
+  const seen: { v: string; hasLabel: boolean }[] = [];
   const h = harness(
-    { checksInfo: async () => ci("pending"), onVerdict: (_n, v) => void verdicts.push(v) },
+    { checksInfo: async () => ci("pending"), onVerdict: (_n, v, hasLabel) => void seen.push({ v, hasLabel }) },
     [LABEL],
   );
   await readyOnce(h.deps);
-  assert.deepEqual(verdicts, []);
+  assert.deepEqual(seen, [{ v: "hold", hasLabel: true }]);
+});
+
+test("readyOnce reports the hold verdict with hasLabel false for an unlabeled held PR", async () => {
+  const seen: { v: string; hasLabel: boolean }[] = [];
+  const h = harness(
+    { checksInfo: async () => ci("pending"), onVerdict: (_n, v, hasLabel) => void seen.push({ v, hasLabel }) },
+    [],
+  );
+  await readyOnce(h.deps);
+  assert.deepEqual(seen, [{ v: "hold", hasLabel: false }]);
 });
 
 test("readyOnce does not report a verdict for a blocked PR", async () => {
@@ -239,4 +249,13 @@ test("readyOnce does not report a verdict for a blocked PR", async () => {
   const h = harness({ onVerdict: (_n, v) => void verdicts.push(v) }, ["blocked"]);
   await readyOnce(h.deps);
   assert.deepEqual(verdicts, []);
+});
+
+test("boardReadyToMerge: ready always, hold only when already labeled, never regressed", () => {
+  assert.equal(boardReadyToMerge("ready", false), true);
+  assert.equal(boardReadyToMerge("ready", true), true);
+  assert.equal(boardReadyToMerge("hold", true), true); // queued: ready and labeled, CI re-running
+  assert.equal(boardReadyToMerge("hold", false), false); // genuinely pending, not yet ready
+  assert.equal(boardReadyToMerge("regressed", true), false);
+  assert.equal(boardReadyToMerge("regressed", false), false);
 });

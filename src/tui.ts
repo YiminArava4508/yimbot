@@ -2,7 +2,7 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
-import { bus, filterToLiveWorktrees, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 
 // How often the board repaints on its own, independent of daemon events. Without
 // it the TUI freezes on its last paint between events: time-based row pruning
@@ -20,15 +20,30 @@ function fmtTime(ts: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function rowsToTable(rows: BoardRow[]): string[][] {
-  const header = ["TIME", "STATUS", "TICKET", "PR", "TITLE"];
-  const body = rows.map((r) => [
-    fmtTime(r.ts),
-    r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
-    r.label,
-    r.pr != null ? `#${r.pr}` : "",
-    r.title ?? "",
-  ]);
+export function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+}
+
+export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[][] {
+  const header = ["TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG"];
+  const body = rows.map((r) => {
+    const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
+    return [
+      fmtTime(r.ts),
+      fmtDuration(durMs),
+      r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
+      r.label,
+      r.pr != null ? `#${r.pr}` : "",
+      r.title ?? "",
+      isFlagged(r, now) ? "{red-fg}⚑{/red-fg}" : "",
+    ];
+  });
   return [header, ...body];
 }
 

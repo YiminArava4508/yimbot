@@ -441,6 +441,36 @@ test("claimOnce skips (no pick) when In-Progress count is at the cap", async () 
   assert.equal(moved.length, 0);
 });
 
+test("claimOnce defers a blocked todo and logs it when merged is available", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"] })],
+    fetchMergedIdentifiers: async () => new Set<string>(),
+  });
+  await claimOnce(deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
+});
+
+test("claimOnce claims a blocked todo once its blocker is merged", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"] })],
+    fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
+  });
+  await claimOnce(deps);
+  assert.deepEqual(moved.map((i) => i.id), ["5"]);
+});
+
+test("claimOnce skips the claim tick if the merged fetch fails", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchMergedIdentifiers: async () => {
+      throw new Error("gh boom");
+    },
+  });
+  await claimOnce(deps); // must not throw
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l.includes("claim failed")));
+});
+
 test("claimOnce moves the selected top-priority ticket to In Progress", async () => {
   const { deps, moved, logs } = claimDeps({
     fetchCycleTodos: async () => [

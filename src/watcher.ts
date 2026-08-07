@@ -9,6 +9,7 @@ import {
   parseAcceptanceCriteria,
   renderAcComment,
 } from "./acceptance.ts";
+import { isBlocked } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
 import {
   type CleanupDeps,
@@ -246,6 +247,9 @@ export type ClaimDeps = {
   countInProgress: () => Promise<number>;
   // The watched team's active-cycle Todo issues assigned to the viewer.
   fetchCycleTodos: () => Promise<CycleTodoIssue[]>;
+  // Merged ticket identifiers for the blocked-by filter. Absent when gh is
+  // unavailable, in which case the filter is skipped.
+  fetchMergedIdentifiers?: () => Promise<Set<string>>;
   // Move the chosen ticket into the watched "In Progress" state, so the
   // deploy step picks it up on the next poll.
   moveToInProgress: (issue: CycleTodoIssue) => Promise<void>;
@@ -284,7 +288,22 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
     return;
   }
 
-  const next = selectNextClaim(todos, { riskLabels: deps.riskLabels });
+  let merged: Set<string> | null = null;
+  if (deps.fetchMergedIdentifiers) {
+    try {
+      merged = await deps.fetchMergedIdentifiers();
+    } catch (err) {
+      deps.log(`claim failed: ${err}`);
+      return;
+    }
+    for (const t of todos) {
+      if (isBlocked(t.blockedBy, merged)) {
+        deps.log(`deferring ${t.identifier}: blocked by ${t.blockedBy.join(", ")} (unmerged)`);
+      }
+    }
+  }
+
+  const next = selectNextClaim(todos, { riskLabels: deps.riskLabels, merged });
   if (!next) return;
 
   try {

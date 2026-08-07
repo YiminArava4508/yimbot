@@ -756,13 +756,16 @@ export function launchMarkerActive(worktreePath: string, ttlMs: number): boolean
 // The script runs headless (arg given), so it skips the interactive client UI and
 // just kills the session by name. Detached and fire-and-forget, mirroring
 // spawnFixSession: a failure is logged and the next heartbeat retries (nothing
-// was removed, so the worktree still appears and is re-selected).
-export function runEndSession(branch: string): void {
+// was removed, so the worktree still appears and is re-selected). `reason` names
+// the step that triggered the reap so daemon.log records which teardowns yimbot
+// initiated (a worktree gone with no such line was removed out of band).
+export function runEndSession(branch: string, reason: string): void {
+  console.log(`[teardown] reaping worktree + session '${branch}' (${reason})`);
   const proc = spawn("bash", [endSessionScriptPath, branch], { detached: true, stdio: "ignore" });
   proc.unref();
-  proc.once("error", (err) => console.error(`[cleanup] end-session.sh for '${branch}' failed: ${err}`));
+  proc.once("error", (err) => console.error(`[teardown] end-session.sh for '${branch}' failed: ${err}`));
   proc.once("exit", (code) => {
-    if (code !== 0) console.error(`[cleanup] end-session.sh for '${branch}' exited ${code}`);
+    if (code !== 0) console.error(`[teardown] end-session.sh for '${branch}' exited ${code}`);
   });
 }
 
@@ -850,7 +853,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     teardown: (branch) => {
       const { key, label } = deriveKey({ branch });
       emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
-      runEndSession(branch);
+      runEndSession(branch, "cleanup (merged or closed PR)");
     },
     // Every tick, transition any board row still shown as active to merged once its
     // PR has merged, even with no worktree left for teardown to emit against (the
@@ -889,7 +892,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     isInert: (path) => worktreeIsInert(path, baseRef),
     ageMs: worktreeAgeMs,
     minAgeMs: config.heartbeatIntervalMinutes * 60 * 1000,
-    teardown: runEndSession,
+    teardown: (branch) => runEndSession(branch, "orphan sweep (inert, session-less)"),
     log: sweepLog,
   };
 
@@ -996,7 +999,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     findSession: (identifier) => findExistingSession(identifier, listTmuxSessions(), listWorktreeDirs()),
-    teardown: runEndSession,
+    teardown: (branch) => runEndSession(branch, "blocked-by move-back"),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,
   };

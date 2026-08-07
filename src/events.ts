@@ -11,7 +11,9 @@ export type EventKind =
   | "blocked_fix_started"
   | "ready_to_merge"
   | "ready_regressed"
-  | "merged";
+  | "merged"
+  | "flagged"
+  | "unflagged";
 
 export type YimbotEvent = {
   ts: number;
@@ -51,7 +53,9 @@ export function titleFromBranch(branch: string): string {
     .trim();
 }
 
-const STATUS: Record<EventKind, { status: string; terminal: boolean }> = {
+// flagged/unflagged have no entry: they are manual overrides folded separately
+// in reduceRows, not a status. statusFor returns undefined for them.
+const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> = {
   task_started: { status: "working", terminal: false },
   review_started: { status: "addressing review", terminal: false },
   ci_fix_started: { status: "fixing CI", terminal: false },
@@ -140,6 +144,8 @@ export type BoardRow = {
   terminal: boolean;
   ts: number;
   startTs: number;
+  flaggedManually: boolean;
+  acknowledged: boolean;
 };
 
 function keepMergedMsDefault(): number {
@@ -152,6 +158,19 @@ function maxRowsDefault(): number {
   return Number.isInteger(n) && n > 0 ? n : 100;
 }
 
+export function flagStuckMsDefault(): number {
+  const n = Number(envOr("TUI_FLAG_STUCK_MS", "21600000"));
+  return Number.isFinite(n) && n > 0 ? n : 21600000;
+}
+
+export function isStuck(row: BoardRow, now: number, stuckMs: number = flagStuckMsDefault()): boolean {
+  return !row.terminal && now - row.startTs > stuckMs;
+}
+
+export function isFlagged(row: BoardRow, now: number, stuckMs: number = flagStuckMsDefault()): boolean {
+  return row.flaggedManually || (isStuck(row, now, stuckMs) && !row.acknowledged);
+}
+
 export function reduceRows(
   events: YimbotEvent[],
   now: number,
@@ -161,7 +180,12 @@ export function reduceRows(
   const maxRows = opts.maxRows ?? maxRowsDefault();
 
   const byKey = new Map<string, BoardRow>();
+  const manual = new Map<string, { kind: "flagged" | "unflagged"; ts: number }>();
   for (const e of events) {
+    if (e.kind === "flagged" || e.kind === "unflagged") {
+      manual.set(e.key, { kind: e.kind, ts: e.ts });
+      continue;
+    }
     const mapped = statusFor(e.kind);
     if (!mapped) continue; // a kind retired in a newer build but still in the persisted log
     const prev = byKey.get(e.key);
@@ -175,7 +199,18 @@ export function reduceRows(
       terminal: mapped.terminal,
       ts: e.ts,
       startTs,
+      flaggedManually: false,
+      acknowledged: false,
     });
+  }
+
+  // A manual flag/unflag only counts while it postdates the row's last status
+  // event; a later status event makes the override stale.
+  for (const row of byKey.values()) {
+    const m = manual.get(row.key);
+    const current = m !== undefined && m.ts >= row.ts;
+    row.flaggedManually = current && m!.kind === "flagged";
+    row.acknowledged = current && m!.kind === "unflagged";
   }
 
   let rows = [...byKey.values()].filter((r) => !(r.terminal && now - r.ts > keepMergedMs));

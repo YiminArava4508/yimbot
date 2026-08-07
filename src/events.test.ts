@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, type BoardRow, type YimbotEvent } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isStuck, isFlagged, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -277,6 +277,9 @@ test("filterToLiveWorktrees: non-terminal row kept only when its key is live", (
     status: "working",
     terminal: false,
     ts: 0,
+    startTs: 0,
+    flaggedManually: false,
+    acknowledged: false,
     ...over,
   });
   const rows = [row({ key: "ENG-1" }), row({ key: "ENG-2" })];
@@ -291,6 +294,9 @@ test("filterToLiveWorktrees: terminal row kept even with no live worktree", () =
     status: "merged",
     terminal: true,
     ts: 0,
+    startTs: 0,
+    flaggedManually: false,
+    acknowledged: false,
   };
   assert.deepEqual(filterToLiveWorktrees([merged], new Set()), [merged]);
 });
@@ -329,4 +335,46 @@ test("reduceRows resets startTs after a merged event", () => {
   );
   assert.equal(rows[0].startTs, 8000);
   assert.equal(rows[0].terminal, false);
+});
+
+test("flagged then unflagged folds to acknowledged, not flaggedManually", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+      { ts: 3000, kind: "unflagged", key: "ENG-1", label: "ENG-1" },
+    ],
+    4000,
+  );
+  assert.equal(rows[0].flaggedManually, false);
+  assert.equal(rows[0].acknowledged, true);
+});
+
+test("a status event after a manual event makes the override stale", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+      { ts: 3000, kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" },
+    ],
+    4000,
+  );
+  assert.equal(rows[0].flaggedManually, false);
+  assert.equal(rows[0].acknowledged, false);
+});
+
+test("isStuck respects the threshold and skips terminal rows", () => {
+  const active = { terminal: false, startTs: 0 } as BoardRow;
+  assert.equal(isStuck(active, 100, 200), false);
+  assert.equal(isStuck(active, 300, 200), true);
+  const done = { terminal: true, startTs: 0 } as BoardRow;
+  assert.equal(isStuck(done, 300, 200), false);
+});
+
+test("isFlagged: manual flags always, acknowledge suppresses stuck", () => {
+  const base = { terminal: false, startTs: 0, flaggedManually: false, acknowledged: false } as BoardRow;
+  assert.equal(isFlagged({ ...base }, 100, 200), false);
+  assert.equal(isFlagged({ ...base }, 300, 200), true); // stuck
+  assert.equal(isFlagged({ ...base, acknowledged: true }, 300, 200), false); // stuck but acked
+  assert.equal(isFlagged({ ...base, flaggedManually: true }, 100, 200), true); // manual, not stuck
 });

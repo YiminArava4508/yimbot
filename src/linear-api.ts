@@ -20,7 +20,17 @@ export type CycleTodoIssue = LinearIssue & {
   priority: number;
   sortOrder: number;
   labels: string[];
+  // Identifiers of tickets this one is blocked by (from inverse "blocks" relations).
+  blockedBy: string[];
 };
+
+type InverseRelationNodes = { nodes: { type: string; issue: { identifier: string } | null }[] };
+
+// Blocker identifiers from an issue's inverse relations: the blockers are the
+// "blocks" relations where this issue is the target (relatedIssue).
+function blockersFrom(inverse: InverseRelationNodes): string[] {
+  return inverse.nodes.filter((r) => r.type === "blocks" && r.issue).map((r) => r.issue!.identifier);
+}
 
 async function gql<T>(
   apiKey: string,
@@ -170,6 +180,53 @@ export async function fetchIssuesInState(
   return data.issues.nodes;
 }
 
+export type IssueWithBlockers = LinearIssue & { blockedBy: string[] };
+
+// The viewer's assigned issues in one state of the watched team, each enriched
+// with the identifiers of the tickets it is blocked by. Used by the reconcile
+// step to move blocked In-Progress tickets back to Todo.
+export async function fetchInProgressIssuesWithBlockers(
+  apiKey: string,
+  ctx: LinearContext,
+  fetchImpl: typeof fetch = fetch,
+): Promise<IssueWithBlockers[]> {
+  type Node = {
+    id: string;
+    identifier: string;
+    title: string;
+    inverseRelations: InverseRelationNodes;
+  };
+  type IssuesData = { issues: { nodes: Node[] } };
+  const data = await gql<IssuesData>(
+    apiKey,
+    `query InProgressWithBlockers($teamId: ID!, $stateId: ID!, $viewerId: ID!) {
+      issues(
+        first: 50
+        filter: {
+          team: { id: { eq: $teamId } }
+          state: { id: { eq: $stateId } }
+          assignee: { id: { eq: $viewerId } }
+        }
+      ) {
+        nodes {
+          id
+          identifier
+          title
+          inverseRelations { nodes { type issue { identifier } } }
+        }
+      }
+    }`,
+    { teamId: ctx.teamId, stateId: ctx.stateId, viewerId: ctx.viewerId },
+    fetchImpl,
+  );
+  return data.issues.nodes.map((n) => ({
+    id: n.id,
+    identifier: n.identifier,
+    title: n.title,
+    blockedBy: blockersFrom(n.inverseRelations),
+  }));
+}
+
 // The watched team's active-cycle Todo issues assigned to the viewer, enriched
 // with priority, sortOrder, and label names for the claim step to rank. Scoped by
 // team + assignee + state + the currently-active cycle.
@@ -185,6 +242,7 @@ export async function fetchCycleTodoIssues(
     priority: number;
     sortOrder: number;
     labels: { nodes: { name: string }[] };
+    inverseRelations: InverseRelationNodes;
   };
   type IssuesData = { issues: { nodes: Node[] } };
   const data = await gql<IssuesData>(
@@ -206,6 +264,7 @@ export async function fetchCycleTodoIssues(
           priority
           sortOrder
           labels { nodes { name } }
+          inverseRelations { nodes { type issue { identifier } } }
         }
       }
     }`,
@@ -219,6 +278,7 @@ export async function fetchCycleTodoIssues(
     priority: n.priority,
     sortOrder: n.sortOrder,
     labels: n.labels.nodes.map((l) => l.name),
+    blockedBy: blockersFrom(n.inverseRelations),
   }));
 }
 

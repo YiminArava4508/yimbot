@@ -4,6 +4,7 @@ import {
   countAssignedInState,
   fetchAcCommentBody,
   fetchCycleTodoIssues,
+  fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
   fetchIssueByIdentifier,
   moveIssueToState,
@@ -116,6 +117,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
             priority: 2,
             sortOrder: 7.5,
             labels: { nodes: [{ name: "frontend" }, { name: "migration" }] },
+            inverseRelations: { nodes: [] },
           },
         ],
       },
@@ -134,7 +136,71 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
       priority: 2,
       sortOrder: 7.5,
       labels: ["frontend", "migration"],
+      blockedBy: [],
     },
+  ]);
+});
+
+test("fetchCycleTodoIssues maps blockedBy from inverse blocks relations", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "Fix login",
+            priority: 2,
+            sortOrder: 7.5,
+            labels: { nodes: [] },
+            inverseRelations: {
+              nodes: [
+                { type: "blocks", issue: { identifier: "ENG-4" } },
+                { type: "related", issue: { identifier: "ENG-9" } },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchCycleTodoIssues(
+    "key",
+    { viewerId: "u", teamId: "t", stateId: "s" },
+    fetchImpl,
+  );
+  assert.deepEqual(issues[0].blockedBy, ["ENG-4"]);
+});
+
+test("fetchInProgressIssuesWithBlockers returns issues with blockedBy", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-2",
+            identifier: "ENG-5",
+            title: "Wire it up",
+            inverseRelations: { nodes: [{ type: "blocks", issue: { identifier: "ENG-4" } }] },
+          },
+          {
+            id: "i-3",
+            identifier: "ENG-6",
+            title: "Standalone",
+            inverseRelations: { nodes: [] },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchInProgressIssuesWithBlockers(
+    "key",
+    { viewerId: "u", teamId: "t", stateId: "s" },
+    fetchImpl,
+  );
+  assert.deepEqual(issues, [
+    { id: "i-2", identifier: "ENG-5", title: "Wire it up", blockedBy: ["ENG-4"] },
+    { id: "i-3", identifier: "ENG-6", title: "Standalone", blockedBy: [] },
   ]);
 });
 

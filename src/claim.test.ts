@@ -10,6 +10,7 @@ function todo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIss
     priority: 0,
     sortOrder: 0,
     labels: [],
+    blockedBy: [],
     ...overrides,
   };
 }

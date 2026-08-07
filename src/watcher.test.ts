@@ -390,6 +390,7 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
     priority: 0,
     sortOrder: 0,
     labels: [],
+    blockedBy: [],
     ...overrides,
   };
 }

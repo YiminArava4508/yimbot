@@ -41,7 +41,7 @@ export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[
       r.label,
       r.pr != null ? `#${r.pr}` : "",
       r.title ?? "",
-      isFlagged(r, now) ? "{red-fg}⚑{/red-fg}" : "",
+      isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
     ];
   });
   return [header, ...body];
@@ -105,7 +105,7 @@ export function runTui(opts: {
   screen.key(["f"], () => {
     const r = currentRows[table.selected - 1];
     if (!r) return;
-    opts.onToggleFlag(r.key, r.label, isFlagged(r, Date.now()));
+    opts.onToggleFlag(r.key, r.label, isFlagged(r));
   });
 
   table.on("select", () => {

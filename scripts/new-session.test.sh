@@ -80,4 +80,43 @@ assert_eq "$?" "1" "dies when skill missing"
 assert_eq "$(SKILLS_DIR=$SK_EMPTY verify_seed_skill random-name >/dev/null 2>&1; echo $?)" "0" "no-op for bare name"
 rm -rf "$SK_TMP" "$SK_EMPTY"
 
+# The hook emitter helpers survive sourcing.
+assert_defined event_key_from_branch
+assert_defined emit_hook_event
+
+# event_key_from_branch mirrors deriveKey({branch}): eng-/sc- ticket branches map
+# to the uppercased TICKET-NUMBER; any other branch is its own key.
+assert_eq "$(event_key_from_branch eng-123-add-widget)" "ENG-123" "eng branch -> ENG-123"
+assert_eq "$(event_key_from_branch SC-42-thing)" "SC-42" "sc branch (any case) -> SC-42"
+assert_eq "$(event_key_from_branch spike-refactor)" "spike-refactor" "non-ticket branch is its own key"
+
+# emit_hook_event appends one JSON line keyed by the worktree's branch. Run it in
+# a throwaway git repo so git branch --show-current resolves.
+HOOK_REPO=$(mktemp -d)
+git -C "$HOOK_REPO" init -q -b eng-7-demo
+git -C "$HOOK_REPO" commit -q --allow-empty -m init
+HOOK_LOG=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG" emit_hook_event needs_input )
+assert_eq "$(wc -l < "$HOOK_LOG" | tr -d ' ')" "1" "emit_hook_event writes one line"
+assert_eq "$(grep -c '"kind":"needs_input"' "$HOOK_LOG")" "1" "line carries the kind"
+assert_eq "$(grep -c '"key":"ENG-7"' "$HOOK_LOG")" "1" "line is keyed ENG-7 from the branch"
+# No EVENTS_LOG is a silent no-op, not an error.
+( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
+assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"
+
+# A branch name containing a double quote (legal in git refs) must not break
+# the JSON line: event_key_from_branch's fallthrough echoes it raw, so
+# emit_hook_event must escape it before interpolating.
+git -C "$HOOK_REPO" checkout -q -b 'weird"branch'
+HOOK_LOG2=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG2" emit_hook_event needs_input )
+assert_eq "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim(); const o=JSON.parse(l); process.stdout.write(o.key)' "$HOOK_LOG2")" 'weird"branch' "malformed-char branch key round-trips through valid JSON"
+rm -rf "$HOOK_REPO" "$HOOK_LOG" "$HOOK_LOG2"
+
+# The session settings file parses and wires both attention hooks to the emitter.
+SETTINGS_JSON="$(cd "$(dirname "$0")" && pwd)/../settings/session-settings.json"
+assert_eq "$(node -e 'const h=require(process.argv[1]).hooks||{}; process.stdout.write(String(!!h.Notification&&!!h.UserPromptSubmit))' "$SETTINGS_JSON")" "true" "settings define both attention hooks"
+assert_eq "$(grep -c 'emit_hook_event needs_input' "$SETTINGS_JSON")" "1" "Notification hook emits needs_input"
+assert_eq "$(grep -c 'emit_hook_event input_received' "$SETTINGS_JSON")" "1" "UserPromptSubmit hook emits input_received"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

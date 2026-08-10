@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { pullCodebase } from "./codebase-sync.ts";
+import { pinEventsLog } from "./events.ts";
 import { envOr } from "./env.ts";
 import {
   addLabel,
@@ -33,6 +34,7 @@ import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
 
 export async function startDaemon(): Promise<() => void> {
+  pinEventsLog();
   const apiKey = process.env.LINEAR_API_KEY?.trim() ?? "";
   const teamName = envOr("LINEAR_TEAM_NAME", "Engineering");
   // The deploy step watches this state. Reads the new DEPLOY_STATE_NAME, falling

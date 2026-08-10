@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { envOr } from "./env.ts";
 
 export type EventKind =
@@ -13,7 +13,9 @@ export type EventKind =
   | "ready_regressed"
   | "merged"
   | "flagged"
-  | "unflagged";
+  | "unflagged"
+  | "needs_input"
+  | "input_received";
 
 export type YimbotEvent = {
   ts: number;
@@ -53,8 +55,9 @@ export function titleFromBranch(branch: string): string {
     .trim();
 }
 
-// flagged/unflagged have no entry: they are manual overrides folded separately
-// in reduceRows, not a status. statusFor returns undefined for them.
+// flagged/unflagged/needs_input/input_received have no entry: they are
+// attention-timeline signals folded separately in reduceRows, not a status.
+// statusFor returns undefined for them.
 const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> = {
   task_started: { status: "working", terminal: false },
   review_started: { status: "addressing review", terminal: false },
@@ -78,6 +81,15 @@ bus.setMaxListeners(0);
 
 export function eventsLogPath(): string {
   return envOr("EVENTS_LOG", join(process.cwd(), "events.jsonl"));
+}
+
+// Pin an absolute EVENTS_LOG into the environment so child processes (the
+// sessions new-session.sh launches, and their Claude hooks) resolve the same
+// log file the TUI reads regardless of their own cwd. Returns the pinned path.
+export function pinEventsLog(): string {
+  const abs = resolve(eventsLogPath());
+  process.env.EVENTS_LOG = abs;
+  return abs;
 }
 
 function maxLines(): number {
@@ -144,8 +156,7 @@ export type BoardRow = {
   terminal: boolean;
   ts: number;
   startTs: number;
-  flaggedManually: boolean;
-  acknowledged: boolean;
+  flagged: boolean;
 };
 
 function keepMergedMsDefault(): number {
@@ -158,17 +169,8 @@ function maxRowsDefault(): number {
   return Number.isInteger(n) && n > 0 ? n : 100;
 }
 
-export function flagStuckMsDefault(): number {
-  const n = Number(envOr("TUI_FLAG_STUCK_MS", "21600000"));
-  return Number.isFinite(n) && n > 0 ? n : 21600000;
-}
-
-export function isStuck(row: BoardRow, now: number, stuckMs: number = flagStuckMsDefault()): boolean {
-  return !row.terminal && now - row.startTs > stuckMs;
-}
-
-export function isFlagged(row: BoardRow, now: number, stuckMs: number = flagStuckMsDefault()): boolean {
-  return row.flaggedManually || (isStuck(row, now, stuckMs) && !row.acknowledged);
+export function isFlagged(row: BoardRow): boolean {
+  return row.flagged;
 }
 
 export function reduceRows(
@@ -180,14 +182,9 @@ export function reduceRows(
   const maxRows = opts.maxRows ?? maxRowsDefault();
 
   const byKey = new Map<string, BoardRow>();
-  const manual = new Map<string, { kind: "flagged" | "unflagged"; ts: number }>();
   for (const e of events) {
-    if (e.kind === "flagged" || e.kind === "unflagged") {
-      manual.set(e.key, { kind: e.kind, ts: e.ts });
-      continue;
-    }
     const mapped = statusFor(e.kind);
-    if (!mapped) continue; // a kind retired in a newer build but still in the persisted log
+    if (!mapped) continue; // flag signals + any kind retired in a newer build
     const prev = byKey.get(e.key);
     const startTs = prev ? (prev.terminal ? e.ts : prev.startTs) : e.ts;
     byKey.set(e.key, {
@@ -199,19 +196,22 @@ export function reduceRows(
       terminal: mapped.terminal,
       ts: e.ts,
       startTs,
-      flaggedManually: false,
-      acknowledged: false,
+      flagged: false,
     });
   }
 
-  // A manual flag/unflag only counts while it postdates the row's last status
-  // event; a later status event makes the override stale.
-  for (const row of byKey.values()) {
-    const m = manual.get(row.key);
-    const current = m !== undefined && m.ts >= row.ts;
-    row.flaggedManually = current && m!.kind === "flagged";
-    row.acknowledged = current && m!.kind === "unflagged";
+  // Fold each key's attention timeline into one flag. Walking events in time
+  // order, the flag flips on for a needs-input or manual flag and off for any
+  // working status, an input-received, or a manual unflag. Latest signal wins,
+  // so a later status or reply clears a stale flag and a new needs-input after
+  // a clear re-raises it.
+  const flagOn = new Set<EventKind>(["needs_input", "flagged"]);
+  const flagged = new Map<string, boolean>();
+  for (const e of events) {
+    if (flagOn.has(e.kind)) flagged.set(e.key, true);
+    else if (statusFor(e.kind) || e.kind === "input_received" || e.kind === "unflagged") flagged.set(e.key, false);
   }
+  for (const row of byKey.values()) row.flagged = flagged.get(row.key) ?? false;
 
   let rows = [...byKey.values()].filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
   rows.sort((a, b) => b.ts - a.ts);

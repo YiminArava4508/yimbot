@@ -36,6 +36,16 @@ set -uo pipefail
 WORKTREES_DIR=${WORKTREES_DIR:-$HOME/Work/worktrees}
 EDITOR=${EDITOR:-vi}
 
+# Where yimbot's event log lives, so this session's Claude hooks can append
+# needs-input / input-received signals to the same log the TUI reads. The daemon
+# exports an absolute path; default it from this script's own repo location
+# (scripts/new-session.sh -> ../events.jsonl) for a hand-run session.
+if [ -z "${EVENTS_LOG:-}" ]; then
+  _self=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
+  EVENTS_LOG="$(cd "$(dirname "$_self")/.." 2>/dev/null && pwd)/events.jsonl"
+fi
+export EVENTS_LOG
+
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 die() {
   log "ERROR: $*"
@@ -70,6 +80,42 @@ seed_prompt_for() {
 skill_in_prompt() {
   local prompt=$1
   [[ "$prompt" =~ the\ ([a-z0-9-]+)\ skill ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# Reproduce deriveKey({branch}) from src/events.ts: an eng-/sc- ticket branch
+# (any case) maps to the uppercased TICKET-NUMBER key; any other branch is its
+# own key. Pure; unit-tested via sourcing.
+event_key_from_branch() {
+  local branch=$1 p n
+  shopt -s nocasematch
+  if [[ "$branch" =~ ^(eng|sc)-([0-9]+) ]]; then
+    p=${BASH_REMATCH[1]}
+    n=${BASH_REMATCH[2]}
+    shopt -u nocasematch
+    printf '%s-%s' "$(printf '%s' "$p" | tr '[:lower:]' '[:upper:]')" "$n"
+    return
+  fi
+  shopt -u nocasematch
+  printf '%s' "$branch"
+}
+
+# Append one yimbot flag signal (needs_input | input_received) for the current
+# worktree to $EVENTS_LOG, keyed by its git branch, so the TUI can flag a session
+# stuck waiting for input. Best-effort: a missing log or unresolvable branch is a
+# silent no-op, never failing the Claude hook that calls it.
+emit_hook_event() {
+  local kind=$1 branch key ts
+  [ -n "${EVENTS_LOG:-}" ] || return 0
+  branch=$(git branch --show-current 2>/dev/null) || return 0
+  [ -n "$branch" ] || return 0
+  key=$(event_key_from_branch "$branch")
+  # JSON-escape the key: git ref names legally allow " and \, and the
+  # fallthrough in event_key_from_branch echoes such branches raw. Order
+  # matters: backslash first, so escaping the quote doesn't get re-escaped.
+  key=${key//\\/\\\\}
+  key=${key//\"/\\\"}
+  ts=$(( $(date +%s%N) / 1000000 ))
+  printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"}\n' "$ts" "$kind" "$key" "$key" >> "$EVENTS_LOG" 2>/dev/null || true
 }
 
 # Fail fast if this session hands off to a skill that isn't installed, rather than

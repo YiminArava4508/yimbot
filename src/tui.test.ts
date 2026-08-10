@@ -10,8 +10,7 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
   terminal: false,
   ts: 0,
   startTs: 0,
-  flaggedManually: false,
-  acknowledged: false,
+  flagged: false,
   ...over,
 });
 
@@ -46,10 +45,7 @@ test("rowsToTable DUR is frozen at ts - startTs for a terminal row", () => {
 });
 
 test("rowsToTable marks a flagged row and leaves others blank", () => {
-  const [, flagged] = rowsToTable(
-    [row({ flaggedManually: true })],
-    0,
-  );
+  const [, flagged] = rowsToTable([row({ flagged: true })], 0);
   assert.equal(flagged[6], "{red-fg}⚑{/red-fg}");
   const [, plain] = rowsToTable([row({})], 0);
   assert.equal(plain[6], "");

@@ -14,5 +14,21 @@
       "Bash(docker volume rm:*)",
       "Bash(dropdb:*)"
     ]
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash -c 'source \"$HOME/new-session.sh\"; emit_hook_event needs_input'" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash -c 'source \"$HOME/new-session.sh\"; emit_hook_event input_received'" }
+        ]
+      }
+    ]
   }
 }

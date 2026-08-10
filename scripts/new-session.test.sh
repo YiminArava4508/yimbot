@@ -113,4 +113,10 @@ HOOK_LOG2=$(mktemp)
 assert_eq "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim(); const o=JSON.parse(l); process.stdout.write(o.key)' "$HOOK_LOG2")" 'weird"branch' "malformed-char branch key round-trips through valid JSON"
 rm -rf "$HOOK_REPO" "$HOOK_LOG" "$HOOK_LOG2"
 
+# The session settings file parses and wires both attention hooks to the emitter.
+SETTINGS_JSON="$(cd "$(dirname "$0")" && pwd)/../settings/session-settings.json"
+assert_eq "$(node -e 'const h=require(process.argv[1]).hooks||{}; process.stdout.write(String(!!h.Notification&&!!h.UserPromptSubmit))' "$SETTINGS_JSON")" "true" "settings define both attention hooks"
+assert_eq "$(grep -c 'emit_hook_event needs_input' "$SETTINGS_JSON")" "1" "Notification hook emits needs_input"
+assert_eq "$(grep -c 'emit_hook_event input_received' "$SETTINGS_JSON")" "1" "UserPromptSubmit hook emits input_received"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

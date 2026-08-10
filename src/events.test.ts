@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isStuck, isFlagged, type BoardRow, type YimbotEvent } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,8 +278,7 @@ test("filterToLiveWorktrees: non-terminal row kept only when its key is live", (
     terminal: false,
     ts: 0,
     startTs: 0,
-    flaggedManually: false,
-    acknowledged: false,
+    flagged: false,
     ...over,
   });
   const rows = [row({ key: "ENG-1" }), row({ key: "ENG-2" })];
@@ -295,8 +294,7 @@ test("filterToLiveWorktrees: terminal row kept even with no live worktree", () =
     terminal: true,
     ts: 0,
     startTs: 0,
-    flaggedManually: false,
-    acknowledged: false,
+    flagged: false,
   };
   assert.deepEqual(filterToLiveWorktrees([merged], new Set()), [merged]);
 });
@@ -337,8 +335,16 @@ test("reduceRows resets startTs after a merged event", () => {
   assert.equal(rows[0].terminal, false);
 });
 
-test("flagged then unflagged folds to acknowledged, not flaggedManually", () => {
-  const rows = reduceRows(
+test("manual flag folds to flagged; a later unflag clears it", () => {
+  const flag = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+    ],
+    4000,
+  );
+  assert.equal(flag[0].flagged, true);
+  const cleared = reduceRows(
     [
       { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
       { ts: 2000, kind: "flagged", key: "ENG-1", label: "ENG-1" },
@@ -346,11 +352,10 @@ test("flagged then unflagged folds to acknowledged, not flaggedManually", () => 
     ],
     4000,
   );
-  assert.equal(rows[0].flaggedManually, false);
-  assert.equal(rows[0].acknowledged, true);
+  assert.equal(cleared[0].flagged, false);
 });
 
-test("a status event after a manual event makes the override stale", () => {
+test("a status event after a manual flag clears it", () => {
   const rows = reduceRows(
     [
       { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
@@ -359,22 +364,48 @@ test("a status event after a manual event makes the override stale", () => {
     ],
     4000,
   );
-  assert.equal(rows[0].flaggedManually, false);
-  assert.equal(rows[0].acknowledged, false);
+  assert.equal(rows[0].flagged, false);
 });
 
-test("isStuck respects the threshold and skips terminal rows", () => {
-  const active = { terminal: false, startTs: 0 } as BoardRow;
-  assert.equal(isStuck(active, 100, 200), false);
-  assert.equal(isStuck(active, 300, 200), true);
-  const done = { terminal: true, startTs: 0 } as BoardRow;
-  assert.equal(isStuck(done, 300, 200), false);
+test("needs_input raises the flag and never changes status or duration", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "needs_input", key: "ENG-1", label: "ENG-1" },
+    ],
+    5000,
+  );
+  assert.equal(rows[0].flagged, true);
+  assert.equal(rows[0].status, "working");
+  assert.equal(rows[0].startTs, 1000);
+  assert.equal(rows[0].ts, 1000); // needs_input is not a status; last status ts stands
+  assert.equal(isFlagged(rows[0]), true);
 });
 
-test("isFlagged: manual flags always, acknowledge suppresses stuck", () => {
-  const base = { terminal: false, startTs: 0, flaggedManually: false, acknowledged: false } as BoardRow;
-  assert.equal(isFlagged({ ...base }, 100, 200), false);
-  assert.equal(isFlagged({ ...base }, 300, 200), true); // stuck
-  assert.equal(isFlagged({ ...base, acknowledged: true }, 300, 200), false); // stuck but acked
-  assert.equal(isFlagged({ ...base, flaggedManually: true }, 100, 200), true); // manual, not stuck
+test("needs_input clears on input, next status, or manual unflag", () => {
+  const clears = (clearer: YimbotEvent) =>
+    reduceRows(
+      [
+        { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+        { ts: 2000, kind: "needs_input", key: "ENG-1", label: "ENG-1" },
+        clearer,
+      ],
+      5000,
+    )[0].flagged;
+  assert.equal(clears({ ts: 3000, kind: "input_received", key: "ENG-1", label: "ENG-1" }), false);
+  assert.equal(clears({ ts: 3000, kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" }), false);
+  assert.equal(clears({ ts: 3000, kind: "unflagged", key: "ENG-1", label: "ENG-1" }), false);
+});
+
+test("a needs_input after a clear re-raises the flag", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "needs_input", key: "ENG-1", label: "ENG-1" },
+      { ts: 3000, kind: "input_received", key: "ENG-1", label: "ENG-1" },
+      { ts: 4000, kind: "needs_input", key: "ENG-1", label: "ENG-1" },
+    ],
+    5000,
+  );
+  assert.equal(rows[0].flagged, true);
 });

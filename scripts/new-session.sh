@@ -109,6 +109,11 @@ emit_hook_event() {
   branch=$(git branch --show-current 2>/dev/null) || return 0
   [ -n "$branch" ] || return 0
   key=$(event_key_from_branch "$branch")
+  # JSON-escape the key: git ref names legally allow " and \, and the
+  # fallthrough in event_key_from_branch echoes such branches raw. Order
+  # matters: backslash first, so escaping the quote doesn't get re-escaped.
+  key=${key//\\/\\\\}
+  key=${key//\"/\\\"}
   ts=$(( $(date +%s%N) / 1000000 ))
   printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"}\n' "$ts" "$kind" "$key" "$key" >> "$EVENTS_LOG" 2>/dev/null || true
 }

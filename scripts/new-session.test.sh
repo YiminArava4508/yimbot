@@ -80,4 +80,29 @@ assert_eq "$?" "1" "dies when skill missing"
 assert_eq "$(SKILLS_DIR=$SK_EMPTY verify_seed_skill random-name >/dev/null 2>&1; echo $?)" "0" "no-op for bare name"
 rm -rf "$SK_TMP" "$SK_EMPTY"
 
+# The hook emitter helpers survive sourcing.
+assert_defined event_key_from_branch
+assert_defined emit_hook_event
+
+# event_key_from_branch mirrors deriveKey({branch}): eng-/sc- ticket branches map
+# to the uppercased TICKET-NUMBER; any other branch is its own key.
+assert_eq "$(event_key_from_branch eng-123-add-widget)" "ENG-123" "eng branch -> ENG-123"
+assert_eq "$(event_key_from_branch SC-42-thing)" "SC-42" "sc branch (any case) -> SC-42"
+assert_eq "$(event_key_from_branch spike-refactor)" "spike-refactor" "non-ticket branch is its own key"
+
+# emit_hook_event appends one JSON line keyed by the worktree's branch. Run it in
+# a throwaway git repo so git branch --show-current resolves.
+HOOK_REPO=$(mktemp -d)
+git -C "$HOOK_REPO" init -q -b eng-7-demo
+git -C "$HOOK_REPO" commit -q --allow-empty -m init
+HOOK_LOG=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG" emit_hook_event needs_input )
+assert_eq "$(wc -l < "$HOOK_LOG" | tr -d ' ')" "1" "emit_hook_event writes one line"
+assert_eq "$(grep -c '"kind":"needs_input"' "$HOOK_LOG")" "1" "line carries the kind"
+assert_eq "$(grep -c '"key":"ENG-7"' "$HOOK_LOG")" "1" "line is keyed ENG-7 from the branch"
+# No EVENTS_LOG is a silent no-op, not an error.
+( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
+assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"
+rm -rf "$HOOK_REPO" "$HOOK_LOG"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

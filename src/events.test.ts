@@ -424,3 +424,49 @@ test("pinEventsLog sets an absolute EVENTS_LOG in the environment", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("needs_decision then flagged folds to the status plus a raised flag", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "review_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "needs_decision", key: "ENG-1", label: "ENG-1" },
+      { ts: 2001, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+    ],
+    5000,
+  );
+  assert.equal(rows[0].status, "needs decision");
+  assert.equal(rows[0].terminal, false);
+  assert.equal(rows[0].flagged, true);
+});
+
+test("review_findings then flagged folds to the status plus a raised flag", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "review_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "review_findings", key: "ENG-1", label: "ENG-1" },
+      { ts: 2001, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+    ],
+    5000,
+  );
+  assert.equal(rows[0].status, "review findings");
+  assert.equal(rows[0].flagged, true);
+});
+
+test("a clearing event after a hand-back drops the flag but keeps the status", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "review_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "needs_decision", key: "ENG-1", label: "ENG-1" },
+      { ts: 2001, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+      { ts: 3000, kind: "input_received", key: "ENG-1", label: "ENG-1" },
+    ],
+    5000,
+  );
+  assert.equal(rows[0].status, "needs decision");
+  assert.equal(rows[0].flagged, false);
+});
+
+test("statusFor maps the two hand-back kinds", () => {
+  assert.deepEqual(statusFor("needs_decision"), { status: "needs decision", terminal: false });
+  assert.deepEqual(statusFor("review_findings"), { status: "review findings", terminal: false });
+});

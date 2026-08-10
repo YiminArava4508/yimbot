@@ -12,7 +12,7 @@ worktree is already checked out on the PR's branch, and the seed prompt gave you
 the PR number. This runs fully automatically; the one thing you never do is
 falsely resolve a comment you did not actually address. The other thing you
 never do is bombard the PR with verbose, AI-generated explanations: thread
-replies are capped tight (see step 4), and anything the reviewer did not
+replies are capped tight (see steps 4 and 7), and anything the reviewer did not
 literally ask about never goes on the PR at all.
 
 ## Flow
@@ -59,14 +59,15 @@ literally ask about never goes on the PR at all.
    Keep a running record of which thread id maps to which change, **and the exact
    file paths you edit**; you will stage only those paths in step 6.
 
-   As you work each thread, sort it into one of three categories; later steps
-   act on the category:
+   As you work each thread, put it in one of the first two categories below;
+   separately, collect anything in the third. Later steps act on the category:
    - **Fixed in code** - you fully satisfied the ask with a code change.
    - **Needs a human decision** - a request you cannot confidently satisfy, a
      disagreement, or an open question. Do not guess; do not half-fix it.
-   - **Extra observation** - anything you notice that is beyond any thread's
-     literal ask (a related bug, a risky pattern, a follow-up idea). Collect
-     these; they never go on the PR.
+   - **Extra observation** (collected separately, not a per-thread bucket) -
+     anything you notice that is beyond any thread's literal ask (a related
+     bug, a risky pattern, a follow-up idea). Collect these; they never go on
+     the PR.
 
 4. **Threads that need a human decision.** Leave the thread **unresolved**. Post
    one short, honest reply on it stating that you have flagged it for a human to

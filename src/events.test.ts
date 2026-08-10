@@ -439,6 +439,19 @@ test("needs_decision then flagged folds to the status plus a raised flag", () =>
   assert.equal(rows[0].flagged, true);
 });
 
+test("flagged before needs_decision leaves the flag cleared (order is load-bearing)", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "review_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+      { ts: 2001, kind: "needs_decision", key: "ENG-1", label: "ENG-1" },
+    ],
+    5000,
+  );
+  assert.equal(rows[0].status, "needs decision");
+  assert.equal(rows[0].flagged, false);
+});
+
 test("review_findings then flagged folds to the status plus a raised flag", () => {
   const rows = reduceRows(
     [

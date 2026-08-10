@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { envOr } from "./env.ts";
 
 export type EventKind =
@@ -81,6 +81,15 @@ bus.setMaxListeners(0);
 
 export function eventsLogPath(): string {
   return envOr("EVENTS_LOG", join(process.cwd(), "events.jsonl"));
+}
+
+// Pin an absolute EVENTS_LOG into the environment so child processes (the
+// sessions new-session.sh launches, and their Claude hooks) resolve the same
+// log file the TUI reads regardless of their own cwd. Returns the pinned path.
+export function pinEventsLog(): string {
+  const abs = resolve(eventsLogPath());
+  process.env.EVENTS_LOG = abs;
+  return abs;
 }
 
 function maxLines(): number {

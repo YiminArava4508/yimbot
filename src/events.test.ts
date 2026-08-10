@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, type BoardRow, type YimbotEvent } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -408,4 +408,19 @@ test("a needs_input after a clear re-raises the flag", () => {
     5000,
   );
   assert.equal(rows[0].flagged, true);
+});
+
+test("pinEventsLog sets an absolute EVENTS_LOG in the environment", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yimbot-pin-"));
+  const prev = process.env.EVENTS_LOG;
+  try {
+    process.env.EVENTS_LOG = join(dir, "events.jsonl");
+    const abs = pinEventsLog();
+    assert.ok(abs.startsWith("/"));
+    assert.equal(process.env.EVENTS_LOG, abs);
+  } finally {
+    if (prev === undefined) delete process.env.EVENTS_LOG;
+    else process.env.EVENTS_LOG = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

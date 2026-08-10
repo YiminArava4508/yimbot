@@ -8,7 +8,7 @@ import { emitEvent } from "./src/events.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { runTui } from "./src/tui.ts";
-import { liveWorktreeKeys } from "./src/watcher.ts";
+import { listGitWorktrees, listTmuxSessions, liveWorktreeKeys, resolveSessionForKey, switchToSession } from "./src/watcher.ts";
 
 if (!isConfigured(process.env)) {
   const config = await runSetup();
@@ -51,6 +51,10 @@ if (process.stdout.isTTY) {
     liveKeys: () => liveWorktreeKeys(codebasePath),
     onToggleFlag: (key, label, flagged) =>
       emitEvent({ kind: flagged ? "unflagged" : "flagged", key, label }),
+    onOpenSession: (key) => {
+      const session = resolveSessionForKey(key, listGitWorktrees(codebasePath), listTmuxSessions());
+      if (session) switchToSession(session);
+    },
   });
 } else {
   const stop = await startDaemon();

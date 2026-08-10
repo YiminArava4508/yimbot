@@ -51,6 +51,7 @@ export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
+  onOpenSession: (key: string, label: string) => void;
 }): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
 
@@ -75,8 +76,8 @@ export function runTui(opts: {
     parent: screen,
     bottom: 0,
     left: 0,
-    content: "j/k move   g/G top/bottom   f flag/unflag   q quit",
-    style: { fg: "grey" },
+    content: "j/k move   g/G top/bottom   enter open   f flag/unflag   q quit",
+    style: { fg: "white" },
   });
   void footer;
 
@@ -105,6 +106,12 @@ export function runTui(opts: {
     const r = currentRows[table.selected - 1];
     if (!r) return;
     opts.onToggleFlag(r.key, r.label, isFlagged(r, Date.now()));
+  });
+
+  table.on("select", () => {
+    const r = currentRows[table.selected - 1];
+    if (!r) return;
+    opts.onOpenSession(r.key, r.label);
   });
 
   render();

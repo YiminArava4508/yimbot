@@ -19,6 +19,7 @@ import {
   porcelainHasNonMarkerChanges,
   reconcileBlockedInProgress,
   type ReconcileDeps,
+  resolveSessionForKey,
   sanitizeBranchToSession,
   type WatchState,
   worktreeKeysUnder,
@@ -385,6 +386,28 @@ test("findExistingSession does not match a numeric-prefix neighbour", () => {
 test("findExistingSession prefers a session over a worktree and picks deterministically", () => {
   const match = findExistingSession("ENG-42", ["eng-42-b", "eng-42-a"], ["eng-42-c"]);
   assert.equal(match, "eng-42-a");
+});
+
+test("resolveSessionForKey returns the live session whose branch maps to the key", () => {
+  const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "eng-42-fix-login" }];
+  const session = resolveSessionForKey("ENG-42", worktrees, ["eng-42-fix-login", "eng-7-other"]);
+  assert.equal(session, "eng-42-fix-login");
+});
+
+test("resolveSessionForKey matches despite a title change since launch", () => {
+  const worktrees = [{ path: "/wt/eng-42-new-title", branch: "eng-42-new-title" }];
+  const session = resolveSessionForKey("ENG-42", worktrees, ["eng-42-old-title"]);
+  assert.equal(session, "eng-42-old-title");
+});
+
+test("resolveSessionForKey returns null when no worktree backs the key", () => {
+  const worktrees = [{ path: "/wt/eng-7-other", branch: "eng-7-other" }];
+  assert.equal(resolveSessionForKey("ENG-42", worktrees, ["eng-7-other"]), null);
+});
+
+test("resolveSessionForKey returns null when the worktree has no live session", () => {
+  const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "eng-42-fix-login" }];
+  assert.equal(resolveSessionForKey("ENG-42", worktrees, []), null);
 });
 
 test("markFeatureReady flags the matched session and logs", () => {

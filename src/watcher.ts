@@ -617,7 +617,7 @@ export function setFeatureReady(session: string): void {
 }
 
 // Current tmux session names; empty if no server is running.
-function listTmuxSessions(): string[] {
+export function listTmuxSessions(): string[] {
   try {
     const out = execFileSync("tmux", ["list-sessions", "-F", "#{session_name}"], {
       encoding: "utf8",
@@ -703,6 +703,35 @@ export function worktreeKeysUnder(worktrees: Worktree[], dir: string): Set<strin
 
 export function liveWorktreeKeys(codebasePath: string, dir: string = worktreesDir): Set<string> {
   return worktreeKeysUnder(listGitWorktrees(codebasePath), dir);
+}
+
+// The live tmux session backing a board row's key, so the TUI can jump to it.
+// Finds the worktree whose branch maps to `key` (the same deriveKey the board
+// uses), then the session for that branch: exact name first, else the identifier
+// prefix so a title edit since launch still resolves. Null when no worktree backs
+// the key (e.g. a merged/PR-only row) or no session is live.
+export function resolveSessionForKey(
+  key: string,
+  worktrees: Worktree[],
+  sessions: string[],
+): string | null {
+  const wt = worktrees.find((w) => deriveKey({ branch: w.branch }).key === key);
+  if (!wt) return null;
+  if (sessions.includes(wt.branch)) return wt.branch;
+  const m = WORKTREE_IDENTIFIER_RE.exec(wt.branch.toLowerCase());
+  return m ? findExistingSession(m[0], sessions, []) : null;
+}
+
+// Switch the current tmux client to `session`. No-op returning false when not
+// inside tmux (nothing to switch) or the session is gone — the TUI stays put.
+export function switchToSession(session: string): boolean {
+  if (!process.env.TMUX) return false;
+  try {
+    execFileSync("tmux", ["switch-client", "-t", `=${session}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Whether `git status --porcelain` output holds any change other than yimbot's own

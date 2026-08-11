@@ -20,6 +20,8 @@ export type CycleTodoIssue = LinearIssue & {
   priority: number;
   sortOrder: number;
   labels: string[];
+  // Raw Linear description, scanned at claim time for dependencies stated in prose.
+  description: string;
   // Identifiers of tickets this one is blocked by (from inverse "blocks" relations).
   blockedBy: string[];
 };
@@ -239,6 +241,7 @@ export async function fetchCycleTodoIssues(
     id: string;
     identifier: string;
     title: string;
+    description: string | null;
     priority: number;
     sortOrder: number;
     labels: { nodes: { name: string }[] };
@@ -261,6 +264,7 @@ export async function fetchCycleTodoIssues(
           id
           identifier
           title
+          description
           priority
           sortOrder
           labels { nodes { name } }
@@ -275,6 +279,7 @@ export async function fetchCycleTodoIssues(
     id: n.id,
     identifier: n.identifier,
     title: n.title,
+    description: n.description ?? "",
     priority: n.priority,
     sortOrder: n.sortOrder,
     labels: n.labels.nodes.map((l) => l.name),
@@ -354,7 +359,7 @@ export async function fetchIssueByIdentifier(
   return { id: data.issue.id, identifier: data.issue.identifier, description: data.issue.description ?? "" };
 }
 
-export async function upsertAcComment(
+export async function upsertMarkedComment(
   apiKey: string,
   issueId: string,
   marker: string,
@@ -396,7 +401,7 @@ export async function upsertAcComment(
   if (!data.commentCreate.success) throw new Error(`commentCreate failed for ${issueId}`);
 }
 
-export async function fetchAcCommentBody(
+export async function fetchMarkedCommentBody(
   apiKey: string,
   issueId: string,
   marker: string,
@@ -413,4 +418,29 @@ export async function fetchAcCommentBody(
   );
   const found = data.issue.comments.nodes.find((c) => c.body.includes(marker));
   return found ? found.body : "";
+}
+
+// Record "blocked is blocked by blocker". Linear stores this as the blocker
+// issue holding a "blocks" relation toward the blocked issue, which is the
+// direction blockersFrom reads back out of inverseRelations.
+export async function createBlocksRelation(
+  apiKey: string,
+  blockerId: string,
+  blockedId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  type Data = { issueRelationCreate: { success: boolean } };
+  const data = await gql<Data>(
+    apiKey,
+    `mutation CreateBlocksRelation($issueId: String!, $relatedIssueId: String!) {
+      issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) {
+        success
+      }
+    }`,
+    { issueId: blockerId, relatedIssueId: blockedId },
+    fetchImpl,
+  );
+  if (!data.issueRelationCreate.success) {
+    throw new Error(`issueRelationCreate failed: ${blockerId} blocks ${blockedId}`);
+  }
 }

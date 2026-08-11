@@ -101,8 +101,18 @@ flowchart TD
   opens a fresh, isolated copy of the code and has Claude start building it.
 - **Grab the next task (blue):** while you have fewer than your work-in-progress
   limit of tickets in progress, it pulls your top to-do into progress so the
-  deploy step picks it up next time. *(optional; settings: `AUTO_CLAIM`,
-  `MAX_IN_PROGRESS` — defaults to 3, set to 1 for one at a time)*
+  deploy step picks it up next time. A ticket whose Linear "blocked by" relations
+  point at work with no merged PR is skipped, and one already in progress is moved
+  back to to-do. Before claiming, it also reads the picked ticket's description:
+  when the description states a blocking dependency that was never recorded as a
+  relation (for example "must land after ENG-1319"), it creates the real Linear
+  relation, leaves a comment explaining what it inferred, and leaves the ticket in
+  to-do for the normal blocked handling. Delete the relation if it got it wrong;
+  the comment stops it being re-added. Reference, related and follow-up mentions
+  are ignored, and a prerequisite named without a ticket number is never linked.
+  *(optional; settings: `AUTO_CLAIM`, `MAX_IN_PROGRESS`, defaults to 3, set to 1
+  for one at a time; `AUTO_DEPENDENCY_SCAN`, on by default; `AC_JUDGE_MODEL`,
+  blank uses the claude default)*
 - **Handle review comments (amber):** every heartbeat, for each of your open PRs
   that has unresolved comments, it adds a fix window to that PR's ticket session
   (or opens a standalone session if the ticket session has ended) that addresses

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { pullCodebase } from "./codebase-sync.ts";
+import { scanDescription } from "./dependency.ts";
 import { pinEventsLog } from "./events.ts";
 import { envOr } from "./env.ts";
 import {
@@ -25,10 +26,10 @@ import {
 import { judgeAcceptance, type JudgeRunner } from "./judge.ts";
 import {
   countAssignedInState,
-  fetchAcCommentBody,
+  fetchMarkedCommentBody,
   fetchIssueByIdentifier,
   resolveContext,
-  upsertAcComment,
+  upsertMarkedComment,
 } from "./linear-api.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
@@ -170,22 +171,39 @@ export async function startDaemon(): Promise<() => void> {
   const judgeRun: JudgeRunner = async (prompt) => {
     const args = ["-p", prompt];
     if (judgeModel) args.push("--model", judgeModel);
-    const { stdout } = await execFileAsync("claude", args, { cwd: codebasePath, maxBuffer: 10 * 1024 * 1024 });
+    const { stdout } = await execFileAsync("claude", args, {
+      cwd: codebasePath,
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 120_000,
+    });
     return stdout;
   };
+  // On unless explicitly disabled, matching AUTO_READY_LABEL. Reuses judgeRun,
+  // so AC_JUDGE_MODEL selects the model here too.
+  const autoDependencyScan = !["false", "off", "no", "0"].includes(
+    envOr("AUTO_DEPENDENCY_SCAN", "true").toLowerCase(),
+  );
+  const dependencyScan = autoDependencyScan
+    ? { scan: (identifier: string, description: string) => scanDescription(judgeRun, identifier, description) }
+    : null;
+  console.log(
+    dependencyScan
+      ? "[yimbot] dependency scan ON: description-stated blockers become Linear relations"
+      : "[yimbot] dependency scan OFF",
+  );
   // Gated on the same gh-availability signal as review/cleanup: if gh is missing,
   // prReview is null and the advance step stays off.
   const advance =
     autoContinue && prReview
       ? {
           listMergedPRs: () => listMyMergedPRs(gh),
-          fetchAcComment: (issueId: string) => fetchAcCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
+          fetchAcComment: (issueId: string) => fetchMarkedCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
           fetchDescription: async (identifier: string) => {
             const d = await fetchIssueByIdentifier(apiKey, identifier);
             return { id: d.id, description: d.description };
           },
           judge: (open: AC[]) => judgeAcceptance(judgeRun, open),
-          writeAcComment: (issueId: string, body: string) => upsertAcComment(apiKey, issueId, AC_COMMENT_MARKER, body),
+          writeAcComment: (issueId: string, body: string) => upsertMarkedComment(apiKey, issueId, AC_COMMENT_MARKER, body),
           activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName),
           maxInProgress,
           maxRounds: maxContinuations,
@@ -259,6 +277,7 @@ export async function startDaemon(): Promise<() => void> {
     advance,
     ready,
     blocked,
+    dependencyScan,
   });
 
   // Re-entrancy guard: a sync that runs longer than one interval must not overlap

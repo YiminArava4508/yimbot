@@ -14,6 +14,14 @@ function refreshMs(): number {
   return Number.isFinite(n) && n > 0 ? n : 5000;
 }
 
+export function returnKey(): string {
+  return envOr("TUI_RETURN_KEY", "Y");
+}
+
+export function footerHint(key: string): string {
+  return `j/k move   g/G top/bottom   enter open   f flag/unflag   q quit   prefix+${key} returns here`;
+}
+
 function fmtTime(ts: number): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -76,7 +84,7 @@ export function runTui(opts: {
     parent: screen,
     bottom: 0,
     left: 0,
-    content: "j/k move   g/G top/bottom   enter open   f flag/unflag   q quit",
+    content: footerHint(returnKey()),
     style: { fg: "white" },
   });
   void footer;

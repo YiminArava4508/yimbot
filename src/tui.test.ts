@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fmtDuration, rowsToTable } from "./tui.ts";
+import { fmtDuration, footerHint, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -56,4 +56,37 @@ test("fmtDuration formats seconds, minutes, and hours", () => {
   assert.equal(fmtDuration(18 * 60_000), "18m");
   assert.equal(fmtDuration((6 * 60 + 40) * 60_000), "6h 40m");
   assert.equal(fmtDuration(6 * 60 * 60_000), "6h");
+});
+
+test("returnKey defaults to Y", () => {
+  const prev = process.env.TUI_RETURN_KEY;
+  delete process.env.TUI_RETURN_KEY;
+  try {
+    assert.equal(returnKey(), "Y");
+  } finally {
+    if (prev === undefined) delete process.env.TUI_RETURN_KEY;
+    else process.env.TUI_RETURN_KEY = prev;
+  }
+});
+
+test("returnKey honors TUI_RETURN_KEY and falls back when it is blank", () => {
+  const prev = process.env.TUI_RETURN_KEY;
+  try {
+    process.env.TUI_RETURN_KEY = "F12";
+    assert.equal(returnKey(), "F12");
+    process.env.TUI_RETURN_KEY = "   ";
+    assert.equal(returnKey(), "Y");
+  } finally {
+    if (prev === undefined) delete process.env.TUI_RETURN_KEY;
+    else process.env.TUI_RETURN_KEY = prev;
+  }
+});
+
+test("footerHint keeps the existing hints and names the return key", () => {
+  const hint = footerHint("F12");
+  assert.match(hint, /j\/k move/);
+  assert.match(hint, /enter open/);
+  assert.match(hint, /f flag\/unflag/);
+  assert.match(hint, /q quit/);
+  assert.match(hint, /prefix\+F12 returns here/);
 });

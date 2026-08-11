@@ -179,7 +179,12 @@ row's status moves through its lifecycle as work progresses, starting at
 conflict** as those steps kick in, then **ready to test**, then **ready to
 merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. Press `q` to quit the board; it also
-stops the daemon.
+stops the daemon. While the board runs it binds `prefix + Y` on the tmux
+server, so `prefix + Y` from any session (a ticket session yimbot opened or one
+of your own) switches back to the board. The binding is registered when the
+board starts and removed when it quits, so nothing needs adding to your
+`tmux.conf`. Started outside tmux, the board skips the binding and runs
+normally.
 
 When stdout is not a TTY (for example `pnpm start > daemon.log 2>&1 &`), the
 board is skipped and yimbot runs headless as before.
@@ -189,8 +194,9 @@ in `.env.example`: `EVENTS_LOG` (the event stream file, default
 `events.jsonl`), `EVENTS_LOG_MAX_LINES` (max lines kept before it
 self-truncates, default `500`), `TUI_KEEP_MERGED_MS` (how long a merged row
 stays before it ages out, in ms, default `300000`), `TUI_MAX_ROWS` (hard cap
-on rows shown, default `100`), and `DAEMON_LOG` (where daemon logs go when the
-board owns the terminal, default `daemon.log`).
+on rows shown, default `100`), `TUI_RETURN_KEY` (the tmux prefix-table key that
+switches back to the board, default `Y`), and `DAEMON_LOG` (where daemon logs
+go when the board owns the terminal, default `daemon.log`).
 
 ## Setup
 

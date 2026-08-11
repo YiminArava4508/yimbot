@@ -118,6 +118,25 @@ emit_hook_event() {
   printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"}\n' "$ts" "$kind" "$key" "$key" >> "$EVENTS_LOG" 2>/dev/null || true
 }
 
+# Notification types that do not mean a human is blocking: the ~60s idle prompt
+# (which an autonomous session hits routinely while its background agents work),
+# plus auth and completion notices.
+NOTIFY_QUIET="idle_prompt auth_success elicitation_complete elicitation_response agent_completed"
+
+# Claude Code Notification hook: reads the hook payload on stdin and emits
+# needs_input only when the notification means the session is waiting on a
+# person. Anything not in NOTIFY_QUIET flags, including a type this build has
+# never seen, so a new kind of block is never silently swallowed.
+emit_notification_event() {
+  local payload="" type=""
+  # Only read a real pipe: a hand-run in a terminal would otherwise hang on cat.
+  [ -t 0 ] || payload=$(cat 2>/dev/null)
+  type=$(printf '%s' "$payload" |
+    sed -n 's/.*"notification_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  case " $NOTIFY_QUIET " in *" $type "*) return 0 ;; esac
+  emit_hook_event needs_input
+}
+
 # Fail fast if this session hands off to a skill that isn't installed, rather than
 # launching a session that will stall on an unknown skill. No skill named: no-op.
 verify_seed_skill() {

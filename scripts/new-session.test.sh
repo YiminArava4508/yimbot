@@ -112,6 +112,36 @@ rm -f "$HOOK_LOG_HB"
 ( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
 assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"
 
+# emit_notification_event filters Claude Code's Notification payload: only a
+# notification that means a human is blocking becomes a needs_input line.
+assert_defined emit_notification_event
+notify_payload() {
+  printf '{"session_id":"abc","hook_event_name":"Notification","message":"m","notification_type":"%s"}' "$1"
+}
+NOTIFY_QUIET_LOG=$(mktemp)
+for t in idle_prompt auth_success elicitation_complete elicitation_response agent_completed; do
+  ( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_QUIET_LOG" emit_notification_event <<<"$(notify_payload "$t")" )
+done
+assert_eq "$(wc -c < "$NOTIFY_QUIET_LOG" | tr -d ' ')" "0" "quiet notification types write nothing"
+
+for t in permission_prompt elicitation_dialog agent_needs_input; do
+  NOTIFY_ONE_LOG=$(mktemp)
+  ( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_ONE_LOG" emit_notification_event <<<"$(notify_payload "$t")" )
+  assert_eq "$(grep -c '"kind":"needs_input"' "$NOTIFY_ONE_LOG")" "1" "$t emits one needs_input"
+  assert_eq "$(grep -c '"key":"ENG-7"' "$NOTIFY_ONE_LOG")" "1" "$t line is keyed ENG-7 from the branch"
+  rm -f "$NOTIFY_ONE_LOG"
+done
+
+# Ignore-list fallthrough: a type this build has never seen, a payload with no
+# notification_type, and empty stdin all still flag rather than going quiet.
+NOTIFY_FALLTHROUGH_LOG=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_FALLTHROUGH_LOG" emit_notification_event <<<"$(notify_payload some_future_block)" )
+( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_FALLTHROUGH_LOG" emit_notification_event <<<'{"hook_event_name":"Notification","message":"m"}' )
+( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_FALLTHROUGH_LOG" emit_notification_event </dev/null )
+assert_eq "$?" "0" "empty stdin exits 0"
+assert_eq "$(grep -c '"kind":"needs_input"' "$NOTIFY_FALLTHROUGH_LOG")" "3" "unknown type, absent type, and empty stdin all flag"
+rm -f "$NOTIFY_QUIET_LOG" "$NOTIFY_FALLTHROUGH_LOG"
+
 # A branch name containing a double quote (legal in git refs) must not break
 # the JSON line: event_key_from_branch's fallthrough echoes it raw, so
 # emit_hook_event must escape it before interpolating.
@@ -124,7 +154,8 @@ rm -rf "$HOOK_REPO" "$HOOK_LOG" "$HOOK_LOG2"
 # The session settings file parses and wires both attention hooks to the emitter.
 SETTINGS_JSON="$(cd "$(dirname "$0")" && pwd)/../settings/session-settings.json"
 assert_eq "$(node -e 'const h=require(process.argv[1]).hooks||{}; process.stdout.write(String(!!h.Notification&&!!h.UserPromptSubmit))' "$SETTINGS_JSON")" "true" "settings define both attention hooks"
-assert_eq "$(grep -c 'emit_hook_event needs_input' "$SETTINGS_JSON")" "1" "Notification hook emits needs_input"
+assert_eq "$(grep -c 'emit_notification_event' "$SETTINGS_JSON")" "1" "Notification hook runs the notification filter"
+assert_eq "$(grep -c 'emit_hook_event needs_input' "$SETTINGS_JSON")" "0" "Notification hook no longer flags unconditionally"
 assert_eq "$(grep -c 'emit_hook_event input_received' "$SETTINGS_JSON")" "1" "UserPromptSubmit hook emits input_received"
 
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

@@ -120,19 +120,28 @@ emit_hook_event() {
 
 # Notification types that do not mean a human is blocking: the ~60s idle prompt
 # (which an autonomous session hits routinely while its background agents work),
-# plus auth and completion notices.
-NOTIFY_QUIET="idle_prompt auth_success elicitation_complete elicitation_response agent_completed"
+# the computer-use banners, a push notification the session itself sent, and the
+# auth and completion notices.
+NOTIFY_QUIET="idle_prompt auth_success elicitation_complete elicitation_response agent_completed \
+computer_use_enter computer_use_exit push_notification"
 
 # Claude Code Notification hook: reads the hook payload on stdin and emits
 # needs_input only when the notification means the session is waiting on a
-# person. Anything not in NOTIFY_QUIET flags, including a type this build has
-# never seen, so a new kind of block is never silently swallowed.
+# person. Anything not in NOTIFY_QUIET flags, including a type not in the
+# documented enum (worker_permission_prompt, say), so a new kind of block is
+# never silently swallowed.
 emit_notification_event() {
   local payload="" type=""
-  # Only read a real pipe: a hand-run in a terminal would otherwise hang on cat.
-  [ -t 0 ] || payload=$(cat 2>/dev/null)
-  type=$(printf '%s' "$payload" |
-    sed -n 's/.*"notification_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  # No payload piped in means no notification fired: a hand-run in a terminal
+  # must not stamp a flag on whatever branch it happens to be sitting in.
+  [ -t 0 ] && return 0
+  payload=$(cat 2>/dev/null)
+  # Match in bash rather than through sed: takes the first occurrence only, so a
+  # pretty-printed payload repeating the key can't yield a multi-line type that
+  # matches nothing below.
+  if [[ $payload =~ \"notification_type\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    type=${BASH_REMATCH[1]}
+  fi
   case " $NOTIFY_QUIET " in *" $type "*) return 0 ;; esac
   emit_hook_event needs_input
 }

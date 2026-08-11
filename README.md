@@ -181,11 +181,16 @@ merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. Press `q` to quit the board; it also
 stops the daemon.
 
-A `⚑` on a row means that ticket's session is waiting on you: it needs a
-permission the classifier would not auto-approve, is asking a question, or has
-handed the task back. An idle prompt does not raise it, so a session waiting on
-its own background agents stays quiet. Replying in the session, the next status
-change, or pressing `f` clears it.
+A `⚑` on a row means that ticket's session raised a notification that looks like
+it wants you: a permission the classifier would not auto-approve, a question
+dialog, a subagent asking for input, or a hand-back. The rule errs toward
+flagging, so a notification type yimbot does not recognize raises it too. The
+noisy ones never do: the ~60s idle nudge, the computer-use banners, and the auth
+and completion notices, so a session waiting on its own background agents stays
+quiet. The gap that leaves: a session that ends its turn with a plain-text
+question and no tool call raises nothing, and shows only as a climbing `DUR`.
+Replying in the session or its next status change clears the flag, and `f`
+toggles it by hand on the selected row.
 
 When stdout is not a TTY (for example `pnpm start > daemon.log 2>&1 &`), the
 board is skipped and yimbot runs headless as before.

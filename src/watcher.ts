@@ -288,7 +288,7 @@ export type ClaimDeps = {
 // ("deferred"): the ticket is now marked, so it is excluded from future scans by
 // the marker check above. A write failure after blockers were identified also
 // fails closed ("skip"), but since no marker was written the ticket would be
-// rescanned and fail closed again every heartbeat forever — claimOnce latches a
+// rescanned and fail closed again every heartbeat forever, so claimOnce latches a
 // "skip" verdict into the per-process skip set so this ticket alone stalls,
 // not the whole claim step.
 type BlockerVerdict = "claim" | "deferred" | "skip";

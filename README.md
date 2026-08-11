@@ -181,6 +181,12 @@ merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. Press `q` to quit the board; it also
 stops the daemon.
 
+A `⚑` on a row means that ticket's session is waiting on you: it needs a
+permission the classifier would not auto-approve, is asking a question, or has
+handed the task back. An idle prompt does not raise it, so a session waiting on
+its own background agents stays quiet. Replying in the session, the next status
+change, or pressing `f` clears it.
+
 When stdout is not a TTY (for example `pnpm start > daemon.log 2>&1 &`), the
 board is skipped and yimbot runs headless as before.
 
@@ -219,9 +225,10 @@ links the session launcher and pickup-ticket skill into place, then writes `.env
 and continues into the daemon. Re-run it anytime with `pnpm onboard` (backs up the
 old `.env`). You can still hand-edit `.env` from `.env.example` if you prefer.
 
-Spawned sessions launch `claude` with `--dangerously-skip-permissions` so the
-pickup / PR-fix flows run unattended (no permission prompt can hang a headless
-session). As a safety net that never prompts, the launcher also passes
+Spawned sessions launch `claude` with `--permission-mode auto` so the pickup /
+PR-fix flows run unattended: the classifier auto-approves safe actions, and
+anything it escalates raises the board's `⚑` rather than hanging unnoticed. As a
+safety net that never prompts, the launcher also passes
 `--settings` a deny-list (`~/.config/yimbot/session-settings.json`, symlinked by
 `pnpm onboard`) that hard-blocks catastrophic commands (force-push, `git clean`,
 `rm -rf /` or `~`, `terraform destroy`, `kubectl delete`, `docker` prune/volume

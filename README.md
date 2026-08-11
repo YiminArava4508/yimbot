@@ -186,6 +186,14 @@ board starts and removed when it quits, so nothing needs adding to your
 `tmux.conf`. Started outside tmux, the board skips the binding and runs
 normally.
 
+While the board owns that key it overwrites any binding of your own for it,
+and quitting unbinds it entirely, so a binding you had comes back only on the
+next `source-file` or tmux server restart, not on its own; this is why the
+default (`Y`) is a key tmux leaves unbound. Two boards running at once clobber
+each other's binding (the second to quit leaves the first with none), and
+renaming the board's tmux session after startup leaves the binding pointing at
+the old name until the board restarts.
+
 When stdout is not a TTY (for example `pnpm start > daemon.log 2>&1 &`), the
 board is skipped and yimbot runs headless as before.
 

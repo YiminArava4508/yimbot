@@ -27,7 +27,7 @@ import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from
 import {
   countAssignedInState,
   type CycleTodoIssue,
-  fetchAcCommentBody,
+  fetchMarkedCommentBody,
   fetchCycleTodoIssues,
   fetchIssueByIdentifier,
   fetchInProgressIssuesWithBlockers,
@@ -36,7 +36,7 @@ import {
   type LinearContext,
   type LinearIssue,
   moveIssueToState,
-  upsertAcComment,
+  upsertMarkedComment,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
 import { boardReadyToMerge, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
@@ -1047,11 +1047,11 @@ export function startWatcher(config: WatcherConfig): () => void {
           const detail = await fetchIssueByIdentifier(config.apiKey, issue.identifier);
           // Seed once: a re-claim must not clobber a tracker that already has
           // satisfied/skipped ACs, so no-op when one is present.
-          const existing = await fetchAcCommentBody(config.apiKey, detail.id, AC_COMMENT_MARKER);
+          const existing = await fetchMarkedCommentBody(config.apiKey, detail.id, AC_COMMENT_MARKER);
           if (existing) return;
           const acs = parseAcceptanceCriteria(detail.description);
           if (acs.length > 0) {
-            await upsertAcComment(config.apiKey, detail.id, AC_COMMENT_MARKER, renderAcComment(acs));
+            await upsertMarkedComment(config.apiKey, detail.id, AC_COMMENT_MARKER, renderAcComment(acs));
           }
         } catch (err) {
           claimLog(`AC seed failed for ${issue.identifier}: ${err}`);

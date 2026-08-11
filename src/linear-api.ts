@@ -359,7 +359,7 @@ export async function fetchIssueByIdentifier(
   return { id: data.issue.id, identifier: data.issue.identifier, description: data.issue.description ?? "" };
 }
 
-export async function upsertAcComment(
+export async function upsertMarkedComment(
   apiKey: string,
   issueId: string,
   marker: string,
@@ -401,7 +401,7 @@ export async function upsertAcComment(
   if (!data.commentCreate.success) throw new Error(`commentCreate failed for ${issueId}`);
 }
 
-export async function fetchAcCommentBody(
+export async function fetchMarkedCommentBody(
   apiKey: string,
   issueId: string,
   marker: string,

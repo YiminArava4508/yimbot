@@ -25,10 +25,10 @@ import {
 import { judgeAcceptance, type JudgeRunner } from "./judge.ts";
 import {
   countAssignedInState,
-  fetchAcCommentBody,
+  fetchMarkedCommentBody,
   fetchIssueByIdentifier,
   resolveContext,
-  upsertAcComment,
+  upsertMarkedComment,
 } from "./linear-api.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
@@ -179,13 +179,13 @@ export async function startDaemon(): Promise<() => void> {
     autoContinue && prReview
       ? {
           listMergedPRs: () => listMyMergedPRs(gh),
-          fetchAcComment: (issueId: string) => fetchAcCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
+          fetchAcComment: (issueId: string) => fetchMarkedCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
           fetchDescription: async (identifier: string) => {
             const d = await fetchIssueByIdentifier(apiKey, identifier);
             return { id: d.id, description: d.description };
           },
           judge: (open: AC[]) => judgeAcceptance(judgeRun, open),
-          writeAcComment: (issueId: string, body: string) => upsertAcComment(apiKey, issueId, AC_COMMENT_MARKER, body),
+          writeAcComment: (issueId: string, body: string) => upsertMarkedComment(apiKey, issueId, AC_COMMENT_MARKER, body),
           activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName),
           maxInProgress,
           maxRounds: maxContinuations,

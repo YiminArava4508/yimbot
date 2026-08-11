@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { pullCodebase } from "./codebase-sync.ts";
+import { scanDescription } from "./dependency.ts";
 import { pinEventsLog } from "./events.ts";
 import { envOr } from "./env.ts";
 import {
@@ -173,6 +174,19 @@ export async function startDaemon(): Promise<() => void> {
     const { stdout } = await execFileAsync("claude", args, { cwd: codebasePath, maxBuffer: 10 * 1024 * 1024 });
     return stdout;
   };
+  // On unless explicitly disabled, matching AUTO_READY_LABEL. Reuses judgeRun,
+  // so AC_JUDGE_MODEL selects the model here too.
+  const autoDependencyScan = !["false", "off", "no", "0"].includes(
+    envOr("AUTO_DEPENDENCY_SCAN", "true").toLowerCase(),
+  );
+  const dependencyScan = autoDependencyScan
+    ? { scan: (identifier: string, description: string) => scanDescription(judgeRun, identifier, description) }
+    : null;
+  console.log(
+    dependencyScan
+      ? "[yimbot] dependency scan ON: description-stated blockers become Linear relations"
+      : "[yimbot] dependency scan OFF",
+  );
   // Gated on the same gh-availability signal as review/cleanup: if gh is missing,
   // prReview is null and the advance step stays off.
   const advance =
@@ -259,7 +273,7 @@ export async function startDaemon(): Promise<() => void> {
     advance,
     ready,
     blocked,
-    dependencyScan: null,
+    dependencyScan,
   });
 
   // Re-entrancy guard: a sync that runs longer than one interval must not overlap

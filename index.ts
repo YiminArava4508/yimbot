@@ -7,8 +7,17 @@ import { envOr } from "./src/env.ts";
 import { emitEvent } from "./src/events.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
-import { runTui } from "./src/tui.ts";
-import { listGitWorktrees, listTmuxSessions, liveWorktreeKeys, resolveSessionForKey, switchToSession } from "./src/watcher.ts";
+import { returnKey, runTui } from "./src/tui.ts";
+import {
+  bindReturnKey,
+  currentTmuxSession,
+  listGitWorktrees,
+  listTmuxSessions,
+  liveWorktreeKeys,
+  resolveSessionForKey,
+  switchToSession,
+  unbindReturnKey,
+} from "./src/watcher.ts";
 
 if (!isConfigured(process.env)) {
   const config = await runSetup();
@@ -43,8 +52,14 @@ if (process.stdout.isTTY) {
   redirectConsoleToFile();
   const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
   const stop = await startDaemon();
+  const returnKeyName = returnKey();
+  const boardSession = currentTmuxSession();
+  if (boardSession && !bindReturnKey(boardSession, returnKeyName)) {
+    console.error(`[tui] could not bind prefix+${returnKeyName} to return to session '${boardSession}'`);
+  }
   runTui({
     onQuit: () => {
+      if (boardSession) unbindReturnKey(returnKeyName);
       stop();
       process.exit(0);
     },

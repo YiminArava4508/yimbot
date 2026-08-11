@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
 import {
+  bindReturnKey,
   buildSessionName,
   claimOnce,
   type ClaimDeps,
   continuationSessionName,
+  currentTmuxSession,
   type DependencyScanDeps,
   type DeployDeps,
   deployOnce,
@@ -22,7 +24,10 @@ import {
   reconcileBlockedInProgress,
   type ReconcileDeps,
   resolveSessionForKey,
+  returnKeyBindArgs,
+  returnKeyUnbindArgs,
   sanitizeBranchToSession,
+  unbindReturnKey,
   type WatchState,
   worktreeKeysUnder,
 } from "./watcher.ts";
@@ -665,6 +670,74 @@ test("reconcile does not unlatch when the move fails", async () => {
   await reconcileBlockedInProgress(deps);
   assert.equal(unlatched.length, 0);
   assert.ok(logs.some((l) => l.includes("failed to move ENG-5 back")));
+});
+
+test("returnKeyBindArgs binds in the prefix table and exact-matches the session", () => {
+  assert.deepEqual(returnKeyBindArgs("yimbot", "Y"), [
+    "bind-key", "-T", "prefix", "Y", "switch-client", "-t", "=yimbot",
+  ]);
+});
+
+test("returnKeyBindArgs carries a custom key through unchanged", () => {
+  assert.deepEqual(returnKeyBindArgs("board", "F12"), [
+    "bind-key", "-T", "prefix", "F12", "switch-client", "-t", "=board",
+  ]);
+});
+
+test("returnKeyUnbindArgs removes the binding from the prefix table", () => {
+  assert.deepEqual(returnKeyUnbindArgs("Y"), ["unbind-key", "-T", "prefix", "Y"]);
+});
+
+test("currentTmuxSession is null when TMUX is unset", () => {
+  const prevTmux = process.env.TMUX;
+  const prevPane = process.env.TMUX_PANE;
+  delete process.env.TMUX;
+  process.env.TMUX_PANE = "%7";
+  try {
+    assert.equal(currentTmuxSession(), null);
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+    if (prevPane === undefined) delete process.env.TMUX_PANE;
+    else process.env.TMUX_PANE = prevPane;
+  }
+});
+
+test("currentTmuxSession is null when TMUX_PANE is unset", () => {
+  const prevTmux = process.env.TMUX;
+  const prevPane = process.env.TMUX_PANE;
+  process.env.TMUX = "/tmp/tmux-1000/default,123,0";
+  delete process.env.TMUX_PANE;
+  try {
+    assert.equal(currentTmuxSession(), null);
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+    if (prevPane === undefined) delete process.env.TMUX_PANE;
+    else process.env.TMUX_PANE = prevPane;
+  }
+});
+
+test("bindReturnKey returns false when TMUX is unset, without shelling out", () => {
+  const prevTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  try {
+    assert.equal(bindReturnKey("yimbot", "Y"), false);
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+  }
+});
+
+test("unbindReturnKey is a no-op when TMUX is unset, without shelling out", () => {
+  const prevTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  try {
+    assert.equal(unbindReturnKey("Y"), undefined);
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+  }
 });
 
 test("claimOnce skips the scan and claims when the marker comment is already present", async () => {

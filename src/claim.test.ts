@@ -7,6 +7,7 @@ function todo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIss
   return {
     identifier: `ENG-${overrides.id}`,
     title: `Issue ${overrides.id}`,
+    description: "",
     priority: 0,
     sortOrder: 0,
     labels: [],

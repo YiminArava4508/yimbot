@@ -440,6 +440,7 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
   return {
     identifier: `ENG-${overrides.id}`,
     title: `Issue ${overrides.id}`,
+    description: "",
     priority: 0,
     sortOrder: 0,
     labels: [],

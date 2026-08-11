@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   countAssignedInState,
+  createBlocksRelation,
   fetchAcCommentBody,
   fetchCycleTodoIssues,
   fetchInProgressIssuesWithBlockers,
@@ -114,6 +115,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
             id: "i-1",
             identifier: "ENG-42",
             title: "Fix login",
+            description: "some body",
             priority: 2,
             sortOrder: 7.5,
             labels: { nodes: [{ name: "frontend" }, { name: "migration" }] },
@@ -133,6 +135,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
       id: "i-1",
       identifier: "ENG-42",
       title: "Fix login",
+      description: "some body",
       priority: 2,
       sortOrder: 7.5,
       labels: ["frontend", "migration"],
@@ -285,4 +288,71 @@ test("upsertAcComment creates when no marked comment exists", async () => {
   }) as unknown as typeof fetch;
   await upsertAcComment("key", "uuid-1", "MARK", "MARK new", f);
   assert.ok(calls.some((q) => q.includes("commentCreate")));
+});
+
+test("fetchCycleTodoIssues carries the description through", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "Fix login",
+            description: "blocked by ENG-41",
+            priority: 2,
+            sortOrder: 7.5,
+            labels: { nodes: [] },
+            inverseRelations: { nodes: [] },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchCycleTodoIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.equal(issues[0].description, "blocked by ENG-41");
+});
+
+test("fetchCycleTodoIssues defaults a null description to empty string", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "Fix login",
+            description: null,
+            priority: 2,
+            sortOrder: 7.5,
+            labels: { nodes: [] },
+            inverseRelations: { nodes: [] },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchCycleTodoIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.equal(issues[0].description, "");
+});
+
+test("createBlocksRelation sends the blocker as issueId and the blocked ticket as relatedIssueId", async () => {
+  let vars: Record<string, unknown> = {};
+  let query = "";
+  const f = (async (_url: string, init: { body: string }) => {
+    const parsed = JSON.parse(init.body) as { query: string; variables: Record<string, unknown> };
+    query = parsed.query;
+    vars = parsed.variables;
+    return { ok: true, json: async () => ({ data: { issueRelationCreate: { success: true } } }) };
+  }) as unknown as typeof fetch;
+  await createBlocksRelation("key", "uuid-blocker", "uuid-blocked", f);
+  assert.equal(vars.issueId, "uuid-blocker");
+  assert.equal(vars.relatedIssueId, "uuid-blocked");
+  assert.ok(query.includes("issueRelationCreate"));
+  assert.ok(query.includes("type: blocks"));
+});
+
+test("createBlocksRelation throws when the mutation reports failure", async () => {
+  const f = fakeFetch({ data: { issueRelationCreate: { success: false } } });
+  await assert.rejects(() => createBlocksRelation("key", "uuid-blocker", "uuid-blocked", f), /issueRelationCreate failed/);
 });

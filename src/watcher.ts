@@ -295,30 +295,32 @@ export type ClaimDeps = {
 // with no session and stalls the claim step until a human intervenes. This only
 // happens on a manual backward move; the normal forward flow is unaffected.
 // Adjudicate the picked ticket's description and record any blocker it names as
-// a real Linear relation. Returns whether the claim may proceed.
+// a real Linear relation.
 //
-// Detection failures fail open, so a broken scanner never halts the claim step.
-// A write failure after blockers were identified fails closed: the ticket is
-// known blocked, and claiming it anyway is the bug this whole step prevents.
-//
-// Known edge: if the marker write fails after relations were created, and the
-// blocker then merges before the ticket is picked again, the ticket is scanned a
-// second time and the same relation is re-sent. The log line above makes that
-// diagnosable; it is self-limiting and does not change the outcome.
+// Detection failures fail open ("claim"), so a broken scanner never halts the
+// claim step. Blockers recorded successfully fail closed for this tick only
+// ("deferred"): the ticket is now marked, so it is excluded from future scans by
+// the marker check above. A write failure after blockers were identified also
+// fails closed ("skip"), but since no marker was written the ticket would be
+// rescanned and fail closed again every heartbeat forever — claimOnce latches a
+// "skip" verdict into the per-process skip set so this ticket alone stalls,
+// not the whole claim step.
+type BlockerVerdict = "claim" | "deferred" | "skip";
+
 async function recordInferredBlockers(
   scan: DependencyScanDeps,
   next: CycleTodoIssue,
   log: (msg: string) => void,
-): Promise<boolean> {
+): Promise<BlockerVerdict> {
   let blockers: string[];
   try {
-    if ((await scan.fetchMarker(next.id)) !== "") return true;
+    if ((await scan.fetchMarker(next.id)) !== "") return "claim";
     blockers = await scan.scan(next.identifier, next.description);
   } catch (err) {
     log(`dependency scan failed for ${next.identifier}: ${err}`);
-    return true;
+    return "claim";
   }
-  if (blockers.length === 0) return true;
+  if (blockers.length === 0) return "claim";
 
   const recorded: string[] = [];
   try {
@@ -333,18 +335,30 @@ async function recordInferredBlockers(
       await scan.createRelation(blockerId, next.id);
       recorded.push(identifier);
     }
-    if (recorded.length === 0) return true;
+    if (recorded.length === 0) return "claim";
     const lines = candidateLines(normalizeDescription(next.description));
     await scan.writeMarker(next.id, renderDependencyComment(next.identifier, recorded, lines));
   } catch (err) {
     log(`dependency scan: failed to record blockers for ${next.identifier}: ${err}`);
-    return false;
+    return "skip";
   }
   log(`inferred ${next.identifier} blocked by ${recorded.join(", ")} from its description; wrote relation`);
-  return false;
+  return "deferred";
 }
 
-export async function claimOnce(deps: ClaimDeps): Promise<void> {
+// Per-process latch of tickets a write-failed dependency-scan adjudication has
+// skipped. Without this, a ticket whose marker write keeps failing is the
+// deterministic top pick forever: every heartbeat rescans it (an LLM call),
+// fails closed on the same write, and the claim step never reaches any other
+// ticket. Latching it here lets the next tick fall through to the
+// next-priority ticket instead, so only the broken ticket stalls.
+export type ClaimState = { skip: Set<string> };
+
+export function freshClaimState(): ClaimState {
+  return { skip: new Set() };
+}
+
+export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<void> {
   if (!deps.autoClaim) return;
 
   try {
@@ -361,6 +375,7 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
     deps.log(`claim failed: ${err}`);
     return;
   }
+  todos = todos.filter((t) => !state.skip.has(t.id));
 
   let merged: Set<string> | null = null;
   if (deps.fetchMergedIdentifiers) {
@@ -382,7 +397,11 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
 
   // Runs on this one ticket only. claimOnce already returned early at the WIP
   // cap, so this is at most one adjudication per heartbeat.
-  if (deps.dependencyScan && !(await recordInferredBlockers(deps.dependencyScan, next, deps.log))) return;
+  if (deps.dependencyScan) {
+    const verdict = await recordInferredBlockers(deps.dependencyScan, next, deps.log);
+    if (verdict === "skip") state.skip.add(next.id);
+    if (verdict !== "claim") return;
+  }
 
   try {
     await deps.moveToInProgress(next);
@@ -1106,6 +1125,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
+  const claimState = freshClaimState();
   const { claim } = config;
   const viewerId = config.progressContext.viewerId;
   const fetchMergedIdentifiers = config.blocked
@@ -1188,7 +1208,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps
       // the WIP cap accounting correct.
-      await claimOnce(claimDeps);
+      await claimOnce(claimState, claimDeps);
     } finally {
       running = false;
     }

@@ -22,6 +22,22 @@ export function footerHint(key: string): string {
   return `j/k move   g/G top/bottom   enter open   f flag/unflag   q quit   prefix+${key} returns here`;
 }
 
+// height: 1 + wrap: false so a hint too long for the terminal clips instead of
+// wrapping. blessed.text defaults to shrink: true, which would otherwise grow
+// the element upward from bottom: 0 into the table's last row (bottom: 1).
+// Exported so the layout test below exercises this exact object, not a copy.
+export function footerLayout(key: string): Record<string, unknown> {
+  return {
+    bottom: 0,
+    left: 0,
+    width: "100%",
+    height: 1,
+    wrap: false,
+    content: footerHint(key),
+    style: { fg: "white" },
+  };
+}
+
 function fmtTime(ts: number): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -80,13 +96,7 @@ export function runTui(opts: {
 
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
   const status = blessed.text({ parent: screen, top: 0, right: 0, content: "live" });
-  const footer = blessed.text({
-    parent: screen,
-    bottom: 0,
-    left: 0,
-    content: footerHint(returnKey()),
-    style: { fg: "white" },
-  });
+  const footer = blessed.text({ parent: screen, ...footerLayout(returnKey()) });
   void footer;
 
   let currentRows: BoardRow[] = [];

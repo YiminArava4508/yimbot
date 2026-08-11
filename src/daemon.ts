@@ -171,7 +171,11 @@ export async function startDaemon(): Promise<() => void> {
   const judgeRun: JudgeRunner = async (prompt) => {
     const args = ["-p", prompt];
     if (judgeModel) args.push("--model", judgeModel);
-    const { stdout } = await execFileAsync("claude", args, { cwd: codebasePath, maxBuffer: 10 * 1024 * 1024 });
+    const { stdout } = await execFileAsync("claude", args, {
+      cwd: codebasePath,
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 120_000,
+    });
     return stdout;
   };
   // On unless explicitly disabled, matching AUTO_READY_LABEL. Reuses judgeRun,

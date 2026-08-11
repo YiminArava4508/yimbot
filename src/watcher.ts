@@ -280,20 +280,6 @@ export type ClaimDeps = {
   log: (msg: string) => void;
 };
 
-// One tick of the claim step. Gated by the WIP cap: acts while fewer than
-// maxInProgress tickets are In Progress (there is no review-queue cap — in-review
-// PRs are worked automatically by the review step). It claims at most one ticket
-// per tick, so the count climbs toward the cap one heartbeat at a time. When the
-// gate is open it selects the top eligible current-cycle Todo and moves it to In
-// Progress — it never launches anything itself.
-//
-// Known limitation: launching relies on the deploy step detecting the Todo→In
-// Progress transition, and that step only fires once per issue per daemon
-// lifetime (its seen-set is never cleared). So if a human moves an
-// already-launched ticket back to Todo, the claim step can re-pick it and move
-// it to In Progress but the deploy step will ignore it — it stays In Progress
-// with no session and stalls the claim step until a human intervenes. This only
-// happens on a manual backward move; the normal forward flow is unaffected.
 // Adjudicate the picked ticket's description and record any blocker it names as
 // a real Linear relation.
 //
@@ -307,11 +293,33 @@ export type ClaimDeps = {
 // not the whole claim step.
 type BlockerVerdict = "claim" | "deferred" | "skip";
 
+// Narrow the cited source lines to the ones naming a blocker actually recorded,
+// not every candidate line, so the marker's audit trail matches what was really
+// acted on (a description can name a rejected blocker alongside an accepted
+// one). Whole-identifier boundary match, consistent with parseDependencies in
+// dependency.ts. Falls back to the full candidate list if nothing matches,
+// rather than emitting an empty Source section.
+function linesForRecorded(lines: string[], recorded: string[]): string[] {
+  const ids = recorded.map((id) => id.toUpperCase());
+  const filtered = lines.filter((line) => {
+    const upper = line.toUpperCase();
+    return ids.some((id) => new RegExp(`\\b${id}\\b`).test(upper));
+  });
+  return filtered.length > 0 ? filtered : lines;
+}
+
 async function recordInferredBlockers(
   scan: DependencyScanDeps,
   next: CycleTodoIssue,
   log: (msg: string) => void,
 ): Promise<BlockerVerdict> {
+  // Free prefilter first: a description with no candidate lines has nothing to
+  // scan, so skip the marker fetch entirely rather than paying a network call
+  // for the common case of a description that never mentions another ticket.
+  const normalized = normalizeDescription(next.description);
+  const lines = candidateLines(normalized);
+  if (lines.length === 0) return "claim";
+
   let blockers: string[];
   try {
     if ((await scan.fetchMarker(next.id)) !== "") return "claim";
@@ -336,8 +344,10 @@ async function recordInferredBlockers(
       recorded.push(identifier);
     }
     if (recorded.length === 0) return "claim";
-    const lines = candidateLines(normalizeDescription(next.description));
-    await scan.writeMarker(next.id, renderDependencyComment(next.identifier, recorded, lines));
+    await scan.writeMarker(
+      next.id,
+      renderDependencyComment(next.identifier, recorded, linesForRecorded(lines, recorded)),
+    );
   } catch (err) {
     log(`dependency scan: failed to record blockers for ${next.identifier}: ${err}`);
     return "skip";
@@ -358,6 +368,20 @@ export function freshClaimState(): ClaimState {
   return { skip: new Set() };
 }
 
+// One tick of the claim step. Gated by the WIP cap: acts while fewer than
+// maxInProgress tickets are In Progress (there is no review-queue cap — in-review
+// PRs are worked automatically by the review step). It claims at most one ticket
+// per tick, so the count climbs toward the cap one heartbeat at a time. When the
+// gate is open it selects the top eligible current-cycle Todo and moves it to In
+// Progress — it never launches anything itself.
+//
+// Known limitation: launching relies on the deploy step detecting the Todo→In
+// Progress transition, and that step only fires once per issue per daemon
+// lifetime (its seen-set is never cleared). So if a human moves an
+// already-launched ticket back to Todo, the claim step can re-pick it and move
+// it to In Progress but the deploy step will ignore it — it stays In Progress
+// with no session and stalls the claim step until a human intervenes. This only
+// happens on a manual backward move; the normal forward flow is unaffected.
 export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<void> {
   if (!deps.autoClaim) return;
 

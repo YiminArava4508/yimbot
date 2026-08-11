@@ -686,6 +686,23 @@ test("claimOnce skips the scan and claims when the marker comment is already pre
   assert.equal(moved.length, 1);
 });
 
+test("claimOnce does not fetch the marker when the description has no candidate lines", async () => {
+  let markerFetched = false;
+  const { scan } = scanDeps({
+    fetchMarker: async () => {
+      markerFetched = true;
+      return "";
+    },
+  });
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1, description: "Just a plain description." })],
+    dependencyScan: scan,
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(markerFetched, false, "no candidate lines means nothing to scan, so skip the network call");
+  assert.equal(moved.length, 1);
+});
+
 test("claimOnce claims when the scan finds no blockers", async () => {
   const { scan, relations, markers } = scanDeps({ scan: async () => [] });
   const { deps, moved } = claimDeps({
@@ -713,6 +730,26 @@ test("claimOnce writes the relation and the marker and does not claim when block
   assert.ok(markers[0][1].includes("ENG-1319"));
   assert.equal(moved.length, 0, "a ticket just found to be blocked must not be claimed");
   assert.ok(logs.some((l) => l.includes("ENG-1320") && l.includes("ENG-1319")));
+});
+
+test("claimOnce cites only the lines for blockers actually recorded in the marker", async () => {
+  const { scan, markers } = scanDeps();
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({
+        id: "1",
+        priority: 1,
+        identifier: "ENG-1320",
+        description: "Blocks ENG-1132 downstream.\nBlocked by ENG-1319 first.",
+      }),
+    ],
+    dependencyScan: scan,
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 0);
+  assert.equal(markers.length, 1);
+  assert.ok(markers[0][1].includes("ENG-1319"), "must cite the accepted blocker's line");
+  assert.ok(!markers[0][1].includes("ENG-1132"), "must not cite the rejected line as a source");
 });
 
 test("claimOnce falls open and claims when the scan itself errors", async () => {

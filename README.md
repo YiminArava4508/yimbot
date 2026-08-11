@@ -204,6 +204,17 @@ each other's binding (the second to quit leaves the first with none), and
 renaming the board's tmux session after startup leaves the binding pointing at
 the old name until the board restarts.
 
+A `⚑` on a row means that ticket's session raised a notification that looks like
+it wants you: a permission the classifier would not auto-approve, a question
+dialog, a subagent asking for input, or a hand-back. The rule errs toward
+flagging, so a notification type yimbot does not recognize raises it too. The
+noisy ones never do: the ~60s idle nudge, the computer-use banners, and the auth
+and completion notices, so a session waiting on its own background agents stays
+quiet. The gap that leaves: a session that ends its turn with a plain-text
+question and no tool call raises nothing, and shows only as a climbing `DUR`.
+Replying in the session or its next status change clears the flag, and `f`
+toggles it by hand on the selected row.
+
 When stdout is not a TTY (for example `pnpm start > daemon.log 2>&1 &`), the
 board is skipped and yimbot runs headless as before.
 
@@ -243,9 +254,10 @@ links the session launcher and pickup-ticket skill into place, then writes `.env
 and continues into the daemon. Re-run it anytime with `pnpm onboard` (backs up the
 old `.env`). You can still hand-edit `.env` from `.env.example` if you prefer.
 
-Spawned sessions launch `claude` with `--dangerously-skip-permissions` so the
-pickup / PR-fix flows run unattended (no permission prompt can hang a headless
-session). As a safety net that never prompts, the launcher also passes
+Spawned sessions launch `claude` with `--permission-mode auto` so the pickup /
+PR-fix flows run unattended: the classifier auto-approves safe actions, and
+anything it escalates raises the board's `⚑` rather than hanging unnoticed. As a
+safety net that never prompts, the launcher also passes
 `--settings` a deny-list (`~/.config/yimbot/session-settings.json`, symlinked by
 `pnpm onboard`) that hard-blocks catastrophic commands (force-push, `git clean`,
 `rm -rf /` or `~`, `terraform destroy`, `kubectl delete`, `docker` prune/volume

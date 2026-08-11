@@ -118,6 +118,34 @@ emit_hook_event() {
   printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"}\n' "$ts" "$kind" "$key" "$key" >> "$EVENTS_LOG" 2>/dev/null || true
 }
 
+# Notification types that do not mean a human is blocking: the ~60s idle prompt
+# (which an autonomous session hits routinely while its background agents work),
+# the computer-use banners, a push notification the session itself sent, and the
+# auth and completion notices.
+NOTIFY_QUIET="idle_prompt auth_success elicitation_complete elicitation_response agent_completed \
+computer_use_enter computer_use_exit push_notification"
+
+# Claude Code Notification hook: reads the hook payload on stdin and emits
+# needs_input only when the notification means the session is waiting on a
+# person. Anything not in NOTIFY_QUIET flags, including a type not in the
+# documented enum (worker_permission_prompt, say), so a new kind of block is
+# never silently swallowed.
+emit_notification_event() {
+  local payload="" type=""
+  # No payload piped in means no notification fired: a hand-run in a terminal
+  # must not stamp a flag on whatever branch it happens to be sitting in.
+  [ -t 0 ] && return 0
+  payload=$(cat 2>/dev/null)
+  # Match in bash rather than through sed: takes the first occurrence only, so a
+  # pretty-printed payload repeating the key can't yield a multi-line type that
+  # matches nothing below.
+  if [[ $payload =~ \"notification_type\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    type=${BASH_REMATCH[1]}
+  fi
+  case " $NOTIFY_QUIET " in *" $type "*) return 0 ;; esac
+  emit_hook_event needs_input
+}
+
 # Fail fast if this session hands off to a skill that isn't installed, rather than
 # launching a session that will stall on an unknown skill. No skill named: no-op.
 verify_seed_skill() {

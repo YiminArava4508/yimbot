@@ -112,6 +112,59 @@ rm -f "$HOOK_LOG_HB"
 ( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
 assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"
 
+# emit_notification_event filters Claude Code's Notification payload: only a
+# notification that means a human is blocking becomes a needs_input line.
+assert_defined emit_notification_event
+notify_payload() {
+  printf '{"session_id":"abc","hook_event_name":"Notification","message":"m","notification_type":"%s"}' "$1"
+}
+NOTIFY_QUIET_LOG=$(mktemp)
+for t in idle_prompt auth_success elicitation_complete elicitation_response agent_completed \
+         computer_use_enter computer_use_exit push_notification; do
+  ( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_QUIET_LOG" emit_notification_event <<<"$(notify_payload "$t")" )
+done
+assert_eq "$(wc -c < "$NOTIFY_QUIET_LOG" | tr -d ' ')" "0" "quiet notification types write nothing"
+
+# A pretty-printed payload repeating the key must still resolve to one type: the
+# match takes the first occurrence, so the quiet list still matches.
+NOTIFY_MULTILINE_LOG=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_MULTILINE_LOG" emit_notification_event <<<'{
+  "notification_type": "idle_prompt",
+  "agent": { "notification_type": "idle_prompt" }
+}' )
+assert_eq "$(wc -c < "$NOTIFY_MULTILINE_LOG" | tr -d ' ')" "0" "a multi-line payload still reads as quiet"
+rm -f "$NOTIFY_MULTILINE_LOG"
+
+# worker_permission_prompt is emitted by the CLI but absent from its documented
+# enum: the ignore-list must flag it rather than swallow it.
+for t in permission_prompt elicitation_dialog agent_needs_input worker_permission_prompt; do
+  NOTIFY_ONE_LOG=$(mktemp)
+  ( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_ONE_LOG" emit_notification_event <<<"$(notify_payload "$t")" )
+  assert_eq "$(grep -c '"kind":"needs_input"' "$NOTIFY_ONE_LOG")" "1" "$t emits one needs_input"
+  assert_eq "$(grep -c '"key":"ENG-7"' "$NOTIFY_ONE_LOG")" "1" "$t line is keyed ENG-7 from the branch"
+  rm -f "$NOTIFY_ONE_LOG"
+done
+
+# Ignore-list fallthrough: a type this build has never seen, a payload with no
+# notification_type, and empty stdin all still flag rather than going quiet.
+NOTIFY_FALLTHROUGH_LOG=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_FALLTHROUGH_LOG" emit_notification_event <<<"$(notify_payload some_future_block)" )
+( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_FALLTHROUGH_LOG" emit_notification_event <<<'{"hook_event_name":"Notification","message":"m"}' )
+( cd "$HOOK_REPO" && EVENTS_LOG="$NOTIFY_FALLTHROUGH_LOG" emit_notification_event </dev/null )
+assert_eq "$?" "0" "empty stdin exits 0"
+assert_eq "$(grep -c '"kind":"needs_input"' "$NOTIFY_FALLTHROUGH_LOG")" "3" "unknown type, absent type, and empty stdin all flag"
+
+# A terminal on stdin means no notification fired at all (someone sourced the
+# script and called the function by hand), which must not stamp a flag. script(1)
+# supplies the pty; without one this asserts nothing, so skip it when absent.
+if command -v script >/dev/null 2>&1; then
+  NOTIFY_TTY_LOG=$(mktemp)
+  script -qec "cd $HOOK_REPO && EVENTS_LOG=$NOTIFY_TTY_LOG bash -c 'source $(dirname "$0")/new-session.sh; emit_notification_event'" /dev/null >/dev/null 2>&1
+  assert_eq "$(wc -c < "$NOTIFY_TTY_LOG" | tr -d ' ')" "0" "a tty on stdin writes nothing"
+  rm -f "$NOTIFY_TTY_LOG"
+fi
+rm -f "$NOTIFY_QUIET_LOG" "$NOTIFY_FALLTHROUGH_LOG"
+
 # A branch name containing a double quote (legal in git refs) must not break
 # the JSON line: event_key_from_branch's fallthrough echoes it raw, so
 # emit_hook_event must escape it before interpolating.
@@ -124,7 +177,13 @@ rm -rf "$HOOK_REPO" "$HOOK_LOG" "$HOOK_LOG2"
 # The session settings file parses and wires both attention hooks to the emitter.
 SETTINGS_JSON="$(cd "$(dirname "$0")" && pwd)/../settings/session-settings.json"
 assert_eq "$(node -e 'const h=require(process.argv[1]).hooks||{}; process.stdout.write(String(!!h.Notification&&!!h.UserPromptSubmit))' "$SETTINGS_JSON")" "true" "settings define both attention hooks"
-assert_eq "$(grep -c 'emit_hook_event needs_input' "$SETTINGS_JSON")" "1" "Notification hook emits needs_input"
+# Read the Notification entry's own command rather than grepping the whole file,
+# so wiring another hook to emit_hook_event never trips these.
+NOTIFY_CMD=$(node -e 'process.stdout.write(require(process.argv[1]).hooks.Notification[0].hooks[0].command)' "$SETTINGS_JSON")
+assert_eq "$(printf '%s' "$NOTIFY_CMD" | grep -c 'then emit_notification_event')" "1" "Notification hook runs the notification filter"
+# Fallback: a stale ~/new-session.sh without the filter must degrade to the old
+# unconditional flag rather than silently disabling the hook.
+assert_eq "$(printf '%s' "$NOTIFY_CMD" | grep -c 'elif command -v emit_hook_event .* then emit_hook_event needs_input')" "1" "Notification hook falls back to the generic emitter"
 assert_eq "$(grep -c 'emit_hook_event input_received' "$SETTINGS_JSON")" "1" "UserPromptSubmit hook emits input_received"
 
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

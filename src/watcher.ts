@@ -764,7 +764,11 @@ export function currentTmuxSession(): string | null {
   }
 }
 
+// Mirrors switchToSession's guard: outside tmux there is no server this
+// process belongs to, so shelling out would hit whatever default socket tmux
+// picks rather than the intended one.
 export function bindReturnKey(session: string, key: string): boolean {
+  if (!process.env.TMUX) return false;
   try {
     execFileSync("tmux", returnKeyBindArgs(session, key), { stdio: "ignore" });
     return true;
@@ -774,6 +778,7 @@ export function bindReturnKey(session: string, key: string): boolean {
 }
 
 export function unbindReturnKey(key: string): void {
+  if (!process.env.TMUX) return;
   try {
     execFileSync("tmux", returnKeyUnbindArgs(key), { stdio: "ignore" });
   } catch {

@@ -20,13 +20,13 @@ import {
   pollOnce,
   porcelainHasNonMarkerChanges,
   reconcileBlockedInProgress,
-  returnKeyBindArgs,
-  returnKeyUnbindArgs,
   type ReconcileDeps,
   resolveSessionForKey,
+  returnKeyBindArgs,
+  returnKeyUnbindArgs,
   sanitizeBranchToSession,
-  type WatchState,
   unbindReturnKey,
+  type WatchState,
   worktreeKeysUnder,
 } from "./watcher.ts";
 
@@ -694,5 +694,27 @@ test("currentTmuxSession is null when TMUX_PANE is unset", () => {
     else process.env.TMUX = prevTmux;
     if (prevPane === undefined) delete process.env.TMUX_PANE;
     else process.env.TMUX_PANE = prevPane;
+  }
+});
+
+test("bindReturnKey returns false when TMUX is unset, without shelling out", () => {
+  const prevTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  try {
+    assert.equal(bindReturnKey("yimbot", "Y"), false);
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+  }
+});
+
+test("unbindReturnKey is a no-op when TMUX is unset, without shelling out", () => {
+  const prevTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  try {
+    assert.equal(unbindReturnKey("Y"), undefined);
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
   }
 });

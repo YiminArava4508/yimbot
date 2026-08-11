@@ -52,14 +52,14 @@ if (process.stdout.isTTY) {
   redirectConsoleToFile();
   const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
   const stop = await startDaemon();
-  const key = returnKey();
+  const returnKeyName = returnKey();
   const boardSession = currentTmuxSession();
-  if (boardSession && !bindReturnKey(boardSession, key)) {
-    console.error(`[tui] could not bind prefix+${key} to return to session '${boardSession}'`);
+  if (boardSession && !bindReturnKey(boardSession, returnKeyName)) {
+    console.error(`[tui] could not bind prefix+${returnKeyName} to return to session '${boardSession}'`);
   }
   runTui({
     onQuit: () => {
-      if (boardSession) unbindReturnKey(key);
+      if (boardSession) unbindReturnKey(returnKeyName);
       stop();
       process.exit(0);
     },

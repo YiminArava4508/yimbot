@@ -100,6 +100,14 @@ HOOK_LOG=$(mktemp)
 assert_eq "$(wc -l < "$HOOK_LOG" | tr -d ' ')" "1" "emit_hook_event writes one line"
 assert_eq "$(grep -c '"kind":"needs_input"' "$HOOK_LOG")" "1" "line carries the kind"
 assert_eq "$(grep -c '"key":"ENG-7"' "$HOOK_LOG")" "1" "line is keyed ENG-7 from the branch"
+# The hand-back kinds ride the same generic emitter, keyed from the branch.
+HOOK_LOG_HB=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG_HB" emit_hook_event needs_decision )
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG_HB" emit_hook_event review_findings )
+assert_eq "$(grep -c '"kind":"needs_decision"' "$HOOK_LOG_HB")" "1" "emit_hook_event writes needs_decision"
+assert_eq "$(grep -c '"kind":"review_findings"' "$HOOK_LOG_HB")" "1" "emit_hook_event writes review_findings"
+assert_eq "$(grep -c '"key":"ENG-7"' "$HOOK_LOG_HB")" "2" "hand-back lines are keyed ENG-7 from the branch"
+rm -f "$HOOK_LOG_HB"
 # No EVENTS_LOG is a silent no-op, not an error.
 ( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
 assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"

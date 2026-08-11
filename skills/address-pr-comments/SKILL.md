@@ -10,7 +10,10 @@ Take an open pull request from "has unresolved review comments" to "comments
 addressed, pushed, threads resolved, review re-requested, ready to test." The
 worktree is already checked out on the PR's branch, and the seed prompt gave you
 the PR number. This runs fully automatically; the one thing you never do is
-falsely resolve a comment you did not actually address.
+falsely resolve a comment you did not actually address. The other thing you
+never do is bombard the PR with verbose, AI-generated explanations: thread
+replies are capped tight (see steps 4 and 7), and anything the reviewer did not
+literally ask about never goes on the PR at all.
 
 ## Flow
 
@@ -48,7 +51,7 @@ falsely resolve a comment you did not actually address.
    - If set, dispatch the code changes to subagents on that model via
      `superpowers:subagent-driven-development`. Subagents do not inherit the
      global CLAUDE.md, so include this rule in every subagent prompt: never use
-     em dashes (—) or en dashes (–) in any output, including thread replies,
+     em dashes or en dashes in any output, including thread replies,
      code comments, and commit messages.
    - If unset, implement in-session.
    Use `superpowers:test-driven-development` for anything that changes behavior.
@@ -56,10 +59,21 @@ falsely resolve a comment you did not actually address.
    Keep a running record of which thread id maps to which change, **and the exact
    file paths you edit**; you will stage only those paths in step 6.
 
-4. **Safety, never force.** If a thread needs a human decision (an open question,
-   a disagreement, a request you cannot confidently satisfy), leave it
-   **unresolved**, optionally reply on the thread explaining the situation, and
-   note it in the final summary. Do not resolve a thread you did not address.
+   As you work each thread, put it in one of the first two categories below;
+   separately, collect anything in the third. Later steps act on the category:
+   - **Fixed in code** - you fully satisfied the ask with a code change.
+   - **Needs a human decision** - a request you cannot confidently satisfy, a
+     disagreement, or an open question. Do not guess; do not half-fix it.
+   - **Extra observation** (collected separately, not a per-thread bucket) -
+     anything you notice that is beyond any thread's literal ask (a related
+     bug, a risky pattern, a follow-up idea). Collect these; they never go on
+     the PR.
+
+4. **Threads that need a human decision.** Leave the thread **unresolved**. Post
+   one short, honest reply on it stating that you have flagged it for a human to
+   handle manually (one or two sentences, no attempt to resolve it, no
+   reasoning dump). Note it for the summary and for the hand-back in step 9. Do
+   not resolve a thread you did not address, and never force a guess into code.
 
 5. **Get tests green.** Run the project's test suite (or the affected tests) and
    loop until green. Do not push red.
@@ -86,7 +100,11 @@ falsely resolve a comment you did not actually address.
    report in the summary that the branch diverged and needs a human. Do not force
    push.
 
-7. **Resolve the threads you addressed**, one mutation per thread id from step 3:
+7. **Resolve the threads you fixed in code.** If a reply genuinely helps, post
+   at most one short line stating only what changed, e.g. `Fixed in <commit>`.
+   No reasoning, no restating the comment, no extras; most threads need no reply
+   at all beyond being resolved. Then resolve, one mutation per thread id from
+   step 3:
 
    ```bash
    gh api graphql -f query='mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}){ thread { isResolved } } }' -f id=THREAD_ID
@@ -100,19 +118,33 @@ falsely resolve a comment you did not actually address.
    gh pr edit <number> --add-reviewer LOGIN
    ```
 
-9. **Flag the session ready to test** so the user knows they can run local dev
-   here:
+9. **Hand back to the operator, or flag ready to test.** Source the launcher so
+   the emitter is available: `source "$HOME/new-session.sh" 2>/dev/null`.
+   - If any thread needs a human decision (step 4), set the stage and raise the
+     board flag:
+     ```bash
+     emit_hook_event needs_decision
+     emit_hook_event flagged
+     ```
+   - Else if you collected any extra observations (step 3) but every thread was
+     fixed:
+     ```bash
+     emit_hook_event review_findings
+     emit_hook_event flagged
+     ```
+   - Else (everything cleanly fixed, nothing to hand back) flag ready to test so
+     the user knows they can run local dev here:
+     ```bash
+     tmux set-option -t "$(tmux display-message -p '#{session_name}')" @feature_status "#[fg=cyan]▶"
+     ```
+   Emit the status line **before** the `flagged` line: the board fold clears the
+   flag on a status event and re-raises it on the trailing `flagged`, so the
+   order is what makes STATUS and the flag both show.
 
-   ```bash
-   tmux set-option -t "$(tmux display-message -p '#{session_name}')" @feature_status "#[fg=cyan]▶"
-   ```
-
-10. **Close the fix session (final step).** Everything above is done: comments
-    addressed, tests green, pushed, addressed threads resolved, review
-    re-requested, ready-to-test flagged. Now end this fix session so a later
-    round of new comments can re-trigger a fresh fix (yimbot dedups by comment
-    recency, not by this session staying open). Print your summary first (threads
-    addressed and resolved, any left unresolved and why, the test result), then
+10. **Close the fix session (final step), unless you handed it back.** If step 9
+    took the ready-to-test branch (nothing flagged), everything is done: close
+    the session so a later round of comments can re-trigger a fresh fix. Print
+    your summary first (threads addressed and resolved, the test result), then
     as the very last action close the session. The PR number is in the seed
     prompt; your fix name is `pr-<number>-fix`:
     - If this tmux session's own name equals `pr-<number>-fix`, you are a
@@ -126,5 +158,9 @@ falsely resolve a comment you did not actually address.
       ```bash
       tmux kill-window -t "$(tmux display-message -p '#{session_name}'):pr-<number>-fix"
       ```
-    Only close on this success path. If you stopped at step 6 because the branch
-    diverged and needs a human, leave the session open as that step says.
+    Do **not** close when step 9 handed the task back (a `needs_decision` or
+    `review_findings` flag). Instead print the summary as the session's final
+    output: list each decision-needed thread and each extra observation in full,
+    since the operator reads them here by pressing Enter on the flagged row,
+    and leave the session open, exactly as you do when step 6 reports a diverged
+    branch that needs a human.

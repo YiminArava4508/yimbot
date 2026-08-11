@@ -12,6 +12,12 @@ import {
 import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
 import {
+  candidateLines,
+  DEPENDENCY_COMMENT_MARKER,
+  normalizeDescription,
+  renderDependencyComment,
+} from "./dependency.ts";
+import {
   type CleanupDeps,
   cleanupOnce,
   isSplitParentWorktree,
@@ -26,8 +32,9 @@ import { deriveKey, emitEvent, emitStatus, readEvents, reduceRows, titleFromBran
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
 import {
   countAssignedInState,
+  createBlocksRelation,
   type CycleTodoIssue,
-  fetchAcCommentBody,
+  fetchMarkedCommentBody,
   fetchCycleTodoIssues,
   fetchIssueByIdentifier,
   fetchInProgressIssuesWithBlockers,
@@ -36,7 +43,7 @@ import {
   type LinearContext,
   type LinearIssue,
   moveIssueToState,
-  upsertAcComment,
+  upsertMarkedComment,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
 import { boardReadyToMerge, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
@@ -238,6 +245,17 @@ export async function deployOnce(state: DeployState, deps: DeployDeps): Promise<
   }
 }
 
+export type DependencyScanDeps = {
+  // Existing yimbot dependency-scan comment body, "" when the ticket has none.
+  fetchMarker: (issueId: string) => Promise<string>;
+  // Blocker identifiers inferred from the description, [] when none qualify.
+  scan: (identifier: string, description: string) => Promise<string[]>;
+  // Resolve a ticket identifier (ENG-1319) to its Linear uuid.
+  resolveId: (identifier: string) => Promise<string>;
+  createRelation: (blockerId: string, blockedId: string) => Promise<void>;
+  writeMarker: (issueId: string, body: string) => Promise<void>;
+};
+
 export type ClaimDeps = {
   // Whether the autonomous claim step is enabled at all.
   autoClaim: boolean;
@@ -256,8 +274,99 @@ export type ClaimDeps = {
   // Move the chosen ticket into the watched "In Progress" state, so the
   // deploy step picks it up on the next poll.
   moveToInProgress: (issue: CycleTodoIssue) => Promise<void>;
+  // Adjudicates the picked ticket's description for a dependency never recorded
+  // as a Linear relation; null or absent disables the step.
+  dependencyScan?: DependencyScanDeps | null;
   log: (msg: string) => void;
 };
+
+// Adjudicate the picked ticket's description and record any blocker it names as
+// a real Linear relation.
+//
+// Detection failures fail open ("claim"), so a broken scanner never halts the
+// claim step. Blockers recorded successfully fail closed for this tick only
+// ("deferred"): the ticket is now marked, so it is excluded from future scans by
+// the marker check above. A write failure after blockers were identified also
+// fails closed ("skip"), but since no marker was written the ticket would be
+// rescanned and fail closed again every heartbeat forever, so claimOnce latches a
+// "skip" verdict into the per-process skip set so this ticket alone stalls,
+// not the whole claim step.
+type BlockerVerdict = "claim" | "deferred" | "skip";
+
+// Narrow the cited source lines to the ones naming a blocker actually recorded,
+// not every candidate line, so the marker's audit trail matches what was really
+// acted on (a description can name a rejected blocker alongside an accepted
+// one). Whole-identifier boundary match, consistent with parseDependencies in
+// dependency.ts. Falls back to the full candidate list if nothing matches,
+// rather than emitting an empty Source section.
+function linesForRecorded(lines: string[], recorded: string[]): string[] {
+  const ids = recorded.map((id) => id.toUpperCase());
+  const filtered = lines.filter((line) => {
+    const upper = line.toUpperCase();
+    return ids.some((id) => new RegExp(`\\b${id}\\b`).test(upper));
+  });
+  return filtered.length > 0 ? filtered : lines;
+}
+
+async function recordInferredBlockers(
+  scan: DependencyScanDeps,
+  next: CycleTodoIssue,
+  log: (msg: string) => void,
+): Promise<BlockerVerdict> {
+  // Free prefilter first: a description with no candidate lines has nothing to
+  // scan, so skip the marker fetch entirely rather than paying a network call
+  // for the common case of a description that never mentions another ticket.
+  const normalized = normalizeDescription(next.description);
+  const lines = candidateLines(normalized);
+  if (lines.length === 0) return "claim";
+
+  let blockers: string[];
+  try {
+    if ((await scan.fetchMarker(next.id)) !== "") return "claim";
+    blockers = await scan.scan(next.identifier, next.description);
+  } catch (err) {
+    log(`dependency scan failed for ${next.identifier}: ${err}`);
+    return "claim";
+  }
+  if (blockers.length === 0) return "claim";
+
+  const recorded: string[] = [];
+  try {
+    for (const identifier of blockers) {
+      let blockerId: string;
+      try {
+        blockerId = await scan.resolveId(identifier);
+      } catch (err) {
+        log(`dependency scan: ${identifier} did not resolve, skipping: ${err}`);
+        continue;
+      }
+      await scan.createRelation(blockerId, next.id);
+      recorded.push(identifier);
+    }
+    if (recorded.length === 0) return "claim";
+    await scan.writeMarker(
+      next.id,
+      renderDependencyComment(next.identifier, recorded, linesForRecorded(lines, recorded)),
+    );
+  } catch (err) {
+    log(`dependency scan: failed to record blockers for ${next.identifier}: ${err}`);
+    return "skip";
+  }
+  log(`inferred ${next.identifier} blocked by ${recorded.join(", ")} from its description; wrote relation`);
+  return "deferred";
+}
+
+// Per-process latch of tickets a write-failed dependency-scan adjudication has
+// skipped. Without this, a ticket whose marker write keeps failing is the
+// deterministic top pick forever: every heartbeat rescans it (an LLM call),
+// fails closed on the same write, and the claim step never reaches any other
+// ticket. Latching it here lets the next tick fall through to the
+// next-priority ticket instead, so only the broken ticket stalls.
+export type ClaimState = { skip: Set<string> };
+
+export function freshClaimState(): ClaimState {
+  return { skip: new Set() };
+}
 
 // One tick of the claim step. Gated by the WIP cap: acts while fewer than
 // maxInProgress tickets are In Progress (there is no review-queue cap — in-review
@@ -273,7 +382,7 @@ export type ClaimDeps = {
 // it to In Progress but the deploy step will ignore it — it stays In Progress
 // with no session and stalls the claim step until a human intervenes. This only
 // happens on a manual backward move; the normal forward flow is unaffected.
-export async function claimOnce(deps: ClaimDeps): Promise<void> {
+export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<void> {
   if (!deps.autoClaim) return;
 
   try {
@@ -290,6 +399,7 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
     deps.log(`claim failed: ${err}`);
     return;
   }
+  todos = todos.filter((t) => !state.skip.has(t.id));
 
   let merged: Set<string> | null = null;
   if (deps.fetchMergedIdentifiers) {
@@ -308,6 +418,14 @@ export async function claimOnce(deps: ClaimDeps): Promise<void> {
 
   const next = selectNextClaim(todos, { riskLabels: deps.riskLabels, merged });
   if (!next) return;
+
+  // Runs on this one ticket only. claimOnce already returned early at the WIP
+  // cap, so this is at most one adjudication per heartbeat.
+  if (deps.dependencyScan) {
+    const verdict = await recordInferredBlockers(deps.dependencyScan, next, deps.log);
+    if (verdict === "skip") state.skip.add(next.id);
+    if (verdict !== "claim") return;
+  }
 
   try {
     await deps.moveToInProgress(next);
@@ -431,6 +549,11 @@ export type WatcherConfig = {
   // move-back); null disables both (gh unavailable). Reuses listMyMergedPRs.
   blocked: {
     listMergedPRs: () => Promise<MergedPR[]>;
+  } | null;
+  // Adjudicator for dependencies stated only in a ticket's description; null
+  // disables the scan. The Linear side is built here from config.apiKey.
+  dependencyScan: {
+    scan: (identifier: string, description: string) => Promise<string[]>;
   } | null;
 };
 
@@ -1026,11 +1149,20 @@ export function startWatcher(config: WatcherConfig): () => void {
   // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
+  const claimState = freshClaimState();
   const { claim } = config;
   const viewerId = config.progressContext.viewerId;
   const fetchMergedIdentifiers = config.blocked
     ? async () => mergedIdentifierSet(await config.blocked!.listMergedPRs())
     : undefined;
+  const dependencyScanDeps: DependencyScanDeps | null = config.dependencyScan && {
+    fetchMarker: (issueId) => fetchMarkedCommentBody(config.apiKey, issueId, DEPENDENCY_COMMENT_MARKER),
+    scan: config.dependencyScan.scan,
+    resolveId: async (identifier) => (await fetchIssueByIdentifier(config.apiKey, identifier)).id,
+    createRelation: (blockerId, blockedId) => createBlocksRelation(config.apiKey, blockerId, blockedId),
+    writeMarker: (issueId, body) =>
+      upsertMarkedComment(config.apiKey, issueId, DEPENDENCY_COMMENT_MARKER, body),
+  };
   const claimDeps: ClaimDeps = {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
@@ -1047,17 +1179,18 @@ export function startWatcher(config: WatcherConfig): () => void {
           const detail = await fetchIssueByIdentifier(config.apiKey, issue.identifier);
           // Seed once: a re-claim must not clobber a tracker that already has
           // satisfied/skipped ACs, so no-op when one is present.
-          const existing = await fetchAcCommentBody(config.apiKey, detail.id, AC_COMMENT_MARKER);
+          const existing = await fetchMarkedCommentBody(config.apiKey, detail.id, AC_COMMENT_MARKER);
           if (existing) return;
           const acs = parseAcceptanceCriteria(detail.description);
           if (acs.length > 0) {
-            await upsertAcComment(config.apiKey, detail.id, AC_COMMENT_MARKER, renderAcComment(acs));
+            await upsertMarkedComment(config.apiKey, detail.id, AC_COMMENT_MARKER, renderAcComment(acs));
           }
         } catch (err) {
           claimLog(`AC seed failed for ${issue.identifier}: ${err}`);
         }
       }
     },
+    dependencyScan: dependencyScanDeps,
     log: claimLog,
   };
 
@@ -1099,7 +1232,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps
       // the WIP cap accounting correct.
-      await claimOnce(claimDeps);
+      await claimOnce(claimState, claimDeps);
     } finally {
       running = false;
     }

@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   countAssignedInState,
-  fetchAcCommentBody,
+  createBlocksRelation,
+  fetchMarkedCommentBody,
   fetchCycleTodoIssues,
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
   fetchIssueByIdentifier,
   moveIssueToState,
   resolveContext,
-  upsertAcComment,
+  upsertMarkedComment,
 } from "./linear-api.ts";
 
 type JsonBody = Record<string, unknown>;
@@ -114,6 +115,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
             id: "i-1",
             identifier: "ENG-42",
             title: "Fix login",
+            description: "some body",
             priority: 2,
             sortOrder: 7.5,
             labels: { nodes: [{ name: "frontend" }, { name: "migration" }] },
@@ -133,6 +135,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
       id: "i-1",
       identifier: "ENG-42",
       title: "Fix login",
+      description: "some body",
       priority: 2,
       sortOrder: 7.5,
       labels: ["frontend", "migration"],
@@ -249,7 +252,7 @@ test("fetchIssueByIdentifier returns id + description", async () => {
   assert.deepEqual(d, { id: "uuid-1", identifier: "ENG-949", description: "body" });
 });
 
-test("upsertAcComment updates when a marked comment exists", async () => {
+test("upsertMarkedComment updates when a marked comment exists", async () => {
   const calls: Record<string, unknown>[] = [];
   const f = (async (_url: string, init: { body: string }) => {
     const parsed = JSON.parse(init.body) as { query: string; variables: Record<string, unknown> };
@@ -259,21 +262,21 @@ test("upsertAcComment updates when a marked comment exists", async () => {
     }
     return { ok: true, json: async () => ({ data: { commentUpdate: { success: true } } }) };
   }) as unknown as typeof fetch;
-  await upsertAcComment("key", "uuid-1", "MARK", "MARK new", f);
+  await upsertMarkedComment("key", "uuid-1", "MARK", "MARK new", f);
   assert.ok(calls.some((c) => String(c.query).includes("commentUpdate")));
   assert.ok(!calls.some((c) => String(c.query).includes("commentCreate")));
 });
 
-test("fetchAcCommentBody returns the marked comment body or empty string", async () => {
+test("fetchMarkedCommentBody returns the marked comment body or empty string", async () => {
   const hit = fakeFetch({
     data: { issue: { comments: { nodes: [{ body: "aa MARK bb" }, { body: "other" }] } } },
   });
-  assert.equal(await fetchAcCommentBody("key", "id", "MARK", hit), "aa MARK bb");
+  assert.equal(await fetchMarkedCommentBody("key", "id", "MARK", hit), "aa MARK bb");
   const miss = fakeFetch({ data: { issue: { comments: { nodes: [{ body: "no match" }] } } } });
-  assert.equal(await fetchAcCommentBody("key", "id", "MARK", miss), "");
+  assert.equal(await fetchMarkedCommentBody("key", "id", "MARK", miss), "");
 });
 
-test("upsertAcComment creates when no marked comment exists", async () => {
+test("upsertMarkedComment creates when no marked comment exists", async () => {
   const calls: string[] = [];
   const f = (async (_url: string, init: { body: string }) => {
     const parsed = JSON.parse(init.body) as { query: string };
@@ -283,6 +286,73 @@ test("upsertAcComment creates when no marked comment exists", async () => {
     }
     return { ok: true, json: async () => ({ data: { commentCreate: { success: true } } }) };
   }) as unknown as typeof fetch;
-  await upsertAcComment("key", "uuid-1", "MARK", "MARK new", f);
+  await upsertMarkedComment("key", "uuid-1", "MARK", "MARK new", f);
   assert.ok(calls.some((q) => q.includes("commentCreate")));
+});
+
+test("fetchCycleTodoIssues carries the description through", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "Fix login",
+            description: "blocked by ENG-41",
+            priority: 2,
+            sortOrder: 7.5,
+            labels: { nodes: [] },
+            inverseRelations: { nodes: [] },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchCycleTodoIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.equal(issues[0].description, "blocked by ENG-41");
+});
+
+test("fetchCycleTodoIssues defaults a null description to empty string", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "Fix login",
+            description: null,
+            priority: 2,
+            sortOrder: 7.5,
+            labels: { nodes: [] },
+            inverseRelations: { nodes: [] },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchCycleTodoIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.equal(issues[0].description, "");
+});
+
+test("createBlocksRelation sends the blocker as issueId and the blocked ticket as relatedIssueId", async () => {
+  let vars: Record<string, unknown> = {};
+  let query = "";
+  const f = (async (_url: string, init: { body: string }) => {
+    const parsed = JSON.parse(init.body) as { query: string; variables: Record<string, unknown> };
+    query = parsed.query;
+    vars = parsed.variables;
+    return { ok: true, json: async () => ({ data: { issueRelationCreate: { success: true } } }) };
+  }) as unknown as typeof fetch;
+  await createBlocksRelation("key", "uuid-blocker", "uuid-blocked", f);
+  assert.equal(vars.issueId, "uuid-blocker");
+  assert.equal(vars.relatedIssueId, "uuid-blocked");
+  assert.ok(query.includes("issueRelationCreate"));
+  assert.ok(query.includes("type: blocks"));
+});
+
+test("createBlocksRelation throws when the mutation reports failure", async () => {
+  const f = fakeFetch({ data: { issueRelationCreate: { success: false } } });
+  await assert.rejects(() => createBlocksRelation("key", "uuid-blocker", "uuid-blocked", f), /issueRelationCreate failed/);
 });

@@ -191,9 +191,11 @@ merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. Press `q` to quit the board; it also
 stops the daemon. While the board runs it binds `prefix + Y` on the tmux
 server, so `prefix + Y` from any session (a ticket session yimbot opened or one
-of your own) switches back to the board. The binding is registered when the
-board starts and removed when it quits, so nothing needs adding to your
-`tmux.conf`. Started outside tmux, the board skips the binding and runs
+of your own) switches back to the board. The binding targets the board's pane,
+not just its session, so it lands on the board itself even when another window
+in that session was the last one you had open there. The binding is registered
+when the board starts and removed when it quits, so nothing needs adding to
+your `tmux.conf`. Started outside tmux, the board skips the binding and runs
 normally.
 
 While the board owns that key it overwrites any binding of your own for it,
@@ -201,8 +203,8 @@ and quitting unbinds it entirely, so a binding you had comes back only on the
 next `source-file` or tmux server restart, not on its own; this is why the
 default (`Y`) is a key tmux leaves unbound. Two boards running at once clobber
 each other's binding (the second to quit leaves the first with none), and
-renaming the board's tmux session after startup leaves the binding pointing at
-the old name until the board restarts.
+moving the board's pane into another window or session keeps the key pointing
+at it, since the target is the pane itself.
 
 A `⚑` on a row means that ticket's session raised a notification that looks like
 it wants you: a permission the classifier would not auto-approve, a question

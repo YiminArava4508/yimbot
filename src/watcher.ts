@@ -858,42 +858,32 @@ export function switchToSession(session: string): boolean {
 }
 
 // Argv for the server-wide tmux binding that switches back to the board. Split
-// out from the exec calls so the argv is unit-testable; tmux's `=` prefix makes
-// the target an exact match, as switchToSession does.
-export function returnKeyBindArgs(session: string, key: string): string[] {
-  return ["bind-key", "-T", "prefix", key, "switch-client", "-t", `=${session}`];
+// out from the exec calls so the argv is unit-testable. The target is the
+// board's pane id, not its session: a `switch-client` aimed at a session lands
+// on whichever window that session last had current, so a session-only target
+// misses the board whenever another window there is active. A pane id also
+// survives renames and window renumbering.
+export function returnKeyBindArgs(pane: string, key: string): string[] {
+  return ["bind-key", "-T", "prefix", key, "switch-client", "-t", pane];
 }
 
 export function returnKeyUnbindArgs(key: string): string[] {
   return ["unbind-key", "-T", "prefix", key];
 }
 
-// The tmux session this process runs in, or null when it is not under tmux.
-// Targets $TMUX_PANE rather than calling display-message bare: this process
-// lives in a pane but is not a tmux client, so an untargeted display-message
-// resolves against whichever client tmux considers current, which need not be
-// this session.
-export function currentTmuxSession(): string | null {
-  const pane = process.env.TMUX_PANE;
-  if (!process.env.TMUX || !pane) return null;
-  try {
-    const out = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{session_name}"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.trim() || null;
-  } catch {
-    return null;
-  }
+// The pane this process runs in, or null when it is not under tmux.
+export function currentTmuxPane(): string | null {
+  if (!process.env.TMUX) return null;
+  return process.env.TMUX_PANE || null;
 }
 
 // Mirrors switchToSession's guard: outside tmux there is no server this
 // process belongs to, so shelling out would hit whatever default socket tmux
 // picks rather than the intended one.
-export function bindReturnKey(session: string, key: string): boolean {
+export function bindReturnKey(pane: string, key: string): boolean {
   if (!process.env.TMUX) return false;
   try {
-    execFileSync("tmux", returnKeyBindArgs(session, key), { stdio: "ignore" });
+    execFileSync("tmux", returnKeyBindArgs(pane, key), { stdio: "ignore" });
     return true;
   } catch {
     return false;

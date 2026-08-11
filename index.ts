@@ -10,7 +10,7 @@ import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
 import {
   bindReturnKey,
-  currentTmuxSession,
+  currentTmuxPane,
   listGitWorktrees,
   listTmuxSessions,
   liveWorktreeKeys,
@@ -53,13 +53,13 @@ if (process.stdout.isTTY) {
   const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
   const stop = await startDaemon();
   const returnKeyName = returnKey();
-  const boardSession = currentTmuxSession();
-  if (boardSession && !bindReturnKey(boardSession, returnKeyName)) {
-    console.error(`[tui] could not bind prefix+${returnKeyName} to return to session '${boardSession}'`);
+  const boardPane = currentTmuxPane();
+  if (boardPane && !bindReturnKey(boardPane, returnKeyName)) {
+    console.error(`[tui] could not bind prefix+${returnKeyName} to return to the board pane '${boardPane}'`);
   }
   runTui({
     onQuit: () => {
-      if (boardSession) unbindReturnKey(returnKeyName);
+      if (boardPane) unbindReturnKey(returnKeyName);
       stop();
       process.exit(0);
     },

@@ -7,7 +7,7 @@ import {
   claimOnce,
   type ClaimDeps,
   continuationSessionName,
-  currentTmuxSession,
+  currentTmuxPane,
   type DependencyScanDeps,
   type DeployDeps,
   deployOnce,
@@ -672,57 +672,60 @@ test("reconcile does not unlatch when the move fails", async () => {
   assert.ok(logs.some((l) => l.includes("failed to move ENG-5 back")));
 });
 
-test("returnKeyBindArgs binds in the prefix table and exact-matches the session", () => {
-  assert.deepEqual(returnKeyBindArgs("yimbot", "Y"), [
-    "bind-key", "-T", "prefix", "Y", "switch-client", "-t", "=yimbot",
+test("returnKeyBindArgs targets the board pane so the window and pane are selected too", () => {
+  assert.deepEqual(returnKeyBindArgs("%36", "Y"), [
+    "bind-key", "-T", "prefix", "Y", "switch-client", "-t", "%36",
   ]);
 });
 
 test("returnKeyBindArgs carries a custom key through unchanged", () => {
-  assert.deepEqual(returnKeyBindArgs("board", "F12"), [
-    "bind-key", "-T", "prefix", "F12", "switch-client", "-t", "=board",
+  assert.deepEqual(returnKeyBindArgs("%7", "F12"), [
+    "bind-key", "-T", "prefix", "F12", "switch-client", "-t", "%7",
   ]);
+});
+
+test("currentTmuxPane is the pane id when under tmux", () => {
+  const prevTmux = process.env.TMUX;
+  const prevPane = process.env.TMUX_PANE;
+  process.env.TMUX = "/tmp/tmux-1000/default,123,0";
+  process.env.TMUX_PANE = "%36";
+  try {
+    assert.equal(currentTmuxPane(), "%36");
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+    if (prevPane === undefined) delete process.env.TMUX_PANE;
+    else process.env.TMUX_PANE = prevPane;
+  }
+});
+
+test("currentTmuxPane is null outside tmux or without a pane id", () => {
+  const prevTmux = process.env.TMUX;
+  const prevPane = process.env.TMUX_PANE;
+  try {
+    delete process.env.TMUX;
+    process.env.TMUX_PANE = "%36";
+    assert.equal(currentTmuxPane(), null);
+    process.env.TMUX = "/tmp/tmux-1000/default,123,0";
+    delete process.env.TMUX_PANE;
+    assert.equal(currentTmuxPane(), null);
+  } finally {
+    if (prevTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = prevTmux;
+    if (prevPane === undefined) delete process.env.TMUX_PANE;
+    else process.env.TMUX_PANE = prevPane;
+  }
 });
 
 test("returnKeyUnbindArgs removes the binding from the prefix table", () => {
   assert.deepEqual(returnKeyUnbindArgs("Y"), ["unbind-key", "-T", "prefix", "Y"]);
 });
 
-test("currentTmuxSession is null when TMUX is unset", () => {
-  const prevTmux = process.env.TMUX;
-  const prevPane = process.env.TMUX_PANE;
-  delete process.env.TMUX;
-  process.env.TMUX_PANE = "%7";
-  try {
-    assert.equal(currentTmuxSession(), null);
-  } finally {
-    if (prevTmux === undefined) delete process.env.TMUX;
-    else process.env.TMUX = prevTmux;
-    if (prevPane === undefined) delete process.env.TMUX_PANE;
-    else process.env.TMUX_PANE = prevPane;
-  }
-});
-
-test("currentTmuxSession is null when TMUX_PANE is unset", () => {
-  const prevTmux = process.env.TMUX;
-  const prevPane = process.env.TMUX_PANE;
-  process.env.TMUX = "/tmp/tmux-1000/default,123,0";
-  delete process.env.TMUX_PANE;
-  try {
-    assert.equal(currentTmuxSession(), null);
-  } finally {
-    if (prevTmux === undefined) delete process.env.TMUX;
-    else process.env.TMUX = prevTmux;
-    if (prevPane === undefined) delete process.env.TMUX_PANE;
-    else process.env.TMUX_PANE = prevPane;
-  }
-});
-
 test("bindReturnKey returns false when TMUX is unset, without shelling out", () => {
   const prevTmux = process.env.TMUX;
   delete process.env.TMUX;
   try {
-    assert.equal(bindReturnKey("yimbot", "Y"), false);
+    assert.equal(bindReturnKey("%36", "Y"), false);
   } finally {
     if (prevTmux === undefined) delete process.env.TMUX;
     else process.env.TMUX = prevTmux;

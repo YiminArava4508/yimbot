@@ -259,6 +259,7 @@ export async function startDaemon(): Promise<() => void> {
     advance,
     ready,
     blocked,
+    dependencyScan: null,
   });
 
   // Re-entrancy guard: a sync that runs longer than one interval must not overlap

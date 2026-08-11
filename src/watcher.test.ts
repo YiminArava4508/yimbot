@@ -6,6 +6,7 @@ import {
   claimOnce,
   type ClaimDeps,
   continuationSessionName,
+  type DependencyScanDeps,
   type DeployDeps,
   deployOnce,
   detectNewIssues,
@@ -469,6 +470,24 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
   return { deps, moved, logs };
 }
 
+function scanDeps(overrides: Partial<DependencyScanDeps> = {}): {
+  scan: DependencyScanDeps;
+  relations: [string, string][];
+  markers: [string, string][];
+} {
+  const relations: [string, string][] = [];
+  const markers: [string, string][] = [];
+  const scan: DependencyScanDeps = {
+    fetchMarker: async () => "",
+    scan: async () => ["ENG-1319"],
+    resolveId: async (identifier) => `uuid-${identifier}`,
+    createRelation: async (blockerId, blockedId) => void relations.push([blockerId, blockedId]),
+    writeMarker: async (issueId, body) => void markers.push([issueId, body]),
+    ...overrides,
+  };
+  return { scan, relations, markers };
+}
+
 test("claimOnce does nothing when autoClaim is off", async () => {
   let counted = false;
   const { deps, moved } = claimDeps({
@@ -645,4 +664,107 @@ test("reconcile does not unlatch when the move fails", async () => {
   await reconcileBlockedInProgress(deps);
   assert.equal(unlatched.length, 0);
   assert.ok(logs.some((l) => l.includes("failed to move ENG-5 back")));
+});
+
+test("claimOnce skips the scan and claims when the marker comment is already present", async () => {
+  let scanned = false;
+  const { scan, relations } = scanDeps({
+    fetchMarker: async () => "<!-- yimbot-dependency-scan --> already done",
+    scan: async () => {
+      scanned = true;
+      return ["ENG-1319"];
+    },
+  });
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1, description: "blocked by ENG-1319" })],
+    dependencyScan: scan,
+  });
+  await claimOnce(deps);
+  assert.equal(scanned, false, "a scanned ticket must never be re-adjudicated");
+  assert.deepEqual(relations, []);
+  assert.equal(moved.length, 1);
+});
+
+test("claimOnce claims when the scan finds no blockers", async () => {
+  const { scan, relations, markers } = scanDeps({ scan: async () => [] });
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1, description: "Follow-up to ENG-1434." })],
+    dependencyScan: scan,
+  });
+  await claimOnce(deps);
+  assert.deepEqual(relations, []);
+  assert.deepEqual(markers, []);
+  assert.equal(moved.length, 1);
+});
+
+test("claimOnce writes the relation and the marker and does not claim when blockers are found", async () => {
+  const { scan, relations, markers } = scanDeps();
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", priority: 1, identifier: "ENG-1320", description: "Must land after ENG-1319." }),
+    ],
+    dependencyScan: scan,
+  });
+  await claimOnce(deps);
+  assert.deepEqual(relations, [["uuid-ENG-1319", "1"]], "blocker uuid first, blocked issue id second");
+  assert.equal(markers.length, 1);
+  assert.equal(markers[0][0], "1");
+  assert.ok(markers[0][1].includes("ENG-1319"));
+  assert.equal(moved.length, 0, "a ticket just found to be blocked must not be claimed");
+  assert.ok(logs.some((l) => l.includes("ENG-1320") && l.includes("ENG-1319")));
+});
+
+test("claimOnce falls open and claims when the scan itself errors", async () => {
+  const { scan, relations } = scanDeps({
+    scan: async () => {
+      throw new Error("claude exploded");
+    },
+  });
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1, description: "blocked by ENG-1319" })],
+    dependencyScan: scan,
+  });
+  await claimOnce(deps);
+  assert.deepEqual(relations, []);
+  assert.equal(moved.length, 1, "a broken scanner must never halt the claim step");
+  assert.ok(logs.some((l) => /dependency scan failed/.test(l)));
+});
+
+test("claimOnce falls open and claims when every blocker fails to resolve", async () => {
+  const { scan, relations } = scanDeps({
+    resolveId: async () => {
+      throw new Error("no such issue");
+    },
+  });
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1, description: "blocked by RFC-005" })],
+    dependencyScan: scan,
+  });
+  await claimOnce(deps);
+  assert.deepEqual(relations, []);
+  assert.equal(moved.length, 1);
+  assert.ok(logs.some((l) => /did not resolve/.test(l)));
+});
+
+test("claimOnce fails closed and does not claim when the relation write errors", async () => {
+  const { scan } = scanDeps({
+    createRelation: async () => {
+      throw new Error("linear 500");
+    },
+  });
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1, description: "blocked by ENG-1319" })],
+    dependencyScan: scan,
+  });
+  await claimOnce(deps);
+  assert.equal(moved.length, 0, "the ticket is known blocked, so claiming anyway is the bug this prevents");
+  assert.ok(logs.some((l) => /failed to record blockers/.test(l)));
+});
+
+test("claimOnce claims normally when no dependency scan is configured", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1, description: "blocked by ENG-1319" })],
+  });
+  await claimOnce(deps);
+  assert.equal(moved.length, 1);
 });

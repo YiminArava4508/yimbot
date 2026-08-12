@@ -46,14 +46,9 @@ literally ask about never goes on the PR at all.
    Work only the threads where `isResolved` is false.
 
 3. **Address each unresolved thread in code.** Understand what the comment asks,
-   then make the change in the worktree. Check `IMPL_MODEL`
-   (`echo "$IMPL_MODEL"`):
-   - If set, dispatch the code changes to subagents on that model via
-     `superpowers:subagent-driven-development`. Subagents do not inherit the
-     global CLAUDE.md, so include this rule in every subagent prompt: never use
-     em dashes or en dashes in any output, including thread replies,
-     code comments, and commit messages.
-   - If unset, implement in-session.
+   then make the change in the worktree, **in this session**. PR-fix work always
+   runs on the stronger session model: never delegate it to cheaper
+   implementation subagents, and ignore `IMPL_MODEL` even when it is set.
    Use `superpowers:test-driven-development` for anything that changes behavior.
 
    Keep a running record of which thread id maps to which change, **and the exact
@@ -62,8 +57,12 @@ literally ask about never goes on the PR at all.
    As you work each thread, put it in one of the first two categories below;
    separately, collect anything in the third. Later steps act on the category:
    - **Fixed in code** - you fully satisfied the ask with a code change.
-   - **Needs a human decision** - a request you cannot confidently satisfy, a
-     disagreement, or an open question. Do not guess; do not half-fix it.
+   - **Needs a human decision** - reserved for genuine disagreements, product
+     or API decisions, and large risky changes, and only after you attempted a
+     confident fix first. A **small** finding (localized, mechanical, low-risk:
+     a typo, a rename, a guard clause, a small refactor, a missing test and the
+     like) never lands here: always fix it yourself. Do not guess on the ones
+     that do land here; do not half-fix them.
    - **Extra observation** (collected separately, not a per-thread bucket) -
      anything you notice that is beyond any thread's literal ask (a related
      bug, a risky pattern, a follow-up idea). Collect these; they never go on

@@ -51,16 +51,17 @@ before you touch any code.
    Decide whether the failure is caused by this PR's changes or by another PR in
    the batch (or a flake). Read enough of the failure to be sure.
 
-4. **Fix if this PR is at fault.** Reproduce the failure locally, then fix it.
-   Check `IMPL_MODEL` (`echo "$IMPL_MODEL"`):
-   - If set, dispatch the code changes to subagents on that model via
-     `superpowers:subagent-driven-development`. Subagents do not inherit the global
-     CLAUDE.md, so include this rule in every subagent prompt: never use em dashes
-     or en dashes in any output, including code comments and commit messages.
-   - If unset, implement in-session.
+4. **Fix if this PR is at fault.** Reproduce the failure locally, then fix it
+   **in this session**. PR-fix work always runs on the stronger session model:
+   never delegate it to cheaper implementation subagents, and ignore
+   `IMPL_MODEL` even when it is set.
    Use `superpowers:test-driven-development` for anything that changes behavior, and
    run the failing suite locally until it is genuinely green. Keep a running record
    of the exact file paths you edit; you stage only those in step 5.
+
+   Never post a PR comment describing the fix: this work is not a response to
+   any review comment, so the commit and your session summary are the record.
+   The label edits in step 6 stay, since the merge queue needs them.
 
 5. **Commit and push** to the PR branch, staging only the paths you edited by name,
    never `git add -A`:

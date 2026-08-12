@@ -239,6 +239,19 @@ export async function blockedInfo(run: GhRunner, prNumber: number, label: string
   return parseBlockedInfo(await run(["pr", "view", String(prNumber), "--json", "labels,headRefOid"]), label);
 }
 
+// Whether a PR is blocked by a changes-requested review, from
+// `gh pr view <n> --json reviewDecision`. GitHub folds all reviews into one
+// decision; only CHANGES_REQUESTED means a human reviewer is blocking the merge
+// (APPROVED, REVIEW_REQUIRED, and an absent field are not blocks).
+export function parseChangesRequested(json: string): boolean {
+  const data = JSON.parse(json) as { reviewDecision?: string };
+  return data.reviewDecision === "CHANGES_REQUESTED";
+}
+
+export async function changesRequested(run: GhRunner, prNumber: number): Promise<boolean> {
+  return parseChangesRequested(await run(["pr", "view", String(prNumber), "--json", "reviewDecision"]));
+}
+
 // The label names currently on a PR from `gh pr view <n> --json labels`.
 export function parseLabels(json: string): string[] {
   const data = JSON.parse(json) as { labels?: { name: string }[] };

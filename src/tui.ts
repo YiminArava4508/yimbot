@@ -55,7 +55,7 @@ export function fmtDuration(ms: number): string {
 }
 
 export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[][] {
-  const header = ["TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG"];
+  const header = ["TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON"];
   const body = rows.map((r) => {
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
     return [
@@ -66,6 +66,7 @@ export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[
       r.pr != null ? `#${r.pr}` : "",
       r.title ?? "",
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
+      r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
     ];
   });
   return [header, ...body];

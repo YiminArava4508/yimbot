@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitFlagged, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -163,6 +163,63 @@ test("emitStatus tracks the last status per key independently", () => {
   });
 });
 
+test("emitFlagged raises the flag with its reason for an unflagged key", () => {
+  withTmpLog((path) => {
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "changes-requested" });
+    const rows = readEvents(path);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, "flagged");
+    assert.equal(rows[0].reason, "changes-requested");
+  });
+});
+
+test("emitFlagged is a no-op while the same reason is already raised", () => {
+  withTmpLog((path) => {
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "changes-requested" });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "changes-requested" });
+    assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitFlagged appends a second distinct reason on an already-flagged key", () => {
+  withTmpLog((path) => {
+    emitEvent({ kind: "needs_input", key: "ENG-1", label: "ENG-1" });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "changes-requested" });
+    assert.deepEqual(
+      readEvents(path).map((e) => e.kind),
+      ["needs_input", "flagged"],
+    );
+  });
+});
+
+test("emitFlagged dedupes against a legacy needs_input via its default reason", () => {
+  withTmpLog((path) => {
+    emitEvent({ kind: "needs_input", key: "ENG-1", label: "ENG-1" });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "input" });
+    assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitFlagged re-raises after a manual unflag", () => {
+  withTmpLog((path) => {
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "changes-requested" });
+    emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1" });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "changes-requested" });
+    assert.deepEqual(
+      readEvents(path).map((e) => e.kind),
+      ["flagged", "unflagged", "flagged"],
+    );
+  });
+});
+
+test("emitFlagged tracks flag state per key independently", () => {
+  withTmpLog((path) => {
+    emitEvent({ kind: "flagged", key: "A", label: "A", reason: "manual" });
+    emitFlagged({ key: "B", label: "B", reason: "manual" });
+    assert.equal(readEvents(path).length, 2);
+  });
+});
+
 test("emitEvent emits on the bus", () => {
   withTmpLog(() => {
     let got: unknown = null;
@@ -279,6 +336,7 @@ test("filterToLiveWorktrees: non-terminal row kept only when its key is live", (
     ts: 0,
     startTs: 0,
     flagged: false,
+    flagReasons: [],
     ...over,
   });
   const rows = [row({ key: "ENG-1" }), row({ key: "ENG-2" })];
@@ -295,6 +353,7 @@ test("filterToLiveWorktrees: terminal row kept even with no live worktree", () =
     ts: 0,
     startTs: 0,
     flagged: false,
+    flagReasons: [],
   };
   assert.deepEqual(filterToLiveWorktrees([merged], new Set()), [merged]);
 });
@@ -409,6 +468,59 @@ test("a needs_input after a clear re-raises the flag", () => {
     5000,
   );
   assert.equal(rows[0].flagged, true);
+});
+
+test("reduceRows collects flag reasons in raise order", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "needs_input", key: "ENG-1", label: "ENG-1", reason: "input" },
+      { ts: 3000, kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "changes-requested" },
+    ],
+    5000,
+  );
+  assert.equal(rows[0].flagged, true);
+  assert.deepEqual(rows[0].flagReasons, ["input", "changes-requested"]);
+});
+
+test("reduceRows defaults legacy reason-less raises by kind", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "needs_input", key: "ENG-1", label: "ENG-1" },
+      { ts: 3000, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+    ],
+    5000,
+  );
+  assert.deepEqual(rows[0].flagReasons, ["input", "manual"]);
+});
+
+test("reduceRows does not repeat a reason raised twice", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2000, kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "decision" },
+      { ts: 3000, kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "decision" },
+    ],
+    5000,
+  );
+  assert.deepEqual(rows[0].flagReasons, ["decision"]);
+});
+
+test("reduceRows clears every reason on input_received or unflag", () => {
+  for (const clearer of ["input_received", "unflagged"] as const) {
+    const rows = reduceRows(
+      [
+        { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+        { ts: 2000, kind: "needs_input", key: "ENG-1", label: "ENG-1", reason: "input" },
+        { ts: 3000, kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "decision" },
+        { ts: 4000, kind: clearer, key: "ENG-1", label: "ENG-1" },
+      ],
+      5000,
+    );
+    assert.equal(rows[0].flagged, false, clearer);
+    assert.deepEqual(rows[0].flagReasons, [], clearer);
+  }
 });
 
 test("pinEventsLog sets an absolute EVENTS_LOG in the environment", () => {

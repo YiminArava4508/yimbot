@@ -91,6 +91,11 @@ export type PrReviewDeps = {
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
   // Blocked summary for a PR: carries the merge-queue "blocked" label + head SHA.
   blockedInfo: (prNumber: number) => Promise<BlockedInfo>;
+  // Whether a changes-requested review is blocking the PR.
+  changesRequested: (prNumber: number) => Promise<boolean>;
+  // Report a changes-requested block, every tick it is noticed. Only a human
+  // reviewer can lift it, so the caller raises the board's attention flag.
+  onChangesRequested: (prNumber: number, branch: string) => void;
   // Which fix kinds are currently in flight for a PR (comment/ci/conflict).
   // Empty means no fixer is on the shared worktree. Replaces the old boolean
   // guard so the reaper can act per kind.
@@ -123,9 +128,11 @@ async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewD
   return false;
 }
 
-// One review-step tick, run every heartbeat. For each non-draft open PR, skip if
-// any fix (comment, conflict, blocked, or CI) is actively running, then handle in
-// priority order: comments, then conflict, then blocked, then CI. All four fixes
+// One review-step tick, run every heartbeat. For each non-draft open PR, first
+// report a changes-requested review (unconditionally; see the note at the
+// check), then skip if any fix (comment, conflict, blocked, or CI) is actively
+// running, then handle in priority order: comments, then conflict, then
+// blocked, then CI. All four fixes
 // share the PR's worktree, so at most one is spawned per PR per tick; the others
 // are picked up a later tick once the running one has ended.
 //
@@ -159,6 +166,14 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
 
   for (const pr of prs) {
     if (pr.isDraft) continue;
+    // A changes-requested review is a human block no fix session can lift, so it
+    // is reported before every skip below (fix in flight, mid-spawn latch) and on
+    // every tick it persists. A failed read only loses this tick's report.
+    try {
+      if (await deps.changesRequested(pr.number)) deps.onChangesRequested(pr.number, pr.headRefName);
+    } catch (err) {
+      deps.log(`review decision read failed for PR #${pr.number}: ${err}`);
+    }
     const running = deps.inFlightFixKinds(pr.number, pr.headRefName);
     // Prune timers for kinds no longer in flight so a future fix of that kind
     // starts a fresh stale clock (runs even when nothing is in flight now).

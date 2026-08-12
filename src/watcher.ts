@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { deriveKey, emitEvent, emitStatus, readEvents, reduceRows, titleFromBranch } from "./events.ts";
+import { deriveKey, emitEvent, emitFlagged, emitStatus, readEvents, reduceRows, titleFromBranch } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
 import {
   countAssignedInState,
@@ -508,7 +508,7 @@ export type WatcherConfig = {
   claim: ClaimConfig;
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
-  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo"> | null;
+  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "changesRequested"> | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
@@ -1031,6 +1031,14 @@ export function startWatcher(config: WatcherConfig): () => void {
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
     blockedInfo: config.prReview.blockedInfo,
+    changesRequested: config.prReview.changesRequested,
+    // A changes-requested review means a human reviewer is blocking: raise the
+    // board's attention flag every tick the block persists (emitFlagged dedupes
+    // while it is already up, and re-raises after a manual unflag).
+    onChangesRequested: (prNumber, branch) => {
+      const { key, label } = deriveKey({ branch });
+      emitFlagged({ key, label, title: titleFromBranch(branch), pr: prNumber, reason: "changes-requested" });
+    },
     inFlightFixKinds,
     reapFix,
     now: Date.now,

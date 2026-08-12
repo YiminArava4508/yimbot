@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   addLabel,
   blockedInfo,
+  changesRequested,
   checksInfo,
   type GhRunner,
   listMyClosedUnmergedPRs,
@@ -10,6 +11,7 @@ import {
   listMyOpenPRs,
   mergeableInfo,
   parseBlockedInfo,
+  parseChangesRequested,
   parseChecksInfo,
   parseLabels,
   parseMergeableInfo,
@@ -338,6 +340,26 @@ test("blockedInfo requests labels + headRefOid for the PR and parses them", asyn
   const { run, calls } = capturingRunner([blockedJson(["blocked"], "deadbeef")]);
   assert.deepEqual(await blockedInfo(run, 4929, "blocked"), { blocked: true, headSha: "deadbeef" });
   assert.deepEqual(calls[0], ["pr", "view", "4929", "--json", "labels,headRefOid"]);
+});
+
+test("parseChangesRequested reports true for a CHANGES_REQUESTED decision", () => {
+  assert.equal(parseChangesRequested(JSON.stringify({ reviewDecision: "CHANGES_REQUESTED" })), true);
+});
+
+test("parseChangesRequested reports false for approved, required, and empty decisions", () => {
+  for (const decision of ["APPROVED", "REVIEW_REQUIRED", ""]) {
+    assert.equal(parseChangesRequested(JSON.stringify({ reviewDecision: decision })), false, decision || "(empty)");
+  }
+});
+
+test("parseChangesRequested treats a missing reviewDecision field as false", () => {
+  assert.equal(parseChangesRequested(JSON.stringify({})), false);
+});
+
+test("changesRequested requests reviewDecision for the PR and parses it", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify({ reviewDecision: "CHANGES_REQUESTED" })]);
+  assert.equal(await changesRequested(run, 4837), true);
+  assert.deepEqual(calls[0], ["pr", "view", "4837", "--json", "reviewDecision"]);
 });
 
 test("parseLabels extracts label names", () => {

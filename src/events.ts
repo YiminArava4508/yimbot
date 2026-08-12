@@ -205,15 +205,15 @@ export function reduceRows(
   }
 
   // Fold each key's attention timeline into one flag. Walking events in time
-  // order, the flag flips on for a needs-input or manual flag and off for any
-  // working status, an input-received, or a manual unflag. Latest signal wins,
-  // so a later status or reply clears a stale flag and a new needs-input after
-  // a clear re-raises it.
+  // order, the flag flips on for a needs-input or manual flag and off ONLY for
+  // an input-received or a manual unflag. Status events never clear it: the
+  // flag strictly means a human must look, so an automated transition (a
+  // conflict fix or CI fix spawning) must not swallow a pending ask.
   const flagOn = new Set<EventKind>(["needs_input", "flagged"]);
   const flagged = new Map<string, boolean>();
   for (const e of events) {
     if (flagOn.has(e.kind)) flagged.set(e.key, true);
-    else if (statusFor(e.kind) || e.kind === "input_received" || e.kind === "unflagged") flagged.set(e.key, false);
+    else if (e.kind === "input_received" || e.kind === "unflagged") flagged.set(e.key, false);
   }
   for (const row of byKey.values()) row.flagged = flagged.get(row.key) ?? false;
 

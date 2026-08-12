@@ -11,6 +11,7 @@ import {
 } from "./acceptance.ts";
 import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
+import type { LabelFilter } from "./labels.ts";
 import {
   candidateLines,
   DEPENDENCY_COMMENT_MARKER,
@@ -261,6 +262,8 @@ export type ClaimDeps = {
   autoClaim: boolean;
   // Label names that disqualify a ticket from being claimed.
   riskLabels: string[];
+  // Which slice of the board this instance works (LABEL_FILTER).
+  labelFilter: LabelFilter;
   // Ceiling on the personal In-Progress WIP: the claim step acts only while the
   // count is below this. 1 restores the old one-at-a-time behavior.
   maxInProgress: number;
@@ -416,7 +419,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     }
   }
 
-  const next = selectNextClaim(todos, { riskLabels: deps.riskLabels, merged });
+  const next = selectNextClaim(todos, { riskLabels: deps.riskLabels, merged, labelFilter: deps.labelFilter });
   if (!next) return;
 
   // Runs on this one ticket only. claimOnce already returned early at the WIP
@@ -488,6 +491,7 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
 export type ClaimConfig = {
   autoClaim: boolean;
   riskLabels: string[];
+  labelFilter: LabelFilter;
   maxInProgress: number;
   // Watched-team Todo context (team + Todo state + viewer) for cycle queries.
   todoContext: LinearContext;
@@ -1208,6 +1212,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   const claimDeps: ClaimDeps = {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
+    labelFilter: claim.labelFilter,
     maxInProgress: claim.maxInProgress,
     countInProgress: () => countAssignedInState(config.apiKey, viewerId, claim.progressStateName),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),

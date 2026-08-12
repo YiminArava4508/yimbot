@@ -24,6 +24,7 @@ import {
   viewerLogin,
 } from "./gh.ts";
 import { judgeAcceptance, type JudgeRunner } from "./judge.ts";
+import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
 import {
   countAssignedInState,
   fetchMarkedCommentBody,
@@ -59,6 +60,9 @@ export async function startDaemon(): Promise<() => void> {
     .split(",")
     .map((l) => l.trim())
     .filter(Boolean);
+  // Which slice of the board this instance works. Two daemons on one Linear
+  // account partition the work by running opposite filters ("bot" / "!bot").
+  const labelFilter = parseLabelFilter(process.env.LABEL_FILTER);
   const todoStateName = envOr("TODO_STATE_NAME", "Todo");
   // How many of the viewer's tickets may sit In Progress before the claim step
   // stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
@@ -258,6 +262,7 @@ export async function startDaemon(): Promise<() => void> {
       ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]`
       : "[yimbot] auto-claim OFF",
   );
+  console.log(`[yimbot] label filter: ${describeLabelFilter(labelFilter)}`);
 
   const stop = startWatcher({
     apiKey,
@@ -268,6 +273,7 @@ export async function startDaemon(): Promise<() => void> {
     claim: {
       autoClaim,
       riskLabels,
+      labelFilter,
       maxInProgress,
       todoContext,
       progressStateName: stateName,

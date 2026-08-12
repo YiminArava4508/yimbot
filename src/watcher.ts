@@ -11,7 +11,7 @@ import {
 } from "./acceptance.ts";
 import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
-import type { LabelFilter } from "./labels.ts";
+import { filterByLabel, type LabelFilter } from "./labels.ts";
 import {
   candidateLines,
   DEPENDENCY_COMMENT_MARKER,
@@ -501,6 +501,8 @@ export type ClaimConfig = {
 
 export type WatcherConfig = {
   apiKey: string;
+  // Which slice of the board this instance works; applied to every step.
+  labelFilter: LabelFilter;
   progressContext: LinearContext;
   // Context for the In-Review Linear poll that flags a session ready-to-test.
   reviewContext: LinearContext;
@@ -999,7 +1001,8 @@ export function startWatcher(config: WatcherConfig): () => void {
   // session/worktree listers rather than a startup baseline.
   const deployState = freshDeployState();
   const deployDeps: DeployDeps = {
-    fetchIssues: () => fetchIssuesInState(config.apiKey, config.progressContext),
+    fetchIssues: async () =>
+      filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.progressContext)),
     listSessions: listTmuxSessions,
     listWorktrees: listWorktreeDirs,
     launch: (name) => {
@@ -1016,7 +1019,8 @@ export function startWatcher(config: WatcherConfig): () => void {
   const reviewIconLog = (msg: string) => console.log(`[review] ${msg}`);
   const reviewIconState: WatchState = { seen: new Set(), initialized: false };
   const reviewIconDeps: WatcherDeps = {
-    fetchIssues: () => fetchIssuesInState(config.apiKey, config.reviewContext),
+    fetchIssues: async () =>
+      filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.reviewContext)),
     launch: (_name, issue) =>
       markFeatureReady(issue, {
         listSessions: listTmuxSessions,
@@ -1248,7 +1252,11 @@ export function startWatcher(config: WatcherConfig): () => void {
   // its PR resolves.
   const reconcileLog = (msg: string) => console.log(`[reconcile] ${msg}`);
   const reconcileDeps: ReconcileDeps | null = config.blocked && {
-    fetchInProgress: () => fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
+    fetchInProgress: async () =>
+      filterByLabel(
+        config.labelFilter,
+        await fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
+      ),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),

@@ -266,6 +266,7 @@ export async function startDaemon(): Promise<() => void> {
 
   const stop = startWatcher({
     apiKey,
+    labelFilter,
     progressContext,
     reviewContext,
     heartbeatIntervalMinutes,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { filterByLabel, parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
 import {
   bindReturnKey,
@@ -212,6 +213,23 @@ test("deployOnce does not relaunch after cleanup removes the worktree (latched)"
   worktrees = []; // cleanup removed the worktree; ticket still In Progress
   await deployOnce(state, deps); // latched → must not relaunch
   assert.deepEqual(launched, ["eng-1-fix-bug"]);
+});
+
+test("deployOnce launches only issues its fetch passes through", async () => {
+  const launched: string[] = [];
+  const state = freshDeployState();
+  await deployOnce(state, {
+    fetchIssues: async () =>
+      filterByLabel(parseLabelFilter("bot"), [
+        { id: "1", identifier: "ENG-1", title: "One", labels: ["bot"] },
+        { id: "2", identifier: "ENG-2", title: "Two", labels: [] },
+      ]),
+    listSessions: () => [],
+    listWorktrees: () => [],
+    launch: (name) => void launched.push(name),
+    log: () => {},
+  });
+  assert.deepEqual(launched, ["eng-1-one"]);
 });
 
 test("deployOnce retries an issue whose launch failed (not latched on failure)", async () => {

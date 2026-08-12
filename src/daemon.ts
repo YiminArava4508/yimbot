@@ -32,6 +32,7 @@ import {
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
+import { makePrLabelFilter } from "./pr-filter.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
 
@@ -123,6 +124,13 @@ export async function startDaemon(): Promise<() => void> {
   // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
   // disabled (null) rather than crashing the daemon.
   const gh = ghRunner(codebasePath);
+  const prLabelFilter = makePrLabelFilter({
+    filter: labelFilter,
+    fetchLabels: async (identifier) => (await fetchIssueByIdentifier(apiKey, identifier)).labels,
+    ttlMs: heartbeatIntervalMinutes * 60 * 1000,
+    now: Date.now,
+    log: (msg) => console.log(`[yimbot] ${msg}`),
+  });
   let prReview:
     | {
         listOpenPRs: () => ReturnType<typeof listMyOpenPRs>;
@@ -136,7 +144,7 @@ export async function startDaemon(): Promise<() => void> {
     const slug = await repoSlug(gh);
     const viewer = await viewerLogin(gh);
     prReview = {
-      listOpenPRs: () => listMyOpenPRs(gh),
+      listOpenPRs: async () => prLabelFilter(await listMyOpenPRs(gh)),
       unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
       mergeableInfo: (n) => mergeableInfo(gh, n),
       checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
@@ -155,8 +163,8 @@ export async function startDaemon(): Promise<() => void> {
     autoCleanup && prReview
       ? {
           codebasePath,
-          listMergedPRs: () => listMyMergedPRs(gh),
-          listClosedUnmergedPRs: () => listMyClosedUnmergedPRs(gh),
+          listMergedPRs: async () => prLabelFilter(await listMyMergedPRs(gh)),
+          listClosedUnmergedPRs: async () => prLabelFilter(await listMyClosedUnmergedPRs(gh)),
         }
       : null;
   console.log(
@@ -200,7 +208,7 @@ export async function startDaemon(): Promise<() => void> {
   const advance =
     autoContinue && prReview
       ? {
-          listMergedPRs: () => listMyMergedPRs(gh),
+          listMergedPRs: async () => prLabelFilter(await listMyMergedPRs(gh)),
           fetchAcComment: (issueId: string) => fetchMarkedCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
           fetchDescription: async (identifier: string) => {
             const d = await fetchIssueByIdentifier(apiKey, identifier);
@@ -247,6 +255,9 @@ export async function startDaemon(): Promise<() => void> {
   // Blocked-by handling: defer claiming and move back In-Progress tickets whose
   // blocker has no merged PR. Gated on the same gh-availability signal as the
   // other gh-backed steps; reuses listMyMergedPRs.
+  // Deliberately unfiltered: this list answers "has my blocker merged?", and a
+  // blocker can live on the other instance's slice of the board. Filtering it
+  // would leave a ticket blocked forever behind a merged bot PR.
   const blocked = prReview ? { listMergedPRs: () => listMyMergedPRs(gh) } : null;
   console.log(
     blocked

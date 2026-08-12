@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
+import { isBlocked, mergedIdentifierSet, ticketIdentifierFromBranch } from "./blocked.ts";
 
 test("mergedIdentifierSet parses identifiers from branch names, uppercased and deduped", () => {
   const set = mergedIdentifierSet([
@@ -23,4 +23,10 @@ test("isBlocked is false when every blocker is merged (case-insensitive)", () =>
 
 test("isBlocked is true when any blocker is unmerged", () => {
   assert.equal(isBlocked(["ENG-4", "ENG-5"], new Set(["ENG-4"])), true);
+});
+
+test("ticketIdentifierFromBranch reads the leading identifier, uppercased", () => {
+  assert.equal(ticketIdentifierFromBranch("eng-1104-do-a-thing"), "ENG-1104");
+  assert.equal(ticketIdentifierFromBranch("SC-42-thing"), "SC-42");
+  assert.equal(ticketIdentifierFromBranch("hotfix-login"), null);
 });

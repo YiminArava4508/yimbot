@@ -292,7 +292,7 @@ still commit and open PRs as you: nothing about git or GitHub identity changes.
 
 ```bash
 pnpm onboard   # (re)configure via the interactive wizard
-pnpm check     # one-shot: print the issues the filter currently matches
+pnpm check     # one-shot: print the issues the deploy state and label filter currently match
 pnpm start     # run the daemon (Ctrl+C to stop); onboards first if unconfigured
 ```
 

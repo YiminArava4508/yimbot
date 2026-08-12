@@ -12,6 +12,7 @@ import {
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
+import { parseLabelFilter } from "./labels.ts";
 
 type JsonBody = Record<string, unknown>;
 
@@ -221,13 +222,44 @@ test("fetchCycleTodoIssues filters by team, assignee, state, and the active cycl
 
 test("countAssignedInState counts issues matched by assignee and state name only", async () => {
   const { fetchImpl, calls } = capturingFetch({
-    data: { issues: { nodes: [{ id: "1" }, { id: "2" }, { id: "3" }] } },
+    data: {
+      issues: {
+        nodes: [
+          { id: "1", labels: { nodes: [] } },
+          { id: "2", labels: { nodes: [] } },
+          { id: "3", labels: { nodes: [] } },
+        ],
+      },
+    },
   });
-  const count = await countAssignedInState("key", "user-1", "In Review", fetchImpl);
+  const count = await countAssignedInState("key", "user-1", "In Review", null, fetchImpl);
   assert.equal(count, 3);
   assert.deepEqual(calls[0].variables, { viewerId: "user-1", stateName: "In Review" });
   // No team filter: the query must not reference a team variable.
   assert.doesNotMatch(calls[0].query as string, /\$teamId/);
+});
+
+test("countAssignedInState counts only issues the label filter allows", async () => {
+  const body = {
+    data: {
+      issues: {
+        nodes: [
+          { id: "1", labels: { nodes: [{ name: "bot" }] } },
+          { id: "2", labels: { nodes: [] } },
+          { id: "3", labels: { nodes: [] } },
+        ],
+      },
+    },
+  };
+  assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body)), 3);
+  assert.equal(
+    await countAssignedInState("k", "v", "In Progress", parseLabelFilter("bot"), fakeFetch(body)),
+    1,
+  );
+  assert.equal(
+    await countAssignedInState("k", "v", "In Progress", parseLabelFilter("!bot"), fakeFetch(body)),
+    2,
+  );
 });
 
 test("moveIssueToState sends an issueUpdate mutation with the new state", async () => {

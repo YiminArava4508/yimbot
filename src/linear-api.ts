@@ -1,3 +1,5 @@
+import { labelFilterAllows, type LabelFilter } from "./labels.ts";
+
 const API_URL = "https://api.linear.app/graphql";
 
 export type LinearIssue = {
@@ -305,9 +307,10 @@ export async function countAssignedInState(
   apiKey: string,
   viewerId: string,
   stateName: string,
+  filter: LabelFilter = null,
   fetchImpl: typeof fetch = fetch,
 ): Promise<number> {
-  type IssuesData = { issues: { nodes: { id: string }[] } };
+  type IssuesData = { issues: { nodes: { id: string; labels: { nodes: { name: string }[] } }[] } };
   const data = await gql<IssuesData>(
     apiKey,
     `query CountAssigned($viewerId: ID!, $stateName: String!) {
@@ -318,13 +321,13 @@ export async function countAssignedInState(
           state: { name: { eq: $stateName } }
         }
       ) {
-        nodes { id }
+        nodes { id labels { nodes { name } } }
       }
     }`,
     { viewerId, stateName },
     fetchImpl,
   );
-  return data.issues.nodes.length;
+  return data.issues.nodes.filter((n) => labelFilterAllows(filter, n.labels.nodes.map((l) => l.name))).length;
 }
 
 // Move an issue to a new workflow state. Throws if Linear reports the update

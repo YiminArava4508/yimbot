@@ -1218,7 +1218,8 @@ export function startWatcher(config: WatcherConfig): () => void {
     riskLabels: claim.riskLabels,
     labelFilter: claim.labelFilter,
     maxInProgress: claim.maxInProgress,
-    countInProgress: () => countAssignedInState(config.apiKey, viewerId, claim.progressStateName),
+    countInProgress: () =>
+      countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     fetchMergedIdentifiers,
     moveToInProgress: async (issue) => {

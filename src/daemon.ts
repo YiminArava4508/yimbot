@@ -216,7 +216,7 @@ export async function startDaemon(): Promise<() => void> {
           },
           judge: (open: AC[]) => judgeAcceptance(judgeRun, open),
           writeAcComment: (issueId: string, body: string) => upsertMarkedComment(apiKey, issueId, AC_COMMENT_MARKER, body),
-          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName),
+          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
           maxInProgress,
           maxRounds: maxContinuations,
         }

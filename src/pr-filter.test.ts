@@ -5,13 +5,18 @@ import { makePrLabelFilter } from "./pr-filter.ts";
 
 const pr = (n: number, branch: string) => ({ number: n, headRefName: branch });
 
-function harness(raw: string | undefined, labels: Record<string, string[]>, opts: { fail?: boolean } = {}) {
+function harness(
+  raw: string | undefined,
+  labels: Record<string, string[]>,
+  opts: { fail?: boolean; notFound?: boolean } = {},
+) {
   const calls: string[] = [];
   let clock = 0;
   const filter = makePrLabelFilter({
     filter: parseLabelFilter(raw),
     fetchLabels: async (identifier) => {
       calls.push(identifier);
+      if (opts.notFound) throw new Error("Linear GraphQL: Entity not found");
       if (opts.fail) throw new Error("linear down");
       return labels[identifier] ?? [];
     },
@@ -51,6 +56,18 @@ test("a branch with no ticket identifier counts as unlabelled", async () => {
 test("a failed lookup skips the PR for this tick rather than working it", async () => {
   const { filter } = harness("!bot", {}, { fail: true });
   assert.deepEqual((await filter([pr(1, "eng-1-a")])).map((p) => p.number), []);
+});
+
+test("a branch that names a nonexistent ticket counts as unlabelled, kept under a negated filter", async () => {
+  const { filter } = harness("!bot", {}, { notFound: true });
+  const kept = await filter([pr(1, "revert-1234-eng-1-thing")]);
+  assert.deepEqual(kept.map((p) => p.number), [1]);
+});
+
+test("a branch that names a nonexistent ticket counts as unlabelled, dropped under an include filter", async () => {
+  const { filter } = harness("bot", {}, { notFound: true });
+  const kept = await filter([pr(1, "revert-1234-eng-1-thing")]);
+  assert.deepEqual(kept.map((p) => p.number), []);
 });
 
 test("labels are cached until the ttl expires", async () => {

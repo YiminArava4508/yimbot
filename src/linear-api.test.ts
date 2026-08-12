@@ -9,6 +9,7 @@ import {
   fetchIssuesInState,
   fetchIssueByIdentifier,
   fetchTeamLabels,
+  isMissingEntityError,
   moveIssueToState,
   resolveContext,
   upsertMarkedComment,
@@ -289,6 +290,25 @@ test("fetchIssueByIdentifier returns id + description", async () => {
   ]);
   const d = await fetchIssueByIdentifier("key", "ENG-949", f);
   assert.deepEqual(d, { id: "uuid-1", identifier: "ENG-949", description: "body", labels: [] });
+});
+
+test("isMissingEntityError recognizes Linear's not-found GraphQL error", () => {
+  assert.equal(isMissingEntityError(new Error("Linear GraphQL: Entity not found")), true);
+});
+
+test("isMissingEntityError returns false for other errors", () => {
+  assert.equal(isMissingEntityError(new Error("Linear API 500: boom")), false);
+  assert.equal(isMissingEntityError("not an Error"), false);
+});
+
+test("fetchIssueByIdentifier throws a missing-entity error when Linear reports the issue not found", async () => {
+  const f = fakeFetch({ errors: [{ message: "Entity not found" }] });
+  await assert.rejects(fetchIssueByIdentifier("key", "REVERT-1234", f), (err) => isMissingEntityError(err));
+});
+
+test("fetchIssueByIdentifier throws a missing-entity error when Linear returns a null issue with no error", async () => {
+  const f = fakeFetchMultiResponse([{ issue: null }]);
+  await assert.rejects(fetchIssueByIdentifier("key", "REVERT-1234", f), (err) => isMissingEntityError(err));
 });
 
 test("upsertMarkedComment updates when a marked comment exists", async () => {

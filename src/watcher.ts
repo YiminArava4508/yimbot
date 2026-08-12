@@ -403,6 +403,9 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     return;
   }
   todos = todos.filter((t) => !state.skip.has(t.id));
+  // Filtered once, up front, so the deferral logging below and selectNextClaim
+  // agree on which todos are actually in this instance's slice.
+  const inSlice = filterByLabel(deps.labelFilter, todos);
 
   let merged: Set<string> | null = null;
   if (deps.fetchMergedIdentifiers) {
@@ -412,14 +415,14 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
       deps.log(`claim failed: ${err}`);
       return;
     }
-    for (const t of todos) {
+    for (const t of inSlice) {
       if (isBlocked(t.blockedBy, merged)) {
         deps.log(`deferring ${t.identifier}: blocked by ${t.blockedBy.join(", ")} (unmerged)`);
       }
     }
   }
 
-  const next = selectNextClaim(todos, { riskLabels: deps.riskLabels, merged, labelFilter: deps.labelFilter });
+  const next = selectNextClaim(inSlice, { riskLabels: deps.riskLabels, merged, labelFilter: deps.labelFilter });
   if (!next) return;
 
   // Runs on this one ticket only. claimOnce already returned early at the WIP

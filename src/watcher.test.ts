@@ -558,6 +558,20 @@ test("claimOnce claims a blocked todo once its blocker is merged", async () => {
   assert.deepEqual(moved.map((i) => i.id), ["5"]);
 });
 
+test("claimOnce only logs deferrals for todos in this instance's LABEL_FILTER slice", async () => {
+  const { deps, logs } = claimDeps({
+    labelFilter: parseLabelFilter("!bot"),
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"], labels: ["bot"] }),
+      cycleTodo({ id: "6", priority: 2, blockedBy: ["ENG-4"] }),
+    ],
+    fetchMergedIdentifiers: async () => new Set<string>(),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.ok(!logs.some((l) => l.includes("ENG-5")), "must not log about a ticket outside this instance's slice");
+  assert.ok(logs.some((l) => l.includes("deferring ENG-6")));
+});
+
 test("claimOnce skips the claim tick if the merged fetch fails", async () => {
   const { deps, moved, logs } = claimDeps({
     fetchMergedIdentifiers: async () => {

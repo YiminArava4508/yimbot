@@ -758,7 +758,9 @@ export async function runSetup(): Promise<YimbotConfig> {
   labelsSpin.stop(`Loaded ${teamLabels.length} label(s)`);
 
   const currentFilter = parseLabelFilter(process.env.LABEL_FILTER);
-  let labelFilter = "";
+  // Preserves an existing LABEL_FILTER on a re-run when the team has zero
+  // labels and the prompt below is skipped.
+  let labelFilter = envOr("LABEL_FILTER", "");
   if (teamLabels.length > 0) {
     const mode = bail(
       await p.select({
@@ -771,13 +773,25 @@ export async function runSetup(): Promise<YimbotConfig> {
         initialValue: currentFilter ? (currentFilter.negated ? "except" : "only") : "all",
       }),
     );
-    if (mode !== "all") {
+    if (mode === "all") {
+      labelFilter = "";
+    } else {
+      // Seed the current filter's label even when it is missing from the
+      // fetched list, so a stale label doesn't silently fall back to the
+      // first one in the picker and swap the partition out from under the user.
+      const currentLabelKnown = teamLabels.some((l) => l.toLowerCase() === currentFilter?.label);
+      const options =
+        currentFilter && !currentLabelKnown
+          ? [{ value: currentFilter.label, label: currentFilter.label }, ...teamLabels.map((l) => ({ value: l, label: l }))]
+          : teamLabels.map((l) => ({ value: l, label: l }));
       const picked = bail(
         await p.select({
           message: mode === "only" ? "Work only tickets labelled…" : "Never work tickets labelled…",
-          options: teamLabels.map((l) => ({ value: l, label: l })),
+          options,
           initialValue:
-            teamLabels.find((l) => l.toLowerCase() === currentFilter?.label) ?? teamLabels[0],
+            teamLabels.find((l) => l.toLowerCase() === currentFilter?.label) ??
+            currentFilter?.label ??
+            teamLabels[0],
         }),
       );
       labelFilter = mode === "only" ? picked : `!${picked}`;

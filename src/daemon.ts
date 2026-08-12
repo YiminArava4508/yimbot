@@ -124,10 +124,14 @@ export async function startDaemon(): Promise<() => void> {
   // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
   // disabled (null) rather than crashing the daemon.
   const gh = ghRunner(codebasePath);
+  // A ticket's labels don't change mid-flight, and reacting slowly to a relabel
+  // is an explicit non-goal of the design, so this is decoupled from the
+  // heartbeat rather than going stale (and re-fetched) every tick.
+  const PR_LABEL_CACHE_TTL_MS = 60 * 60 * 1000;
   const prLabelFilter = makePrLabelFilter({
     filter: labelFilter,
     fetchLabels: async (identifier) => (await fetchIssueByIdentifier(apiKey, identifier)).labels,
-    ttlMs: heartbeatIntervalMinutes * 60 * 1000,
+    ttlMs: PR_LABEL_CACHE_TTL_MS,
     now: Date.now,
     log: (msg) => console.log(`[yimbot] ${msg}`),
   });
@@ -159,12 +163,17 @@ export async function startDaemon(): Promise<() => void> {
 
   // Cleanup step: tear down merged PRs' worktrees. Shares the review step's gh
   // availability signal (prReview !== null): if gh is missing, both are off.
+  // Unfiltered: cleanup only tears down worktrees that exist on THIS machine, so
+  // the other instance's PRs never had one here to reap. Gating this list would
+  // suppress no duplicate work, only cost a Linear lookup per merged/closed PR,
+  // and would leave a PR that changed slices mid-flight orphaned instead of
+  // reaped.
   const cleanup =
     autoCleanup && prReview
       ? {
           codebasePath,
-          listMergedPRs: async () => prLabelFilter(await listMyMergedPRs(gh)),
-          listClosedUnmergedPRs: async () => prLabelFilter(await listMyClosedUnmergedPRs(gh)),
+          listMergedPRs: () => listMyMergedPRs(gh),
+          listClosedUnmergedPRs: () => listMyClosedUnmergedPRs(gh),
         }
       : null;
   console.log(

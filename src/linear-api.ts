@@ -63,6 +63,14 @@ async function gql<T>(
   return payload.data;
 }
 
+// Linear reports a missing entity (e.g. issue(id) with no matching issue) as a
+// GraphQL error with this message, which gql() surfaces as a thrown Error.
+// fetchIssueByIdentifier throws the same wording for the other shape Linear
+// can use: a null field with no error at all.
+export function isMissingEntityError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("Entity not found");
+}
+
 export async function resolveContext(
   apiKey: string,
   teamName: string,
@@ -385,7 +393,7 @@ export async function fetchIssueByIdentifier(
       identifier: string;
       description: string | null;
       labels: { nodes: { name: string }[] };
-    };
+    } | null;
   };
   const data = await gql<Data>(
     apiKey,
@@ -395,6 +403,9 @@ export async function fetchIssueByIdentifier(
     { id: identifier },
     fetchImpl,
   );
+  if (!data.issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
   return {
     id: data.issue.id,
     identifier: data.issue.identifier,

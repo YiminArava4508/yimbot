@@ -8,6 +8,7 @@ import {
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
   fetchIssueByIdentifier,
+  fetchTeamLabels,
   moveIssueToState,
   resolveContext,
   upsertMarkedComment,
@@ -442,4 +443,9 @@ test("fetchIssueByIdentifier returns label names", async () => {
   };
   const detail = await fetchIssueByIdentifier("k", "ENG-1", fakeFetch(body));
   assert.deepEqual(detail.labels, ["bot"]);
+});
+
+test("fetchTeamLabels returns the team's label names", async () => {
+  const body = { data: { team: { labels: { nodes: [{ name: "bot" }, { name: "infra" }] } } } };
+  assert.deepEqual(await fetchTeamLabels("k", "t", fakeFetch(body)), ["bot", "infra"]);
 });

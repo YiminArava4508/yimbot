@@ -242,6 +242,24 @@ export async function fetchInProgressIssuesWithBlockers(
   }));
 }
 
+// A team's label names, for the setup wizard's LABEL_FILTER picker.
+export async function fetchTeamLabels(
+  apiKey: string,
+  teamId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  type Data = { team: { labels: { nodes: { name: string }[] } } };
+  const data = await gql<Data>(
+    apiKey,
+    `query TeamLabels($teamId: String!) {
+      team(id: $teamId) { labels(first: 100) { nodes { name } } }
+    }`,
+    { teamId },
+    fetchImpl,
+  );
+  return data.team.labels.nodes.map((l) => l.name);
+}
+
 // The watched team's active-cycle Todo issues assigned to the viewer, enriched
 // with priority, sortOrder, and label names for the claim step to rank. Scoped by
 // team + assignee + state + the currently-active cycle.

@@ -14,7 +14,8 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as p from "@clack/prompts";
 import { envOr } from "./env.ts";
-import { fetchTeamStates, fetchTeams, fetchViewer } from "./linear-api.ts";
+import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
+import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./linear-api.ts";
 import { endSessionScriptPath, sessionScriptPath } from "./watcher.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
@@ -36,6 +37,7 @@ export type YimbotConfig = {
   autoContinue: boolean;
   maxContinuations: number;
   acJudgeModel: string;
+  labelFilter: string;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -329,6 +331,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     TODO_STATE_NAME: c.todoStateName,
     RISK_LABELS: c.riskLabels.join(","),
     MAX_IN_PROGRESS: String(c.maxInProgress),
+    LABEL_FILTER: c.labelFilter,
     AUTO_CLEANUP: String(c.autoCleanup),
     AUTO_CONTINUE: String(c.autoContinue),
     MAX_CONTINUATIONS: String(c.maxContinuations),
@@ -358,6 +361,7 @@ export function serializeEnvFile(c: YimbotConfig): string {
     `TODO_STATE_NAME=${r.TODO_STATE_NAME}`,
     `RISK_LABELS=${r.RISK_LABELS}`,
     `MAX_IN_PROGRESS=${r.MAX_IN_PROGRESS}`,
+    `LABEL_FILTER=${r.LABEL_FILTER}`,
     "",
     "# --- Cleanup step ---",
     `AUTO_CLEANUP=${r.AUTO_CLEANUP}`,
@@ -748,6 +752,38 @@ export async function runSetup(): Promise<YimbotConfig> {
     envOr("TODO_STATE_NAME", "Todo"),
   );
 
+  const labelsSpin = p.spinner();
+  labelsSpin.start("Loading labels");
+  const teamLabels = await fetchTeamLabels(apiKey, teamId);
+  labelsSpin.stop(`Loaded ${teamLabels.length} label(s)`);
+
+  const currentFilter = parseLabelFilter(process.env.LABEL_FILTER);
+  let labelFilter = "";
+  if (teamLabels.length > 0) {
+    const mode = bail(
+      await p.select({
+        message: "Which tickets should this instance work?",
+        options: [
+          { value: "all", label: "Every ticket", hint: "one machine, no restriction" },
+          { value: "only", label: "Only tickets with a label", hint: "the bot machine" },
+          { value: "except", label: "Every ticket except one label", hint: "your own machine" },
+        ],
+        initialValue: currentFilter ? (currentFilter.negated ? "except" : "only") : "all",
+      }),
+    );
+    if (mode !== "all") {
+      const picked = bail(
+        await p.select({
+          message: mode === "only" ? "Work only tickets labelled…" : "Never work tickets labelled…",
+          options: teamLabels.map((l) => ({ value: l, label: l })),
+          initialValue:
+            teamLabels.find((l) => l.toLowerCase() === currentFilter?.label) ?? teamLabels[0],
+        }),
+      );
+      labelFilter = mode === "only" ? picked : `!${picked}`;
+    }
+  }
+
   const codebasePath = expandTilde(
     bail(
       await p.text({
@@ -947,8 +983,11 @@ export async function runSetup(): Promise<YimbotConfig> {
     autoContinue,
     maxContinuations,
     acJudgeModel,
+    labelFilter,
   };
   writeEnvFile(serializeEnvFile(config));
-  p.outro(`Saved to .env — signed in as ${viewerName}, watching "${teamName}".`);
+  p.outro(
+    `Saved to .env, signed in as ${viewerName}, watching "${teamName}", working ${describeLabelFilter(parseLabelFilter(labelFilter))}.`,
+  );
   return config;
 }

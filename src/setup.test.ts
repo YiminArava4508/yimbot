@@ -44,6 +44,7 @@ const sample: YimbotConfig = {
   autoContinue: true,
   maxContinuations: 5,
   acJudgeModel: "",
+  labelFilter: "",
 };
 
 test("isConfigured requires a non-empty API key", () => {
@@ -187,6 +188,16 @@ test("serializeEnvFile round-trips the advance step config", () => {
   assert.match(text, /^AUTO_CONTINUE=false$/m);
   assert.match(text, /^MAX_CONTINUATIONS=8$/m);
   assert.match(text, /^AC_JUDGE_MODEL=haiku$/m);
+});
+
+test("configToEnvRecord carries the label filter", () => {
+  assert.equal(configToEnvRecord({ ...sample, labelFilter: "!bot" }).LABEL_FILTER, "!bot");
+  assert.equal(configToEnvRecord(sample).LABEL_FILTER, "");
+});
+
+test("serializeEnvFile writes LABEL_FILTER in the claim section", () => {
+  const text = serializeEnvFile({ ...sample, labelFilter: "bot" });
+  assert.match(text, /^LABEL_FILTER=bot$/m);
 });
 
 test("commandExists is true for a real binary, false for a bogus one", () => {

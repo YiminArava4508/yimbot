@@ -355,7 +355,7 @@ test("manual flag folds to flagged; a later unflag clears it", () => {
   assert.equal(cleared[0].flagged, false);
 });
 
-test("a status event after a manual flag clears it", () => {
+test("a status event after a manual flag does not clear it", () => {
   const rows = reduceRows(
     [
       { ts: 1000, kind: "task_started", key: "ENG-1", label: "ENG-1" },
@@ -364,7 +364,7 @@ test("a status event after a manual flag clears it", () => {
     ],
     4000,
   );
-  assert.equal(rows[0].flagged, false);
+  assert.equal(rows[0].flagged, true);
 });
 
 test("needs_input raises the flag and never changes status or duration", () => {
@@ -382,7 +382,7 @@ test("needs_input raises the flag and never changes status or duration", () => {
   assert.equal(isFlagged(rows[0]), true);
 });
 
-test("needs_input clears on input, next status, or manual unflag", () => {
+test("needs_input clears only on input or manual unflag, never on a status", () => {
   const clears = (clearer: YimbotEvent) =>
     reduceRows(
       [
@@ -393,8 +393,9 @@ test("needs_input clears on input, next status, or manual unflag", () => {
       5000,
     )[0].flagged;
   assert.equal(clears({ ts: 3000, kind: "input_received", key: "ENG-1", label: "ENG-1" }), false);
-  assert.equal(clears({ ts: 3000, kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" }), false);
   assert.equal(clears({ ts: 3000, kind: "unflagged", key: "ENG-1", label: "ENG-1" }), false);
+  assert.equal(clears({ ts: 3000, kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" }), true);
+  assert.equal(clears({ ts: 3000, kind: "conflict_fix_started", key: "ENG-1", label: "ENG-1" }), true);
 });
 
 test("a needs_input after a clear re-raises the flag", () => {
@@ -439,7 +440,7 @@ test("needs_decision then flagged folds to the status plus a raised flag", () =>
   assert.equal(rows[0].flagged, true);
 });
 
-test("flagged before needs_decision leaves the flag cleared (order is load-bearing)", () => {
+test("flagged before needs_decision keeps the flag raised (order no longer matters)", () => {
   const rows = reduceRows(
     [
       { ts: 1000, kind: "review_started", key: "ENG-1", label: "ENG-1" },
@@ -449,7 +450,7 @@ test("flagged before needs_decision leaves the flag cleared (order is load-beari
     5000,
   );
   assert.equal(rows[0].status, "needs decision");
-  assert.equal(rows[0].flagged, false);
+  assert.equal(rows[0].flagged, true);
 });
 
 test("review_findings then flagged folds to the status plus a raised flag", () => {

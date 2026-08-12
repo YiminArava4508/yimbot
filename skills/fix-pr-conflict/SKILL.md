@@ -81,15 +81,16 @@ the PR's own commits stay intact; you only add a resolution merge commit.
 
 6. **Verify.** Run the project's tests and typecheck for anything the merge
    touched (e.g. `pnpm test`, `pnpm typecheck`) and confirm they are genuinely
-   green. Check `IMPL_MODEL` (`echo "$IMPL_MODEL"`): resolution decisions stay in
-   this session (they need the PR-intent context from step 2), but if the merge
-   requires a sizable code fix and `IMPL_MODEL` is set, dispatch that fix to
-   subagents on that model via `superpowers:subagent-driven-development`.
-   Subagents do not inherit the global CLAUDE.md, so include this rule in every
-   subagent prompt: never use em dashes or en dashes in any output, including code
-   comments and commit messages. Only continue once the resolution is confidently
-   feature-preserving and the suite is green; if it is not, return to step 5 and
-   bail.
+   green. Resolution decisions and any code fix the merge requires stay **in
+   this session**: PR-fix work always runs on the stronger session model, so
+   never delegate it to cheaper implementation subagents, and ignore
+   `IMPL_MODEL` even when it is set. Only continue once the resolution is
+   confidently feature-preserving and the suite is green; if it is not, return
+   to step 5 and bail.
+
+   Never post a PR comment describing the resolution: this work is not a
+   response to any review comment, so the merge commit and your session summary
+   are the record.
 
 7. **Commit and push** the merge. A merge commit records the resolution; complete
    it and push (fast-forward, no force):

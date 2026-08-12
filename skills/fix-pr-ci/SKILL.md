@@ -48,16 +48,15 @@ A very common cause is not a code defect at all: the branch is behind
    branch is level with main, a still-red build is a code problem (step 4).
 
 4. **Then fix the code.** If CI is failing for a real reason (or is still red
-   after the sync), reproduce the failure locally, then fix it. Check `IMPL_MODEL`
-   (`echo "$IMPL_MODEL"`):
-   - If set, dispatch the code changes to subagents on that model via
-     `superpowers:subagent-driven-development`. Subagents do not inherit the
-     global CLAUDE.md, so include this rule in every subagent prompt: never use
-     em dashes (—) or en dashes (–) in any output, including code comments and
-     commit messages.
-   - If unset, implement in-session.
+   after the sync), reproduce the failure locally, then fix it **in this
+   session**. PR-fix work always runs on the stronger session model: never
+   delegate it to cheaper implementation subagents, and ignore `IMPL_MODEL`
+   even when it is set.
    Use `superpowers:test-driven-development` for anything that changes behavior,
    and run the failing suite locally until it is genuinely green.
+
+   Never post a PR comment describing the fix: this work is not a response to
+   any review comment, so the commit and your session summary are the record.
 
    Keep a running record of **the exact file paths you edit**; you stage only
    those paths in step 5.

@@ -69,7 +69,9 @@ test("resolveContext throws when state is missing", async () => {
 test("fetchIssuesInState returns issue nodes", async () => {
   const fetchImpl = fakeFetch({
     data: {
-      issues: { nodes: [{ id: "i-1", identifier: "ENG-42", title: "Fix login" }] },
+      issues: {
+        nodes: [{ id: "i-1", identifier: "ENG-42", title: "Fix login", labels: { nodes: [] } }],
+      },
     },
   });
   const issues = await fetchIssuesInState(
@@ -77,7 +79,7 @@ test("fetchIssuesInState returns issue nodes", async () => {
     { viewerId: "u", teamId: "t", stateId: "s" },
     fetchImpl,
   );
-  assert.deepEqual(issues, [{ id: "i-1", identifier: "ENG-42", title: "Fix login" }]);
+  assert.deepEqual(issues, [{ id: "i-1", identifier: "ENG-42", title: "Fix login", labels: [] }]);
 });
 
 test("GraphQL errors are surfaced", async () => {
@@ -184,12 +186,14 @@ test("fetchInProgressIssuesWithBlockers returns issues with blockedBy", async ()
             id: "i-2",
             identifier: "ENG-5",
             title: "Wire it up",
+            labels: { nodes: [] },
             inverseRelations: { nodes: [{ type: "blocks", issue: { identifier: "ENG-4" } }] },
           },
           {
             id: "i-3",
             identifier: "ENG-6",
             title: "Standalone",
+            labels: { nodes: [] },
             inverseRelations: { nodes: [] },
           },
         ],
@@ -202,8 +206,8 @@ test("fetchInProgressIssuesWithBlockers returns issues with blockedBy", async ()
     fetchImpl,
   );
   assert.deepEqual(issues, [
-    { id: "i-2", identifier: "ENG-5", title: "Wire it up", blockedBy: ["ENG-4"] },
-    { id: "i-3", identifier: "ENG-6", title: "Standalone", blockedBy: [] },
+    { id: "i-2", identifier: "ENG-5", title: "Wire it up", labels: [], blockedBy: ["ENG-4"] },
+    { id: "i-3", identifier: "ENG-6", title: "Standalone", labels: [], blockedBy: [] },
   ]);
 });
 
@@ -247,9 +251,11 @@ function fakeFetchMultiResponse(responses: unknown[]): typeof fetch {
 }
 
 test("fetchIssueByIdentifier returns id + description", async () => {
-  const f = fakeFetchMultiResponse([{ issue: { id: "uuid-1", identifier: "ENG-949", description: "body" } }]);
+  const f = fakeFetchMultiResponse([
+    { issue: { id: "uuid-1", identifier: "ENG-949", description: "body", labels: { nodes: [] } } },
+  ]);
   const d = await fetchIssueByIdentifier("key", "ENG-949", f);
-  assert.deepEqual(d, { id: "uuid-1", identifier: "ENG-949", description: "body" });
+  assert.deepEqual(d, { id: "uuid-1", identifier: "ENG-949", description: "body", labels: [] });
 });
 
 test("upsertMarkedComment updates when a marked comment exists", async () => {
@@ -355,4 +361,53 @@ test("createBlocksRelation sends the blocker as issueId and the blocked ticket a
 test("createBlocksRelation throws when the mutation reports failure", async () => {
   const f = fakeFetch({ data: { issueRelationCreate: { success: false } } });
   await assert.rejects(() => createBlocksRelation("key", "uuid-blocker", "uuid-blocked", f), /issueRelationCreate failed/);
+});
+
+test("fetchIssuesInState returns each issue's label names", async () => {
+  const body = {
+    data: {
+      issues: {
+        nodes: [
+          { id: "1", identifier: "ENG-1", title: "One", labels: { nodes: [{ name: "bot" }] } },
+          { id: "2", identifier: "ENG-2", title: "Two", labels: { nodes: [] } },
+        ],
+      },
+    },
+  };
+  const issues = await fetchIssuesInState("k", { viewerId: "u", teamId: "t", stateId: "s" }, fakeFetch(body));
+  assert.deepEqual(issues.map((i) => i.labels), [["bot"], []]);
+});
+
+test("fetchInProgressIssuesWithBlockers returns label names", async () => {
+  const body = {
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "1",
+            identifier: "ENG-1",
+            title: "One",
+            labels: { nodes: [{ name: "bot" }] },
+            inverseRelations: { nodes: [] },
+          },
+        ],
+      },
+    },
+  };
+  const issues = await fetchInProgressIssuesWithBlockers(
+    "k",
+    { viewerId: "u", teamId: "t", stateId: "s" },
+    fakeFetch(body),
+  );
+  assert.deepEqual(issues[0].labels, ["bot"]);
+});
+
+test("fetchIssueByIdentifier returns label names", async () => {
+  const body = {
+    data: {
+      issue: { id: "1", identifier: "ENG-1", description: "d", labels: { nodes: [{ name: "bot" }] } },
+    },
+  };
+  const detail = await fetchIssueByIdentifier("k", "ENG-1", fakeFetch(body));
+  assert.deepEqual(detail.labels, ["bot"]);
 });

@@ -625,7 +625,7 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
 test("reconcile moves a blocked In-Progress ticket back and unlatches, never tearing down", async () => {
   const { deps, movedBack, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
     ],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
@@ -638,8 +638,8 @@ test("reconcile moves a blocked In-Progress ticket back and unlatches, never tea
 test("reconcile leaves unblocked and no-blocker tickets alone", async () => {
   const { deps, movedBack } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
-      { id: "i-6", identifier: "ENG-6", title: "t", blockedBy: [] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-6", identifier: "ENG-6", title: "t", labels: [], blockedBy: [] },
     ],
     fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
   });
@@ -661,7 +661,7 @@ test("reconcile swallows a fetch failure without throwing", async () => {
 test("reconcile does not unlatch when the move fails", async () => {
   const { deps, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
     ],
     moveToTodo: async () => {
       throw new Error("move boom");

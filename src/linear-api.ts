@@ -156,12 +156,15 @@ export async function fetchTeamStates(
 // The viewer's assigned issues in one state of the watched team. Shared by the
 // deploy step (In Progress) and the review step (In Review) — both watch a
 // single state, so this is deliberately state-agnostic.
+export type StateIssue = LinearIssue & { labels: string[] };
+
 export async function fetchIssuesInState(
   apiKey: string,
   ctx: LinearContext,
   fetchImpl: typeof fetch = fetch,
-): Promise<LinearIssue[]> {
-  type IssuesData = { issues: { nodes: LinearIssue[] } };
+): Promise<StateIssue[]> {
+  type Node = LinearIssue & { labels: { nodes: { name: string }[] } };
+  type IssuesData = { issues: { nodes: Node[] } };
   const data = await gql<IssuesData>(
     apiKey,
     `query IssuesInState($teamId: ID!, $stateId: ID!, $viewerId: ID!) {
@@ -173,16 +176,21 @@ export async function fetchIssuesInState(
           assignee: { id: { eq: $viewerId } }
         }
       ) {
-        nodes { id identifier title }
+        nodes { id identifier title labels { nodes { name } } }
       }
     }`,
     { teamId: ctx.teamId, stateId: ctx.stateId, viewerId: ctx.viewerId },
     fetchImpl,
   );
-  return data.issues.nodes;
+  return data.issues.nodes.map((n) => ({
+    id: n.id,
+    identifier: n.identifier,
+    title: n.title,
+    labels: n.labels.nodes.map((l) => l.name),
+  }));
 }
 
-export type IssueWithBlockers = LinearIssue & { blockedBy: string[] };
+export type IssueWithBlockers = LinearIssue & { blockedBy: string[]; labels: string[] };
 
 // The viewer's assigned issues in one state of the watched team, each enriched
 // with the identifiers of the tickets it is blocked by. Used by the reconcile
@@ -196,6 +204,7 @@ export async function fetchInProgressIssuesWithBlockers(
     id: string;
     identifier: string;
     title: string;
+    labels: { nodes: { name: string }[] };
     inverseRelations: InverseRelationNodes;
   };
   type IssuesData = { issues: { nodes: Node[] } };
@@ -214,6 +223,7 @@ export async function fetchInProgressIssuesWithBlockers(
           id
           identifier
           title
+          labels { nodes { name } }
           inverseRelations { nodes { type issue { identifier } } }
         }
       }
@@ -225,6 +235,7 @@ export async function fetchInProgressIssuesWithBlockers(
     id: n.id,
     identifier: n.identifier,
     title: n.title,
+    labels: n.labels.nodes.map((l) => l.name),
     blockedBy: blockersFrom(n.inverseRelations),
   }));
 }
@@ -340,23 +351,35 @@ export async function moveIssueToState(
   }
 }
 
-export type IssueDetail = { id: string; identifier: string; description: string };
+export type IssueDetail = { id: string; identifier: string; description: string; labels: string[] };
 
 export async function fetchIssueByIdentifier(
   apiKey: string,
   identifier: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<IssueDetail> {
-  type Data = { issue: { id: string; identifier: string; description: string | null } };
+  type Data = {
+    issue: {
+      id: string;
+      identifier: string;
+      description: string | null;
+      labels: { nodes: { name: string }[] };
+    };
+  };
   const data = await gql<Data>(
     apiKey,
     `query IssueDetail($id: String!) {
-      issue(id: $id) { id identifier description }
+      issue(id: $id) { id identifier description labels { nodes { name } } }
     }`,
     { id: identifier },
     fetchImpl,
   );
-  return { id: data.issue.id, identifier: data.issue.identifier, description: data.issue.description ?? "" };
+  return {
+    id: data.issue.id,
+    identifier: data.issue.identifier,
+    description: data.issue.description ?? "",
+    labels: data.issue.labels.nodes.map((l) => l.name),
+  };
 }
 
 export async function upsertMarkedComment(

@@ -7,6 +7,14 @@ import {
   isPositiveInt,
   isPositiveNumber,
   parseCommaList,
+  settingRows,
+  newDraft,
+  setEdit,
+  dirtyKeys,
+  draftRows,
+  validateDraft,
+  commitDraft,
+  type YimbotConfig,
 } from "./settings-model.ts";
 
 test("isOff recognizes only the documented off values", () => {
@@ -80,4 +88,107 @@ test("configFromEnv is the inverse of configToEnvRecord", () => {
     labelFilter: "!bot",
   };
   assert.deepEqual(configFromEnv(configToEnvRecord(config)), config);
+});
+
+const sample: YimbotConfig = {
+  apiKey: "lin_api_secret1234",
+  teamName: "Engineering",
+  deployStateName: "In Progress",
+  reviewStateName: "In Review",
+  todoStateName: "Todo",
+  heartbeatIntervalMinutes: 3,
+  codebasePath: "/home/u/Work/repo",
+  planModel: "opus",
+  implModel: "sonnet",
+  autoClaim: true,
+  riskLabels: ["migration", "infra"],
+  maxInProgress: 4,
+  autoCleanup: true,
+  autoContinue: true,
+  maxContinuations: 5,
+  acJudgeModel: "",
+  labelFilter: "!bot",
+};
+
+test("settingRows lists every setting once, in display order", () => {
+  const rows = settingRows(sample, "Yimin Arava");
+  assert.equal(rows.length, 18);
+  assert.deepEqual(rows.slice(0, 3).map((r) => r.envKey), ["LINEAR_API_KEY", "ASSIGNEE", "LINEAR_TEAM_NAME"]);
+  const keys = new Set(rows.map((r) => r.envKey));
+  assert.equal(keys.size, 18);
+  for (const k of Object.keys(configToEnvRecord(sample))) assert.equal(keys.has(k), true);
+});
+
+test("settingRows masks the api key and shows the assignee read-only", () => {
+  const rows = settingRows(sample, "Yimin Arava");
+  const key = rows.find((r) => r.envKey === "LINEAR_API_KEY")!;
+  assert.equal(key.editor, "secret");
+  assert.equal(key.display.includes("secret1234"), false);
+  assert.match(key.display, /^lin_.*1234$/);
+  const who = rows.find((r) => r.envKey === "ASSIGNEE")!;
+  assert.equal(who.editor, "readonly");
+  assert.equal(who.display, "Yimin Arava (this API key)");
+});
+
+test("settingRows renders the label filter's three modes in words", () => {
+  const display = (labelFilter: string) =>
+    settingRows({ ...sample, labelFilter }, "x").find((r) => r.envKey === "LABEL_FILTER")!.display;
+  assert.equal(display(""), "every ticket");
+  assert.equal(display("bot"), 'only tickets labelled "bot"');
+  assert.equal(display("!bot"), 'every ticket except those labelled "bot"');
+});
+
+test("settingRows renders toggles and lists readably", () => {
+  const rows = settingRows({ ...sample, autoClaim: false }, "x");
+  assert.equal(rows.find((r) => r.envKey === "AUTO_CLAIM")!.display, "off");
+  assert.equal(rows.find((r) => r.envKey === "RISK_LABELS")!.display, "migration, infra");
+  assert.equal(settingRows(sample, "x").find((r) => r.envKey === "AC_JUDGE_MODEL")!.display, "(claude default)");
+});
+
+test("a draft tracks only what changed and commits to a config", () => {
+  let draft = newDraft(sample);
+  assert.deepEqual(dirtyKeys(draft), []);
+  draft = setEdit(draft, "MAX_IN_PROGRESS", "2");
+  draft = setEdit(draft, "LABEL_FILTER", "bot");
+  assert.deepEqual(dirtyKeys(draft).sort(), ["LABEL_FILTER", "MAX_IN_PROGRESS"]);
+  const committed = commitDraft(draft);
+  assert.equal(committed.maxInProgress, 2);
+  assert.equal(committed.labelFilter, "bot");
+  assert.equal(committed.teamName, sample.teamName);
+});
+
+test("an edit back to the current value is not dirty", () => {
+  const draft = setEdit(newDraft(sample), "MAX_IN_PROGRESS", "4");
+  assert.deepEqual(dirtyKeys(draft), []);
+});
+
+test("draftRows shows pending values, not the committed ones", () => {
+  const draft = setEdit(newDraft(sample), "MAX_IN_PROGRESS", "9");
+  const row = draftRows(draft, "x").find((r) => r.envKey === "MAX_IN_PROGRESS")!;
+  assert.equal(row.display, "9");
+});
+
+test("validateDraft reports one message per invalid row and nothing when clean", () => {
+  assert.deepEqual(validateDraft(newDraft(sample)), {});
+  const bad = setEdit(
+    setEdit(setEdit(newDraft(sample), "MAX_IN_PROGRESS", "0"), "HEARTBEAT_INTERVAL_MINUTES", "x"),
+    "PLAN_MODEL",
+    "  ",
+  );
+  const errors = validateDraft(bad);
+  assert.deepEqual(Object.keys(errors).sort(), [
+    "HEARTBEAT_INTERVAL_MINUTES",
+    "MAX_IN_PROGRESS",
+    "PLAN_MODEL",
+  ]);
+  assert.match(errors.MAX_IN_PROGRESS, /positive integer/i);
+});
+
+test("validateDraft rejects a codebase path that is not a git repository", () => {
+  const errors = validateDraft(setEdit(newDraft(sample), "CODEBASE_PATH", "/definitely/not/here"));
+  assert.match(errors.CODEBASE_PATH, /git repository/i);
+});
+
+test("commitDraft throws rather than committing an invalid draft", () => {
+  assert.throws(() => commitDraft(setEdit(newDraft(sample), "MAX_IN_PROGRESS", "0")));
 });

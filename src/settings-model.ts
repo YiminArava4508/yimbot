@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
 // collects these; the daemon reads them back via envOr() at startup.
@@ -173,4 +174,138 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     acJudgeModel: or("AC_JUDGE_MODEL", ""),
     labelFilter: or("LABEL_FILTER", ""),
   };
+}
+
+export type EditorKind =
+  | "text"
+  | "secret"
+  | "number"
+  | "toggle"
+  | "list"
+  | "pickTeam"
+  | "pickState"
+  | "labelFilter"
+  | "readonly";
+
+export type SettingRow = {
+  envKey: string;
+  label: string;
+  editor: EditorKind;
+  value: string;
+  display: string;
+};
+
+function maskKey(key: string): string {
+  if (!key) return "(not set)";
+  const head = key.slice(0, 4);
+  return `${head}${"*".repeat(6)}${key.slice(-4)}`;
+}
+
+const ROW_SPECS: { envKey: string; label: string; editor: EditorKind }[] = [
+  { envKey: "LINEAR_API_KEY", label: "linear api key", editor: "secret" },
+  { envKey: "ASSIGNEE", label: "assignee", editor: "readonly" },
+  { envKey: "LINEAR_TEAM_NAME", label: "team", editor: "pickTeam" },
+  { envKey: "DEPLOY_STATE_NAME", label: "deploy state", editor: "pickState" },
+  { envKey: "TODO_STATE_NAME", label: "todo state", editor: "pickState" },
+  { envKey: "REVIEW_STATE_NAME", label: "review state", editor: "pickState" },
+  { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter" },
+  { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number" },
+  { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle" },
+  { envKey: "RISK_LABELS", label: "risk labels", editor: "list" },
+  { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number" },
+  { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text" },
+  { envKey: "PLAN_MODEL", label: "plan model", editor: "text" },
+  { envKey: "IMPL_MODEL", label: "impl model", editor: "text" },
+  { envKey: "AUTO_CLEANUP", label: "auto-cleanup", editor: "toggle" },
+  { envKey: "AUTO_CONTINUE", label: "auto-continue", editor: "toggle" },
+  { envKey: "MAX_CONTINUATIONS", label: "max continuations", editor: "number" },
+  { envKey: "AC_JUDGE_MODEL", label: "judge model", editor: "text" },
+];
+
+function displayValue(envKey: string, value: string): string {
+  switch (envKey) {
+    case "LINEAR_API_KEY":
+      return maskKey(value);
+    case "LABEL_FILTER":
+      return describeLabelFilter(parseLabelFilter(value));
+    case "RISK_LABELS":
+      return parseCommaList(value).join(", ") || "(none)";
+    case "AUTO_CLAIM":
+    case "AUTO_CLEANUP":
+    case "AUTO_CONTINUE":
+      return isOff(value) ? "off" : "on";
+    case "AC_JUDGE_MODEL":
+      return value || "(claude default)";
+    default:
+      return value;
+  }
+}
+
+function rowsFrom(record: Record<string, string>, assignee: string): SettingRow[] {
+  return ROW_SPECS.map((spec) => {
+    const value = spec.envKey === "ASSIGNEE" ? assignee : (record[spec.envKey] ?? "");
+    const display =
+      spec.envKey === "ASSIGNEE" ? `${assignee || "unknown"} (this API key)` : displayValue(spec.envKey, value);
+    return { ...spec, value, display };
+  });
+}
+
+export function settingRows(config: YimbotConfig, assignee: string): SettingRow[] {
+  return rowsFrom(configToEnvRecord(config), assignee);
+}
+
+export type Draft = { base: YimbotConfig; edits: Record<string, string> };
+
+export function newDraft(base: YimbotConfig): Draft {
+  return { base, edits: {} };
+}
+
+export function setEdit(draft: Draft, envKey: string, raw: string): Draft {
+  const edits = { ...draft.edits };
+  if (raw === configToEnvRecord(draft.base)[envKey]) delete edits[envKey];
+  else edits[envKey] = raw;
+  return { base: draft.base, edits };
+}
+
+export function dirtyKeys(draft: Draft): string[] {
+  return Object.keys(draft.edits);
+}
+
+export function draftRows(draft: Draft, assignee: string): SettingRow[] {
+  return rowsFrom({ ...configToEnvRecord(draft.base), ...draft.edits }, assignee);
+}
+
+export function validateDraft(draft: Draft): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const [envKey, raw] of Object.entries(draft.edits)) {
+    switch (envKey) {
+      case "MAX_IN_PROGRESS":
+      case "MAX_CONTINUATIONS":
+        if (!isPositiveInt(raw)) errors[envKey] = "must be a positive integer";
+        break;
+      case "HEARTBEAT_INTERVAL_MINUTES":
+        if (!isPositiveNumber(raw)) errors[envKey] = "must be a positive number";
+        break;
+      case "CODEBASE_PATH":
+        if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
+        break;
+      case "LINEAR_API_KEY":
+      case "LINEAR_TEAM_NAME":
+      case "DEPLOY_STATE_NAME":
+      case "TODO_STATE_NAME":
+      case "REVIEW_STATE_NAME":
+      case "PLAN_MODEL":
+      case "IMPL_MODEL":
+        if (!raw.trim()) errors[envKey] = "cannot be empty";
+        break;
+    }
+  }
+  return errors;
+}
+
+export function commitDraft(draft: Draft): YimbotConfig {
+  const errors = validateDraft(draft);
+  const first = Object.entries(errors)[0];
+  if (first) throw new Error(`${first[0]} ${first[1]}`);
+  return configFromEnv({ ...configToEnvRecord(draft.base), ...draft.edits });
 }

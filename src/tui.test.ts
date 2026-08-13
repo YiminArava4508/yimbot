@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindQuitKeys, bindSettingsKey, fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindSettingsKey, fmtDuration, footerHint, footerLayout, modeContent, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -103,8 +103,33 @@ test("footerHint keeps the existing hints and names the return key", () => {
   assert.match(hint, /j\/k move/);
   assert.match(hint, /enter open/);
   assert.match(hint, /f flag\/unflag/);
+  assert.match(hint, /m mode/);
   assert.match(hint, /q quit/);
   assert.match(hint, /prefix\+F12 returns here/);
+});
+
+test("modeContent highlights each mode distinctly", () => {
+  assert.equal(modeContent("supervised"), "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}");
+  assert.equal(modeContent("autonomous"), "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}");
+});
+
+test("bindModeKey gates m while settings is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let toggleCalls = 0;
+  bindModeKey(fakeScreen, () => settingsOpen, () => toggleCalls++);
+
+  handlers["m"]();
+  assert.equal(toggleCalls, 0, "m must not toggle the mode while the panel is open");
+
+  settingsOpen = false;
+  handlers["m"]();
+  assert.equal(toggleCalls, 1, "m toggles again once the panel is closed");
 });
 
 test("footerHint advertises the settings key", () => {

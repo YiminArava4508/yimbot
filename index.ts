@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { format } from "node:util";
 import { envOr } from "./src/env.ts";
 import { emitEvent } from "./src/events.ts";
+import { readMode, toggleMode } from "./src/mode.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
@@ -111,6 +112,8 @@ if (process.stdout.isTTY) {
       const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);
     },
+    mode: readMode,
+    onToggleMode: toggleMode,
     settings,
   });
 } else {

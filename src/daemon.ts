@@ -7,13 +7,13 @@ import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { pullCodebase } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
 import { pinEventsLog } from "./events.ts";
-import { envOr } from "./env.ts";
+import { envCsvSet, envOr } from "./env.ts";
 import {
   addLabel,
   blockedInfo,
-  changesRequested,
   checksInfo,
   ghRunner,
+  humanChangesRequested,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
@@ -34,6 +34,7 @@ import {
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
+import { readMode } from "./mode.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
@@ -109,18 +110,19 @@ export async function startDaemon(): Promise<() => void> {
   // (e.g. Aviator's "aviator/checks") only completes once the ready label queues
   // the PR, so counting it would keep CI perpetually pending and deadlock both the
   // ready label and the CI-fix step. Empty by default (ignore nothing).
-  const ignoreCheckNames = new Set(
-    envOr("IGNORE_CHECKS", "")
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
-  );
+  const ignoreCheckNames = envCsvSet("IGNORE_CHECKS", "");
   const ignoreChecks = ignoreCheckNames.size ? (name: string) => ignoreCheckNames.has(name.toLowerCase()) : undefined;
 
   // The merge queue's "blocked" label. Aviator adds it (and removes the ready
   // label) when its combined-CI batch fails; the review step's blocked-fix kind
   // triggers on it and re-queues by removing it and re-adding the ready label.
   const blockedLabelName = envOr("BLOCKED_LABEL", "blocked");
+
+  // Reviewer logins whose comments/reviews the bot addresses itself in
+  // supervised mode; anyone else's raise the board flag and halt that PR's fix
+  // work. Comma-separated, case-insensitive. Defaults to GitHub Copilot's
+  // review identities.
+  const trustedReviewers = envCsvSet("TRUSTED_REVIEWERS", "copilot-pull-request-reviewer,github-copilot[bot],copilot");
 
   // Review step: address comments on the viewer's open PRs. gh resolves the repo
   // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
@@ -144,7 +146,7 @@ export async function startDaemon(): Promise<() => void> {
         mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
         checksInfo: (n: number) => ReturnType<typeof checksInfo>;
         blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
-        changesRequested: (n: number) => ReturnType<typeof changesRequested>;
+        humanChangesRequested: (n: number) => ReturnType<typeof humanChangesRequested>;
       }
     | null = null;
   try {
@@ -152,11 +154,11 @@ export async function startDaemon(): Promise<() => void> {
     const viewer = await viewerLogin(gh);
     prReview = {
       listOpenPRs: async () => prLabelFilter(await listMyOpenPRs(gh)),
-      unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer),
+      unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer, trustedReviewers),
       mergeableInfo: (n) => mergeableInfo(gh, n),
       checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
       blockedInfo: (n) => blockedInfo(gh, n, blockedLabelName),
-      changesRequested: (n) => changesRequested(gh, n),
+      humanChangesRequested: (n) => humanChangesRequested(gh, n, trustedReviewers),
     };
     console.log(
       `[yimbot] review step ON: addressing PR comments + conflicts + failing CI + queue blocks in ${slug.owner}/${slug.name} as ${viewer}`,
@@ -282,6 +284,9 @@ export async function startDaemon(): Promise<() => void> {
 
   console.log(
     `[yimbot] watching "${teamName}": deploy on "${stateName}", ready-to-test flag on "${reviewStateName}", every ${heartbeatIntervalMinutes}m; syncing ${codebasePath}`,
+  );
+  console.log(
+    `[yimbot] mode: ${readMode()} (toggle with 'm' on the board); trusted reviewers: [${[...trustedReviewers].join(", ")}]`,
   );
   console.log(
     autoClaim

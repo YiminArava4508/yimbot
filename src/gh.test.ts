@@ -3,7 +3,6 @@ import { test } from "node:test";
 import {
   addLabel,
   blockedInfo,
-  changesRequested,
   checksInfo,
   type GhRunner,
   listMyClosedUnmergedPRs,
@@ -11,7 +10,6 @@ import {
   listMyOpenPRs,
   mergeableInfo,
   parseBlockedInfo,
-  parseChangesRequested,
   parseChecksInfo,
   parseLabels,
   parseMergeableInfo,
@@ -21,6 +19,8 @@ import {
   prLabels,
   removeLabel,
   repoSlug,
+  humanChangesRequested,
+  parseHumanChangesRequested,
   parseUnresolvedInfo,
   parseViewerLogin,
   unresolvedThreadInfo,
@@ -133,7 +133,38 @@ test("parseUnresolvedInfo returns null timestamp when only the viewer's comments
 });
 
 test("parseUnresolvedInfo returns {0,null} for no threads", () => {
-  assert.deepEqual(parseUnresolvedInfo(threadsJson([]), "yimbot"), { count: 0, newestOtherCommentAt: null });
+  assert.deepEqual(parseUnresolvedInfo(threadsJson([]), "yimbot"), {
+    count: 0,
+    newestOtherCommentAt: null,
+    newestTrustedCommentAt: null,
+    newestHumanCommentAt: null,
+  });
+});
+
+test("parseUnresolvedInfo splits newest timestamps by trusted vs human authors", () => {
+  const json = threadsJson([
+    thread(false, "2026-07-02T00:00:00Z", "alice"),
+    thread(false, "2026-07-05T00:00:00Z", "Copilot"), // trusted match is case-insensitive
+    thread(false, "2026-07-03T00:00:00Z", "bob"),
+  ]);
+  const info = parseUnresolvedInfo(json, "yimbot", new Set(["copilot"]));
+  assert.equal(info.newestOtherCommentAt, Date.parse("2026-07-05T00:00:00Z"));
+  assert.equal(info.newestTrustedCommentAt, Date.parse("2026-07-05T00:00:00Z"));
+  assert.equal(info.newestHumanCommentAt, Date.parse("2026-07-03T00:00:00Z"));
+});
+
+test("parseUnresolvedInfo without a trusted set treats every other author as human", () => {
+  const json = threadsJson([thread(false, "2026-07-02T00:00:00Z", "copilot")]);
+  const info = parseUnresolvedInfo(json, "yimbot");
+  assert.equal(info.newestHumanCommentAt, Date.parse("2026-07-02T00:00:00Z"));
+  assert.equal(info.newestTrustedCommentAt, null);
+});
+
+test("parseUnresolvedInfo never counts the viewer's own replies in either split", () => {
+  const json = threadsJson([thread(false, "2026-07-09T00:00:00Z", "yimbot")]);
+  const info = parseUnresolvedInfo(json, "yimbot", new Set(["copilot"]));
+  assert.equal(info.newestTrustedCommentAt, null);
+  assert.equal(info.newestHumanCommentAt, null);
 });
 
 test("unresolvedThreadInfo passes owner/name/number and parses with the viewer login", async () => {
@@ -342,24 +373,48 @@ test("blockedInfo requests labels + headRefOid for the PR and parses them", asyn
   assert.deepEqual(calls[0], ["pr", "view", "4929", "--json", "labels,headRefOid"]);
 });
 
-test("parseChangesRequested reports true for a CHANGES_REQUESTED decision", () => {
-  assert.equal(parseChangesRequested(JSON.stringify({ reviewDecision: "CHANGES_REQUESTED" })), true);
+function latestReviewsJson(reviews: { login: string; state: string; submittedAt: string }[]): string {
+  return JSON.stringify({
+    latestReviews: reviews.map((r) => ({ author: { login: r.login }, state: r.state, submittedAt: r.submittedAt })),
+  });
+}
+
+test("parseHumanChangesRequested reports only non-trusted CHANGES_REQUESTED reviews", () => {
+  const json = latestReviewsJson([
+    { login: "Copilot", state: "CHANGES_REQUESTED", submittedAt: "2026-07-01T00:00:00Z" },
+    { login: "alice", state: "CHANGES_REQUESTED", submittedAt: "2026-07-02T00:00:00Z" },
+    { login: "bob", state: "APPROVED", submittedAt: "2026-07-03T00:00:00Z" },
+  ]);
+  const info = parseHumanChangesRequested(json, new Set(["copilot"]));
+  assert.equal(info.requested, true);
+  assert.equal(info.latestAt, Date.parse("2026-07-02T00:00:00Z"));
 });
 
-test("parseChangesRequested reports false for approved, required, and empty decisions", () => {
-  for (const decision of ["APPROVED", "REVIEW_REQUIRED", ""]) {
-    assert.equal(parseChangesRequested(JSON.stringify({ reviewDecision: decision })), false, decision || "(empty)");
-  }
+test("parseHumanChangesRequested is false when only trusted reviewers request changes", () => {
+  const json = latestReviewsJson([{ login: "copilot", state: "CHANGES_REQUESTED", submittedAt: "2026-07-01T00:00:00Z" }]);
+  assert.deepEqual(parseHumanChangesRequested(json, new Set(["copilot"])), { requested: false, latestAt: null });
 });
 
-test("parseChangesRequested treats a missing reviewDecision field as false", () => {
-  assert.equal(parseChangesRequested(JSON.stringify({})), false);
+test("parseHumanChangesRequested handles empty and missing latestReviews", () => {
+  assert.deepEqual(parseHumanChangesRequested(latestReviewsJson([]), new Set()), { requested: false, latestAt: null });
+  assert.deepEqual(parseHumanChangesRequested(JSON.stringify({}), new Set()), { requested: false, latestAt: null });
 });
 
-test("changesRequested requests reviewDecision for the PR and parses it", async () => {
-  const { run, calls } = capturingRunner([JSON.stringify({ reviewDecision: "CHANGES_REQUESTED" })]);
-  assert.equal(await changesRequested(run, 4837), true);
-  assert.deepEqual(calls[0], ["pr", "view", "4837", "--json", "reviewDecision"]);
+test("parseHumanChangesRequested picks the newest human changes-requested timestamp", () => {
+  const json = latestReviewsJson([
+    { login: "alice", state: "CHANGES_REQUESTED", submittedAt: "2026-07-02T00:00:00Z" },
+    { login: "bob", state: "CHANGES_REQUESTED", submittedAt: "2026-07-06T00:00:00Z" },
+  ]);
+  assert.equal(parseHumanChangesRequested(json, new Set()).latestAt, Date.parse("2026-07-06T00:00:00Z"));
+});
+
+test("humanChangesRequested requests latestReviews for the PR and parses it", async () => {
+  const { run, calls } = capturingRunner([
+    latestReviewsJson([{ login: "alice", state: "CHANGES_REQUESTED", submittedAt: "2026-07-02T00:00:00Z" }]),
+  ]);
+  const info = await humanChangesRequested(run, 4837, new Set(["copilot"]));
+  assert.equal(info.requested, true);
+  assert.deepEqual(calls[0], ["pr", "view", "4837", "--json", "latestReviews"]);
 });
 
 test("parseLabels extracts label names", () => {

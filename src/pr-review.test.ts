@@ -17,8 +17,19 @@ function pr(number: number, overrides: Partial<OpenPR> = {}): OpenPR {
   return { number, headRefName: `eng-${number}-x`, isDraft: false, ...overrides };
 }
 
-function info(count: number, newestOtherCommentAt: number | null): UnresolvedInfo {
-  return { count, newestOtherCommentAt };
+// Default shape mirrors a pre-split caller: any other-authored comment counts
+// as human unless the test says it came from a trusted reviewer.
+function info(
+  count: number,
+  newestOtherCommentAt: number | null,
+  split: { trustedTs?: number | null; humanTs?: number | null } = {},
+): UnresolvedInfo {
+  return {
+    count,
+    newestOtherCommentAt,
+    newestTrustedCommentAt: split.trustedTs ?? null,
+    newestHumanCommentAt: split.humanTs !== undefined ? split.humanTs : newestOtherCommentAt,
+  };
 }
 
 const noComments = info(0, null);
@@ -37,7 +48,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   conflictSpawned: { name: string; branch: string; prNumber: number }[];
   blockedSpawned: { name: string; branch: string; prNumber: number }[];
   reaped: { prNumber: number; branch: string; kind: string }[];
-  changesNoticed: { prNumber: number; branch: string }[];
+  flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[];
   logs: string[];
 } {
   const spawned: { name: string; branch: string; prNumber: number }[] = [];
@@ -45,7 +56,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   const conflictSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const blockedSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const reaped: { prNumber: number; branch: string; kind: string }[] = [];
-  const changesNoticed: { prNumber: number; branch: string }[] = [];
+  const flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
@@ -53,8 +64,10 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     mergeableInfo: async () => noConflict,
     checksInfo: async () => ci("passing"),
     blockedInfo: async () => ({ blocked: false, headSha: "sha" }),
-    changesRequested: async () => false,
-    onChangesRequested: (prNumber, branch) => void changesNoticed.push({ prNumber, branch }),
+    mode: () => "autonomous",
+    humanChangesRequested: async () => ({ requested: false, latestAt: null }),
+    flagState: () => ({ flagged: false, clearedAt: null }),
+    raiseFlag: (prNumber, branch, reason, signalTs) => void flagRaised.push({ prNumber, branch, reason, signalTs }),
     inFlightFixKinds: () => [],
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     now: () => 0,
@@ -66,7 +79,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, changesNoticed, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, flagRaised, logs };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -505,53 +518,154 @@ test("reviewOnce prunes a fix timer once the kind is no longer in flight", async
   assert.equal(state.fixSeenAt.has("4706:fix"), false);
 });
 
-test("reviewOnce reports a PR whose review decision is changes-requested", async () => {
-  const { deps: d, changesNoticed } = deps({ changesRequested: async () => true });
+test("supervised: a human changes-requested review flags the PR and spawns nothing", async () => {
+  const { deps: d, flagRaised, spawned, ciSpawned, conflictSpawned } = deps({
+    mode: () => "supervised",
+    humanChangesRequested: async () => ({ requested: true, latestAt: 500 }),
+    unresolvedInfo: async () => info(1, 1000, { trustedTs: 1000, humanTs: null }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    checksInfo: async () => ci("failing", "abc"),
+  });
   await reviewOnce(freshReviewState(), d);
-  assert.deepEqual(changesNoticed, [{ prNumber: 4706, branch: "eng-4706-x" }]);
+  assert.deepEqual(flagRaised, [{ prNumber: 4706, branch: "eng-4706-x", reason: "changes-requested", signalTs: 500 }]);
+  assert.equal(spawned.length + ciSpawned.length + conflictSpawned.length, 0);
 });
 
-test("reviewOnce does not report a PR with no changes-requested review", async () => {
-  const { deps: d, changesNoticed } = deps();
+test("supervised: a human comment flags the PR and spawns nothing", async () => {
+  const { deps: d, flagRaised, spawned, ciSpawned, conflictSpawned } = deps({
+    mode: () => "supervised",
+    unresolvedInfo: async () => info(2, 1500, { trustedTs: 900, humanTs: 1500 }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    checksInfo: async () => ci("failing", "abc"),
+  });
   await reviewOnce(freshReviewState(), d);
-  assert.equal(changesNoticed.length, 0);
+  assert.deepEqual(flagRaised, [{ prNumber: 4706, branch: "eng-4706-x", reason: "human-comment", signalTs: 1500 }]);
+  assert.equal(spawned.length + ciSpawned.length + conflictSpawned.length, 0);
 });
 
-test("reviewOnce reports changes-requested even while a fix is in flight", async () => {
-  const { deps: d, changesNoticed } = deps({
-    changesRequested: async () => true,
+test("supervised: trusted-only comments spawn a fix and raise nothing", async () => {
+  const { deps: d, flagRaised, spawned } = deps({
+    mode: () => "supervised",
+    unresolvedInfo: async () => info(1, 1000, { trustedTs: 1000, humanTs: null }),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.equal(flagRaised.length, 0);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+  assert.equal(state.lastHandledAt.get(4706), 1000);
+});
+
+test("supervised: an already-flagged PR (e.g. manual flag) gets no fix work", async () => {
+  const { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned } = deps({
+    mode: () => "supervised",
+    flagState: () => ({ flagged: true, clearedAt: null }),
+    unresolvedInfo: async () => info(1, 1000, { trustedTs: 1000, humanTs: null }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    checksInfo: async () => ci("failing", "abc"),
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(spawned.length + ciSpawned.length + conflictSpawned.length + blockedSpawned.length, 0);
+});
+
+test("supervised: an acknowledged human comment neither flags nor blocks trusted work", async () => {
+  const { deps: d, flagRaised, spawned } = deps({
+    mode: () => "supervised",
+    flagState: () => ({ flagged: false, clearedAt: 2000 }),
+    unresolvedInfo: async () => info(2, 2500, { trustedTs: 2500, humanTs: 1500 }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(flagRaised.length, 0);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+});
+
+test("supervised: an acknowledged changes-requested review does not re-flag", async () => {
+  const { deps: d, flagRaised } = deps({
+    mode: () => "supervised",
+    flagState: () => ({ flagged: false, clearedAt: 2000 }),
+    humanChangesRequested: async () => ({ requested: true, latestAt: 500 }),
+    unresolvedInfo: async () => noComments,
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(flagRaised.length, 0);
+});
+
+test("supervised: flags changes-requested even while a fix is in flight", async () => {
+  const { deps: d, flagRaised } = deps({
+    mode: () => "supervised",
+    humanChangesRequested: async () => ({ requested: true, latestAt: 500 }),
     inFlightFixKinds: () => ["fix"],
   });
   await reviewOnce(freshReviewState(), d);
-  assert.deepEqual(changesNoticed, [{ prNumber: 4706, branch: "eng-4706-x" }]);
+  assert.equal(flagRaised.length, 1);
 });
 
-test("reviewOnce reports changes-requested on every tick it persists", async () => {
-  const { deps: d, changesNoticed } = deps({ changesRequested: async () => true });
+test("supervised: raises on every tick the block persists (emitFlagged dedupes)", async () => {
+  const { deps: d, flagRaised } = deps({
+    mode: () => "supervised",
+    humanChangesRequested: async () => ({ requested: true, latestAt: 500 }),
+    unresolvedInfo: async () => noComments,
+  });
   const state = freshReviewState();
   await reviewOnce(state, d);
   await reviewOnce(state, d);
-  assert.equal(changesNoticed.length, 2);
+  assert.equal(flagRaised.length, 2);
 });
 
-test("reviewOnce does not report changes-requested for draft PRs", async () => {
-  const { deps: d, changesNoticed } = deps({
+test("supervised: draft PRs are never flagged", async () => {
+  const { deps: d, flagRaised } = deps({
+    mode: () => "supervised",
     listOpenPRs: async () => [pr(1, { isDraft: true })],
-    changesRequested: async () => true,
+    humanChangesRequested: async () => ({ requested: true, latestAt: 500 }),
   });
   await reviewOnce(freshReviewState(), d);
-  assert.equal(changesNoticed.length, 0);
+  assert.equal(flagRaised.length, 0);
 });
 
-test("reviewOnce still handles comments when the review decision read throws", async () => {
+test("supervised: still handles trusted comments when the review decision read throws", async () => {
   const { deps: d, spawned, logs } = deps({
-    changesRequested: async () => {
+    mode: () => "supervised",
+    humanChangesRequested: async () => {
       throw new Error("gh decision 502");
     },
+    unresolvedInfo: async () => info(1, 1000, { trustedTs: 1000, humanTs: null }),
   });
   await reviewOnce(freshReviewState(), d);
   assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
   assert.ok(logs.some((l) => /gh decision 502/.test(l)));
+});
+
+test("autonomous: never reads the review decision and never flags", async () => {
+  let crReads = 0;
+  const { deps: d, flagRaised, spawned } = deps({
+    humanChangesRequested: async () => {
+      crReads++;
+      return { requested: true, latestAt: 500 };
+    },
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(crReads, 0);
+  assert.equal(flagRaised.length, 0);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+});
+
+test("autonomous: a raised flag does not block fix work", async () => {
+  const { deps: d, spawned } = deps({
+    flagState: () => ({ flagged: true, clearedAt: null }),
+    unresolvedInfo: async () => info(2, 1000),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+});
+
+test("autonomous: human comments spawn a comment fix like any other", async () => {
+  const { deps: d, spawned } = deps({
+    unresolvedInfo: async () => info(2, 1500, { trustedTs: null, humanTs: 1500 }),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+  assert.equal(state.lastHandledAt.get(4706), 1500);
 });
 
 test("blockedSessionName is keyed by PR number", () => {

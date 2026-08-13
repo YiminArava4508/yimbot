@@ -1,4 +1,5 @@
-import type { BlockedInfo, ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { BlockedInfo, ChecksInfo, HumanChangesRequested, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { Mode } from "./mode.ts";
 
 // The tmux session name for a PR's fix run. Keyed by PR number (not branch) so
 // the in-flight guard is one-fix-session-per-PR regardless of the branch slug.
@@ -91,11 +92,20 @@ export type PrReviewDeps = {
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
   // Blocked summary for a PR: carries the merge-queue "blocked" label + head SHA.
   blockedInfo: (prNumber: number) => Promise<BlockedInfo>;
-  // Whether a changes-requested review is blocking the PR.
-  changesRequested: (prNumber: number) => Promise<boolean>;
-  // Report a changes-requested block, every tick it is noticed. Only a human
-  // reviewer can lift it, so the caller raises the board's attention flag.
-  onChangesRequested: (prNumber: number, branch: string) => void;
+  // The operating mode, read fresh every tick so a TUI toggle applies at the
+  // next heartbeat without a restart.
+  mode: () => Mode;
+  // Author-aware changes-requested: only reviewers outside the trusted set
+  // (e.g. Copilot's review bot) count as a human block. Supervised mode only.
+  humanChangesRequested: (prNumber: number) => Promise<HumanChangesRequested>;
+  // The PR's attention state on the board: whether its flag is up, and when a
+  // human last cleared it (epoch ms; null if never). Drives supervised gating
+  // and the acknowledged-signal check.
+  flagState: (branch: string) => { flagged: boolean; clearedAt: number | null };
+  // Raise the board's attention flag for a PR. `signalTs` is when the
+  // underlying condition last changed, so an acknowledged (unflagged) signal
+  // is not re-raised.
+  raiseFlag: (prNumber: number, branch: string, reason: string, signalTs?: number) => void;
   // Which fix kinds are currently in flight for a PR (comment/ci/conflict).
   // Empty means no fixer is on the shared worktree. Replaces the old boolean
   // guard so the reaper can act per kind.
@@ -128,17 +138,24 @@ async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewD
   return false;
 }
 
-// One review-step tick, run every heartbeat. For each non-draft open PR, first
-// report a changes-requested review (unconditionally; see the note at the
-// check), then skip if any fix (comment, conflict, blocked, or CI) is actively
+// One review-step tick, run every heartbeat. For each non-draft open PR, in
+// supervised mode first notice human review signals (a changes-requested review
+// by a non-trusted reviewer, then, after the thread read, a non-trusted
+// comment): each raises the board flag, and a flagged PR gets NO fix work of
+// any kind until a person unflags it. Unflagging acknowledges the signals it
+// covered; only a strictly newer signal re-raises. In autonomous mode no review
+// signal is read or raised and nothing blocks.
+//
+// Then skip if any fix (comment, conflict, blocked, or CI) is actively
 // running, then handle in priority order: comments, then conflict, then
 // blocked, then CI. All four fixes
 // share the PR's worktree, so at most one is spawned per PR per tick; the others
 // are picked up a later tick once the running one has ended.
 //
 // Comments first — skip if nothing is unresolved, if only the viewer's own
-// replies remain, or if the newest other-authored comment is not newer than the
-// last one handled (so deliberately-left threads never loop); otherwise spawn a
+// replies remain, or if the newest actionable comment (trusted authors only in
+// supervised mode, any other author in autonomous) is not newer than the last
+// one handled (so deliberately-left threads never loop); otherwise spawn a
 // comment fix, record the timestamp, and move on.
 //
 // Conflict second — only when there is no comment work. Skip unless the PR is
@@ -164,15 +181,34 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     return;
   }
 
+  const mode = deps.mode();
   for (const pr of prs) {
     if (pr.isDraft) continue;
-    // A changes-requested review is a human block no fix session can lift, so it
-    // is reported before every skip below (fix in flight, mid-spawn latch) and on
-    // every tick it persists. A failed read only loses this tick's report.
-    try {
-      if (await deps.changesRequested(pr.number)) deps.onChangesRequested(pr.number, pr.headRefName);
-    } catch (err) {
-      deps.log(`review decision read failed for PR #${pr.number}: ${err}`);
+    const att = mode === "supervised" ? deps.flagState(pr.headRefName) : { flagged: false, clearedAt: null };
+    // A signal is acknowledged when a human unflagged the row after it fired;
+    // acknowledged signals neither flag nor block (emitFlagged applies the
+    // same rule via signalTs, so raiseFlag stays a plain pass-through).
+    const acknowledged = (signalAt: number | null) =>
+      signalAt !== null && att.clearedAt !== null && signalAt <= att.clearedAt;
+    // Whether a human owns this PR right now: its flag is already up, or a
+    // human review signal below raises it this tick. Supervised only; in
+    // autonomous mode this never becomes true and nothing blocks.
+    let humanBlocked = att.flagged;
+    if (mode === "supervised") {
+      // A human changes-requested review is a block no fix session can lift, so
+      // it is noticed before every skip below (fix in flight, mid-spawn latch)
+      // and on every tick it persists (emitFlagged dedupes while the flag is
+      // up, and an unflag acknowledges it via the signal timestamp). A failed
+      // read only loses this tick's report.
+      try {
+        const cr = await deps.humanChangesRequested(pr.number);
+        if (cr.requested && !acknowledged(cr.latestAt)) {
+          deps.raiseFlag(pr.number, pr.headRefName, "changes-requested", cr.latestAt ?? undefined);
+          humanBlocked = true;
+        }
+      } catch (err) {
+        deps.log(`review decision read failed for PR #${pr.number}: ${err}`);
+      }
     }
     const running = deps.inFlightFixKinds(pr.number, pr.headRefName);
     // Prune timers for kinds no longer in flight so a future fix of that kind
@@ -223,17 +259,26 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       continue;
     }
 
+    if (mode === "supervised" && info.newestHumanCommentAt !== null && !acknowledged(info.newestHumanCommentAt)) {
+      deps.raiseFlag(pr.number, pr.headRefName, "human-comment", info.newestHumanCommentAt);
+      humanBlocked = true;
+    }
+    // Supervised: a flagged PR belongs to a human. Spawn nothing (comment,
+    // conflict, blocked, or CI) until they unflag it.
+    if (humanBlocked) continue;
+
+    // Which comments count as work: in supervised mode only trusted reviewers'
+    // (a human's comment flags instead, above); in autonomous mode anyone's.
+    const actionableAt = mode === "supervised" ? info.newestTrustedCommentAt : info.newestOtherCommentAt;
     const lastHandled = state.lastHandledAt.get(pr.number);
     const hasNewComment =
-      info.count > 0 &&
-      info.newestOtherCommentAt !== null &&
-      (lastHandled === undefined || info.newestOtherCommentAt > lastHandled);
+      info.count > 0 && actionableAt !== null && (lastHandled === undefined || actionableAt > lastHandled);
     if (hasNewComment) {
       if (pending && pending !== "fix") continue; // another fix kind is starting on the shared worktree; wait
       const name = fixSessionName(pr.number);
       try {
         deps.spawnFix(name, pr.headRefName, pr.number);
-        state.lastHandledAt.set(pr.number, info.newestOtherCommentAt as number);
+        state.lastHandledAt.set(pr.number, actionableAt as number);
         state.pendingSpawn.set(pr.number, "fix");
         deps.log(`spawned ${name} for PR #${pr.number} (${info.count} unresolved, new comment)`);
       } catch (err) {

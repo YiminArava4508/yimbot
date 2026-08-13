@@ -5,3 +5,4 @@ daemon.log
 daemon.log.bak.*
 events.jsonl
 docs/superpowers/
+mode

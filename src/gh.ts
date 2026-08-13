@@ -82,7 +82,16 @@ const THREADS_QUERY =
   "pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved " +
   "comments(last:1){nodes{createdAt author{login}}}}}}}}";
 
-export type UnresolvedInfo = { count: number; newestOtherCommentAt: number | null };
+export type UnresolvedInfo = {
+  count: number;
+  newestOtherCommentAt: number | null;
+  newestTrustedCommentAt: number | null;
+  newestHumanCommentAt: number | null;
+};
+
+function newerOf(cur: number | null, at: number): number {
+  return cur === null || at > cur ? at : cur;
+}
 
 type ThreadNode = {
   isResolved: boolean;
@@ -90,25 +99,39 @@ type ThreadNode = {
 };
 
 // Unresolved-thread summary for a PR. `count` is the number of unresolved threads
-// (any author). `newestOtherCommentAt` is the newest latest-comment timestamp
+// (any author). The `newest*At` fields are the newest latest-comment timestamps
 // (epoch ms) among unresolved threads whose latest comment is NOT the viewer's,
-// or null if every unresolved thread's latest comment is the viewer's own (we've
-// replied and are waiting on a human). This is what decides "is there new work?".
-export function parseUnresolvedInfo(json: string, viewer: string): UnresolvedInfo {
+// or null when there is none: `newestOtherCommentAt` over all such comments,
+// split into trusted (login in `trusted`, e.g. Copilot's review bot) and human
+// (everyone else). Supervised mode spawns fixes on the trusted split only and
+// flags the human split for a person.
+export function parseUnresolvedInfo(json: string, viewer: string, trusted: Set<string> = new Set()): UnresolvedInfo {
   const data = JSON.parse(json) as {
     data: { repository: { pullRequest: { reviewThreads: { nodes: ThreadNode[] } } } };
   };
   const unresolved = data.data.repository.pullRequest.reviewThreads.nodes.filter((n) => !n.isResolved);
-  let newest: number | null = null;
+  let newestOther: number | null = null;
+  let newestTrusted: number | null = null;
+  let newestHuman: number | null = null;
   for (const t of unresolved) {
     const latest = t.comments.nodes.at(-1);
     if (!latest) continue;
     if (latest.author && latest.author.login === viewer) continue;
     const at = Date.parse(latest.createdAt);
     if (Number.isNaN(at)) continue;
-    if (newest === null || at > newest) newest = at;
+    newestOther = newerOf(newestOther, at);
+    if (latest.author && trusted.has(latest.author.login.toLowerCase())) {
+      newestTrusted = newerOf(newestTrusted, at);
+    } else {
+      newestHuman = newerOf(newestHuman, at);
+    }
   }
-  return { count: unresolved.length, newestOtherCommentAt: newest };
+  return {
+    count: unresolved.length,
+    newestOtherCommentAt: newestOther,
+    newestTrustedCommentAt: newestTrusted,
+    newestHumanCommentAt: newestHuman,
+  };
 }
 
 export async function unresolvedThreadInfo(
@@ -116,6 +139,7 @@ export async function unresolvedThreadInfo(
   slug: RepoSlug,
   prNumber: number,
   viewer: string,
+  trusted: Set<string> = new Set(),
 ): Promise<UnresolvedInfo> {
   return parseUnresolvedInfo(
     await run([
@@ -126,6 +150,7 @@ export async function unresolvedThreadInfo(
       "-F", `number=${prNumber}`,
     ]),
     viewer,
+    trusted,
   );
 }
 
@@ -239,17 +264,35 @@ export async function blockedInfo(run: GhRunner, prNumber: number, label: string
   return parseBlockedInfo(await run(["pr", "view", String(prNumber), "--json", "labels,headRefOid"]), label);
 }
 
-// Whether a PR is blocked by a changes-requested review, from
-// `gh pr view <n> --json reviewDecision`. GitHub folds all reviews into one
-// decision; only CHANGES_REQUESTED means a human reviewer is blocking the merge
-// (APPROVED, REVIEW_REQUIRED, and an absent field are not blocks).
-export function parseChangesRequested(json: string): boolean {
-  const data = JSON.parse(json) as { reviewDecision?: string };
-  return data.reviewDecision === "CHANGES_REQUESTED";
+export type HumanChangesRequested = { requested: boolean; latestAt: number | null };
+
+// Author-aware changes-requested from `gh pr view <n> --json latestReviews`
+// (GitHub's latest review per author). Only a review by an author outside
+// `trusted` counts as a human block; `latestAt` is the newest such review's
+// submittedAt (epoch ms), which supervised mode compares against the last
+// unflag to re-raise only on a re-submitted review.
+export function parseHumanChangesRequested(json: string, trusted: Set<string>): HumanChangesRequested {
+  const data = JSON.parse(json) as {
+    latestReviews?: { author?: { login: string } | null; state?: string; submittedAt?: string }[];
+  };
+  let requested = false;
+  let latestAt: number | null = null;
+  for (const r of data.latestReviews ?? []) {
+    if (r.state !== "CHANGES_REQUESTED") continue;
+    if (r.author && trusted.has(r.author.login.toLowerCase())) continue;
+    requested = true;
+    const at = Date.parse(r.submittedAt ?? "");
+    if (!Number.isNaN(at)) latestAt = newerOf(latestAt, at);
+  }
+  return { requested, latestAt };
 }
 
-export async function changesRequested(run: GhRunner, prNumber: number): Promise<boolean> {
-  return parseChangesRequested(await run(["pr", "view", String(prNumber), "--json", "reviewDecision"]));
+export async function humanChangesRequested(
+  run: GhRunner,
+  prNumber: number,
+  trusted: Set<string>,
+): Promise<HumanChangesRequested> {
+  return parseHumanChangesRequested(await run(["pr", "view", String(prNumber), "--json", "latestReviews"]), trusted);
 }
 
 // The label names currently on a PR from `gh pr view <n> --json labels`.

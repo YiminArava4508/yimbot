@@ -319,8 +319,8 @@ test("openSettings: escape during an in-flight picker fetch does not close the p
 // picker fetch can now only still be in flight while the panel is open. The
 // one fetch that is genuinely in flight before any edit gate applies is the
 // initial assignee() lookup kicked off at open, which a clean-draft escape
-// can race — so that is what this test exercises, covering the same
-// `closed` guard defensively added to every async callback.
+// can race. That is what this test exercises, covering the same `closed`
+// guard defensively added to every async callback.
 test("openSettings: the initial assignee lookup resolving after the panel closed does not repaint or throw", async () => {
   const screen = testScreen();
   let resolveAssignee: (v: string) => void = () => {};

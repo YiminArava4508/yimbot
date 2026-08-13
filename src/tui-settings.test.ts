@@ -128,7 +128,7 @@ test("openSettings: esc on a clean draft closes immediately", () => {
   assert.equal(closed, true);
 });
 
-test("openSettings: w with an invalid draft does not call apply", async () => {
+test("openSettings: w with an invalid draft never calls apply", async () => {
   const screen = testScreen();
   let applied = false;
   openSettings(
@@ -142,14 +142,46 @@ test("openSettings: w with an invalid draft does not call apply", async () => {
     () => {},
   );
   const list = screen.children.find((c: any) => c.type === "list");
-  // MAX_IN_PROGRESS row: dirty it with an invalid value directly through the
-  // list's own draft state is not exposed, so drive it via the textbox path
-  // is out of scope here; instead assert the no-op case: pressing w on a
-  // clean, valid draft does reach apply.
-  void list;
+  const wipIndex = list.ritems.findIndex((l: string) => l.startsWith("wip cap".padEnd(20, " ")));
+  list.select(wipIndex);
+  press(screen, "enter"); // opens the wip-cap textbox, prefilled with "3"
+  await new Promise((r) => setImmediate(r)); // let readInput attach its keypress listener
+  press(screen, "backspace"); // clear the prefilled "3"
+  press(screen, "-");
+  press(screen, "1");
+  press(screen, "enter"); // submit "-1": not a positive integer
+  assert.match(list.ritems[wipIndex], /must be a positive integer/);
   press(screen, "w");
   await new Promise((r) => setImmediate(r));
-  assert.equal(applied, true);
+  assert.equal(applied, false, "an invalid draft must never reach apply");
+  screen.destroy();
+});
+
+test("openSettings: submitting a valid textbox edit reaches the draft and w applies it", async () => {
+  const screen = testScreen();
+  let applied: YimbotConfig | undefined;
+  openSettings(
+    screen,
+    testDeps({
+      apply: (next) => {
+        applied = next;
+        return Promise.resolve({ ok: true } as ApplyResult);
+      },
+    }),
+    () => {},
+  );
+  const list = screen.children.find((c: any) => c.type === "list");
+  const wipIndex = list.ritems.findIndex((l: string) => l.startsWith("wip cap".padEnd(20, " ")));
+  list.select(wipIndex);
+  press(screen, "enter"); // opens the wip-cap textbox, prefilled with "3"
+  await new Promise((r) => setImmediate(r)); // let readInput attach its keypress listener
+  press(screen, "backspace");
+  press(screen, "5");
+  press(screen, "enter"); // submit "5"
+  assert.match(list.ritems[wipIndex], /\{yellow-fg\}5 \*\{\/yellow-fg\}/, "the submitted value must land in the draft, dirtying the row");
+  press(screen, "w");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(applied?.maxInProgress, 5, "the edit reaches apply's next config");
   screen.destroy();
 });
 
@@ -198,5 +230,129 @@ test("openSettings: a failed apply keeps the dirty draft and reports the error",
   // draft should warn once rather than closing straight away.
   press(screen, "escape");
   assert.equal(closed, false, "a failed apply must leave the draft dirty");
+  screen.destroy();
+});
+
+test("openSettings: a rejected apply clears applying so the panel is usable afterwards", async () => {
+  const screen = testScreen();
+  let applyCalls = 0;
+  const deps = testDeps({
+    apply: () => {
+      applyCalls++;
+      return applyCalls === 1
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve({ ok: true } as ApplyResult);
+    },
+  });
+  openSettings(screen, deps, () => {});
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter"); // toggle auto-claim, dirtying the draft
+  press(screen, "w"); // first write rejects outright, not { ok: false }
+  await new Promise((r) => setImmediate(r));
+  const footer = screen.children.find((c: any) => c.type === "text");
+  assert.match(footer.getContent(), /network down/);
+  assert.match(footer.getContent(), /daemon stopped/);
+  // the panel must not be frozen by the unreset `applying` flag: a second
+  // write attempt still reaches apply.
+  press(screen, "w");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(applyCalls, 2, "applying must have been cleared after the rejection");
+  screen.destroy();
+});
+
+test("openSettings: a second edit attempt during an in-flight picker fetch does not open a second widget", async () => {
+  const screen = testScreen();
+  let resolveTeams: (v: string[]) => void = () => {};
+  const deps = testDeps({
+    teams: () =>
+      new Promise((resolve) => {
+        resolveTeams = resolve;
+      }),
+  });
+  openSettings(screen, deps, () => {});
+  const list = screen.children.find((c: any) => c.type === "list");
+  const floating = () => screen.children.filter((c: any) => c !== list && c.type !== "text");
+
+  const teamIndex = list.ritems.findIndex((l: string) => l.startsWith("team".padEnd(20, " ")));
+  list.select(teamIndex);
+  press(screen, "enter"); // starts the team fetch; list stays focused while it's pending
+
+  const wipIndex = list.ritems.findIndex((l: string) => l.startsWith("wip cap".padEnd(20, " ")));
+  list.select(wipIndex);
+  press(screen, "enter"); // a second edit attempt on a different row, still mid-fetch
+  assert.equal(floating().length, 0, "no widget should attach while the first fetch is still pending");
+
+  resolveTeams(["Engineering"]);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(floating().length, 1, "exactly one picker should attach once the fetch resolves");
+  screen.destroy();
+});
+
+test("openSettings: escape during an in-flight picker fetch does not close the panel", async () => {
+  const screen = testScreen();
+  let resolveTeams: (v: string[]) => void = () => {};
+  let closed = false;
+  const deps = testDeps({
+    teams: () =>
+      new Promise((resolve) => {
+        resolveTeams = resolve;
+      }),
+  });
+  openSettings(screen, deps, () => {
+    closed = true;
+  });
+  const list = screen.children.find((c: any) => c.type === "list");
+  const teamIndex = list.ritems.findIndex((l: string) => l.startsWith("team".padEnd(20, " ")));
+  list.select(teamIndex);
+  press(screen, "enter");
+  press(screen, "escape");
+  assert.equal(closed, false, "escape must be inert while an edit's fetch is in flight");
+  resolveTeams(["Engineering"]);
+  await new Promise((r) => setImmediate(r));
+  screen.destroy();
+});
+
+// The picker-fetch analogue of this race ("a picker fetch resolving after
+// close attaches nothing") is unreachable through the public API once
+// escape is gated on `editing` (the test above proves that gate holds): a
+// picker fetch can now only still be in flight while the panel is open. The
+// one fetch that is genuinely in flight before any edit gate applies is the
+// initial assignee() lookup kicked off at open, which a clean-draft escape
+// can race — so that is what this test exercises, covering the same
+// `closed` guard defensively added to every async callback.
+test("openSettings: the initial assignee lookup resolving after the panel closed does not repaint or throw", async () => {
+  const screen = testScreen();
+  let resolveAssignee: (v: string) => void = () => {};
+  let closed = false;
+  const deps = testDeps({
+    assignee: () =>
+      new Promise((resolve) => {
+        resolveAssignee = resolve;
+      }),
+  });
+  openSettings(screen, deps, () => {
+    closed = true;
+  });
+  press(screen, "escape"); // draft is clean: closes immediately, before assignee() resolves
+  assert.equal(closed, true);
+  resolveAssignee("bot@example.com");
+  await new Promise((r) => setImmediate(r));
+  screen.destroy();
+});
+
+test("openSettings: the footer stops reading 'loading...' once a remote picker actually opens", async () => {
+  const screen = testScreen();
+  const deps = testDeps();
+  openSettings(screen, deps, () => {});
+  const list = screen.children.find((c: any) => c.type === "list");
+  const teamIndex = list.ritems.findIndex((l: string) => l.startsWith("team".padEnd(20, " ")));
+  list.select(teamIndex);
+  press(screen, "enter");
+  const footer = screen.children.find((c: any) => c.type === "text");
+  assert.match(footer.getContent(), /loading/);
+  await new Promise((r) => setImmediate(r)); // let the already-resolved teams() promise settle
+  assert.doesNotMatch(footer.getContent(), /loading/);
+  assert.match(footer.getContent(), /enter accept/);
   screen.destroy();
 });

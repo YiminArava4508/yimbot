@@ -70,6 +70,12 @@ function currentLabel(value: string): string | null {
   return v.startsWith("!") ? v.slice(1) : v;
 }
 
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return String(err);
+}
+
 export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () => void): void {
   const s: any = screen;
 
@@ -94,8 +100,15 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   // list stays focused during that await (no widget steals focus the way an
   // editor does), so without this a second `w` or `esc` could race the apply.
   let applying = false;
+  // True once the panel has been detached and onClose() called. Guards async
+  // work (remote fetches, the initial assignee lookup) that can resolve after
+  // the operator already left: without it, a late resolution would repaint a
+  // detached list/footer or attach a fresh, focused picker to a screen the
+  // panel no longer owns.
+  let closed = false;
 
   function paint(footerOverride?: string): void {
+    if (closed) return;
     const rows = draftRows(draft, assigneeName);
     const dirty = dirtyKeys(draft);
     const errors = validateDraft(draft);
@@ -114,6 +127,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   }
 
   function endEdit(): void {
+    if (closed) return;
     editing = false;
     list.focus();
     paint();
@@ -125,6 +139,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   }
 
   function closePanel(): void {
+    closed = true;
     list.detach();
     footer.detach();
     s.render();
@@ -159,15 +174,23 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
 
   // A picker whose items come from Linear. Shows "loading..." while in
   // flight and "linear unreachable" on failure, leaving the row unchanged.
+  // Both branches bail out if the panel was closed while the fetch was
+  // in flight, so a late resolution never attaches a widget to a screen
+  // the panel no longer owns.
   function openRemotePicker(fetch: () => Promise<string[]>, seed: string | null, onPick: (value: string) => void): void {
     beginEdit();
     paint("loading...");
     fetch()
       .then((items) => {
+        if (closed) return;
         const seeded = seed && !items.includes(seed) ? [seed, ...items] : items;
         openPicker(seeded, onPick);
+        // openPicker moves focus to the new list; reflect that in the
+        // footer instead of leaving the stale "loading..." message up.
+        paint();
       })
       .catch(() => {
+        if (closed) return;
         endEdit();
         paint("linear unreachable");
       });
@@ -185,11 +208,16 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
       label: ` ${row.label} `,
       tags: true,
       censor,
-      inputOnFocus: true,
     });
     if (!censor) box.setValue(row.value);
     box.focus();
     s.render();
+    // Not `inputOnFocus`: that option makes the textbox call its own
+    // readInput(null) the moment focus() fires above, which wins the
+    // widget's `_reading` guard and silently discards the callback we
+    // register on the next line (readInput no-ops once `_reading` is set).
+    // Calling readInput ourselves, once, with our own callback, is what
+    // actually captures the submitted value into the draft.
     box.readInput((_err: unknown, value: string | null) => {
       box.detach();
       if (value != null) draft = setEdit(draft, row.envKey, value);
@@ -251,7 +279,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   }
 
   function dispatchEdit(row: SettingRow): void {
-    if (applying) return;
+    if (applying || editing) return;
     resetEscArm();
     switch (row.editor) {
       case "text":
@@ -280,7 +308,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   }
 
   function onWrite(): void {
-    if (applying) return;
+    if (applying || editing) return;
     resetEscArm();
     const errors = validateDraft(draft);
     if (Object.keys(errors).length > 0) {
@@ -290,21 +318,31 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
     applying = true;
     paint("applying...");
     const next = commitDraft(draft);
-    deps.apply(next, base).then((result) => {
-      applying = false;
-      if (result.ok) {
-        base = next;
-        draft = newDraft(base);
-        paint("saved, daemon restarted");
-        return;
-      }
-      const suffix = result.rolledBack ? "" : ", daemon stopped";
-      paint(`${result.error}${suffix}`);
-    });
+    deps
+      .apply(next, base)
+      .then((result) => {
+        applying = false;
+        if (result.ok) {
+          base = next;
+          draft = newDraft(base);
+          paint("saved, daemon restarted");
+          return;
+        }
+        const suffix = result.rolledBack ? "" : ", daemon stopped";
+        paint(`${result.error}${suffix}`);
+      })
+      .catch((err) => {
+        // A rejection, not a resolved { ok: false }: same footer contract
+        // (error text, "daemon stopped" since we cannot know it rolled
+        // back), and applying must still clear or the panel freezes for
+        // good, since dispatchEdit/onWrite/onEscape all gate on it.
+        applying = false;
+        paint(`${errMessage(err)}, daemon stopped`);
+      });
   }
 
   function onEscape(): void {
-    if (applying) return;
+    if (applying || editing) return;
     if (dirtyKeys(draft).length === 0) {
       closePanel();
       return;
@@ -336,10 +374,12 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   deps
     .assignee()
     .then((name) => {
+      if (closed) return;
       assigneeName = name;
       paint();
     })
     .catch(() => {
+      if (closed) return;
       assigneeName = "unknown (linear unreachable)";
       paint();
     });

@@ -50,7 +50,12 @@ not, no matter how blocked the PR looks.
 
    Work only the threads where `isResolved` is false.
 
-3. **Address each unresolved thread in code.** Understand what the comment asks,
+3. **Address each unresolved thread in code.** First invoke the
+   `receiving-code-review` skill and follow it for every thread: verify each
+   suggestion against the codebase before implementing, push back (leave the
+   thread for step 4) when a suggestion is technically wrong for this codebase,
+   and never blind-implement or performatively agree. With that lens on,
+   understand what the comment asks,
    then make the change in the worktree, **in this session**. PR-fix work always
    runs on the stronger session model: never delegate it to cheaper
    implementation subagents, and ignore `IMPL_MODEL` even when it is set.

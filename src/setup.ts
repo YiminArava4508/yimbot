@@ -440,6 +440,11 @@ export const hostLinks: HostLink[] = [
     label: "merge-main skill (~/.claude/skills/merge-main)",
   },
   {
+    source: join(repoRoot, "skills/receiving-code-review"),
+    target: join(homedir(), ".claude/skills/receiving-code-review"),
+    label: "receiving-code-review skill (~/.claude/skills/receiving-code-review)",
+  },
+  {
     source: join(repoRoot, "settings/session-settings.json"),
     target: join(homedir(), ".config/yimbot/session-settings.json"),
     label: "session deny-list (~/.config/yimbot/session-settings.json)",
@@ -906,6 +911,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".claude/skills/merge-main"),
       label: "~/.claude/skills/merge-main",
       role: "sync branch with origin/main during CI/conflict fixes (required for PR handling)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/receiving-code-review"),
+      label: "~/.claude/skills/receiving-code-review",
+      role: "review step: verify review feedback before implementing (required for PR handling)",
     },
     {
       path: join(homedir(), ".config/yimbot/session-settings.json"),

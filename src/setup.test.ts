@@ -353,6 +353,12 @@ test("hostLinks installs the merge-main skill", () => {
   assert.ok(link!.source.endsWith("skills/merge-main"), "sourced from skills/merge-main");
 });
 
+test("hostLinks installs the receiving-code-review skill", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/receiving-code-review"));
+  assert.ok(link, "receiving-code-review skill host link is present");
+  assert.ok(link!.source.endsWith("skills/receiving-code-review"), "sourced from skills/receiving-code-review");
+});
+
 test("hostLinks installs the session deny-list settings", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/session-settings.json"));
   assert.ok(link, "session-settings host link is present");

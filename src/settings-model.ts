@@ -197,6 +197,7 @@ export type SettingRow = {
 
 function maskKey(key: string): string {
   if (!key) return "(not set)";
+  if (key.length < 14) return "*".repeat(8);
   const head = key.slice(0, 4);
   return `${head}${"*".repeat(6)}${key.slice(-4)}`;
 }
@@ -289,6 +290,7 @@ export function validateDraft(draft: Draft): Record<string, string> {
       case "CODEBASE_PATH":
         if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
         break;
+      // These non-empty rules match the wizard's Required validators.
       case "LINEAR_API_KEY":
       case "LINEAR_TEAM_NAME":
       case "DEPLOY_STATE_NAME":

@@ -130,6 +130,24 @@ test("settingRows masks the api key and shows the assignee read-only", () => {
   assert.equal(who.display, "Yimin Arava (this API key)");
 });
 
+test("settingRows masks short keys with only stars, never revealing input characters", () => {
+  const display = (apiKey: string) =>
+    settingRows({ ...sample, apiKey }, "x").find((r) => r.envKey === "LINEAR_API_KEY")!.display;
+  assert.equal(display(""), "(not set)");
+  const short4 = display("abcd");
+  assert.equal(short4.includes("a"), false);
+  assert.equal(short4.includes("b"), false);
+  assert.equal(short4.includes("c"), false);
+  assert.equal(short4.includes("d"), false);
+  const short8 = display("abcdefgh");
+  for (const c of "abcdefgh") assert.equal(short8.includes(c), false);
+  const short9 = display("abcdefghi");
+  for (const c of "abcdefghi") assert.equal(short9.includes(c), false);
+  const long = display("abcdefghijklmnopqrst");
+  assert.match(long, /^abcd.*qrst$/);
+  assert.equal(long.includes("e"), false);
+});
+
 test("settingRows renders the label filter's three modes in words", () => {
   const display = (labelFilter: string) =>
     settingRows({ ...sample, labelFilter }, "x").find((r) => r.envKey === "LABEL_FILTER")!.display;

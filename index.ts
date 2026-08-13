@@ -1,5 +1,5 @@
 // index.ts
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { format } from "node:util";
@@ -8,6 +8,10 @@ import { emitEvent } from "./src/events.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
+import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src/linear-api.ts";
+import { applySettings } from "./src/settings-apply.ts";
+import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
+import type { SettingsDeps } from "./src/tui-settings.ts";
 import {
   bindReturnKey,
   currentTmuxPane,
@@ -51,12 +55,38 @@ function redirectConsoleToFile(): void {
 if (process.stdout.isTTY) {
   redirectConsoleToFile();
   const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
-  const stop = await startDaemon();
+  let stop = await startDaemon();
   const returnKeyName = returnKey();
   const boardPane = currentTmuxPane();
   if (boardPane && !bindReturnKey(boardPane, returnKeyName)) {
     console.error(`[tui] could not bind prefix+${returnKeyName} to return to the board pane '${boardPane}'`);
   }
+  const apiKey = () => process.env.LINEAR_API_KEY?.trim() ?? "";
+  const settings: SettingsDeps = {
+    loadConfig: () => configFromEnv(process.env),
+    assignee: async () => (await fetchViewer(apiKey())).name,
+    teams: async () => (await fetchTeams(apiKey())).map((t) => t.name),
+    states: async (teamName) => {
+      const team = (await fetchTeams(apiKey())).find((t) => t.name === teamName);
+      return team ? (await fetchTeamStates(apiKey(), team.id)).map((s) => s.name) : [];
+    },
+    labels: async (teamName) => {
+      const team = (await fetchTeams(apiKey())).find((t) => t.name === teamName);
+      return team ? await fetchTeamLabels(apiKey(), team.id) : [];
+    },
+    apply: (next, prev) =>
+      applySettings(next, prev, {
+        readEnv: () => (existsSync(envPath) ? readFileSync(envPath, "utf8") : null),
+        writeEnv: (contents) => writeEnvFile(contents),
+        setProcessEnv: (record) => {
+          for (const [k, v] of Object.entries(record)) process.env[k] = v;
+        },
+        restart: async () => {
+          stop();
+          stop = await startDaemon();
+        },
+      }),
+  };
   runTui({
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
@@ -70,6 +100,7 @@ if (process.stdout.isTTY) {
       const session = resolveSessionForKey(key, listGitWorktrees(codebasePath), listTmuxSessions());
       if (session) switchToSession(session);
     },
+    settings,
   });
 } else {
   const stop = await startDaemon();

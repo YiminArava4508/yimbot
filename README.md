@@ -189,7 +189,25 @@ row's status moves through its lifecycle as work progresses, starting at
 conflict** as those steps kick in, then **ready to test**, then **ready to
 merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. Press `q` to quit the board; it also
-stops the daemon. While the board runs it binds `prefix + Y` on the tmux
+stops the daemon.
+
+Press `s` for the settings screen: every value `pnpm onboard` asks about, shown
+with the team, the assignee the API key resolves to, the three workflow states,
+the ticket slice (`LABEL_FILTER`), and the WIP cap. `enter` edits the selected
+row, `w` writes `.env` and restarts the daemon in place, `esc` goes back. A save
+is all or nothing: if the daemon refuses to start on the new config (a codebase
+path that is not a git repository, a rejected API key, Linear unreachable), the
+old config is restored, the daemon restarts on it, and the panel shows the
+error with your edit still pending. Settings the wizard never asks about
+(`BLOCKED_LABEL`, `IGNORE_CHECKS`, `READY_MERGE_LABEL`, the reap timeout and the
+`TUI_*` vars) stay hand-edited in `.env`.
+
+One thing to know before using it: restarting the daemon resets the advance
+step's in-memory continuation counters, so an already-merged PR can drive one
+more judged round and `MAX_CONTINUATIONS` counts from zero again. This is true
+of any restart, including quitting the board.
+
+While the board runs it binds `prefix + Y` on the tmux
 server, so `prefix + Y` from any session (a ticket session yimbot opened or one
 of your own) switches back to the board. The binding targets the board's pane,
 not just its session, so it lands on the board itself even when another window

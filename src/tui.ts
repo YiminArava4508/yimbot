@@ -3,6 +3,7 @@
 import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
 import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 
 // How often the board repaints on its own, independent of daemon events. Without
 // it the TUI freezes on its last paint between events: time-based row pruning
@@ -19,7 +20,7 @@ export function returnKey(): string {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   g/G top/bottom   enter open   f flag/unflag   q quit   prefix+${key} returns here`;
+  return `j/k move   g/G top/bottom   enter open   f flag/unflag   s settings   q quit   prefix+${key} returns here`;
 }
 
 // height: 1 + wrap: false so a hint too long for the terminal clips instead of
@@ -71,11 +72,29 @@ export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[
   return [header, ...body];
 }
 
+// screen.key's handler runs before the focused widget's own keypress handling
+// (see neo-blessed's screen.js _listenKeys: it emits on the screen first, then
+// on screen.focused). While the settings panel is open, the panel's own list
+// owns q/escape (list.js maps them to cancelSelected, which drives the
+// unsaved-changes double-escape prompt), so the board must not act on them
+// here. C-c stays a hard quit regardless.
+export function bindQuitKeys(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isSettingsOpen: () => boolean,
+  quit: () => void,
+): void {
+  screen.key(["q", "escape"], () => {
+    if (!isSettingsOpen()) quit();
+  });
+  screen.key(["C-c"], quit);
+}
+
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
+  settings: SettingsDeps;
 }): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
 
@@ -118,7 +137,19 @@ export function runTui(opts: {
     screen.destroy();
     opts.onQuit();
   };
-  screen.key(["q", "escape", "C-c"], quit);
+  let settingsOpen = false;
+  bindQuitKeys(screen, () => settingsOpen, quit);
+
+  screen.key(["s"], () => {
+    settingsOpen = true;
+    table.hide();
+    openSettings(screen, opts.settings, () => {
+      settingsOpen = false;
+      table.show();
+      table.focus();
+      render();
+    });
+  });
 
   screen.key(["f"], () => {
     const r = currentRows[table.selected - 1];

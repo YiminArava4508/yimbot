@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
+import { bindQuitKeys, fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -91,6 +91,33 @@ test("footerHint keeps the existing hints and names the return key", () => {
   assert.match(hint, /f flag\/unflag/);
   assert.match(hint, /q quit/);
   assert.match(hint, /prefix\+F12 returns here/);
+});
+
+test("footerHint advertises the settings key", () => {
+  assert.match(footerHint("Y"), /s settings/);
+});
+
+test("bindQuitKeys gates q and escape while settings is open, but C-c always fires", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let quitCalls = 0;
+  bindQuitKeys(fakeScreen, () => settingsOpen, () => quitCalls++);
+
+  handlers["q"]();
+  handlers["escape"]();
+  assert.equal(quitCalls, 0, "q and escape must not quit while the panel is open");
+
+  handlers["C-c"]();
+  assert.equal(quitCalls, 1, "C-c must quit even while the panel is open");
+
+  settingsOpen = false;
+  handlers["q"]();
+  assert.equal(quitCalls, 2, "q quits again once the panel is closed");
 });
 
 // A minimal EventEmitter standing in for a TTY stream, sized to the columns

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { selectNextClaim } from "./claim.ts";
+import { parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue } from "./linear-api.ts";
 
 function todo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIssue {
@@ -18,7 +19,7 @@ function todo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIss
 
 const riskLabels = ["migration", "infra", "security", "breaking"];
 
-const opts = (merged: Set<string> | null = null) => ({ riskLabels, merged });
+const opts = (merged: Set<string> | null = null) => ({ riskLabels, merged, labelFilter: null });
 
 test("selectNextClaim picks the highest Linear priority (Urgent=1 before High=2)", () => {
   const picked = selectNextClaim(
@@ -100,4 +101,28 @@ test("selectNextClaim ignores blockers when merged is null (gh unavailable)", ()
     opts(null),
   );
   assert.equal(picked?.id, "blocked");
+});
+
+test("selectNextClaim skips labelled todos under a negated filter", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "a", priority: 1, labels: ["bot"] }), todo({ id: "b", priority: 2 })],
+    { ...opts(), labelFilter: parseLabelFilter("!bot") },
+  );
+  assert.equal(picked?.id, "b");
+});
+
+test("selectNextClaim takes only labelled todos under an include filter", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "a", priority: 1 }), todo({ id: "b", priority: 2, labels: ["bot"] })],
+    { ...opts(), labelFilter: parseLabelFilter("bot") },
+  );
+  assert.equal(picked?.id, "b");
+});
+
+test("selectNextClaim still drops risk labels under an include filter", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "a", priority: 1, labels: ["bot", "migration"] })],
+    { ...opts(), labelFilter: parseLabelFilter("bot") },
+  );
+  assert.equal(picked, null);
 });

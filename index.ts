@@ -1,5 +1,5 @@
 // index.ts
-import { createWriteStream } from "node:fs";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { format } from "node:util";
@@ -9,6 +9,10 @@ import { readMode, toggleMode } from "./src/mode.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
+import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src/linear-api.ts";
+import { applySettings } from "./src/settings-apply.ts";
+import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
+import type { SettingsDeps } from "./src/tui-settings.ts";
 import {
   bindReturnKey,
   currentTmuxPane,
@@ -49,22 +53,55 @@ function redirectConsoleToFile(): void {
   }
 }
 
+// Read fresh rather than captured once: the settings panel can restart the
+// daemon on a new CODEBASE_PATH mid-session, and callers that closed over a
+// stale value would keep filtering/opening sessions against the old repo.
+const currentCodebasePath = () => envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+
 if (process.stdout.isTTY) {
   redirectConsoleToFile();
-  const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
-  const stop = await startDaemon();
+  let stop = await startDaemon();
   const returnKeyName = returnKey();
   const boardPane = currentTmuxPane();
   if (boardPane && !bindReturnKey(boardPane, returnKeyName)) {
     console.error(`[tui] could not bind prefix+${returnKeyName} to return to the board pane '${boardPane}'`);
   }
+  const apiKey = () => process.env.LINEAR_API_KEY?.trim() ?? "";
+  const settings: SettingsDeps = {
+    loadConfig: () => configFromEnv(process.env),
+    assignee: async () => (await fetchViewer(apiKey())).name,
+    teams: async () => (await fetchTeams(apiKey())).map((t) => t.name),
+    states: async (teamName) => {
+      // Matched case-insensitively, same as the daemon's own resolveContext
+      // (eqIgnoreCase in linear-api.ts), so a team name that differs only in
+      // case from Linear's still resolves instead of silently returning [].
+      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
+      return team ? (await fetchTeamStates(apiKey(), team.id)).map((s) => s.name) : [];
+    },
+    labels: async (teamName) => {
+      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
+      return team ? await fetchTeamLabels(apiKey(), team.id) : [];
+    },
+    apply: (next, prev) =>
+      applySettings(next, prev, {
+        readEnv: () => (existsSync(envPath) ? readFileSync(envPath, "utf8") : null),
+        writeEnv: (contents) => writeEnvFile(contents),
+        setProcessEnv: (record) => {
+          for (const [k, v] of Object.entries(record)) process.env[k] = v;
+        },
+        restart: async () => {
+          stop();
+          stop = await startDaemon();
+        },
+      }),
+  };
   runTui({
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
       stop();
       process.exit(0);
     },
-    liveKeys: () => liveWorktreeKeys(codebasePath),
+    liveKeys: () => liveWorktreeKeys(currentCodebasePath()),
     onToggleFlag: (key, label, flagged) =>
       emitEvent(
         flagged
@@ -72,11 +109,12 @@ if (process.stdout.isTTY) {
           : { kind: "flagged", key, label, reason: "manual" },
       ),
     onOpenSession: (key) => {
-      const session = resolveSessionForKey(key, listGitWorktrees(codebasePath), listTmuxSessions());
+      const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);
     },
     mode: readMode,
     onToggleMode: toggleMode,
+    settings,
   });
 } else {
   const stop = await startDaemon();

@@ -25,6 +25,7 @@ import {
   viewerLogin,
 } from "./gh.ts";
 import { judgeAcceptance, type JudgeRunner } from "./judge.ts";
+import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
 import {
   countAssignedInState,
   fetchMarkedCommentBody,
@@ -34,6 +35,7 @@ import {
   upsertMarkedComment,
 } from "./linear-api.ts";
 import { readMode } from "./mode.ts";
+import { makePrLabelFilter } from "./pr-filter.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
 
@@ -62,6 +64,9 @@ export async function startDaemon(): Promise<() => void> {
     .split(",")
     .map((l) => l.trim())
     .filter(Boolean);
+  // Which slice of the board this instance works. Two daemons on one Linear
+  // account partition the work by running opposite filters ("bot" / "!bot").
+  const labelFilter = parseLabelFilter(process.env.LABEL_FILTER);
   const todoStateName = envOr("TODO_STATE_NAME", "Todo");
   // How many of the viewer's tickets may sit In Progress before the claim step
   // stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
@@ -123,6 +128,17 @@ export async function startDaemon(): Promise<() => void> {
   // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
   // disabled (null) rather than crashing the daemon.
   const gh = ghRunner(codebasePath);
+  // A ticket's labels don't change mid-flight, and reacting slowly to a relabel
+  // is an explicit non-goal of the design, so this is decoupled from the
+  // heartbeat rather than going stale (and re-fetched) every tick.
+  const PR_LABEL_CACHE_TTL_MS = 60 * 60 * 1000;
+  const prLabelFilter = makePrLabelFilter({
+    filter: labelFilter,
+    fetchLabels: async (identifier) => (await fetchIssueByIdentifier(apiKey, identifier)).labels,
+    ttlMs: PR_LABEL_CACHE_TTL_MS,
+    now: Date.now,
+    log: (msg) => console.log(`[yimbot] ${msg}`),
+  });
   let prReview:
     | {
         listOpenPRs: () => ReturnType<typeof listMyOpenPRs>;
@@ -137,7 +153,7 @@ export async function startDaemon(): Promise<() => void> {
     const slug = await repoSlug(gh);
     const viewer = await viewerLogin(gh);
     prReview = {
-      listOpenPRs: () => listMyOpenPRs(gh),
+      listOpenPRs: async () => prLabelFilter(await listMyOpenPRs(gh)),
       unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer, trustedReviewers),
       mergeableInfo: (n) => mergeableInfo(gh, n),
       checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
@@ -153,6 +169,11 @@ export async function startDaemon(): Promise<() => void> {
 
   // Cleanup step: tear down merged PRs' worktrees. Shares the review step's gh
   // availability signal (prReview !== null): if gh is missing, both are off.
+  // Unfiltered: cleanup only tears down worktrees that exist on THIS machine, so
+  // the other instance's PRs never had one here to reap. Gating this list would
+  // suppress no duplicate work, only cost a Linear lookup per merged/closed PR,
+  // and would leave a PR that changed slices mid-flight orphaned instead of
+  // reaped.
   const cleanup =
     autoCleanup && prReview
       ? {
@@ -204,7 +225,7 @@ export async function startDaemon(): Promise<() => void> {
   const advance =
     autoContinue && prReview
       ? {
-          listMergedPRs: () => listMyMergedPRs(gh),
+          listMergedPRs: async () => prLabelFilter(await listMyMergedPRs(gh)),
           fetchAcComment: (issueId: string) => fetchMarkedCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
           fetchDescription: async (identifier: string) => {
             const d = await fetchIssueByIdentifier(apiKey, identifier);
@@ -212,7 +233,7 @@ export async function startDaemon(): Promise<() => void> {
           },
           judge: (open: AC[]) => judgeAcceptance(judgeRun, open),
           writeAcComment: (issueId: string, body: string) => upsertMarkedComment(apiKey, issueId, AC_COMMENT_MARKER, body),
-          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName),
+          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
           maxInProgress,
           maxRounds: maxContinuations,
         }
@@ -251,6 +272,9 @@ export async function startDaemon(): Promise<() => void> {
   // Blocked-by handling: defer claiming and move back In-Progress tickets whose
   // blocker has no merged PR. Gated on the same gh-availability signal as the
   // other gh-backed steps; reuses listMyMergedPRs.
+  // Deliberately unfiltered: this list answers "has my blocker merged?", and a
+  // blocker can live on the other instance's slice of the board. Filtering it
+  // would leave a ticket blocked forever behind a merged bot PR.
   const blocked = prReview ? { listMergedPRs: () => listMyMergedPRs(gh) } : null;
   console.log(
     blocked
@@ -269,9 +293,11 @@ export async function startDaemon(): Promise<() => void> {
       ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]`
       : "[yimbot] auto-claim OFF",
   );
+  console.log(`[yimbot] label filter: ${describeLabelFilter(labelFilter)}`);
 
   const stop = startWatcher({
     apiKey,
+    labelFilter,
     progressContext,
     reviewContext,
     heartbeatIntervalMinutes,
@@ -279,6 +305,7 @@ export async function startDaemon(): Promise<() => void> {
     claim: {
       autoClaim,
       riskLabels,
+      labelFilter,
       maxInProgress,
       todoContext,
       progressStateName: stateName,

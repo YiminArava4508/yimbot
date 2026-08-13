@@ -197,7 +197,33 @@ row's status moves through its lifecycle as work progresses, starting at
 conflict** as those steps kick in, then **ready to test**, then **ready to
 merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. Press `q` to quit the board; it also
-stops the daemon. While the board runs it binds `prefix + Y` on the tmux
+stops the daemon.
+
+Press `s` for the settings screen: every value `pnpm onboard` asks about, shown
+with the team, the assignee the API key resolves to, the three workflow states,
+the ticket slice (`LABEL_FILTER`), and the WIP cap. `enter` edits the selected
+row, `w` writes `.env` and restarts the daemon in place, `esc` goes back. A save
+is all or nothing: if the daemon refuses to start on the new config (a codebase
+path that is not a git repository, a rejected API key, Linear unreachable), the
+old config is restored, the daemon restarts on it, and the panel shows the
+error with your edit still pending. If that rollback restart also fails, the
+board's status line reads `daemon stopped` until a later save succeeds, even
+if you close and reopen the settings screen without saving in between.
+Settings the wizard never asks about (`BLOCKED_LABEL`, `IGNORE_CHECKS`,
+`READY_MERGE_LABEL`, the reap timeout and the `TUI_*` vars) stay hand-edited in
+`.env`: both `pnpm onboard` and the settings panel carry forward any plain
+`KEY=value` line (one line, no `export`, no spaces around the `=`) that the
+generated sections above don't own, so a save doesn't drop it. That parser is
+deliberately narrow: a commented-out setting, a line with `export` or spaces
+around the `=`, or a multi-line quoted value is not preserved, so keep
+hand-edited lines in that plain form.
+
+One thing to know before using it: restarting the daemon resets the advance
+step's in-memory continuation counters, so an already-merged PR can drive one
+more judged round and `MAX_CONTINUATIONS` counts from zero again. This is true
+of any restart, including quitting the board.
+
+While the board runs it binds `prefix + Y` on the tmux
 server, so `prefix + Y` from any session (a ticket session yimbot opened or one
 of your own) switches back to the board. The binding targets the board's pane,
 not just its session, so it lands on the board itself even when another window
@@ -288,11 +314,39 @@ rm, `dropdb`); a denied command fails silently rather than prompting, so it adds
 safety without any hang risk. Point `SESSION_SETTINGS` at your own file to extend
 it per repo.
 
+### Running a second instance
+
+Two machines can share one Linear account and one GitHub account as long as they
+work opposite slices of the board. `LABEL_FILTER` is the whole mechanism: it
+gates every step (claim, deploy, ready-to-test, the PR comment/CI/conflict/
+blocked fixers, advance and the ready label), with two deliberate exceptions.
+The blocked-by check reads merged PRs across the whole board on purpose, so a
+ticket isn't blocked forever behind the other instance's merged PR. Cleanup's
+merged/closed PR lists are likewise never gated, because cleanup only acts on
+worktrees that already exist on this machine.
+
+On the new machine: clone this repo, `pnpm install`, then `pnpm onboard`. Use the
+same Linear API key, but that machine's own `gh auth login`, its own Claude
+login, and its own `CODEBASE_PATH`. Answer the scoping question with **only
+tickets with a label** and pick `bot`.
+
+On this machine, re-run `pnpm onboard` (or edit `.env`) and set
+`LABEL_FILTER=!bot`, so it leaves the bot's tickets alone.
+
+Label a ticket `bot` in Linear to hand it to the bot machine; everything else
+stays here. A PR whose branch carries no ticket identifier counts as unlabelled
+and stays with the `!bot` instance. `MAX_IN_PROGRESS` counts only the tickets in
+this instance's slice, so each machine gets its own WIP cap. Both instances
+still commit and open PRs as you: nothing about git or GitHub identity changes.
+Finish or tear down in-flight work before relabelling a ticket to hand it to the
+other machine: a PR that drops out of this instance's slice mid-flight leaves
+its local worktree and any running fix session behind for a human to clear up.
+
 ## Usage
 
 ```bash
 pnpm onboard   # (re)configure via the interactive wizard
-pnpm check     # one-shot: print the issues the filter currently matches
+pnpm check     # one-shot: print the issues the deploy state and label filter currently match
 pnpm start     # run the daemon (Ctrl+C to stop); onboards first if unconfigured
 ```
 

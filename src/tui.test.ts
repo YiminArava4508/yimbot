@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { fmtDuration, footerHint, footerLayout, modeContent, returnKey, rowsToTable } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindSettingsKey, fmtDuration, footerHint, footerLayout, modeContent, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -111,6 +111,96 @@ test("footerHint keeps the existing hints and names the return key", () => {
 test("modeContent highlights each mode distinctly", () => {
   assert.equal(modeContent("supervised"), "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}");
   assert.equal(modeContent("autonomous"), "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}");
+});
+
+test("bindModeKey gates m while settings is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let toggleCalls = 0;
+  bindModeKey(fakeScreen, () => settingsOpen, () => toggleCalls++);
+
+  handlers["m"]();
+  assert.equal(toggleCalls, 0, "m must not toggle the mode while the panel is open");
+
+  settingsOpen = false;
+  handlers["m"]();
+  assert.equal(toggleCalls, 1, "m toggles again once the panel is closed");
+});
+
+test("footerHint advertises the settings key", () => {
+  assert.match(footerHint("Y"), /s settings/);
+});
+
+test("bindQuitKeys gates q and escape while settings is open, but C-c always fires", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let quitCalls = 0;
+  bindQuitKeys(fakeScreen, () => settingsOpen, () => quitCalls++);
+
+  handlers["q"]();
+  handlers["escape"]();
+  assert.equal(quitCalls, 0, "q and escape must not quit while the panel is open");
+
+  handlers["C-c"]();
+  assert.equal(quitCalls, 1, "C-c must quit even while the panel is open");
+
+  settingsOpen = false;
+  handlers["q"]();
+  assert.equal(quitCalls, 2, "q quits again once the panel is closed");
+});
+
+test("bindSettingsKey does not reopen the panel on a second s while it is already open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = false;
+  let openCalls = 0;
+  bindSettingsKey(fakeScreen, () => settingsOpen, () => {
+    settingsOpen = true;
+    openCalls++;
+  });
+
+  handlers["s"]();
+  assert.equal(openCalls, 1, "the first s opens the panel");
+
+  handlers["s"]();
+  assert.equal(openCalls, 1, "a second s while the panel is open must not open another one");
+
+  settingsOpen = false;
+  handlers["s"]();
+  assert.equal(openCalls, 2, "s opens again once the panel is closed");
+});
+
+test("bindFlagKey gates f while settings is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let toggleCalls = 0;
+  bindFlagKey(fakeScreen, () => settingsOpen, () => toggleCalls++);
+
+  handlers["f"]();
+  assert.equal(toggleCalls, 0, "f must not flag the hidden board's row while the panel is open");
+
+  settingsOpen = false;
+  handlers["f"]();
+  assert.equal(toggleCalls, 1, "f flags again once the panel is closed");
 });
 
 // A minimal EventEmitter standing in for a TTY stream, sized to the columns

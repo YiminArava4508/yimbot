@@ -8,6 +8,7 @@ import {
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
   fetchIssueByIdentifier,
+  fetchIssueStateType,
   fetchTeamLabels,
   isMissingEntityError,
   moveIssueToState,
@@ -309,6 +310,11 @@ test("fetchIssueByIdentifier throws a missing-entity error when Linear reports t
 test("fetchIssueByIdentifier throws a missing-entity error when Linear returns a null issue with no error", async () => {
   const f = fakeFetchMultiResponse([{ issue: null }]);
   await assert.rejects(fetchIssueByIdentifier("key", "REVERT-1234", f), (err) => isMissingEntityError(err));
+});
+
+test("fetchIssueStateType returns the issue's workflow state type", async () => {
+  const f = fakeFetchMultiResponse([{ issue: { state: { type: "completed" } } }]);
+  assert.equal(await fetchIssueStateType("key", "ENG-949", f), "completed");
 });
 
 test("upsertMarkedComment updates when a marked comment exists", async () => {

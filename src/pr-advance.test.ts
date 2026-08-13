@@ -2,12 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AC } from "./acceptance.ts";
 import { renderAcComment } from "./acceptance.ts";
-import { type AdvanceDeps, advanceOnce, freshAdvanceState, issueFromBranch } from "./pr-advance.ts";
+import { type AdvanceDeps, advanceOnce, freshAdvanceState, isContinuationBranch, issueFromBranch } from "./pr-advance.ts";
 
 test("issueFromBranch extracts ENG id from ticket and continuation branches", () => {
   assert.equal(issueFromBranch("yiminarava/eng-949-create-offers"), "ENG-949");
   assert.equal(issueFromBranch("eng-949-cont-2"), "ENG-949");
   assert.equal(issueFromBranch("fix/wrike-thing"), null);
+});
+
+test("isContinuationBranch matches only the eng-<n>-cont-<round> shape", () => {
+  assert.equal(isContinuationBranch("eng-949-cont-2"), true);
+  assert.equal(isContinuationBranch("eng-949-create-offers"), false);
+  assert.equal(isContinuationBranch("eng-949-contour"), false);
 });
 
 function acs(...ids: string[]): AC[] {

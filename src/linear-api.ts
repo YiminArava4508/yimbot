@@ -414,6 +414,26 @@ export async function fetchIssueByIdentifier(
   };
 }
 
+// The workflow state type ("completed", "canceled", "started", ...) of an issue,
+// by identifier. Drives the cleanup step's no-PR (spike) reap: a terminal type
+// means the human closed the ticket out, so its worktree/session can go.
+export async function fetchIssueStateType(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  type Data = { issue: { state: { type: string } } };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueStateType($id: String!) {
+      issue(id: $id) { state { type } }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  return data.issue.state.type;
+}
+
 export async function upsertMarkedComment(
   apiKey: string,
   issueId: string,

@@ -99,12 +99,14 @@ event_key_from_branch() {
   printf '%s' "$branch"
 }
 
-# Append one yimbot flag signal (needs_input | input_received) for the current
-# worktree to $EVENTS_LOG, keyed by its git branch, so the TUI can flag a session
-# stuck waiting for input. Best-effort: a missing log or unresolvable branch is a
-# silent no-op, never failing the Claude hook that calls it.
+# Append one yimbot flag signal (needs_input | input_received | flagged ...)
+# for the current worktree to $EVENTS_LOG, keyed by its git branch, so the TUI
+# can flag a session stuck waiting for input. An optional second argument is
+# the raise reason the board's REASON column shows (decision, findings, ...).
+# Best-effort: a missing log or unresolvable branch is a silent no-op, never
+# failing the Claude hook that calls it.
 emit_hook_event() {
-  local kind=$1 branch key ts
+  local kind=$1 reason=${2:-} branch key ts extra=""
   [ -n "${EVENTS_LOG:-}" ] || return 0
   branch=$(git branch --show-current 2>/dev/null) || return 0
   [ -n "$branch" ] || return 0
@@ -115,7 +117,8 @@ emit_hook_event() {
   key=${key//\\/\\\\}
   key=${key//\"/\\\"}
   ts=$(( $(date +%s%N) / 1000000 ))
-  printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"}\n' "$ts" "$kind" "$key" "$key" >> "$EVENTS_LOG" 2>/dev/null || true
+  [ -n "$reason" ] && extra=",\"reason\":\"$reason\""
+  printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"%s}\n' "$ts" "$kind" "$key" "$key" "$extra" >> "$EVENTS_LOG" 2>/dev/null || true
 }
 
 # Notification types that do not mean a human is blocking: the ~60s idle prompt

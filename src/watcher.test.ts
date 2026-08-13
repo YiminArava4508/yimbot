@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { filterByLabel, parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
 import {
@@ -30,6 +34,7 @@ import {
   sanitizeBranchToSession,
   unbindReturnKey,
   type WatchState,
+  worktreeFullyPushed,
   worktreeKeysUnder,
 } from "./watcher.ts";
 
@@ -388,6 +393,54 @@ test("sanitizeBranchToSession matches new-session.sh's rule (no-op on a clean sl
 test("sanitizeBranchToSession replaces disallowed chars and caps at 50", () => {
   assert.equal(sanitizeBranchToSession("feat/ENG-42_fix bar"), "feat-ENG-42-fix-bar");
   assert.equal(sanitizeBranchToSession("x".repeat(60)).length, 50);
+});
+
+function gitIn(cwd: string, args: string[]): void {
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+// A real temp repo pair: a bare "origin" and a clone with one pushed commit on
+// main. Returns the clone path; callers mutate it per case.
+function tempClone(): string {
+  const root = mkdtempSync(join(tmpdir(), "yimbot-push-test-"));
+  const bare = join(root, "origin.git");
+  const clone = join(root, "clone");
+  gitIn(root, ["init", "--bare", "-b", "main", bare]);
+  gitIn(root, ["clone", bare, clone]);
+  gitIn(clone, ["config", "user.email", "t@t"]);
+  gitIn(clone, ["config", "user.name", "t"]);
+  gitIn(clone, ["commit", "--allow-empty", "-m", "init"]);
+  gitIn(clone, ["push", "origin", "main"]);
+  return clone;
+}
+
+test("worktreeFullyPushed accepts a clean never-pushed branch with no local-only commits", () => {
+  // A spike's branch: created off main, never pushed, no upstream. Everything on
+  // it is reachable from origin/main, so nothing would be lost.
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "-b", "eng-1104-spike"]);
+  assert.equal(worktreeFullyPushed(clone), true);
+});
+
+test("worktreeFullyPushed rejects a branch with a local-only commit", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "-b", "eng-1104-spike"]);
+  gitIn(clone, ["commit", "--allow-empty", "-m", "local scaffolding"]);
+  assert.equal(worktreeFullyPushed(clone), false);
+});
+
+test("worktreeFullyPushed accepts a branch whose commits are all pushed to its origin branch", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "-b", "eng-1104-spike"]);
+  gitIn(clone, ["commit", "--allow-empty", "-m", "kept for reference"]);
+  gitIn(clone, ["push", "-u", "origin", "eng-1104-spike"]);
+  assert.equal(worktreeFullyPushed(clone), true);
+});
+
+test("worktreeFullyPushed rejects a dirty working tree", () => {
+  const clone = tempClone();
+  writeFileSync(join(clone, "scratch.txt"), "wip");
+  assert.equal(worktreeFullyPushed(clone), false);
 });
 
 test("porcelainHasNonMarkerChanges ignores yimbot marker files", () => {

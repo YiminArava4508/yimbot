@@ -37,6 +37,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   conflictSpawned: { name: string; branch: string; prNumber: number }[];
   blockedSpawned: { name: string; branch: string; prNumber: number }[];
   reaped: { prNumber: number; branch: string; kind: string }[];
+  changesNoticed: { prNumber: number; branch: string }[];
   logs: string[];
 } {
   const spawned: { name: string; branch: string; prNumber: number }[] = [];
@@ -44,6 +45,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   const conflictSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const blockedSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const reaped: { prNumber: number; branch: string; kind: string }[] = [];
+  const changesNoticed: { prNumber: number; branch: string }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
@@ -51,6 +53,8 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     mergeableInfo: async () => noConflict,
     checksInfo: async () => ci("passing"),
     blockedInfo: async () => ({ blocked: false, headSha: "sha" }),
+    changesRequested: async () => false,
+    onChangesRequested: (prNumber, branch) => void changesNoticed.push({ prNumber, branch }),
     inFlightFixKinds: () => [],
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     now: () => 0,
@@ -62,7 +66,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, changesNoticed, logs };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -499,6 +503,55 @@ test("reviewOnce prunes a fix timer once the kind is no longer in flight", async
   kinds = [];
   await reviewOnce(state, d); // no longer in flight -> pruned
   assert.equal(state.fixSeenAt.has("4706:fix"), false);
+});
+
+test("reviewOnce reports a PR whose review decision is changes-requested", async () => {
+  const { deps: d, changesNoticed } = deps({ changesRequested: async () => true });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(changesNoticed, [{ prNumber: 4706, branch: "eng-4706-x" }]);
+});
+
+test("reviewOnce does not report a PR with no changes-requested review", async () => {
+  const { deps: d, changesNoticed } = deps();
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(changesNoticed.length, 0);
+});
+
+test("reviewOnce reports changes-requested even while a fix is in flight", async () => {
+  const { deps: d, changesNoticed } = deps({
+    changesRequested: async () => true,
+    inFlightFixKinds: () => ["fix"],
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(changesNoticed, [{ prNumber: 4706, branch: "eng-4706-x" }]);
+});
+
+test("reviewOnce reports changes-requested on every tick it persists", async () => {
+  const { deps: d, changesNoticed } = deps({ changesRequested: async () => true });
+  const state = freshReviewState();
+  await reviewOnce(state, d);
+  await reviewOnce(state, d);
+  assert.equal(changesNoticed.length, 2);
+});
+
+test("reviewOnce does not report changes-requested for draft PRs", async () => {
+  const { deps: d, changesNoticed } = deps({
+    listOpenPRs: async () => [pr(1, { isDraft: true })],
+    changesRequested: async () => true,
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(changesNoticed.length, 0);
+});
+
+test("reviewOnce still handles comments when the review decision read throws", async () => {
+  const { deps: d, spawned, logs } = deps({
+    changesRequested: async () => {
+      throw new Error("gh decision 502");
+    },
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-4706-fix"]);
+  assert.ok(logs.some((l) => /gh decision 502/.test(l)));
 });
 
 test("blockedSessionName is keyed by PR number", () => {

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { filterByLabel, parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
 import {
   bindReturnKey,
@@ -217,6 +218,23 @@ test("deployOnce does not relaunch after cleanup removes the worktree (latched)"
   worktrees = []; // cleanup removed the worktree; ticket still In Progress
   await deployOnce(state, deps); // latched → must not relaunch
   assert.deepEqual(launched, ["eng-1-fix-bug"]);
+});
+
+test("deployOnce launches only issues its fetch passes through", async () => {
+  const launched: string[] = [];
+  const state = freshDeployState();
+  await deployOnce(state, {
+    fetchIssues: async () =>
+      filterByLabel(parseLabelFilter("bot"), [
+        { id: "1", identifier: "ENG-1", title: "One", labels: ["bot"] },
+        { id: "2", identifier: "ENG-2", title: "Two", labels: [] },
+      ]),
+    listSessions: () => [],
+    listWorktrees: () => [],
+    launch: (name) => void launched.push(name),
+    log: () => {},
+  });
+  assert.deepEqual(launched, ["eng-1-one"]);
 });
 
 test("deployOnce retries an issue whose launch failed (not latched on failure)", async () => {
@@ -519,6 +537,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
   const deps: ClaimDeps = {
     autoClaim: true,
     riskLabels: ["migration"],
+    labelFilter: null,
     maxInProgress: 3,
     countInProgress: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
@@ -590,6 +609,20 @@ test("claimOnce claims a blocked todo once its blocker is merged", async () => {
   });
   await claimOnce(freshClaimState(), deps);
   assert.deepEqual(moved.map((i) => i.id), ["5"]);
+});
+
+test("claimOnce only logs deferrals for todos in this instance's LABEL_FILTER slice", async () => {
+  const { deps, logs } = claimDeps({
+    labelFilter: parseLabelFilter("!bot"),
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"], labels: ["bot"] }),
+      cycleTodo({ id: "6", priority: 2, blockedBy: ["ENG-4"] }),
+    ],
+    fetchMergedIdentifiers: async () => new Set<string>(),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.ok(!logs.some((l) => l.includes("ENG-5")), "must not log about a ticket outside this instance's slice");
+  assert.ok(logs.some((l) => l.includes("deferring ENG-6")));
 });
 
 test("claimOnce skips the claim tick if the merged fetch fails", async () => {
@@ -678,7 +711,7 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
 test("reconcile moves a blocked In-Progress ticket back and unlatches, never tearing down", async () => {
   const { deps, movedBack, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
     ],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
@@ -691,8 +724,8 @@ test("reconcile moves a blocked In-Progress ticket back and unlatches, never tea
 test("reconcile leaves unblocked and no-blocker tickets alone", async () => {
   const { deps, movedBack } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
-      { id: "i-6", identifier: "ENG-6", title: "t", blockedBy: [] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-6", identifier: "ENG-6", title: "t", labels: [], blockedBy: [] },
     ],
     fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
   });
@@ -714,7 +747,7 @@ test("reconcile swallows a fetch failure without throwing", async () => {
 test("reconcile does not unlatch when the move fails", async () => {
   const { deps, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
     ],
     moveToTodo: async () => {
       throw new Error("move boom");

@@ -288,11 +288,39 @@ rm, `dropdb`); a denied command fails silently rather than prompting, so it adds
 safety without any hang risk. Point `SESSION_SETTINGS` at your own file to extend
 it per repo.
 
+### Running a second instance
+
+Two machines can share one Linear account and one GitHub account as long as they
+work opposite slices of the board. `LABEL_FILTER` is the whole mechanism: it
+gates every step (claim, deploy, ready-to-test, the PR comment/CI/conflict/
+blocked fixers, advance and the ready label), with two deliberate exceptions.
+The blocked-by check reads merged PRs across the whole board on purpose, so a
+ticket isn't blocked forever behind the other instance's merged PR. Cleanup's
+merged/closed PR lists are likewise never gated, because cleanup only acts on
+worktrees that already exist on this machine.
+
+On the new machine: clone this repo, `pnpm install`, then `pnpm onboard`. Use the
+same Linear API key, but that machine's own `gh auth login`, its own Claude
+login, and its own `CODEBASE_PATH`. Answer the scoping question with **only
+tickets with a label** and pick `bot`.
+
+On this machine, re-run `pnpm onboard` (or edit `.env`) and set
+`LABEL_FILTER=!bot`, so it leaves the bot's tickets alone.
+
+Label a ticket `bot` in Linear to hand it to the bot machine; everything else
+stays here. A PR whose branch carries no ticket identifier counts as unlabelled
+and stays with the `!bot` instance. `MAX_IN_PROGRESS` counts only the tickets in
+this instance's slice, so each machine gets its own WIP cap. Both instances
+still commit and open PRs as you: nothing about git or GitHub identity changes.
+Finish or tear down in-flight work before relabelling a ticket to hand it to the
+other machine: a PR that drops out of this instance's slice mid-flight leaves
+its local worktree and any running fix session behind for a human to clear up.
+
 ## Usage
 
 ```bash
 pnpm onboard   # (re)configure via the interactive wizard
-pnpm check     # one-shot: print the issues the filter currently matches
+pnpm check     # one-shot: print the issues the deploy state and label filter currently match
 pnpm start     # run the daemon (Ctrl+C to stop); onboards first if unconfigured
 ```
 

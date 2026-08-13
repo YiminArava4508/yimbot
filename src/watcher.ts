@@ -11,6 +11,7 @@ import {
 } from "./acceptance.ts";
 import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
+import { filterByLabel, type LabelFilter } from "./labels.ts";
 import {
   candidateLines,
   DEPENDENCY_COMMENT_MARKER,
@@ -261,6 +262,8 @@ export type ClaimDeps = {
   autoClaim: boolean;
   // Label names that disqualify a ticket from being claimed.
   riskLabels: string[];
+  // Which slice of the board this instance works (LABEL_FILTER).
+  labelFilter: LabelFilter;
   // Ceiling on the personal In-Progress WIP: the claim step acts only while the
   // count is below this. 1 restores the old one-at-a-time behavior.
   maxInProgress: number;
@@ -400,6 +403,9 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     return;
   }
   todos = todos.filter((t) => !state.skip.has(t.id));
+  // Filtered once, up front, so the deferral logging below and selectNextClaim
+  // agree on which todos are actually in this instance's slice.
+  const inSlice = filterByLabel(deps.labelFilter, todos);
 
   let merged: Set<string> | null = null;
   if (deps.fetchMergedIdentifiers) {
@@ -409,14 +415,14 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
       deps.log(`claim failed: ${err}`);
       return;
     }
-    for (const t of todos) {
+    for (const t of inSlice) {
       if (isBlocked(t.blockedBy, merged)) {
         deps.log(`deferring ${t.identifier}: blocked by ${t.blockedBy.join(", ")} (unmerged)`);
       }
     }
   }
 
-  const next = selectNextClaim(todos, { riskLabels: deps.riskLabels, merged });
+  const next = selectNextClaim(inSlice, { riskLabels: deps.riskLabels, merged, labelFilter: deps.labelFilter });
   if (!next) return;
 
   // Runs on this one ticket only. claimOnce already returned early at the WIP
@@ -488,6 +494,7 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
 export type ClaimConfig = {
   autoClaim: boolean;
   riskLabels: string[];
+  labelFilter: LabelFilter;
   maxInProgress: number;
   // Watched-team Todo context (team + Todo state + viewer) for cycle queries.
   todoContext: LinearContext;
@@ -497,6 +504,8 @@ export type ClaimConfig = {
 
 export type WatcherConfig = {
   apiKey: string;
+  // Which slice of the board this instance works; applied to every step.
+  labelFilter: LabelFilter;
   progressContext: LinearContext;
   // Context for the In-Review Linear poll that flags a session ready-to-test.
   reviewContext: LinearContext;
@@ -999,7 +1008,8 @@ export function startWatcher(config: WatcherConfig): () => void {
   // session/worktree listers rather than a startup baseline.
   const deployState = freshDeployState();
   const deployDeps: DeployDeps = {
-    fetchIssues: () => fetchIssuesInState(config.apiKey, config.progressContext),
+    fetchIssues: async () =>
+      filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.progressContext)),
     listSessions: listTmuxSessions,
     listWorktrees: listWorktreeDirs,
     launch: (name) => {
@@ -1016,7 +1026,8 @@ export function startWatcher(config: WatcherConfig): () => void {
   const reviewIconLog = (msg: string) => console.log(`[review] ${msg}`);
   const reviewIconState: WatchState = { seen: new Set(), initialized: false };
   const reviewIconDeps: WatcherDeps = {
-    fetchIssues: () => fetchIssuesInState(config.apiKey, config.reviewContext),
+    fetchIssues: async () =>
+      filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.reviewContext)),
     launch: (_name, issue) =>
       markFeatureReady(issue, {
         listSessions: listTmuxSessions,
@@ -1222,8 +1233,10 @@ export function startWatcher(config: WatcherConfig): () => void {
   const claimDeps: ClaimDeps = {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
+    labelFilter: claim.labelFilter,
     maxInProgress: claim.maxInProgress,
-    countInProgress: () => countAssignedInState(config.apiKey, viewerId, claim.progressStateName),
+    countInProgress: () =>
+      countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     fetchMergedIdentifiers,
     moveToInProgress: async (issue) => {
@@ -1257,7 +1270,11 @@ export function startWatcher(config: WatcherConfig): () => void {
   // its PR resolves.
   const reconcileLog = (msg: string) => console.log(`[reconcile] ${msg}`);
   const reconcileDeps: ReconcileDeps | null = config.blocked && {
-    fetchInProgress: () => fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
+    fetchInProgress: async () =>
+      filterByLabel(
+        config.labelFilter,
+        await fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
+      ),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),

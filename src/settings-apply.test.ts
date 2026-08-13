@@ -78,3 +78,23 @@ test("a first run with no existing .env rolls back by writing the old config out
   assert.equal(result.ok, false);
   assert.deepEqual(h.writes, [serializeEnvFile(next), serializeEnvFile(prev)]);
 });
+
+test("a rejection with a plain object preserves recognizable properties in the error", async () => {
+  const plainObjectError = { code: "ECONNREFUSED", errno: -111, message: "connection refused" };
+  const h = harness([plainObjectError as unknown as Error | null, null]);
+  const result = await applySettings(next, prev, h.effects);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.error, /ECONNREFUSED/);
+  assert.equal(result.rolledBack, true);
+});
+
+test("a rejection with a string passes through unchanged", async () => {
+  const stringError = "daemon shutdown in progress";
+  const h = harness([stringError as unknown as Error | null, null]);
+  const result = await applySettings(next, prev, h.effects);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error, stringError);
+  assert.equal(result.rolledBack, true);
+});

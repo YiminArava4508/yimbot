@@ -11,7 +11,15 @@ export type ApplyEffects = {
 
 export type ApplyResult = { ok: true } | { ok: false; error: string; rolledBack: boolean };
 
-const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const errMsg = (e: unknown): string => {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+};
 
 // Apply a config edit as all or nothing: either the new config is running, or
 // the old one is and nothing changed on disk. The daemon validates at startup

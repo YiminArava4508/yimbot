@@ -176,13 +176,18 @@ export function runTui(opts: {
   bindSettingsKey(screen, () => settingsOpen, () => {
     settingsOpen = true;
     table.hide();
-    openSettings(screen, opts.settings, (stopped) => {
-      settingsOpen = false;
-      daemonStopped = stopped;
-      table.show();
-      table.focus();
-      render();
-    });
+    openSettings(
+      screen,
+      opts.settings,
+      (stopped) => {
+        settingsOpen = false;
+        daemonStopped = stopped;
+        table.show();
+        table.focus();
+        render();
+      },
+      daemonStopped,
+    );
   });
 
   bindFlagKey(screen, () => settingsOpen, () => {

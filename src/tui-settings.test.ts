@@ -317,6 +317,46 @@ test("openSettings: a later successful apply clears a previously reported daemon
   assert.equal(daemonStopped, false, "a later successful apply must clear the stopped state reported at close");
 });
 
+test("openSettings: reopening after a stopped daemon with no apply this session still reports it stopped", () => {
+  const screen = testScreen();
+  let daemonStopped: boolean | undefined;
+  const deps = testDeps();
+  // Simulates a reopen: the board already knows the daemon is down from a
+  // previous session (seeded via the fourth argument), and this session
+  // never calls apply at all.
+  openSettings(
+    screen,
+    deps,
+    (stopped: boolean) => {
+      daemonStopped = stopped;
+    },
+    true,
+  );
+  press(screen, "escape"); // clean draft: closes immediately
+  assert.equal(daemonStopped, true, "a stopped daemon must stay reported stopped across a no-op reopen");
+});
+
+test("openSettings: a successful apply clears a daemon-stopped state seeded from a previous session", async () => {
+  const screen = testScreen();
+  let daemonStopped: boolean | undefined;
+  const deps = testDeps({ apply: () => Promise.resolve({ ok: true } as ApplyResult) });
+  openSettings(
+    screen,
+    deps,
+    (stopped: boolean) => {
+      daemonStopped = stopped;
+    },
+    true,
+  );
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter");
+  press(screen, "w");
+  await new Promise((r) => setImmediate(r));
+  press(screen, "escape");
+  assert.equal(daemonStopped, false, "a successful apply must clear a stopped state seeded from a previous session");
+});
+
 test("openSettings: a rejected apply clears applying so the panel is usable afterwards", async () => {
   const screen = testScreen();
   let applyCalls = 0;
@@ -462,6 +502,28 @@ test("openSettings: an empty label picker never composes '!undefined' into the l
   // with items[0] === undefined and compose LABEL_FILTER=!undefined.
   assert.doesNotThrow(() => press(screen, "enter"));
   assert.doesNotMatch(list.ritems[ticketsIndex], /undefined/);
+  screen.destroy();
+});
+
+test("openSettings: a remote picker's cursor starts on the row's current value, not Linear's first item", async () => {
+  const screen = testScreen();
+  const deps = testDeps({ states: () => Promise.resolve(["Todo", "In Progress"]) });
+  openSettings(screen, deps, () => {});
+  const list = screen.children.find((c: any) => c.type === "list");
+  const stateIndex = list.ritems.findIndex((l: string) => l.startsWith("deploy state".padEnd(20, " ")));
+  list.select(stateIndex);
+  press(screen, "enter"); // opens the deploy-state picker; base value is "In Progress"
+  await new Promise((r) => setImmediate(r));
+  const picker = screen.children.find((c: any) => c !== list && c.type === "list");
+  assert.equal(
+    picker.selected,
+    picker.ritems.indexOf("In Progress"),
+    "cursor must start on the current value, not Linear's first item",
+  );
+  // A stray enter should keep the current value, not silently retarget to
+  // whatever item the cursor happened to default to.
+  press(screen, "enter");
+  assert.doesNotMatch(list.ritems[stateIndex], /\*/, "confirming the seeded cursor must not dirty the draft");
   screen.destroy();
 });
 

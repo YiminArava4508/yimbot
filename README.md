@@ -199,12 +199,16 @@ is all or nothing: if the daemon refuses to start on the new config (a codebase
 path that is not a git repository, a rejected API key, Linear unreachable), the
 old config is restored, the daemon restarts on it, and the panel shows the
 error with your edit still pending. If that rollback restart also fails, the
-board's status line reads `daemon stopped` until a later save succeeds.
+board's status line reads `daemon stopped` until a later save succeeds, even
+if you close and reopen the settings screen without saving in between.
 Settings the wizard never asks about (`BLOCKED_LABEL`, `IGNORE_CHECKS`,
 `READY_MERGE_LABEL`, the reap timeout and the `TUI_*` vars) stay hand-edited in
-`.env`: both `pnpm onboard` and the settings panel carry any line they don't
-recognize forward into a passthrough block at the end of the regenerated file,
-so a save never drops them.
+`.env`: both `pnpm onboard` and the settings panel carry forward any plain
+`KEY=value` line (one line, no `export`, no spaces around the `=`) that the
+generated sections above don't own, so a save doesn't drop it. That parser is
+deliberately narrow: a commented-out setting, a line with `export` or spaces
+around the `=`, or a multi-line quoted value is not preserved, so keep
+hand-edited lines in that plain form.
 
 One thing to know before using it: restarting the daemon resets the advance
 step's in-memory continuation counters, so an already-merged PR can drive one

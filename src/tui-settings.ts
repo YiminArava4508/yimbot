@@ -80,7 +80,12 @@ function errMessage(err: unknown): string {
   return String(err);
 }
 
-export function openSettings(screen: unknown, deps: SettingsDeps, onClose: (daemonStopped: boolean) => void): void {
+export function openSettings(
+  screen: unknown,
+  deps: SettingsDeps,
+  onClose: (daemonStopped: boolean) => void,
+  initialDaemonStopped = false,
+): void {
   const s: any = screen;
 
   const list: any = blessed.list({ parent: s, items: [], ...settingsPanelLayout() });
@@ -105,11 +110,12 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: (daem
   // editor does), so without this a second `w` or `esc` could race the apply.
   let applying = false;
   // True once an apply has failed and the daemon could not be rolled back
-  // onto its old config. Cleared by the next successful apply; surfaced to
-  // onClose so the board's status line keeps showing it after the panel
-  // closes, since the draft's own dirty/clean state says nothing about
-  // whether the real daemon process is still running.
-  let daemonStopped = false;
+  // onto its old config. Seeded from the board's own record of this (a
+  // previous session's failure survives a reopen with no apply at all,
+  // rather than being silently cleared by closing with a fresh, clean
+  // draft), cleared by the next successful apply, and surfaced to onClose
+  // so the board's status line keeps showing it after the panel closes.
+  let daemonStopped = initialDaemonStopped;
   // True once the panel has been detached and onClose() called. Guards async
   // work (remote fetches, the initial assignee lookup) that can resolve after
   // the operator already left: without it, a late resolution would repaint a
@@ -156,7 +162,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: (daem
     onClose(daemonStopped);
   }
 
-  function openPicker(items: string[], onPick: (value: string) => void): void {
+  function openPicker(items: string[], seed: string | null, onPick: (value: string) => void): void {
     const picker: any = blessed.list({
       parent: s,
       top: "center",
@@ -169,6 +175,13 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: (daem
       items,
       style: { selected: { inverse: true } },
     });
+    // The prepend below only covers a seed Linear's list is missing; when the
+    // current value is present (the common case), the cursor still needs to
+    // be moved onto it, or it silently defaults to Linear's first item.
+    if (seed) {
+      const index = items.indexOf(seed);
+      if (index >= 0) picker.select(index);
+    }
     picker.focus();
     s.render();
     picker.on("select", (_item: unknown, index: number) => {
@@ -219,7 +232,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: (daem
           return;
         }
         const seeded = seed && !items.includes(seed) ? [seed, ...items] : items;
-        openPicker(seeded, onPick);
+        openPicker(seeded, seed, onPick);
         // openPicker moves focus to the new list; reflect that in the
         // footer instead of leaving the stale "loading..." message up.
         paint();

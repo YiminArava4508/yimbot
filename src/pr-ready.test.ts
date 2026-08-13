@@ -9,7 +9,8 @@ function pr(number: number, overrides: Partial<OpenPR> = {}): OpenPR {
   return { number, headRefName: `eng-${number}-x`, isDraft: false, ...overrides };
 }
 function info(count: number): UnresolvedInfo {
-  return { count, newestOtherCommentAt: count > 0 ? 1000 : null };
+  const at = count > 0 ? 1000 : null;
+  return { count, newestOtherCommentAt: at, newestTrustedCommentAt: null, newestHumanCommentAt: at };
 }
 function ci(state: CiState): ChecksInfo {
   return { state, headSha: "sha" };

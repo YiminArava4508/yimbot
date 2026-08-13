@@ -27,9 +27,12 @@ export type YimbotEvent = {
   title?: string;
   pr?: number;
   // Why a raise event (needs_input/flagged) raised the flag: input,
-  // changes-requested, decision, findings, or manual. Absent on events from
-  // older builds; the fold defaults those by kind.
+  // changes-requested, human-comment, stuck, decision, findings, or manual.
+  // Absent on events from older builds; the fold defaults those by kind.
   reason?: string;
+  // The tmux pane the emitting hook ran in, so the autonomous-mode nudge can
+  // target the exact stuck Claude. Only needs_input events carry it.
+  pane?: string;
 };
 
 const TICKET = /^(eng|sc)-(\d+)/i;
@@ -105,6 +108,41 @@ function maxLines(): number {
   return Number.isInteger(n) && n > 0 ? n : 500;
 }
 
+function parseLine(line: string): YimbotEvent | null {
+  try {
+    return JSON.parse(line) as YimbotEvent;
+  } catch {
+    return null; // malformed line (e.g. a torn write)
+  }
+}
+
+function isClear(e: YimbotEvent): boolean {
+  return e.kind === "unflagged" || e.kind === "input_received";
+}
+
+// A key's acknowledgment must survive the line cap: its newest clear event is
+// what keeps an already-acknowledged raise signal down (emitFlagged's signalTs
+// check), so trimming it away would re-flag a signal a human dismissed. Keep
+// the newest dropped clear per key unless the kept window holds a newer one —
+// at most one extra line per key rides above the cap.
+function preservedClears(dropped: string[], kept: string[]): string[] {
+  const newest = new Map<string, YimbotEvent>();
+  for (const line of dropped) {
+    const e = parseLine(line);
+    if (!e || !isClear(e)) continue;
+    const cur = newest.get(e.key);
+    if (!cur || e.ts >= cur.ts) newest.set(e.key, e);
+  }
+  if (newest.size === 0) return [];
+  for (const line of kept) {
+    const e = parseLine(line);
+    if (!e || !isClear(e)) continue;
+    const cur = newest.get(e.key);
+    if (cur && e.ts >= cur.ts) newest.delete(e.key);
+  }
+  return [...newest.values()].sort((a, b) => a.ts - b.ts).map((e) => JSON.stringify(e));
+}
+
 export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
   const full: YimbotEvent = { ...ev, ts: ev.ts ?? Date.now() };
   try {
@@ -112,7 +150,10 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
     appendFileSync(path, JSON.stringify(full) + "\n");
     const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
     const cap = maxLines();
-    if (lines.length > cap) writeFileSync(path, lines.slice(-cap).join("\n") + "\n");
+    if (lines.length > cap) {
+      const kept = lines.slice(-cap);
+      writeFileSync(path, [...preservedClears(lines.slice(0, -cap), kept), ...kept].join("\n") + "\n");
+    }
   } catch {
     // Best-effort telemetry: never crash the daemon on a log IO failure.
   }
@@ -143,36 +184,47 @@ function reasonFor(e: YimbotEvent): string {
   return e.reason ?? (e.kind === "needs_input" ? "input" : "manual");
 }
 
-// Fold each key's attention timeline into its set of raise reasons, in raise
-// order. Walking events in time order, a needs-input or flagged event adds its
-// reason, and an input-received or manual unflag clears the whole set: human
-// engagement acknowledges every pending reason at once, and a condition that
-// still stands (a changes-requested review) re-raises itself next heartbeat.
-// Status events never clear anything: the flag strictly means a human must
-// look, so an automated transition (a conflict fix or CI fix spawning) must
-// not swallow a pending ask.
-export function foldFlagReasons(events: YimbotEvent[]): Map<string, Set<string>> {
-  const reasons = new Map<string, Set<string>>();
+export type Attention = { reasons: Set<string>; clearedAt: number | null };
+
+// Fold each key's attention timeline into its set of raise reasons (in raise
+// order) plus the timestamp of its last clear. Walking events in time order, a
+// needs-input or flagged event adds its reason, and an input-received or manual
+// unflag clears the whole set while recording when: human engagement
+// acknowledges every pending reason at once, and only a signal NEWER than that
+// acknowledgment may re-raise (see emitFlagged). Status events never clear
+// anything: the flag strictly means a human must look, so an automated
+// transition (a conflict fix or CI fix spawning) must not swallow a pending ask.
+export function foldAttention(events: YimbotEvent[]): Map<string, Attention> {
+  const att = new Map<string, Attention>();
   for (const e of events) {
     if (e.kind === "needs_input" || e.kind === "flagged") {
-      let set = reasons.get(e.key);
-      if (!set) reasons.set(e.key, (set = new Set()));
-      set.add(reasonFor(e));
+      let a = att.get(e.key);
+      if (!a) att.set(e.key, (a = { reasons: new Set(), clearedAt: null }));
+      a.reasons.add(reasonFor(e));
     } else if (e.kind === "input_received" || e.kind === "unflagged") {
-      reasons.delete(e.key);
+      let a = att.get(e.key);
+      if (!a) att.set(e.key, (a = { reasons: new Set(), clearedAt: null }));
+      a.reasons.clear();
+      a.clearedAt = e.ts;
     }
   }
-  return reasons;
+  return att;
 }
 
 // Raise the attention flag for a key, deduped per (key, reason) against the
 // folded state: a persisting condition re-noticed every tick appends nothing
 // while its reason is already up (so it never truncates other rows' history),
-// a second distinct reason still lands, and a manual unflag is re-raised on
-// the next notice.
-export function emitFlagged(ev: Omit<YimbotEvent, "ts" | "kind"> & { reason: string }): void {
-  if (foldFlagReasons(readEvents()).get(ev.key)?.has(ev.reason)) return;
-  emitEvent({ ...ev, kind: "flagged" });
+// and a second distinct reason still lands. `signalTs` is when the underlying
+// condition last changed (a comment's or review's timestamp): a raise whose
+// signal is not newer than the key's last clear is dropped, so an unflag
+// acknowledges the condition and only fresh signals re-raise. Without a
+// signalTs the old behavior stands: any notice after an unflag re-raises.
+export function emitFlagged(ev: Omit<YimbotEvent, "ts" | "kind"> & { reason: string; signalTs?: number }): void {
+  const a = foldAttention(readEvents()).get(ev.key);
+  if (a?.reasons.has(ev.reason)) return;
+  if (ev.signalTs !== undefined && a?.clearedAt != null && ev.signalTs <= a.clearedAt) return;
+  const { signalTs: _signalTs, ...rest } = ev;
+  emitEvent({ ...rest, kind: "flagged" });
 }
 
 export function readEvents(path: string = eventsLogPath()): YimbotEvent[] {
@@ -185,11 +237,8 @@ export function readEvents(path: string = eventsLogPath()): YimbotEvent[] {
   const out: YimbotEvent[] = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
-    try {
-      out.push(JSON.parse(line) as YimbotEvent);
-    } catch {
-      // Skip malformed lines (e.g. a torn write).
-    }
+    const e = parseLine(line);
+    if (e) out.push(e);
   }
   return out;
 }
@@ -250,9 +299,9 @@ export function reduceRows(
     });
   }
 
-  const reasons = foldFlagReasons(events);
+  const attention = foldAttention(events);
   for (const row of byKey.values()) {
-    row.flagReasons = [...(reasons.get(row.key) ?? [])];
+    row.flagReasons = [...(attention.get(row.key)?.reasons ?? [])];
     row.flagged = row.flagReasons.length > 0;
   }
 

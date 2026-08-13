@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
+import { fmtDuration, footerHint, footerLayout, modeContent, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -103,8 +103,14 @@ test("footerHint keeps the existing hints and names the return key", () => {
   assert.match(hint, /j\/k move/);
   assert.match(hint, /enter open/);
   assert.match(hint, /f flag\/unflag/);
+  assert.match(hint, /m mode/);
   assert.match(hint, /q quit/);
   assert.match(hint, /prefix\+F12 returns here/);
+});
+
+test("modeContent highlights each mode distinctly", () => {
+  assert.equal(modeContent("supervised"), "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}");
+  assert.equal(modeContent("autonomous"), "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}");
 });
 
 // A minimal EventEmitter standing in for a TTY stream, sized to the columns

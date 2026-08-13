@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitFlagged, emitStatus, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitFlagged, emitStatus, foldAttention, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -209,6 +209,93 @@ test("emitFlagged re-raises after a manual unflag", () => {
       readEvents(path).map((e) => e.kind),
       ["flagged", "unflagged", "flagged"],
     );
+  });
+});
+
+test("trimming the log preserves each key's newest clear event", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 100 });
+      emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 200 });
+      emitEvent({ kind: "task_started", key: "A", label: "A", ts: 300 });
+      emitEvent({ kind: "task_started", key: "B", label: "B", ts: 400 });
+      emitEvent({ kind: "task_started", key: "C", label: "C", ts: 500 });
+      // The unflagged line at ts 200 fell past the 3-line cap, but the trim
+      // must keep it: it is ENG-1's acknowledgment, and losing it would let an
+      // already-acknowledged signal re-raise the flag.
+      assert.equal(foldAttention(readEvents(path)).get("ENG-1")?.clearedAt, 200);
+      emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "human-comment", signalTs: 150 });
+      assert.equal(readEvents(path).filter((e) => e.kind === "flagged").length, 0);
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("trimming drops a key's older clear once a newer one is retained", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 100 });
+      emitEvent({ kind: "task_started", key: "A", label: "A", ts: 200 });
+      emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 300 });
+      emitEvent({ kind: "task_started", key: "B", label: "B", ts: 400 });
+      emitEvent({ kind: "task_started", key: "C", label: "C", ts: 500 });
+      const clears = readEvents(path).filter((e) => e.kind === "unflagged");
+      assert.deepEqual(clears.map((e) => e.ts), [300]);
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("foldAttention records the last clear timestamp per key", () => {
+  withTmpLog(() => {
+    emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "manual", ts: 100 });
+    emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 200 });
+    emitEvent({ kind: "needs_input", key: "ENG-2", label: "ENG-2", ts: 300 });
+    const att = foldAttention(readEvents());
+    assert.equal(att.get("ENG-1")?.clearedAt, 200);
+    assert.equal(att.get("ENG-1")?.reasons.size, 0);
+    assert.equal(att.get("ENG-2")?.clearedAt, null);
+    assert.deepEqual([...(att.get("ENG-2")?.reasons ?? [])], ["input"]);
+  });
+});
+
+test("emitFlagged with a signal at or before the last clear stays down", () => {
+  withTmpLog((path) => {
+    emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 100 });
+    emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 200 });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "human-comment", signalTs: 150 });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "human-comment", signalTs: 200 });
+    assert.deepEqual(
+      readEvents(path).map((e) => e.kind),
+      ["flagged", "unflagged"],
+    );
+  });
+});
+
+test("emitFlagged with a signal newer than the last clear re-raises", () => {
+  withTmpLog((path) => {
+    emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 100 });
+    emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 200 });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "human-comment", signalTs: 250 });
+    assert.deepEqual(
+      readEvents(path).map((e) => e.kind),
+      ["flagged", "unflagged", "flagged"],
+    );
+  });
+});
+
+test("emitFlagged with a signal and no prior clear raises normally", () => {
+  withTmpLog((path) => {
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "human-comment", signalTs: 50 });
+    assert.equal(readEvents(path).length, 1);
   });
 });
 

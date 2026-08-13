@@ -3,6 +3,7 @@
 import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
 import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import type { Mode } from "./mode.ts";
 
 // How often the board repaints on its own, independent of daemon events. Without
 // it the TUI freezes on its last paint between events: time-based row pruning
@@ -19,7 +20,16 @@ export function returnKey(): string {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   g/G top/bottom   enter open   f flag/unflag   q quit   prefix+${key} returns here`;
+  return `j/k move   g/G top/bottom   enter open   f flag/unflag   m mode   q quit   prefix+${key} returns here`;
+}
+
+// The status bar's mode chip. Inverse-video blocks so the operating mode is
+// legible at a glance: supervised (human gates flagged PRs) in yellow,
+// autonomous (the bot self-resolves everything) in green.
+export function modeContent(mode: Mode): string {
+  return mode === "supervised"
+    ? "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}"
+    : "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}";
 }
 
 // height: 1 + wrap: false so a hint too long for the terminal clips instead of
@@ -77,6 +87,8 @@ export function runTui(opts: {
   liveKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
+  mode: () => Mode;
+  onToggleMode: () => Mode;
 }): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
 
@@ -96,7 +108,7 @@ export function runTui(opts: {
   table.focus();
 
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
-  const status = blessed.text({ parent: screen, top: 0, right: 0, content: "live" });
+  const status = blessed.text({ parent: screen, top: 0, right: 0, tags: true, content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout(returnKey()) });
   void footer;
 
@@ -105,7 +117,7 @@ export function runTui(opts: {
     currentRows = filterToLiveWorktrees(reduceRows(readEvents(), Date.now()), opts.liveKeys());
     table.setData(rowsToTable(currentRows, Date.now()));
     const active = currentRows.filter((r) => !r.terminal).length;
-    status.setContent(`live | ${active} active`);
+    status.setContent(`${modeContent(opts.mode())} live | ${active} active`);
     screen.render();
   };
 
@@ -125,6 +137,11 @@ export function runTui(opts: {
     const r = currentRows[table.selected - 1];
     if (!r) return;
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
+  });
+
+  screen.key(["m"], () => {
+    opts.onToggleMode();
+    render();
   });
 
   table.on("select", () => {

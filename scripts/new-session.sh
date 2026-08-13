@@ -118,6 +118,9 @@ emit_hook_event() {
   key=${key//\"/\\\"}
   ts=$(( $(date +%s%N) / 1000000 ))
   [ -n "$reason" ] && extra=",\"reason\":\"$reason\""
+  # The emitting pane, so the autonomous-mode nudge can address this exact
+  # Claude. tmux pane ids are %N; no escaping needed.
+  [ -n "${TMUX_PANE:-}" ] && extra="$extra,\"pane\":\"$TMUX_PANE\""
   printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"%s}\n' "$ts" "$kind" "$key" "$key" "$extra" >> "$EVENTS_LOG" 2>/dev/null || true
 }
 

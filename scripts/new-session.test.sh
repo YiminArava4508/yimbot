@@ -116,6 +116,14 @@ assert_eq "$(grep -c '"kind":"flagged".*"reason":"decision"' "$HOOK_LOG_REASON")
 assert_eq "$(grep -c '"kind":"needs_decision"' "$HOOK_LOG_REASON")" "1" "reason-less call still writes its line"
 assert_eq "$(grep -c '"kind":"needs_decision".*"reason"' "$HOOK_LOG_REASON")" "0" "no reason arg, no reason field"
 rm -f "$HOOK_LOG_REASON"
+# The emitting pane rides along when tmux provides one, so the autonomous nudge
+# can target the exact stuck Claude; outside tmux the field is absent.
+HOOK_LOG_PANE=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG_PANE" TMUX_PANE="%7" emit_hook_event needs_input )
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG_PANE" TMUX_PANE="" emit_hook_event needs_input )
+assert_eq "$(grep -c '"pane":"%7"' "$HOOK_LOG_PANE")" "1" "TMUX_PANE lands as the pane field"
+assert_eq "$(grep -c '"pane"' "$HOOK_LOG_PANE")" "1" "no TMUX_PANE, no pane field"
+rm -f "$HOOK_LOG_PANE"
 # No EVENTS_LOG is a silent no-op, not an error.
 ( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
 assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"

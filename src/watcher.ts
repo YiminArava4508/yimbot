@@ -28,8 +28,10 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { deriveKey, emitEvent, emitFlagged, emitStatus, readEvents, reduceRows, titleFromBranch } from "./events.ts";
+import { deriveKey, emitEvent, emitFlagged, emitStatus, foldAttention, readEvents, reduceRows, titleFromBranch } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
+import { readMode } from "./mode.ts";
+import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
@@ -508,7 +510,7 @@ export type WatcherConfig = {
   claim: ClaimConfig;
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
-  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "changesRequested"> | null;
+  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
@@ -848,6 +850,29 @@ export function resolveSessionForKey(
   return m ? findExistingSession(m[0], sessions, []) : null;
 }
 
+// Deliver the autonomous-mode nudge into a pane: Escape first (declines a
+// pending permission dialog; a no-op at an idle prompt), then the prompt text,
+// then Enter. Returns false without typing anything when the pane is gone or
+// its foreground process is not Claude (a crashed session leaves a shell; a
+// tmux server restart recycles %N ids onto unrelated panes) — literal
+// keystrokes into an arbitrary shell or editor would execute the prompt as
+// commands. Other tmux failures throw; the nudge step logs and retries.
+export function sendNudge(pane: string, prompt: string): boolean {
+  let cmd: string;
+  try {
+    cmd = execFileSync("tmux", ["display", "-p", "-t", pane, "#{pane_current_command}"], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return false; // pane gone
+  }
+  if (!/^(claude|node)$/.test(cmd)) return false;
+  execFileSync("tmux", ["send-keys", "-t", pane, "Escape"], { stdio: "ignore" });
+  execFileSync("tmux", ["send-keys", "-t", pane, "-l", prompt], { stdio: "ignore" });
+  execFileSync("tmux", ["send-keys", "-t", pane, "Enter"], { stdio: "ignore" });
+  return true;
+}
+
 // Switch the current tmux client to `session`. No-op returning false when not
 // inside tmux (nothing to switch) or the session is gone — the TUI stays put.
 export function switchToSession(session: string): boolean {
@@ -1029,19 +1054,28 @@ export function startWatcher(config: WatcherConfig): () => void {
 
   // Review step (gh-driven): each heartbeat, address comments on open PRs.
   const reviewState = freshReviewState();
+  // Per-tick memo for flagState below; reset at the top of every heartbeat.
+  let attentionSnapshot: ReturnType<typeof foldAttention> | null = null;
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
     listOpenPRs: config.prReview.listOpenPRs,
     unresolvedInfo: config.prReview.unresolvedInfo,
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
     blockedInfo: config.prReview.blockedInfo,
-    changesRequested: config.prReview.changesRequested,
-    // A changes-requested review means a human reviewer is blocking: raise the
-    // board's attention flag every tick the block persists (emitFlagged dedupes
-    // while it is already up, and re-raises after a manual unflag).
-    onChangesRequested: (prNumber, branch) => {
+    mode: readMode,
+    humanChangesRequested: config.prReview.humanChangesRequested,
+    // The PR's attention state, keyed the same way the board keys its rows, so
+    // supervised gating and the manual `f` toggle agree on what "flagged" means.
+    // Folded once per heartbeat (reset below): a raise for one PR cannot change
+    // another key's state, so the snapshot stays valid across the tick's PRs.
+    flagState: (branch) => {
+      attentionSnapshot ??= foldAttention(readEvents());
+      const a = attentionSnapshot.get(deriveKey({ branch }).key);
+      return { flagged: (a?.reasons.size ?? 0) > 0, clearedAt: a?.clearedAt ?? null };
+    },
+    raiseFlag: (prNumber, branch, reason, signalTs) => {
       const { key, label } = deriveKey({ branch });
-      emitFlagged({ key, label, title: titleFromBranch(branch), pr: prNumber, reason: "changes-requested" });
+      emitFlagged({ key, label, title: titleFromBranch(branch), pr: prNumber, reason, signalTs });
     },
     inFlightFixKinds,
     reapFix,
@@ -1264,11 +1298,25 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: reconcileLog,
   };
 
+  // Nudge step: in autonomous mode, answer needs_input raises by prompting the
+  // stuck session to resolve the block itself (capped; then flagged "stuck").
+  const nudgeState = freshNudgeState();
+  const nudgeDeps: NudgeDeps = {
+    mode: readMode,
+    events: readEvents,
+    send: sendNudge,
+    raiseFlag: (key, label, reason) => emitFlagged({ key, label, reason }),
+    log: (msg) => console.log(`[nudge] ${msg}`),
+    maxNudges: 3,
+  };
+
   let running = false;
   const heartbeat = async () => {
     if (running) return;
     running = true;
+    attentionSnapshot = null;
     try {
+      nudgeOnce(nudgeState, nudgeDeps);
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);

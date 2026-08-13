@@ -159,8 +159,8 @@ Keep PRs small enough to review. Measure the branch's changed lines against
 `main`: `git diff main...HEAD --stat` (ignore generated files, lockfiles,
 and snapshots).
 
-- **Target: under 500 LOC.** Aim to land every PR under this.
-- **Hard limit: ~1000 LOC.** A branch whose changes exceed ~1000 LOC **must**
+- **Target: well under 500 LOC.** Aim to land every PR comfortably below the limit.
+- **Hard limit: 500 LOC.** A branch whose changes exceed 500 LOC **must**
   be split into multiple smaller PRs before shipping, no exceptions.
 
 Implementation always happens as a whole, on the single ticket branch.

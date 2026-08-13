@@ -62,8 +62,8 @@ flowchart TD
     T3 -- yes --> F["Mark its session with a<br/>'ready to test' icon"]
 
     P --> G5["Clean up finished work"]
-    G5 --> T4{"Did one of your<br/>PRs get merged?"}
-    T4 -- yes --> CU["Remove that PR's workspace<br/>and close its session"]
+    G5 --> T4{"Did one of your PRs merge,<br/>or a no-PR ticket<br/>reach Done?"}
+    T4 -- yes --> CU["Remove that work's workspace<br/>and close its session"]
 
     P --> G7["Advance the work"]
     G7 --> T6{"Did one of your<br/>PRs just merge?"}
@@ -162,9 +162,12 @@ flowchart TD
   dev there to try it. (yimbot no longer starts the dev env for you.)
 - **Clean up finished work (red):** every heartbeat, once one of your PRs is
   merged, yimbot tears down that branch's workspace (its worktree) and closes its
-  tmux session via `~/end-session.sh`. *(optional; setting: `AUTO_CLEANUP`, on by
-  default)* Needs `gh` installed and authenticated; runs against the repo at
-  `CODEBASE_PATH`.
+  tmux session via `~/end-session.sh`. Work that never gets a PR (a spike whose
+  deliverable is an answer on the ticket) is reaped when its Linear ticket
+  (an `eng-<n>` branch) reaches a terminal state (Done/Canceled), as long as
+  the worktree holds no local-only work. *(optional; setting: `AUTO_CLEANUP`,
+  on by default)* Needs `gh` installed and authenticated; runs against the
+  repo at `CODEBASE_PATH`.
 - **Advance the work (teal):** every heartbeat, once one of your PRs is merged,
   yimbot judges its issue against the issue's acceptance criteria and, while any
   remain unmet, spawns a continuation session to keep working the issue.

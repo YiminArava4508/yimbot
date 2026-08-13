@@ -8,6 +8,7 @@ import {
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
   fetchIssueByIdentifier,
+  fetchIssueStateType,
   moveIssueToState,
   resolveContext,
   upsertMarkedComment,
@@ -250,6 +251,11 @@ test("fetchIssueByIdentifier returns id + description", async () => {
   const f = fakeFetchMultiResponse([{ issue: { id: "uuid-1", identifier: "ENG-949", description: "body" } }]);
   const d = await fetchIssueByIdentifier("key", "ENG-949", f);
   assert.deepEqual(d, { id: "uuid-1", identifier: "ENG-949", description: "body" });
+});
+
+test("fetchIssueStateType returns the issue's workflow state type", async () => {
+  const f = fakeFetchMultiResponse([{ issue: { state: { type: "completed" } } }]);
+  assert.equal(await fetchIssueStateType("key", "ENG-949", f), "completed");
 });
 
 test("upsertMarkedComment updates when a marked comment exists", async () => {

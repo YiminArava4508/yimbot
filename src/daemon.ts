@@ -29,6 +29,7 @@ import {
   countAssignedInState,
   fetchMarkedCommentBody,
   fetchIssueByIdentifier,
+  fetchIssueStateType,
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
@@ -156,11 +157,13 @@ export async function startDaemon(): Promise<() => void> {
           codebasePath,
           listMergedPRs: () => listMyMergedPRs(gh),
           listClosedUnmergedPRs: () => listMyClosedUnmergedPRs(gh),
+          listOpenPRs: () => listMyOpenPRs(gh),
+          issueStateType: (identifier: string) => fetchIssueStateType(apiKey, identifier),
         }
       : null;
   console.log(
     cleanup
-      ? "[yimbot] cleanup step ON: removing worktrees + sessions of merged PRs"
+      ? "[yimbot] cleanup step ON: removing worktrees + sessions of merged PRs and done no-PR tickets"
       : `[yimbot] cleanup step OFF${autoCleanup ? " (gh unavailable)" : ""}`,
   );
 

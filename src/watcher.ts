@@ -516,6 +516,9 @@ export type WatcherConfig = {
     codebasePath: string;
     listMergedPRs: () => Promise<MergedPR[]>;
     listClosedUnmergedPRs: () => Promise<MergedPR[]>;
+    listOpenPRs: () => Promise<OpenPR[]>;
+    // Linear state type of an issue by identifier, for the no-PR (spike) reap.
+    issueStateType: (identifier: string) => Promise<string | null>;
   } | null;
   // gh-backed hooks for the advance step; null disables it (AUTO_CONTINUE off, or
   // gh unavailable). When set, each heartbeat judges merged PRs' issues against
@@ -912,11 +915,12 @@ export function porcelainHasNonMarkerChanges(porcelain: string): boolean {
 }
 
 // Whether a worktree holds no work teardown would destroy: a clean working tree
-// AND no commits ahead of its own upstream branch (everything is pushed to origin,
-// so the branch survives there and is recoverable). Spares only genuinely local
-// work — the right test for a closed PR, whose commits never reach the base ref but
-// are safely on its origin branch. No upstream set, or any git error → false (the
-// closed-unmerged reaper then keeps the worktree rather than risk losing work).
+// AND no commit that lives only locally (every commit on HEAD is reachable from
+// some origin ref, so it survives on the remote and is recoverable). Spares only
+// genuinely local work — the right test both for a closed PR, whose commits never
+// reach the base ref but are safely on its origin branch, and for a never-pushed
+// spike branch sitting at a pushed ref's tip, which holds nothing of its own. Any
+// git error → false (the reapers then keep the worktree rather than risk losing work).
 export function worktreeFullyPushed(worktreePath: string): boolean {
   try {
     const dirty = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
@@ -924,12 +928,12 @@ export function worktreeFullyPushed(worktreePath: string): boolean {
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (porcelainHasNonMarkerChanges(dirty)) return false;
-    const ahead = execFileSync(
+    const localOnly = execFileSync(
       "git",
-      ["-C", worktreePath, "rev-list", "--count", "@{upstream}..HEAD"],
+      ["-C", worktreePath, "rev-list", "--count", "HEAD", "--not", "--remotes=origin"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
-    return ahead === "0";
+    return localOnly === "0";
   } catch {
     return false;
   }
@@ -1074,12 +1078,14 @@ export function startWatcher(config: WatcherConfig): () => void {
     listWorktrees: () => listGitWorktrees(cleanup.codebasePath),
     listMergedPRs: cleanup.listMergedPRs,
     listClosedUnmergedPRs: cleanup.listClosedUnmergedPRs,
+    listOpenPRs: cleanup.listOpenPRs,
+    issueStateType: cleanup.issueStateType,
     hasNoUnpushedWork: worktreeFullyPushed,
     worktreesDir,
     teardown: (branch) => {
       const { key, label } = deriveKey({ branch });
       emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
-      runEndSession(branch, "cleanup (merged or closed PR)");
+      runEndSession(branch, "cleanup (merged/closed PR or done ticket)");
     },
     // Every tick, transition any board row still shown as active to merged once its
     // PR has merged, even with no worktree left for teardown to emit against (the

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applySettings, type ApplyEffects } from "./settings-apply.ts";
-import { configToEnvRecord, serializeEnvFile, type YimbotConfig } from "./settings-model.ts";
+import { configToEnvRecord, extractPassthroughLines, serializeEnvFile, type YimbotConfig } from "./settings-model.ts";
 
 const prev: YimbotConfig = {
   apiKey: "lin_api_old",
@@ -87,6 +87,15 @@ test("a rejection with a plain object preserves recognizable properties in the e
   if (result.ok) return;
   assert.match(result.error, /ECONNREFUSED/);
   assert.equal(result.rolledBack, true);
+});
+
+test("a successful apply carries forward settings the template doesn't own from the old .env", async () => {
+  const h = harness([null]);
+  h.effects.readEnv = () => `${serializeEnvFile(prev)}BLOCKED_LABEL=needs-review\n`;
+  const result = await applySettings(next, prev, h.effects);
+  assert.deepEqual(result, { ok: true });
+  assert.match(h.writes[0], /BLOCKED_LABEL=needs-review/);
+  assert.deepEqual(h.writes[0], serializeEnvFile(next, extractPassthroughLines(h.effects.readEnv()!)));
 });
 
 test("a rejection with a string passes through unchanged", async () => {

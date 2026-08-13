@@ -198,9 +198,13 @@ row, `w` writes `.env` and restarts the daemon in place, `esc` goes back. A save
 is all or nothing: if the daemon refuses to start on the new config (a codebase
 path that is not a git repository, a rejected API key, Linear unreachable), the
 old config is restored, the daemon restarts on it, and the panel shows the
-error with your edit still pending. Settings the wizard never asks about
-(`BLOCKED_LABEL`, `IGNORE_CHECKS`, `READY_MERGE_LABEL`, the reap timeout and the
-`TUI_*` vars) stay hand-edited in `.env`.
+error with your edit still pending. If that rollback restart also fails, the
+board's status line reads `daemon stopped` until a later save succeeds.
+Settings the wizard never asks about (`BLOCKED_LABEL`, `IGNORE_CHECKS`,
+`READY_MERGE_LABEL`, the reap timeout and the `TUI_*` vars) stay hand-edited in
+`.env`: both `pnpm onboard` and the settings panel carry any line they don't
+recognize forward into a passthrough block at the end of the regenerated file,
+so a save never drops them.
 
 One thing to know before using it: restarting the daemon resets the advance
 step's in-memory continuation counters, so an already-merged PR can drive one

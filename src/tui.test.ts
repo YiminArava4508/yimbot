@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindQuitKeys, bindSettingsKey, fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
+import { bindFlagKey, bindQuitKeys, bindSettingsKey, fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -143,6 +143,25 @@ test("bindSettingsKey does not reopen the panel on a second s while it is alread
   settingsOpen = false;
   handlers["s"]();
   assert.equal(openCalls, 2, "s opens again once the panel is closed");
+});
+
+test("bindFlagKey gates f while settings is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let toggleCalls = 0;
+  bindFlagKey(fakeScreen, () => settingsOpen, () => toggleCalls++);
+
+  handlers["f"]();
+  assert.equal(toggleCalls, 0, "f must not flag the hidden board's row while the panel is open");
+
+  settingsOpen = false;
+  handlers["f"]();
+  assert.equal(toggleCalls, 1, "f flags again once the panel is closed");
 });
 
 // A minimal EventEmitter standing in for a TTY stream, sized to the columns

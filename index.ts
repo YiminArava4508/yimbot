@@ -52,9 +52,13 @@ function redirectConsoleToFile(): void {
   }
 }
 
+// Read fresh rather than captured once: the settings panel can restart the
+// daemon on a new CODEBASE_PATH mid-session, and callers that closed over a
+// stale value would keep filtering/opening sessions against the old repo.
+const currentCodebasePath = () => envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+
 if (process.stdout.isTTY) {
   redirectConsoleToFile();
-  const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
   let stop = await startDaemon();
   const returnKeyName = returnKey();
   const boardPane = currentTmuxPane();
@@ -67,11 +71,14 @@ if (process.stdout.isTTY) {
     assignee: async () => (await fetchViewer(apiKey())).name,
     teams: async () => (await fetchTeams(apiKey())).map((t) => t.name),
     states: async (teamName) => {
-      const team = (await fetchTeams(apiKey())).find((t) => t.name === teamName);
+      // Matched case-insensitively, same as the daemon's own resolveContext
+      // (eqIgnoreCase in linear-api.ts), so a team name that differs only in
+      // case from Linear's still resolves instead of silently returning [].
+      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
       return team ? (await fetchTeamStates(apiKey(), team.id)).map((s) => s.name) : [];
     },
     labels: async (teamName) => {
-      const team = (await fetchTeams(apiKey())).find((t) => t.name === teamName);
+      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
       return team ? await fetchTeamLabels(apiKey(), team.id) : [];
     },
     apply: (next, prev) =>
@@ -93,11 +100,11 @@ if (process.stdout.isTTY) {
       stop();
       process.exit(0);
     },
-    liveKeys: () => liveWorktreeKeys(codebasePath),
+    liveKeys: () => liveWorktreeKeys(currentCodebasePath()),
     onToggleFlag: (key, label, flagged) =>
       emitEvent({ kind: flagged ? "unflagged" : "flagged", key, label }),
     onOpenSession: (key) => {
-      const session = resolveSessionForKey(key, listGitWorktrees(codebasePath), listTmuxSessions());
+      const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);
     },
     settings,

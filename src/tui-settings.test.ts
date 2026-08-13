@@ -204,6 +204,25 @@ test("openSettings: esc twice discards a dirty draft and closes", () => {
   screen.destroy();
 });
 
+test("openSettings: navigating between the two escapes re-arms the discard warning", () => {
+  const screen = testScreen();
+  let closed = false;
+  const deps = testDeps();
+  openSettings(screen, deps, () => {
+    closed = true;
+  });
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter"); // dirties the draft
+  press(screen, "escape"); // arms the warning
+  press(screen, "j"); // navigation must clear the arm
+  press(screen, "escape"); // this must warn again, not discard and close
+  assert.equal(closed, false, "esc after navigation must re-warn instead of discarding");
+  press(screen, "escape");
+  assert.equal(closed, true, "a genuine second esc still discards and closes");
+  screen.destroy();
+});
+
 test("openSettings: a failed apply keeps the dirty draft and reports the error", async () => {
   const screen = testScreen();
   let closed = false;
@@ -231,6 +250,71 @@ test("openSettings: a failed apply keeps the dirty draft and reports the error",
   press(screen, "escape");
   assert.equal(closed, false, "a failed apply must leave the draft dirty");
   screen.destroy();
+});
+
+test("openSettings: closing after a failed, non-rolled-back apply tells onClose the daemon is stopped", async () => {
+  const screen = testScreen();
+  let daemonStopped: boolean | undefined;
+  const deps = testDeps({
+    apply: () => Promise.resolve({ ok: false, error: "boom", rolledBack: false } as ApplyResult),
+  });
+  openSettings(screen, deps, (stopped: boolean) => {
+    daemonStopped = stopped;
+  });
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter");
+  press(screen, "w");
+  await new Promise((r) => setImmediate(r));
+  press(screen, "escape"); // arm
+  press(screen, "escape"); // discard and close
+  assert.equal(daemonStopped, true, "a failed apply that could not roll back must be reported to onClose");
+});
+
+test("openSettings: closing after a rolled-back failure does not report the daemon stopped", async () => {
+  const screen = testScreen();
+  let daemonStopped: boolean | undefined;
+  const deps = testDeps({
+    apply: () => Promise.resolve({ ok: false, error: "boom", rolledBack: true } as ApplyResult),
+  });
+  openSettings(screen, deps, (stopped: boolean) => {
+    daemonStopped = stopped;
+  });
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter");
+  press(screen, "w");
+  await new Promise((r) => setImmediate(r));
+  press(screen, "escape");
+  press(screen, "escape");
+  assert.equal(daemonStopped, false, "a rolled-back failure means the daemon is running again on the old config");
+});
+
+test("openSettings: a later successful apply clears a previously reported daemon-stopped state", async () => {
+  const screen = testScreen();
+  let daemonStopped: boolean | undefined;
+  let applyCalls = 0;
+  const deps = testDeps({
+    apply: () => {
+      applyCalls++;
+      return applyCalls === 1
+        ? Promise.resolve({ ok: false, error: "boom", rolledBack: false } as ApplyResult)
+        : Promise.resolve({ ok: true } as ApplyResult);
+    },
+  });
+  openSettings(screen, deps, (stopped: boolean) => {
+    daemonStopped = stopped;
+  });
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter");
+  press(screen, "w"); // fails, not rolled back
+  await new Promise((r) => setImmediate(r));
+  press(screen, "enter"); // toggle auto-claim again so the draft is dirty
+  press(screen, "w"); // succeeds
+  await new Promise((r) => setImmediate(r));
+  press(screen, "escape"); // clean draft now: closes immediately
+  assert.equal(daemonStopped, false, "a later successful apply must clear the stopped state reported at close");
 });
 
 test("openSettings: a rejected apply clears applying so the panel is usable afterwards", async () => {
@@ -341,6 +425,46 @@ test("openSettings: the initial assignee lookup resolving after the panel closed
   screen.destroy();
 });
 
+test("openSettings: an empty Linear picker does not crash and records no edit", async () => {
+  const screen = testScreen();
+  const deps = testDeps({ states: () => Promise.resolve([]) });
+  openSettings(screen, deps, () => {});
+  const list = screen.children.find((c: any) => c.type === "list");
+  const stateIndex = list.ritems.findIndex((l: string) => l.startsWith("deploy state".padEnd(20, " ")));
+  list.select(stateIndex);
+  press(screen, "enter"); // starts the states() fetch, which resolves to []
+  await new Promise((r) => setImmediate(r));
+  const footer = screen.children.find((c: any) => c.type === "text");
+  assert.match(footer.getContent(), /no states found/);
+  // Before the fix, the fetch resolving to [] still attached and focused an
+  // empty picker; pressing enter on it hit neo-blessed's enterSelected with
+  // items[0] === undefined and threw.
+  assert.doesNotThrow(() => press(screen, "enter"));
+  await new Promise((r) => setImmediate(r)); // drain the second fetch this enter started
+  assert.doesNotMatch(list.ritems[stateIndex], /\*/, "no edit must be recorded from an empty picker");
+  screen.destroy();
+});
+
+test("openSettings: an empty label picker never composes '!undefined' into the label filter", async () => {
+  const screen = testScreen();
+  const deps = testDeps({ labels: () => Promise.resolve([]) });
+  openSettings(screen, deps, () => {});
+  const list = screen.children.find((c: any) => c.type === "list");
+  const ticketsIndex = list.ritems.findIndex((l: string) => l.startsWith("tickets".padEnd(20, " ")));
+  list.select(ticketsIndex);
+  press(screen, "enter"); // opens the mode picker
+  const modePicker = screen.children.find((c: any) => c !== list && c.type === "list");
+  modePicker.select(2); // "every ticket except labelled"
+  press(screen, "enter"); // starts the labels() fetch, which resolves to []
+  await new Promise((r) => setImmediate(r));
+  // Before the fix, the resolved empty list still attached and focused a
+  // picker here; this second enter is what used to hit its enterSelected
+  // with items[0] === undefined and compose LABEL_FILTER=!undefined.
+  assert.doesNotThrow(() => press(screen, "enter"));
+  assert.doesNotMatch(list.ritems[ticketsIndex], /undefined/);
+  screen.destroy();
+});
+
 test("openSettings: the footer stops reading 'loading...' once a remote picker actually opens", async () => {
   const screen = testScreen();
   const deps = testDeps();
@@ -354,5 +478,27 @@ test("openSettings: the footer stops reading 'loading...' once a remote picker a
   await new Promise((r) => setImmediate(r)); // let the already-resolved teams() promise settle
   assert.doesNotMatch(footer.getContent(), /loading/);
   assert.match(footer.getContent(), /enter accept/);
+  screen.destroy();
+});
+
+test("openSettings: a hung Linear fetch times out so the panel is usable again", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const screen = testScreen();
+  let closed = false;
+  const deps = testDeps({ teams: () => new Promise(() => {}) }); // never resolves
+  openSettings(screen, deps, () => {
+    closed = true;
+  });
+  const list = screen.children.find((c: any) => c.type === "list");
+  const teamIndex = list.ritems.findIndex((l: string) => l.startsWith("team".padEnd(20, " ")));
+  list.select(teamIndex);
+  press(screen, "enter"); // starts the hung fetch; only C-c would otherwise get out
+  t.mock.timers.tick(10_000); // matches REMOTE_FETCH_TIMEOUT_MS in tui-settings.ts
+  const footer = screen.children.find((c: any) => c.type === "text");
+  assert.match(footer.getContent(), /timed out/);
+  // the panel must be usable again: the draft is still clean, so esc closes
+  // it immediately instead of being gated by a stuck `editing` flag.
+  press(screen, "escape");
+  assert.equal(closed, true);
   screen.destroy();
 });

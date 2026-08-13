@@ -19,9 +19,9 @@ import {
   configToEnvRecord,
   envPath,
   expandTilde,
+  extractPassthroughLines,
   isConfigured,
   isGitRepo,
-  isOff,
   isPositiveInt,
   isPositiveNumber,
   parseCommaList,
@@ -883,7 +883,8 @@ export async function runSetup(): Promise<YimbotConfig> {
     acJudgeModel,
     labelFilter,
   };
-  writeEnvFile(serializeEnvFile(config));
+  const existingEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : null;
+  writeEnvFile(serializeEnvFile(config, existingEnv ? extractPassthroughLines(existingEnv) : []));
   p.outro(
     `Saved to .env, signed in as ${viewerName}, watching "${teamName}", working ${describeLabelFilter(parseLabelFilter(labelFilter))}.`,
   );

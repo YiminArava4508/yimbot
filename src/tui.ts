@@ -104,6 +104,20 @@ export function bindSettingsKey(
   });
 }
 
+// Gated the same way as bindQuitKeys/bindSettingsKey: while the panel's list
+// or a picker is focused, grabKeys is false, so without this gate f would
+// still reach the screen-level handler and flag/unflag the hidden board's
+// selected row out from under the operator.
+export function bindFlagKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isSettingsOpen: () => boolean,
+  toggle: () => void,
+): void {
+  screen.key(["f"], () => {
+    if (!isSettingsOpen()) toggle();
+  });
+}
+
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
@@ -134,11 +148,15 @@ export function runTui(opts: {
   void footer;
 
   let currentRows: BoardRow[] = [];
+  // Set when a settings apply's rollback restart also failed, so the daemon
+  // is confirmed down. The panel itself closes on esc/w regardless of draft
+  // state, so this has to outlive it to keep showing on the board.
+  let daemonStopped = false;
   const render = () => {
     currentRows = filterToLiveWorktrees(reduceRows(readEvents(), Date.now()), opts.liveKeys());
     table.setData(rowsToTable(currentRows, Date.now()));
     const active = currentRows.filter((r) => !r.terminal).length;
-    status.setContent(`live | ${active} active`);
+    status.setContent(daemonStopped ? "daemon stopped" : `live | ${active} active`);
     screen.render();
   };
 
@@ -158,15 +176,16 @@ export function runTui(opts: {
   bindSettingsKey(screen, () => settingsOpen, () => {
     settingsOpen = true;
     table.hide();
-    openSettings(screen, opts.settings, () => {
+    openSettings(screen, opts.settings, (stopped) => {
       settingsOpen = false;
+      daemonStopped = stopped;
       table.show();
       table.focus();
       render();
     });
   });
 
-  screen.key(["f"], () => {
+  bindFlagKey(screen, () => settingsOpen, () => {
     const r = currentRows[table.selected - 1];
     if (!r) return;
     opts.onToggleFlag(r.key, r.label, isFlagged(r));

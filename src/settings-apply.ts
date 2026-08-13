@@ -1,4 +1,4 @@
-import { configToEnvRecord, serializeEnvFile, type YimbotConfig } from "./settings-model.ts";
+import { configToEnvRecord, extractPassthroughLines, serializeEnvFile, type YimbotConfig } from "./settings-model.ts";
 
 export type ApplyEffects = {
   // Current .env contents, null when the file does not exist yet.
@@ -30,8 +30,10 @@ export async function applySettings(
   prev: YimbotConfig,
   effects: ApplyEffects,
 ): Promise<ApplyResult> {
-  const snapshot = effects.readEnv() ?? serializeEnvFile(prev);
-  effects.writeEnv(serializeEnvFile(next));
+  const existing = effects.readEnv();
+  const snapshot = existing ?? serializeEnvFile(prev);
+  const passthrough = existing ? extractPassthroughLines(existing) : [];
+  effects.writeEnv(serializeEnvFile(next, passthrough));
   effects.setProcessEnv(configToEnvRecord(next));
   try {
     await effects.restart();

@@ -15,6 +15,10 @@ import type { ApplyResult } from "./settings-apply.ts";
 
 const LABEL_WIDTH = 20;
 
+// Bounds a Linear picker fetch so a hung request cannot trap the operator in
+// the panel with no exit but C-c (which quits the board and stops the daemon).
+const REMOTE_FETCH_TIMEOUT_MS = 10_000;
+
 export function rowsToLines(
   rows: SettingRow[],
   dirty: string[],
@@ -76,7 +80,7 @@ function errMessage(err: unknown): string {
   return String(err);
 }
 
-export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () => void): void {
+export function openSettings(screen: unknown, deps: SettingsDeps, onClose: (daemonStopped: boolean) => void): void {
   const s: any = screen;
 
   const list: any = blessed.list({ parent: s, items: [], ...settingsPanelLayout() });
@@ -100,6 +104,12 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   // list stays focused during that await (no widget steals focus the way an
   // editor does), so without this a second `w` or `esc` could race the apply.
   let applying = false;
+  // True once an apply has failed and the daemon could not be rolled back
+  // onto its old config. Cleared by the next successful apply; surfaced to
+  // onClose so the board's status line keeps showing it after the panel
+  // closes, since the draft's own dirty/clean state says nothing about
+  // whether the real daemon process is still running.
+  let daemonStopped = false;
   // True once the panel has been detached and onClose() called. Guards async
   // work (remote fetches, the initial assignee lookup) that can resolve after
   // the operator already left: without it, a late resolution would repaint a
@@ -143,7 +153,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
     list.detach();
     footer.detach();
     s.render();
-    onClose();
+    onClose(daemonStopped);
   }
 
   function openPicker(items: string[], onPick: (value: string) => void): void {
@@ -163,7 +173,10 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
     s.render();
     picker.on("select", (_item: unknown, index: number) => {
       picker.detach();
-      onPick(items[index]);
+      // neo-blessed's enterSelected emits select with items[0] === undefined
+      // on an empty list; openRemotePicker never attaches an empty picker,
+      // but this stays as a second line of defence for any other caller.
+      if (items[index] !== undefined) onPick(items[index]);
       endEdit();
     });
     picker.on("cancel", () => {
@@ -176,13 +189,35 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   // flight and "linear unreachable" on failure, leaving the row unchanged.
   // Both branches bail out if the panel was closed while the fetch was
   // in flight, so a late resolution never attaches a widget to a screen
-  // the panel no longer owns.
-  function openRemotePicker(fetch: () => Promise<string[]>, seed: string | null, onPick: (value: string) => void): void {
+  // the panel no longer owns. `settled` guards the same race against a
+  // timeout: once one fires, the other's result is abandoned.
+  function openRemotePicker(
+    fetch: () => Promise<string[]>,
+    seed: string | null,
+    onPick: (value: string) => void,
+    emptyLabel: string,
+  ): void {
     beginEdit();
     paint("loading...");
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (closed) return;
+      endEdit();
+      paint("linear timed out");
+    }, REMOTE_FETCH_TIMEOUT_MS);
     fetch()
       .then((items) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         if (closed) return;
+        if (items.length === 0) {
+          endEdit();
+          paint(`no ${emptyLabel} found`);
+          return;
+        }
         const seeded = seed && !items.includes(seed) ? [seed, ...items] : items;
         openPicker(seeded, onPick);
         // openPicker moves focus to the new list; reflect that in the
@@ -190,6 +225,9 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
         paint();
       })
       .catch(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         if (closed) return;
         endEdit();
         paint("linear unreachable");
@@ -231,16 +269,26 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   }
 
   function editPickTeam(row: SettingRow): void {
-    openRemotePicker(deps.teams, null, (value) => {
-      draft = setEdit(draft, row.envKey, value);
-    });
+    openRemotePicker(
+      deps.teams,
+      row.value,
+      (value) => {
+        draft = setEdit(draft, row.envKey, value);
+      },
+      "teams",
+    );
   }
 
   function editPickState(row: SettingRow): void {
     const team = currentTeamName();
-    openRemotePicker(() => deps.states(team), null, (value) => {
-      draft = setEdit(draft, row.envKey, value);
-    });
+    openRemotePicker(
+      () => deps.states(team),
+      row.value,
+      (value) => {
+        draft = setEdit(draft, row.envKey, value);
+      },
+      "states",
+    );
   }
 
   function editLabelFilter(row: SettingRow): void {
@@ -268,9 +316,19 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
       }
       const team = currentTeamName();
       const seed = currentLabel(row.value);
-      openRemotePicker(() => deps.labels(team), seed, (label) => {
-        draft = setEdit(draft, row.envKey, index === 1 ? label : `!${label}`);
-      });
+      openRemotePicker(
+        () => deps.labels(team),
+        seed,
+        (label) => {
+          // Defence in depth: openPicker already refuses to call onPick with
+          // an undefined item, and openRemotePicker never attaches an empty
+          // picker, so this should be unreachable, but a filter must never
+          // become the literal string "!undefined".
+          if (!label) return;
+          draft = setEdit(draft, row.envKey, index === 1 ? label : `!${label}`);
+        },
+        "labels",
+      );
     });
     modePicker.on("cancel", () => {
       modePicker.detach();
@@ -325,9 +383,11 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
         if (result.ok) {
           base = next;
           draft = newDraft(base);
+          daemonStopped = false;
           paint("saved, daemon restarted");
           return;
         }
+        daemonStopped = !result.rolledBack;
         const suffix = result.rolledBack ? "" : ", daemon stopped";
         paint(`${result.error}${suffix}`);
       })
@@ -337,6 +397,7 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
         // back), and applying must still clear or the panel freezes for
         // good, since dispatchEdit/onWrite/onEscape all gate on it.
         applying = false;
+        daemonStopped = true;
         paint(`${errMessage(err)}, daemon stopped`);
       });
   }
@@ -365,7 +426,14 @@ export function openSettings(screen: unknown, deps: SettingsDeps, onClose: () =>
   list.on("cancel", onEscape);
 
   list.on("keypress", (_ch: string, key: any) => {
-    if (key.full === "w") onWrite();
+    if (key.full === "w") {
+      onWrite();
+      return;
+    }
+    // escape/q drive the double-esc discard prompt themselves (via the
+    // "cancel" event below); any other key means the operator moved on,
+    // so a stale arm must not silently discard on the next plain esc.
+    if (key.name !== "escape" && key.name !== "q") resetEscArm();
   });
 
   list.focus();

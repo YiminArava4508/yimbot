@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindQuitKeys, fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
+import { bindQuitKeys, bindSettingsKey, fmtDuration, footerHint, footerLayout, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -118,6 +118,31 @@ test("bindQuitKeys gates q and escape while settings is open, but C-c always fir
   settingsOpen = false;
   handlers["q"]();
   assert.equal(quitCalls, 2, "q quits again once the panel is closed");
+});
+
+test("bindSettingsKey does not reopen the panel on a second s while it is already open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = false;
+  let openCalls = 0;
+  bindSettingsKey(fakeScreen, () => settingsOpen, () => {
+    settingsOpen = true;
+    openCalls++;
+  });
+
+  handlers["s"]();
+  assert.equal(openCalls, 1, "the first s opens the panel");
+
+  handlers["s"]();
+  assert.equal(openCalls, 1, "a second s while the panel is open must not open another one");
+
+  settingsOpen = false;
+  handlers["s"]();
+  assert.equal(openCalls, 2, "s opens again once the panel is closed");
 });
 
 // A minimal EventEmitter standing in for a TTY stream, sized to the columns

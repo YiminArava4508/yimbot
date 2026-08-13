@@ -89,6 +89,21 @@ export function bindQuitKeys(
   screen.key(["C-c"], quit);
 }
 
+// Gated the same way as bindQuitKeys: without this, a second s while the
+// panel is already open attaches a second list/footer pair on top of the
+// first (openSettings has no idea it is already open), and the first pair is
+// then permanently unreachable since only the panel that receives the close
+// ever detaches its own widgets.
+export function bindSettingsKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isSettingsOpen: () => boolean,
+  openPanel: () => void,
+): void {
+  screen.key(["s"], () => {
+    if (!isSettingsOpen()) openPanel();
+  });
+}
+
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
@@ -140,7 +155,7 @@ export function runTui(opts: {
   let settingsOpen = false;
   bindQuitKeys(screen, () => settingsOpen, quit);
 
-  screen.key(["s"], () => {
+  bindSettingsKey(screen, () => settingsOpen, () => {
     settingsOpen = true;
     table.hide();
     openSettings(screen, opts.settings, () => {

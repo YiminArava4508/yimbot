@@ -11,6 +11,7 @@ import { envOr } from "./env.ts";
 import {
   addLabel,
   blockedInfo,
+  changesRequested,
   checksInfo,
   ghRunner,
   listMyClosedUnmergedPRs,
@@ -29,6 +30,7 @@ import {
   countAssignedInState,
   fetchMarkedCommentBody,
   fetchIssueByIdentifier,
+  fetchIssueStateType,
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
@@ -142,6 +144,7 @@ export async function startDaemon(): Promise<() => void> {
         mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
         checksInfo: (n: number) => ReturnType<typeof checksInfo>;
         blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
+        changesRequested: (n: number) => ReturnType<typeof changesRequested>;
       }
     | null = null;
   try {
@@ -153,6 +156,7 @@ export async function startDaemon(): Promise<() => void> {
       mergeableInfo: (n) => mergeableInfo(gh, n),
       checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
       blockedInfo: (n) => blockedInfo(gh, n, blockedLabelName),
+      changesRequested: (n) => changesRequested(gh, n),
     };
     console.log(
       `[yimbot] review step ON: addressing PR comments + conflicts + failing CI + queue blocks in ${slug.owner}/${slug.name} as ${viewer}`,
@@ -174,11 +178,13 @@ export async function startDaemon(): Promise<() => void> {
           codebasePath,
           listMergedPRs: () => listMyMergedPRs(gh),
           listClosedUnmergedPRs: () => listMyClosedUnmergedPRs(gh),
+          listOpenPRs: () => listMyOpenPRs(gh),
+          issueStateType: (identifier: string) => fetchIssueStateType(apiKey, identifier),
         }
       : null;
   console.log(
     cleanup
-      ? "[yimbot] cleanup step ON: removing worktrees + sessions of merged PRs"
+      ? "[yimbot] cleanup step ON: removing worktrees + sessions of merged PRs and done no-PR tickets"
       : `[yimbot] cleanup step OFF${autoCleanup ? " (gh unavailable)" : ""}`,
   );
 

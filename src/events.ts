@@ -26,6 +26,10 @@ export type YimbotEvent = {
   label: string;
   title?: string;
   pr?: number;
+  // Why a raise event (needs_input/flagged) raised the flag: input,
+  // changes-requested, decision, findings, or manual. Absent on events from
+  // older builds; the fold defaults those by kind.
+  reason?: string;
 };
 
 const TICKET = /^(eng|sc)-(\d+)/i;
@@ -132,6 +136,45 @@ export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void 
   emitEvent(ev);
 }
 
+// The reason a raise event carries; events persisted before reasons existed
+// default by kind (needs_input was always a session waiting on a person, and
+// every reason-less flagged was the manual toggle).
+function reasonFor(e: YimbotEvent): string {
+  return e.reason ?? (e.kind === "needs_input" ? "input" : "manual");
+}
+
+// Fold each key's attention timeline into its set of raise reasons, in raise
+// order. Walking events in time order, a needs-input or flagged event adds its
+// reason, and an input-received or manual unflag clears the whole set: human
+// engagement acknowledges every pending reason at once, and a condition that
+// still stands (a changes-requested review) re-raises itself next heartbeat.
+// Status events never clear anything: the flag strictly means a human must
+// look, so an automated transition (a conflict fix or CI fix spawning) must
+// not swallow a pending ask.
+export function foldFlagReasons(events: YimbotEvent[]): Map<string, Set<string>> {
+  const reasons = new Map<string, Set<string>>();
+  for (const e of events) {
+    if (e.kind === "needs_input" || e.kind === "flagged") {
+      let set = reasons.get(e.key);
+      if (!set) reasons.set(e.key, (set = new Set()));
+      set.add(reasonFor(e));
+    } else if (e.kind === "input_received" || e.kind === "unflagged") {
+      reasons.delete(e.key);
+    }
+  }
+  return reasons;
+}
+
+// Raise the attention flag for a key, deduped per (key, reason) against the
+// folded state: a persisting condition re-noticed every tick appends nothing
+// while its reason is already up (so it never truncates other rows' history),
+// a second distinct reason still lands, and a manual unflag is re-raised on
+// the next notice.
+export function emitFlagged(ev: Omit<YimbotEvent, "ts" | "kind"> & { reason: string }): void {
+  if (foldFlagReasons(readEvents()).get(ev.key)?.has(ev.reason)) return;
+  emitEvent({ ...ev, kind: "flagged" });
+}
+
 export function readEvents(path: string = eventsLogPath()): YimbotEvent[] {
   let raw: string;
   try {
@@ -161,6 +204,8 @@ export type BoardRow = {
   ts: number;
   startTs: number;
   flagged: boolean;
+  // The pending raise reasons, in raise order; flagged === (length > 0).
+  flagReasons: string[];
 };
 
 function keepMergedMsDefault(): number {
@@ -201,21 +246,15 @@ export function reduceRows(
       ts: e.ts,
       startTs,
       flagged: false,
+      flagReasons: [],
     });
   }
 
-  // Fold each key's attention timeline into one flag. Walking events in time
-  // order, the flag flips on for a needs-input or manual flag and off ONLY for
-  // an input-received or a manual unflag. Status events never clear it: the
-  // flag strictly means a human must look, so an automated transition (a
-  // conflict fix or CI fix spawning) must not swallow a pending ask.
-  const flagOn = new Set<EventKind>(["needs_input", "flagged"]);
-  const flagged = new Map<string, boolean>();
-  for (const e of events) {
-    if (flagOn.has(e.kind)) flagged.set(e.key, true);
-    else if (e.kind === "input_received" || e.kind === "unflagged") flagged.set(e.key, false);
+  const reasons = foldFlagReasons(events);
+  for (const row of byKey.values()) {
+    row.flagReasons = [...(reasons.get(row.key) ?? [])];
+    row.flagged = row.flagReasons.length > 0;
   }
-  for (const row of byKey.values()) row.flagged = flagged.get(row.key) ?? false;
 
   let rows = [...byKey.values()].filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
   rows.sort((a, b) => b.ts - a.ts);

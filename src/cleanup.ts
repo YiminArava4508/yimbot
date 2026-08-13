@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { MergedPR } from "./gh.ts";
+import type { MergedPR, OpenPR } from "./gh.ts";
+import { isContinuationBranch, issueFromBranch } from "./pr-advance.ts";
 
 export type Worktree = { path: string; branch: string };
 
@@ -23,6 +24,14 @@ export type CleanupDeps = {
   // never merges, so the merged path ignores it; this reaps it when nothing
   // would be lost.
   listClosedUnmergedPRs: () => Promise<MergedPR[]>;
+  // The viewer's open PRs. A worktree with NO PR anywhere (open, merged, or
+  // closed) is a spike's: its ticket's Linear state is the only completion
+  // signal, so the no-PR reap below keys off issueStateType instead of gh.
+  listOpenPRs: () => Promise<OpenPR[]>;
+  // The Linear workflow state type ("completed", "canceled", "started", ...) of
+  // an issue by identifier (ENG-<n>). A terminal type on a no-PR worktree's
+  // ticket means the human closed it out, so the worktree/session can go.
+  issueStateType: (identifier: string) => Promise<string | null>;
   // Whether a closed PR's worktree holds no work teardown would destroy: a clean
   // tree AND every commit pushed to its own origin branch (the branch survives on
   // origin, recoverable). Gates the closed-unmerged teardown. Not the base-ref
@@ -348,9 +357,11 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   // list is non-fatal: closedBranches stays empty, so the group path falls back to
   // merged-only readiness and path (a2) reaps nothing this tick.
   let closed: MergedPR[] = [];
+  let closedListFailed = false;
   try {
     closed = await deps.listClosedUnmergedPRs();
   } catch (err) {
+    closedListFailed = true;
     deps.log(`closed PR list failed: ${err}`);
   }
   const closedBranches = new Set(closed.map((p) => p.headRefName));
@@ -427,6 +438,63 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       deps.log(`torn down ${w.branch} (PR closed unmerged, no unsaved work)`);
     } catch (err) {
       deps.log(`teardown failed for ${w.branch}: ${err}`);
+    }
+  }
+
+  // (a3) worktrees with NO PR anywhere (a true spike never opens one): the ticket's
+  // Linear state is the only completion signal, so reap once it goes terminal
+  // (Done/Canceled — the human closing it out is the gate, mirroring a PR merge).
+  // Needs the full PR picture to know "no PR": if the open list fails, or the
+  // closed list failed above (a closed-PR worktree would masquerade as no-PR),
+  // this path sits the tick out.
+  let openBranches: Set<string> | null = null;
+  if (!closedListFailed) {
+    try {
+      openBranches = new Set((await deps.listOpenPRs()).map((p) => p.headRefName));
+    } catch (err) {
+      deps.log(`open PR list failed: ${err}`);
+    }
+  }
+  if (openBranches !== null) {
+    const prefix = deps.worktreesDir.endsWith("/") ? deps.worktreesDir : `${deps.worktreesDir}/`;
+    for (const w of worktrees) {
+      if (!w.path.startsWith(prefix)) continue;
+      if (mergedBranches.has(w.branch) || closedBranches.has(w.branch) || openBranches.has(w.branch)) continue;
+      if (groupedPaths.has(w.path)) continue;
+      // An AC continuation shares its issue with an already-merged PR, and that
+      // issue may be Done while the continuation is still working: never its reap
+      // trigger. Its own PR (once opened and merged/closed) tears it down instead.
+      if (isContinuationBranch(w.branch)) continue;
+      const identifier = issueFromBranch(w.branch);
+      if (identifier === null) continue;
+      let stateType: string | null;
+      try {
+        stateType = await deps.issueStateType(identifier);
+      } catch (err) {
+        deps.log(`issue state lookup failed for ${identifier}: ${err}`);
+        continue;
+      }
+      if (stateType !== "completed" && stateType !== "canceled") continue;
+      // Same guards as the closed-unmerged path: a split in progress or unsaved
+      // work spares the worktree.
+      if (deps.isSplitParent(w.path)) {
+        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but worktree is a split parent)`);
+        continue;
+      }
+      if (deps.hasActiveSplitWindows(w)) {
+        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but session has an active split in progress)`);
+        continue;
+      }
+      if (!deps.hasNoUnpushedWork(w.path)) {
+        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but worktree has unsaved work)`);
+        continue;
+      }
+      try {
+        deps.teardown(w.branch);
+        deps.log(`torn down ${w.branch} (ticket ${identifier} ${stateType}, no PR)`);
+      } catch (err) {
+        deps.log(`teardown failed for ${w.branch}: ${err}`);
+      }
     }
   }
 

@@ -29,6 +29,16 @@ export function issueFromBranch(branch: string): string | null {
   return m ? `ENG-${m[1]}` : null;
 }
 
+// Whether a branch is an AC-continuation spawn (continuationSessionName's
+// eng-<n>-cont-<round> shape). Its issue identifier is the SAME as the merged
+// PR that triggered it, and the issue may already be Done while the
+// continuation is mid-work, so the cleanup step's no-PR reap must skip these.
+const CONTINUATION_BRANCH_RE = /-cont-\d+$/i;
+
+export function isContinuationBranch(branch: string): boolean {
+  return CONTINUATION_BRANCH_RE.test(branch);
+}
+
 export type AdvanceDeps = {
   listMergedPRs: () => Promise<MergedPR[]>;
   fetchAcComment: (issueId: string) => Promise<string>;

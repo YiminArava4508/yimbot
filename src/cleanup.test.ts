@@ -20,7 +20,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import type { MergedPR } from "./gh.ts";
+import type { MergedPR, OpenPR } from "./gh.ts";
 
 const WT = "/home/ymbo/Work/worktrees";
 
@@ -271,6 +271,10 @@ test("sweepOrphanWorktrees is a no-op on an empty worktree list", async () => {
   assert.deepEqual(reattached, []);
 });
 
+function opr(number: number, headRefName = `eng-${number}-x`): OpenPR {
+  return { number, headRefName, isDraft: false };
+}
+
 function mpr(number: number, headRefName = `eng-${number}-x`): MergedPR {
   return { number, headRefName };
 }
@@ -288,6 +292,8 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
     listWorktrees: () => [wt("eng-1-a"), wt("eng-2-b")],
     listMergedPRs: async () => [mpr(2, "eng-2-b")],
     listClosedUnmergedPRs: async () => [],
+    listOpenPRs: async () => [],
+    issueStateType: async () => null,
     hasNoUnpushedWork: () => true,
     worktreesDir: WT,
     teardown: (branch) => void torn.push(branch),
@@ -565,6 +571,149 @@ test("cleanupOnce still reaps merged worktrees when the closed-PR list fails", a
   assert.ok(logs.some((l) => /gh 503/.test(l)));
 });
 
+test("cleanupOnce reaps a no-PR worktree once its ticket completes", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    issueStateType: async (id) => (id === "ENG-1104" ? "completed" : null),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["eng-1104-spike"]);
+  assert.ok(logs.some((l) => /eng-1104-spike/.test(l) && /no PR/.test(l)));
+});
+
+test("cleanupOnce reaps a no-PR worktree once its ticket is canceled", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    issueStateType: async () => "canceled",
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["eng-1104-spike"]);
+});
+
+test("cleanupOnce leaves a no-PR worktree alone while its ticket is non-terminal", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    issueStateType: async () => "started",
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+});
+
+test("cleanupOnce spares a completed ticket's worktree while its PR is still open", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listOpenPRs: async () => [opr(4880, "eng-1104-spike")],
+    issueStateType: async () => "completed",
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+});
+
+test("cleanupOnce keeps a completed no-PR worktree that has unpushed work", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    issueStateType: async () => "completed",
+    hasNoUnpushedWork: () => false,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-1104-spike/.test(l) && /unsaved work/.test(l)));
+});
+
+test("cleanupOnce never looks up a branch that maps to no issue", async () => {
+  const looked: string[] = [];
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("experiment-scratch")],
+    listMergedPRs: async () => [],
+    issueStateType: async (id) => {
+      looked.push(id);
+      return "completed";
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(looked, []);
+  assert.deepEqual(torn, []);
+});
+
+test("cleanupOnce skips the no-PR reap when the open PR list fails", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listOpenPRs: async () => {
+      throw new Error("gh 503");
+    },
+    issueStateType: async () => "completed",
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /gh 503/.test(l)));
+});
+
+test("cleanupOnce skips the no-PR reap when the closed PR list fails", async () => {
+  // With the closed set unknown, a closed-PR worktree would masquerade as no-PR;
+  // the merged path still runs, but the no-PR reap must sit the tick out.
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => {
+      throw new Error("gh 503");
+    },
+    issueStateType: async () => "completed",
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+});
+
+test("cleanupOnce keeps a no-PR worktree when the issue state lookup fails", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    issueStateType: async () => {
+      throw new Error("linear 500");
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /ENG-1104/.test(l) && /linear 500/.test(l)));
+});
+
+test("cleanupOnce never reaps an AC-continuation worktree, even with its issue completed", async () => {
+  // The advance step spawns eng-<n>-cont-<k> continuations for an issue whose PR
+  // already merged; the issue may be Done (auto-transitioned on merge, or closed
+  // by a human) while the continuation is still working with a clean tree. Its
+  // branch maps to the same ENG-<n>, so without a guard the no-PR reap would
+  // kill it mid-work.
+  const looked: string[] = [];
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-42-cont-1")],
+    listMergedPRs: async () => [],
+    issueStateType: async (id) => {
+      looked.push(id);
+      return "completed";
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.deepEqual(looked, []);
+});
+
+test("cleanupOnce spares a completed no-PR worktree flagged as a split parent", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    issueStateType: async () => "completed",
+    isSplitParent: (p) => p === `${WT}/eng-1104-spike`,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-1104-spike/.test(l) && /split/.test(l)));
+});
+
 test("isSplitSliceWindow recognizes the 'PR (i/n)' window split-pr.sh creates", () => {
   assert.equal(isSplitSliceWindow("PR (1/2)"), true);
   assert.equal(isSplitSliceWindow("PR (10/12)"), true);
@@ -686,6 +835,8 @@ function recorderDeps(over: Partial<CleanupDeps> & {
     listWorktrees: () => over.worktrees,
     listMergedPRs: async () => over.merged,
     listClosedUnmergedPRs: async () => [],
+    listOpenPRs: async () => [],
+    issueStateType: async () => null,
     hasNoUnpushedWork: () => true,
     worktreesDir: WT,
     teardown: (b) => tornDown.push(b),

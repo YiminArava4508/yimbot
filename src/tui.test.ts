@@ -13,12 +13,13 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
   ts: 0,
   startTs: 0,
   flagged: false,
+  flagReasons: [],
   ...over,
 });
 
-test("rowsToTable header has DUR at index 1 and FLAG last", () => {
+test("rowsToTable header has DUR at index 1 and REASON last", () => {
   assert.deepEqual(rowsToTable([])[0], [
-    "TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG",
+    "TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON",
   ]);
 });
 
@@ -47,10 +48,23 @@ test("rowsToTable DUR is frozen at ts - startTs for a terminal row", () => {
 });
 
 test("rowsToTable marks a flagged row and leaves others blank", () => {
-  const [, flagged] = rowsToTable([row({ flagged: true })], 0);
+  const [, flagged] = rowsToTable([row({ flagged: true, flagReasons: ["manual"] })], 0);
   assert.equal(flagged[6], "{red-fg}⚑{/red-fg}");
   const [, plain] = rowsToTable([row({})], 0);
   assert.equal(plain[6], "");
+});
+
+test("rowsToTable joins the flag reasons in the REASON cell", () => {
+  const [, body] = rowsToTable(
+    [row({ flagged: true, flagReasons: ["input", "changes-requested"] })],
+    0,
+  );
+  assert.equal(body[7], "{red-fg}input,changes-requested{/red-fg}");
+});
+
+test("rowsToTable leaves the REASON cell blank when unflagged", () => {
+  const [, body] = rowsToTable([row({})], 0);
+  assert.equal(body[7], "");
 });
 
 test("fmtDuration formats seconds, minutes, and hours", () => {

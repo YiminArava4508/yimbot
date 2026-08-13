@@ -108,6 +108,14 @@ assert_eq "$(grep -c '"kind":"needs_decision"' "$HOOK_LOG_HB")" "1" "emit_hook_e
 assert_eq "$(grep -c '"kind":"review_findings"' "$HOOK_LOG_HB")" "1" "emit_hook_event writes review_findings"
 assert_eq "$(grep -c '"key":"ENG-7"' "$HOOK_LOG_HB")" "2" "hand-back lines are keyed ENG-7 from the branch"
 rm -f "$HOOK_LOG_HB"
+# A second argument becomes the reason field; without one the field is absent.
+HOOK_LOG_REASON=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG_REASON" emit_hook_event flagged decision )
+( cd "$HOOK_REPO" && EVENTS_LOG="$HOOK_LOG_REASON" emit_hook_event needs_decision )
+assert_eq "$(grep -c '"kind":"flagged".*"reason":"decision"' "$HOOK_LOG_REASON")" "1" "reason arg lands as the reason field"
+assert_eq "$(grep -c '"kind":"needs_decision"' "$HOOK_LOG_REASON")" "1" "reason-less call still writes its line"
+assert_eq "$(grep -c '"kind":"needs_decision".*"reason"' "$HOOK_LOG_REASON")" "0" "no reason arg, no reason field"
+rm -f "$HOOK_LOG_REASON"
 # No EVENTS_LOG is a silent no-op, not an error.
 ( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
 assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"

@@ -65,7 +65,11 @@ if (process.stdout.isTTY) {
     },
     liveKeys: () => liveWorktreeKeys(codebasePath),
     onToggleFlag: (key, label, flagged) =>
-      emitEvent({ kind: flagged ? "unflagged" : "flagged", key, label }),
+      emitEvent(
+        flagged
+          ? { kind: "unflagged", key, label }
+          : { kind: "flagged", key, label, reason: "manual" },
+      ),
     onOpenSession: (key) => {
       const session = resolveSessionForKey(key, listGitWorktrees(codebasePath), listTmuxSessions());
       if (session) switchToSession(session);

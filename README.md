@@ -62,8 +62,8 @@ flowchart TD
     T3 -- yes --> F["Mark its session with a<br/>'ready to test' icon"]
 
     P --> G5["Clean up finished work"]
-    G5 --> T4{"Did one of your<br/>PRs get merged?"}
-    T4 -- yes --> CU["Remove that PR's workspace<br/>and close its session"]
+    G5 --> T4{"Did one of your PRs merge,<br/>or a no-PR ticket<br/>reach Done?"}
+    T4 -- yes --> CU["Remove that work's workspace<br/>and close its session"]
 
     P --> G7["Advance the work"]
     G7 --> T6{"Did one of your<br/>PRs just merge?"}
@@ -152,14 +152,22 @@ flowchart TD
   human. Re-triggers only when the head moves, so a re-block caused by another
   PR in the batch never loops. Settings: `BLOCKED_LABEL` (defaults to
   `blocked`); re-queue reuses `READY_MERGE_LABEL`.
+- **Flag changes-requested reviews:** every heartbeat, any of your open
+  non-draft PRs blocked by a changes-requested review raises that row's `⚑` on
+  the board. No fix session can lift that block, only the reviewer re-reviewing
+  can, so the flag is raised again on the next heartbeat if you unflag it while
+  the review still stands.
 - **Flag ready to test (purple):** when a card moves to **In Review**, it marks
   that card's session with a "ready to test" icon so you know you can run local
   dev there to try it. (yimbot no longer starts the dev env for you.)
 - **Clean up finished work (red):** every heartbeat, once one of your PRs is
   merged, yimbot tears down that branch's workspace (its worktree) and closes its
-  tmux session via `~/end-session.sh`. *(optional; setting: `AUTO_CLEANUP`, on by
-  default)* Needs `gh` installed and authenticated; runs against the repo at
-  `CODEBASE_PATH`.
+  tmux session via `~/end-session.sh`. Work that never gets a PR (a spike whose
+  deliverable is an answer on the ticket) is reaped when its Linear ticket
+  (an `eng-<n>` branch) reaches a terminal state (Done/Canceled), as long as
+  the worktree holds no local-only work. *(optional; setting: `AUTO_CLEANUP`,
+  on by default)* Needs `gh` installed and authenticated; runs against the
+  repo at `CODEBASE_PATH`.
 - **Advance the work (teal):** every heartbeat, once one of your PRs is merged,
   yimbot judges its issue against the issue's acceptance criteria and, while any
   remain unmet, spawns a continuation session to keep working the issue.
@@ -214,8 +222,21 @@ noisy ones never do: the ~60s idle nudge, the computer-use banners, and the auth
 and completion notices, so a session waiting on its own background agents stays
 quiet. The gap that leaves: a session that ends its turn with a plain-text
 question and no tool call raises nothing, and shows only as a climbing `DUR`.
-Replying in the session or its next status change clears the flag, and `f`
-toggles it by hand on the selected row.
+A changes-requested review on one of your open PRs raises the flag too, every
+heartbeat while the review stands: only the reviewer can lift that block, so
+an unflag by hand comes back on the next heartbeat until they re-review.
+Replying in the session clears the flag, and `f` toggles it by hand on the
+selected row; an automated status change never clears it.
+
+The `REASON` column says why the row is flagged, and a row flagged for several
+causes at once shows them all, comma-joined in raise order (`input,decision`).
+The vocabulary: `input` (the session is waiting on a person: a permission
+prompt, a question dialog, a subagent ask), `changes-requested` (a reviewer is
+blocking the PR), `decision` (a fix session handed back review threads that
+need a human call), `findings` (a fix session collected observations worth
+reading), and `manual` (you pressed `f`). Clearing the flag clears every
+reason at once; a cause that still stands, like a changes-requested review,
+re-raises its reason on the next heartbeat.
 
 When stdout is not a TTY (for example `pnpm start > daemon.log 2>&1 &`), the
 board is skipped and yimbot runs headless as before.

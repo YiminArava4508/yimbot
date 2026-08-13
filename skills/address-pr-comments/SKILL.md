@@ -12,8 +12,13 @@ worktree is already checked out on the PR's branch, and the seed prompt gave you
 the PR number. This runs fully automatically; the one thing you never do is
 falsely resolve a comment you did not actually address. The other thing you
 never do is bombard the PR with verbose, AI-generated explanations: thread
-replies are capped tight (see steps 4 and 7), and anything the reviewer did not
-literally ask about never goes on the PR at all.
+replies are capped tight (see step 7), and anything the reviewer did not
+literally ask about never goes on the PR at all. And you never dismiss a
+review: a changes-requested review is the reviewer's verdict, and only their
+re-review lifts it (step 8 asks them to). Resolving individual threads you
+fixed is fine, including threads of a changes-requested review; touching the
+review itself (`gh pr review --dismiss`, the `reviews/<id>/dismissals` API) is
+not, no matter how blocked the PR looks.
 
 ## Flow
 
@@ -45,7 +50,12 @@ literally ask about never goes on the PR at all.
 
    Work only the threads where `isResolved` is false.
 
-3. **Address each unresolved thread in code.** Understand what the comment asks,
+3. **Address each unresolved thread in code.** First invoke the
+   `receiving-code-review` skill and follow it for every thread: verify each
+   suggestion against the codebase before implementing, push back (leave the
+   thread for step 4) when a suggestion is technically wrong for this codebase,
+   and never blind-implement or performatively agree. With that lens on,
+   understand what the comment asks,
    then make the change in the worktree, **in this session**. PR-fix work always
    runs on the stronger session model: never delegate it to cheaper
    implementation subagents, and ignore `IMPL_MODEL` even when it is set.
@@ -68,11 +78,11 @@ literally ask about never goes on the PR at all.
      bug, a risky pattern, a follow-up idea). Collect these; they never go on
      the PR.
 
-4. **Threads that need a human decision.** Leave the thread **unresolved**. Post
-   one short, honest reply on it stating that you have flagged it for a human to
-   handle manually (one or two sentences, no attempt to resolve it, no
-   reasoning dump). Note it for the summary and for the hand-back in step 9. Do
-   not resolve a thread you did not address, and never force a guess into code.
+4. **Threads that need a human decision.** Leave the thread **unresolved** and
+   post **nothing** on it: the reviewer never asked for a status note, and the
+   hand-back in step 9 is what tells the operator (the board flags the row with
+   reason `decision`, and your session summary carries the details). Do not
+   resolve a thread you did not address, and never force a guess into code.
 
 5. **Get tests green.** Run the project's test suite (or the affected tests) and
    loop until green. Do not push red.
@@ -120,25 +130,25 @@ literally ask about never goes on the PR at all.
 9. **Hand back to the operator, or flag ready to test.** Source the launcher so
    the emitter is available: `source "$HOME/new-session.sh" 2>/dev/null`.
    - If any thread needs a human decision (step 4), set the stage and raise the
-     board flag:
+     board flag with its reason:
      ```bash
      emit_hook_event needs_decision
-     emit_hook_event flagged
+     emit_hook_event flagged decision
      ```
    - Else if you collected any extra observations (step 3) but every thread was
      fixed:
      ```bash
      emit_hook_event review_findings
-     emit_hook_event flagged
+     emit_hook_event flagged findings
      ```
    - Else (everything cleanly fixed, nothing to hand back) flag ready to test so
      the user knows they can run local dev here:
      ```bash
      tmux set-option -t "$(tmux display-message -p '#{session_name}')" @feature_status "#[fg=cyan]▶"
      ```
-   Emit the status line **before** the `flagged` line: the board fold clears the
-   flag on a status event and re-raises it on the trailing `flagged`, so the
-   order is what makes STATUS and the flag both show.
+   The second argument on the `flagged` line is the reason the board's REASON
+   column shows; keep the status line first so the row reads STATUS + flag
+   together.
 
 10. **Close the fix session (final step), unless you handed it back.** If step 9
     took the ready-to-test branch (nothing flagged), everything is done: close

@@ -82,9 +82,14 @@ asking for a behavior change.
      (`git diff main...HEAD --stat`, ignoring generated files, lockfiles,
      and snapshots).
    - **If under the hard limit:** push the branch to origin
-     (`git push -u origin HEAD`) and open a PR with `gh pr create` as a
-     **non-draft** PR (so the daemon's review step can pick up review
-     comments). **Always create a brand-new PR; never reopen a previously
+     (`git push -u origin HEAD`) and open a PR with `gh pr create`.
+     **Check the operating mode first**: read
+     `"$(dirname "$EVENTS_LOG")/mode"` (if `EVENTS_LOG` is unset or the
+     file is missing, treat it as `supervised`). In `supervised` mode pass
+     `--draft` (a human marks the PR ready for review); in `autonomous`
+     mode open it non-draft. The daemon's review and ready steps process
+     drafts too, so this only gates the merge. **Always create a brand-new
+     PR; never reopen a previously
      closed PR, even one referenced by the branch, commit, or ticket.** Title = the ticket summary; body = a short "what changed /
      why / test result", any **Decisions** you made to resolve uncertainty
      (with the alternative you rejected, and what was reused), and the
@@ -183,8 +188,9 @@ the reuse audit above), and only then decide how to slice it into PRs.
   1. Create the slice branch off `main`.
   2. Cherry-pick the subset of commits for that slice onto it.
   3. Push the slice branch.
-  4. `gh pr create` as a **non-draft** PR (always a brand-new PR, never a
-     reopened closed one), with a series marker `[i/n]` in the title and a
+  4. `gh pr create`, draft in `supervised` mode / non-draft in `autonomous`
+     mode exactly as in the single-PR flow above (always a brand-new PR,
+     never a reopened closed one), with a series marker `[i/n]` in the title and a
      body that lists every sibling slice branch/PR and its order in the
      series.
   5. Run `~/split-pr.sh <slice-branch> <i> <n>`.

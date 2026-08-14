@@ -82,7 +82,7 @@ export function freshReviewState(): ReviewState {
 }
 
 export type PrReviewDeps = {
-  // The viewer's open PRs (drafts included; filtered here).
+  // The viewer's open PRs, drafts included.
   listOpenPRs: () => Promise<OpenPR[]>;
   // Unresolved-thread summary for a PR: count + newest other-authored comment ms.
   unresolvedInfo: (prNumber: number) => Promise<UnresolvedInfo>;
@@ -138,7 +138,8 @@ async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewD
   return false;
 }
 
-// One review-step tick, run every heartbeat. For each non-draft open PR, in
+// One review-step tick, run every heartbeat. For each open PR (drafts included:
+// supervised mode opens PRs as drafts and a human marks them ready), in
 // supervised mode first notice human review signals (a changes-requested review
 // by a non-trusted reviewer, then, after the thread read, a non-trusted
 // comment): each raises the board flag, and a flagged PR gets NO fix work of
@@ -183,7 +184,6 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
 
   const mode = deps.mode();
   for (const pr of prs) {
-    if (pr.isDraft) continue;
     const att = mode === "supervised" ? deps.flagState(pr.headRefName) : { flagged: false, clearedAt: null };
     // A signal is acknowledged when a human unflagged the row after it fired;
     // acknowledged signals neither flag nor block (emitFlagged applies the

@@ -137,13 +137,27 @@ test("readyOnce treats no CI (none) as passing", async () => {
   assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
 });
 
-test("readyOnce skips draft PRs entirely", async () => {
+test("readyOnce labels a ready draft PR like any other", async () => {
   const h = harness({ listOpenPRs: async () => [pr(4706, { isDraft: true })] }, []);
   await readyOnce(h.deps);
-  assert.equal(h.added.length, 0);
+  assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
   assert.equal(h.removed.length, 0);
-  assert.equal(h.calls.unresolved, 0);
-  assert.equal(h.calls.labels, 0);
+});
+
+test("readyOnce reports isDraft via onVerdict", async () => {
+  const seen: { n: number; v: string; isDraft: boolean }[] = [];
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(1, { isDraft: true }), pr(2)],
+      onVerdict: (n, v, _hasLabel, isDraft) => void seen.push({ n, v, isDraft }),
+    },
+    [],
+  );
+  await readyOnce(h.deps);
+  assert.deepEqual(seen, [
+    { n: 1, v: "ready", isDraft: true },
+    { n: 2, v: "ready", isDraft: false },
+  ]);
 });
 
 test("readyOnce skips a PR whose readiness read errors, leaving the label untouched", async () => {

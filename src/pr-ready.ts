@@ -1,7 +1,7 @@
 import type { ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
 
 export type PrReadyDeps = {
-  // The viewer's open PRs (drafts included; filtered here).
+  // The viewer's open PRs, drafts included.
   listOpenPRs: () => Promise<OpenPR[]>;
   // Unresolved-thread summary for a PR: count + newest other-authored comment ms.
   unresolvedInfo: (prNumber: number) => Promise<UnresolvedInfo>;
@@ -25,8 +25,10 @@ export type PrReadyDeps = {
   // observed readiness independent of whether a label write happened: a PR that is
   // ready but already labeled still surfaces as ready-to-merge, and a queued PR
   // sitting in `hold` with the label surfaces as ready-to-merge too (rather than
-  // stalling on whatever fix status last touched its row).
-  onVerdict?: (prNumber: number, verdict: ReadyVerdict, hasLabel: boolean) => void;
+  // stalling on whatever fix status last touched its row). Carries `isDraft` so
+  // the board can say "draft pr" instead of "ready to merge" while a supervised
+  // draft waits for a human to mark it ready for review.
+  onVerdict?: (prNumber: number, verdict: ReadyVerdict, hasLabel: boolean, isDraft: boolean) => void;
   log: (msg: string) => void;
 };
 
@@ -73,7 +75,8 @@ async function classify(prNumber: number, deps: PrReadyDeps): Promise<ReadyVerdi
   return "ready"; // passing or none
 }
 
-// One ready-step tick, run every heartbeat. For each non-draft open PR, keep the
+// One ready-step tick, run every heartbeat. For each open PR (drafts included:
+// supervised mode opens PRs as drafts and a human marks them ready), keep the
 // ready label in sync with its readiness: add it when the PR is ready and lacks
 // it, remove it on a hard regression when it carries it, and otherwise leave it
 // alone. Stateless: it reconciles against GitHub's live label state every tick,
@@ -90,8 +93,6 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
   }
 
   for (const pr of prs) {
-    if (pr.isDraft) continue;
-
     let verdict: ReadyVerdict;
     try {
       verdict = await classify(pr.number, deps);
@@ -112,7 +113,7 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
     }
     if (labels.includes(deps.blockedLabel)) continue; // blocked-fix flow owns this PR's labels
     const hasLabel = labels.includes(deps.label);
-    deps.onVerdict?.(pr.number, verdict, hasLabel);
+    deps.onVerdict?.(pr.number, verdict, hasLabel, pr.isDraft);
     if (verdict === "hold") continue; // board reconciled above; neither add nor remove the label
 
     if (verdict === "ready" && !hasLabel) {

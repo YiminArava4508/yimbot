@@ -1210,7 +1210,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   // Ready step (gh-driven): each heartbeat, keep the ready-to-merge label in sync
-  // on each non-draft open PR. Independent of the fixers, which keep running on
+  // on each open PR, drafts included. Independent of the fixers, which keep running on
   // every open PR, so a labeled PR that regresses is still fixed and just loses the
   // label until it is clean again.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
@@ -1230,12 +1230,14 @@ export function startWatcher(config: WatcherConfig): () => void {
     // Board emission is owned by onVerdict below (fires whether or not a label
     // write happens), so a PR that is ready but already carries the label still
     // shows ready-to-merge, and a queued PR held with the label reconciles off a
-    // stale fix status. The label writers stay pure GitHub side effects.
-    onVerdict: (n: number, verdict, hasLabel) => {
+    // stale fix status. The label writers stay pure GitHub side effects. A ready
+    // draft says "draft pr" instead: it cannot merge until a human marks it
+    // ready for review.
+    onVerdict: (n: number, verdict, hasLabel, isDraft) => {
       if (!boardReadyToMerge(verdict, hasLabel)) return;
       const branch = prBranchByNumber.get(n);
       const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-      emitStatus({ kind: "ready_to_merge", key: k.key, label: k.label, pr: n });
+      emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     removeLabel: (n: number, label: string) => {

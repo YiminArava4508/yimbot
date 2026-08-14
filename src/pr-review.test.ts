@@ -365,10 +365,10 @@ test("reviewOnce skips when only the viewer's own replies remain (null timestamp
   assert.equal(spawned.length, 0);
 });
 
-test("reviewOnce skips draft PRs", async () => {
+test("reviewOnce fixes draft PRs like any other", async () => {
   const { deps: d, spawned } = deps({ listOpenPRs: async () => [pr(1, { isDraft: true })] });
   await reviewOnce(freshReviewState(), d);
-  assert.equal(spawned.length, 0);
+  assert.deepEqual(spawned.map((s) => s.name), ["pr-1-fix"]);
 });
 
 test("reviewOnce skips a PR with no unresolved threads", async () => {
@@ -612,14 +612,15 @@ test("supervised: raises on every tick the block persists (emitFlagged dedupes)"
   assert.equal(flagRaised.length, 2);
 });
 
-test("supervised: draft PRs are never flagged", async () => {
+test("supervised: draft PRs flag on human review signals like any other", async () => {
   const { deps: d, flagRaised } = deps({
     mode: () => "supervised",
     listOpenPRs: async () => [pr(1, { isDraft: true })],
     humanChangesRequested: async () => ({ requested: true, latestAt: 500 }),
+    unresolvedInfo: async () => noComments,
   });
   await reviewOnce(freshReviewState(), d);
-  assert.equal(flagRaised.length, 0);
+  assert.equal(flagRaised.length, 1);
 });
 
 test("supervised: still handles trusted comments when the review decision read throws", async () => {

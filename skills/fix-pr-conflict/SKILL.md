@@ -34,7 +34,29 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    `git status --porcelain` before you touch anything. Those files are not yours
    to commit: never blanket-stage the tree (step 7).
 
-2. **Understand the PR's intent.** This is the crux — you cannot resolve a
+2. **Bring main in with a merge.**
+
+   ```bash
+   git fetch origin main
+   git merge origin/main
+   ```
+
+   If it merges clean, skip to step 6. Otherwise
+   `git diff --name-only --diff-filter=U` lists the conflicted paths.
+
+   **Shortcircuit: atlas.sum-only conflict.** If the *only* conflicted path is an
+   `atlas.sum`, this is just a migration-checksum collision — no semantic
+   resolution needed. Recalculate the hash and jump straight to step 6:
+
+   ```bash
+   atlas migrate hash --dir "file://<directory containing atlas.sum>"
+   git add <path/to/atlas.sum>
+   ```
+
+   If other paths are conflicted too, resolve them first (steps 3–4), then still
+   finish atlas.sum with `atlas migrate hash` rather than hand-merging it.
+
+3. **Understand the PR's intent.** This is the crux — you cannot resolve a
    conflict well without it. Read:
 
    ```bash
@@ -44,16 +66,6 @@ the PR's own commits stay intact; you only add a resolution merge commit.
 
    Read the linked ticket if there is one. Form a clear picture of the feature or
    fix this PR delivers and which of its changes are load-bearing.
-
-3. **Bring main in with a merge.**
-
-   ```bash
-   git fetch origin main
-   git merge origin/main
-   ```
-
-   If it merges clean, skip to step 6. Otherwise `git status` lists the conflicted
-   paths — resolve them in step 4.
 
 4. **Resolve each conflict, preserving the feature.** For every conflicted hunk,
    reconcile the two sides so main's incoming change and the PR's feature intent

@@ -55,7 +55,19 @@ resolve.
    order versus main. Regenerated files are easy to miss because they land
    unstaged — inspect the whole tree, not just the paths you touched.
 
-5. **Resolve conflicts, preserving the feature.** For each conflicted hunk,
+5. **Resolve conflicts, preserving the feature.** First the shortcircuit: if the
+   only conflicted path is an `atlas.sum`, it is a migration-checksum collision,
+   not a real conflict — recalculate it and move on to step 6:
+
+   ```bash
+   atlas migrate hash --dir "file://<directory containing atlas.sum>"
+   git add <path/to/atlas.sum>
+   ```
+
+   (If atlas.sum conflicts alongside other files, resolve those below, then still
+   regenerate atlas.sum with `atlas migrate hash` rather than hand-merging it.)
+
+   For each remaining conflicted hunk,
    reconcile both sides so main's incoming change and this branch's intent both
    hold. Read enough surrounding code (and `git log` / `git blame` the incoming
    side) to understand each change. Do not blindly `--ours` / `--theirs`, do not

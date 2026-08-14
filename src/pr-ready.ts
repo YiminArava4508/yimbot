@@ -32,10 +32,11 @@ export type PrReadyDeps = {
 
 // Three outcomes that drive the ready label:
 //   ready     - every thread resolved, mergeable, CI green (or none): add the label.
-//   regressed - a hard failure (unresolved thread, merge conflict, or failing CI):
-//               the label must come off.
-//   hold      - neither: a still-running CI check or GitHub's not-yet-computed
-//               mergeable state. Leave the label exactly as it is.
+//   regressed - a hard failure (unresolved thread or failing CI): the label must
+//               come off.
+//   hold      - neither: a still-running CI check, GitHub's not-yet-computed
+//               mergeable state, or a merge conflict (the label-driven conflict
+//               sweep heals those). Leave the label exactly as it is.
 // The `hold` state is what lets the label coexist with a merge queue: once the
 // label triggers the queue, the queue rebases the branch and re-runs CI, which
 // reads back as pending/unknown for a spell. Treating that as `hold` (not
@@ -58,8 +59,13 @@ export function boardReadyToMerge(verdict: ReadyVerdict, hasLabel: boolean): boo
 // rejecting propagates to readyOnce, which skips the PR for this tick.
 async function classify(prNumber: number, deps: PrReadyDeps): Promise<ReadyVerdict> {
   if ((await deps.unresolvedInfo(prNumber)).count !== 0) return "regressed";
+  // A conflict is a hold, not a regression: the repo's resolve-generated-conflicts
+  // sweep discovers PRs by the ready-to-merge/blocked labels, so stripping the
+  // label here would hide the PR from the auto-heal (and its approval-preserving
+  // App push). Real conflicts get a "needs a human" comment from that sweep, and
+  // Aviator relabels to blocked if a queued conflict fails its speculative merge.
   const mergeable = (await deps.mergeableInfo(prNumber)).state;
-  if (mergeable === "conflicting") return "regressed";
+  if (mergeable === "conflicting") return "hold";
   if (mergeable === "unknown") return "hold";
   const ci = (await deps.checksInfo(prNumber)).state;
   if (ci === "failing") return "regressed";

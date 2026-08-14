@@ -177,10 +177,13 @@ flowchart TD
   non-draft PRs that is clean on all three signals (no unresolved review threads,
   no merge conflicts, and CI passing or no CI at all), it adds a `ready-to-merge`
   label so you or an automerge system can see at a glance that it's mergeable. The
-  label is removed again only on a hard regression (a new comment, a broken build,
-  a conflict), which the fixers then handle; a merely in-flight state (CI still
-  running, mergeability not yet computed) holds the label as-is, so a merge queue
-  that queues on the label is never yanked back out mid-merge. If your merge queue
+  label is removed again only on a hard regression (a new comment, a broken build),
+  which the fixers then handle; an in-flight state (CI still running, mergeability
+  not yet computed) or a merge conflict holds the label as-is, so a merge queue
+  that queues on the label is never yanked back out mid-merge. Conflicts hold
+  rather than regress because label-driven conflict sweeps (like gemini's
+  resolve-generated-conflicts workflow) discover PRs by this label, and stripping
+  it would hide the PR from the auto-heal; the conflict fixer still runs either way. If your merge queue
   posts its own gating check that only completes once the PR is queued (e.g.
   Aviator's `aviator/checks`), list it in `IGNORE_CHECKS` so it isn't counted as
   perpetually-pending CI and deadlock the label. *(optional; settings:

@@ -80,7 +80,6 @@ test("readyOnce does not re-add the label to an already-labeled ready PR", async
 test("readyOnce removes the label on a hard regression", async () => {
   const cases: Partial<PrReadyDeps>[] = [
     { unresolvedInfo: async () => info(1) },
-    { mergeableInfo: async () => merge("conflicting") },
     { checksInfo: async () => ci("failing") },
   ];
   for (const c of cases) {
@@ -105,6 +104,22 @@ test("readyOnce holds the label through a transient not-ready state", async () =
     assert.equal(h.added.length, 0);
     assert.equal(h.calls.labels, 1); // a hold reads labels to reconcile the board but never writes
   }
+});
+
+// The repo's resolve-generated-conflicts sweep discovers PRs BY the ready-to-merge
+// (or blocked) label, so stripping the label on a conflict hides the PR from the
+// auto-heal that would fix generated-only conflicts for free. A conflict is
+// therefore a hold, not a regression: leave the label alone either way.
+test("readyOnce holds the label on a conflicting PR so the conflict sweep can heal it", async () => {
+  const labeled = harness({ mergeableInfo: async () => merge("conflicting") }, [LABEL]);
+  await readyOnce(labeled.deps);
+  assert.equal(labeled.removed.length, 0);
+  assert.equal(labeled.added.length, 0);
+
+  const unlabeled = harness({ mergeableInfo: async () => merge("conflicting") }, []);
+  await readyOnce(unlabeled.deps);
+  assert.equal(unlabeled.added.length, 0);
+  assert.equal(unlabeled.removed.length, 0);
 });
 
 test("readyOnce leaves an unlabeled not-ready PR alone", async () => {

@@ -46,11 +46,24 @@ the PR's own commits stay intact; you only add a resolution merge commit.
 
    **Shortcircuit: atlas.sum-only conflict.** If the *only* conflicted path is an
    `atlas.sum`, this is just a migration-checksum collision — no semantic
-   resolution needed. But this collision is the signature of two branches adding
-   migrations concurrently, so first check ordering: if any branch-new migration
-   file sorts before main's latest, renumber it as step 4 describes (the
-   project's rebase task, e.g. `task atlas-auto-rebase`, or `atlas migrate
-   rebase`). Then recalculate the hash and jump straight to step 6:
+   resolution needed.
+
+   First check the PR's labels: `gh pr view <number> --json labels`. If the PR
+   carries the ready-to-merge label (default name `ready-to-merge`), **do not
+   resolve it yourself** — the target repo's automation sweep discovers
+   ready-to-merge PRs and heals generated-only conflicts like this with an
+   approval-preserving App push, whereas a push from this session would dismiss
+   the approval. Instead: `git merge --abort`, restore the pre-existing worktree
+   state, note in your summary that the atlas.sum conflict was left to the
+   automation bot, and jump to step 9 to close the session (yimbot dedups by
+   head SHA, so leaving the head unmoved will not re-trigger this fix).
+
+   Without the label, resolve it here. This collision is the signature of two
+   branches adding migrations concurrently, so first check ordering: if any
+   branch-new migration file sorts before main's latest, renumber it as step 4
+   describes (the project's rebase task, e.g. `task atlas-auto-rebase`, or
+   `atlas migrate rebase`). Then recalculate the hash and jump straight to
+   step 6:
 
    ```bash
    atlas migrate hash --dir "file://<directory containing atlas.sum>"
@@ -149,8 +162,9 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    tmux set-option -t "$(tmux display-message -p '#{session_name}')" @feature_status "#[fg=cyan]▶"
    ```
 
-9. **Close the conflict-fix session (final step).** The resolution is pushed and
-   the PR should now be mergeable. End this session so a later conflict can
+9. **Close the conflict-fix session (final step).** Either the resolution is
+   pushed and the PR should now be mergeable, or you deferred an atlas.sum-only
+   conflict to the automation bot in step 2. End this session so a later conflict can
    re-trigger a fresh fix (yimbot dedups by the PR head SHA, which your push has
    now moved, not by this session staying open). Print your summary first (what
    the PR does, which conflicts you resolved and how, the local test result), then
@@ -167,5 +181,6 @@ the PR's own commits stay intact; you only add a resolution merge commit.
      ```bash
      tmux kill-window -t "$(tmux display-message -p '#{session_name}'):pr-<number>-conflict"
      ```
-   Only close on this success path. If you bailed at step 5, or the branch
-   diverged at step 7, leave the session open as those steps say.
+   Only close on these success paths (pushed resolution, or deferral to the
+   automation bot). If you bailed at step 5, or the branch diverged at step 7,
+   leave the session open as those steps say.

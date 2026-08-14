@@ -41,15 +41,30 @@ A very common cause is not a code defect at all: the branch is behind
 
 3. **Stale-branch first.** If the branch is behind `origin/main`
    (`git fetch origin main` then check `git rev-list --count HEAD..origin/main`),
-   invoke the `merge-main` skill and follow it exactly — it handles the merge,
-   codegen, and migration regeneration, then commits and pushes. That push moves
-   the PR head, so the CI run restarts; if the sync alone makes it green, you are
-   done — go to step 6. Do not loop back into another merge afterwards: once the
-   branch is level with main, a still-red build is a code problem (step 4).
+   merge it in directly:
+
+   ```bash
+   git merge origin/main
+   ```
+
+   Do not run the project's full sync task (`task merge-main` or similar): its
+   codegen output is gitignored, so it produces nothing committable and can eat
+   the whole session. Resolve any conflicts the way the `fix-pr-conflict` skill
+   does: an `atlas.sum`-only conflict is just `atlas migrate hash` + stage, and
+   whenever `atlas.sum` collided, also check migration ordering first: any
+   branch-new migration sorting before main's latest gets renumbered with the
+   project's rebase task (e.g. `task atlas-auto-rebase`) or
+   `atlas migrate rebase` before rehashing. Commit the merge
+   and push. That push moves the PR head, so the CI run restarts; if the sync
+   alone makes it green, you are done — go to step 6. Do not loop back into
+   another merge afterwards: once the branch is level with main, a still-red
+   build is a code problem (step 4).
 
 4. **Then fix the code.** If CI is failing for a real reason (or is still red
    after the sync), reproduce the failure locally, then fix it **in this
-   session**. PR-fix work always runs on the stronger session model: never
+   session**. One special case: if the failing check is a codegen-freshness
+   check (committed generated files out of date), run the specific codegen
+   command that check names and commit only the tracked output it regenerates. PR-fix work always runs on the stronger session model: never
    delegate it to cheaper implementation subagents, and ignore `IMPL_MODEL`
    even when it is set.
    Use `superpowers:test-driven-development` for anything that changes behavior,
@@ -71,8 +86,8 @@ A very common cause is not a code defect at all: the branch is behind
    git push
    ```
 
-   (When step 3 ran `merge-main`, its own commit/push already happened; this step
-   is for the code edits from step 4.)
+   (When step 3 merged main, its merge commit and push already happened; this
+   step is for the code edits from step 4.)
 
    If the push is **rejected** (non-fast-forward: the branch advanced on the
    remote), rebase onto the remote and retry once:

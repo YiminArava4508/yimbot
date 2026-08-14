@@ -46,11 +46,15 @@ the PR's own commits stay intact; you only add a resolution merge commit.
 
    **Shortcircuit: atlas.sum-only conflict.** If the *only* conflicted path is an
    `atlas.sum`, this is just a migration-checksum collision — no semantic
-   resolution needed. Recalculate the hash and jump straight to step 6:
+   resolution needed. But this collision is the signature of two branches adding
+   migrations concurrently, so first check ordering: if any branch-new migration
+   file sorts before main's latest, renumber it as step 4 describes (the
+   project's rebase task, e.g. `task atlas-auto-rebase`, or `atlas migrate
+   rebase`). Then recalculate the hash and jump straight to step 6:
 
    ```bash
    atlas migrate hash --dir "file://<directory containing atlas.sum>"
-   git add <path/to/atlas.sum>
+   git add <path/to/atlas.sum> <renumbered migration files, if any>
    ```
 
    If other paths are conflicted too, resolve them first (steps 3–4), then still
@@ -74,10 +78,21 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    is not obvious. Do not blindly `--ours`/`--theirs`, do not delete the PR's
    feature to make the file merge, do not revert main.
 
-   Migrations are a common conflict (two branches claiming the same number or
-   touching generated code). For that mechanical part invoke the `merge-main`
-   skill and follow it exactly — it handles renumbering, codegen, and migration
-   regeneration.
+   Migrations are a common conflict (two branches claiming the same number).
+   Handle them with file operations only:
+
+   - If branch-new migrations sort before main's latest, renumber them with the
+     project's rebase task if it defines one (e.g. `task atlas-auto-rebase`),
+     otherwise `atlas migrate rebase --dir "file://<migrations dir>" <file>`.
+   - Then recalculate the checksum as in step 2 (`atlas migrate hash`) and stage
+     the result.
+
+   Do not run the project's full sync task (`task merge-main` or similar) and do
+   not run codegen: the heavyweight generated output is gitignored, so
+   regenerating it produces nothing committable and can eat the whole session.
+   Run a specific codegen command only when a conflicted path is itself a
+   committed generated file (e.g. resolver stubs or emitted `.graphql` schema),
+   and only the one that produces that file.
 
 5. **Bail cleanly if you cannot resolve safely.** If reconciling a conflict would
    risk compromising the PR's feature, or you genuinely cannot tell how to honor

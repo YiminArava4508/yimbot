@@ -318,6 +318,35 @@ test("cleanupOnce hands the merged branch set to reconcileMerged, even with no w
   assert.deepEqual([...(seen as unknown as Set<string>)].sort(), ["eng-2-b", "eng-3-c"]);
 });
 
+test("cleanupOnce hands the open branch set to reconcileMerged, so split slices are not marked merged early", async () => {
+  let openSeen: Set<string> | null = null;
+  const { deps: d } = deps({
+    listWorktrees: () => [],
+    listMergedPRs: async () => [mpr(2, "sc-9-x-part-1")],
+    listOpenPRs: async () => [opr(3, "sc-9-x-part-2")],
+    reconcileMerged: (_merged, open) => void (openSeen = open),
+  });
+  await cleanupOnce(d);
+  assert.ok(openSeen, "reconcileMerged was called");
+  assert.deepEqual([...(openSeen as unknown as Set<string>)], ["sc-9-x-part-2"]);
+});
+
+test("cleanupOnce skips reconcileMerged when the open PR list fails", async () => {
+  // With the open set unknown, a merged split slice would mark its whole
+  // ticket row merged while sibling slice PRs are still open; sit the tick out.
+  let called = false;
+  const { deps: d, logs } = deps({
+    listWorktrees: () => [],
+    listOpenPRs: async () => {
+      throw new Error("gh 503");
+    },
+    reconcileMerged: () => void (called = true),
+  });
+  await cleanupOnce(d);
+  assert.equal(called, false);
+  assert.ok(logs.some((l) => /gh 503/.test(l)));
+});
+
 test("cleanupOnce still reconciles merged branches when a later teardown throws", async () => {
   let seen: Set<string> | null = null;
   const { deps: d } = deps({

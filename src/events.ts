@@ -58,6 +58,15 @@ export function deriveKey(opts: { identifier?: string; branch?: string; pr?: num
   return { key, label: key };
 }
 
+// A ticket-keyed board row can cover several PRs at once: split slices all
+// carry the ticket slug, so every slice branch derives to the same key. A single
+// merged slice must not mark the whole row merged while sibling PRs are open —
+// return only the merged branches whose key no open PR still maps to.
+export function branchesFullyMerged(merged: Set<string>, open: Set<string>): string[] {
+  const openKeys = new Set([...open].map((b) => deriveKey({ branch: b }).key));
+  return [...merged].filter((b) => !openKeys.has(deriveKey({ branch: b }).key));
+}
+
 export function titleFromBranch(branch: string): string {
   return branch
     .replace(TICKET, "")

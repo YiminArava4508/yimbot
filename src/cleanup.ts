@@ -46,8 +46,10 @@ export type CleanupDeps = {
   teardown: (branch: string) => void;
   // Reconcile the board against the full merged-branch set each tick. Called even
   // when a merged PR has no worktree left to tear down, so a row stuck on a stale
-  // action status (e.g. "fixing CI") still transitions to merged.
-  reconcileMerged?: (mergedBranches: Set<string>) => void;
+  // action status (e.g. "fixing CI") still transitions to merged. The open set
+  // rides along so a merged split slice never marks its ticket's row merged while
+  // sibling slice PRs are still open; skipped when the open list can't be fetched.
+  reconcileMerged?: (mergedBranches: Set<string>, openBranches: Set<string>) => void;
   // Live tmux session names, for the pr-<n>-fix session scan below.
   listSessions: () => string[];
   // Kill a tmux session by exact name (a merged PR's fix session).
@@ -336,7 +338,17 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   const mergedBranches = new Set(merged.map((p) => p.headRefName));
   const mergedNumbers = new Set(merged.map((p) => p.number));
 
-  deps.reconcileMerged?.(mergedBranches);
+  // Fetched before the board reconcile: without the open set, a merged split
+  // slice would mark its whole ticket row merged while sibling PRs are open.
+  // Also feeds path (a3) below. On failure both sit the tick out.
+  let openBranches: Set<string> | null = null;
+  try {
+    openBranches = new Set((await deps.listOpenPRs()).map((p) => p.headRefName));
+  } catch (err) {
+    deps.log(`open PR list failed: ${err}`);
+  }
+
+  if (openBranches !== null) deps.reconcileMerged?.(mergedBranches, openBranches);
 
   // Closed-but-not-merged PRs (spikes, abandoned/superseded work). Fetched up front
   // because both the split-group readiness below and path (a2) need it. A failure to
@@ -425,18 +437,10 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   // (a3) worktrees with NO PR anywhere (a true spike never opens one): the ticket's
   // Linear state is the only completion signal, so reap once it goes terminal
   // (Done/Canceled — the human closing it out is the gate, mirroring a PR merge).
-  // Needs the full PR picture to know "no PR": if the open list fails, or the
-  // closed list failed above (a closed-PR worktree would masquerade as no-PR),
+  // Needs the full PR picture to know "no PR": if the open list failed above, or
+  // the closed list failed (a closed-PR worktree would masquerade as no-PR),
   // this path sits the tick out.
-  let openBranches: Set<string> | null = null;
-  if (!closedListFailed) {
-    try {
-      openBranches = new Set((await deps.listOpenPRs()).map((p) => p.headRefName));
-    } catch (err) {
-      deps.log(`open PR list failed: ${err}`);
-    }
-  }
-  if (openBranches !== null) {
+  if (openBranches !== null && !closedListFailed) {
     const prefix = deps.worktreesDir.endsWith("/") ? deps.worktreesDir : `${deps.worktreesDir}/`;
     for (const w of worktrees) {
       if (!w.path.startsWith(prefix)) continue;

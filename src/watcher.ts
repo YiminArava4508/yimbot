@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { deriveKey, emitEvent, emitFlagged, emitStatus, foldAttention, readEvents, reduceRows, titleFromBranch } from "./events.ts";
+import { branchesFullyMerged, deriveKey, emitEvent, emitFlagged, emitStatus, foldAttention, readEvents, reduceRows, titleFromBranch } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
@@ -1122,14 +1122,15 @@ export function startWatcher(config: WatcherConfig): () => void {
     // Every tick, transition any board row still shown as active to merged once its
     // PR has merged, even with no worktree left for teardown to emit against (the
     // worktree was reaped, or cleaned up out of band). Scoped to keys already on the
-    // board so a backlog of old merges never spawns fresh rows.
-    reconcileMerged: (mergedBranches) => {
+    // board so a backlog of old merges never spawns fresh rows. Split slices share
+    // their ticket's key, so a key is only marked merged once no open PR maps to it.
+    reconcileMerged: (mergedBranches, openBranches) => {
       const active = new Set(
         reduceRows(readEvents(), Date.now())
           .filter((r) => !r.terminal)
           .map((r) => r.key),
       );
-      for (const branch of mergedBranches) {
+      for (const branch of branchesFullyMerged(mergedBranches, openBranches)) {
         const { key, label } = deriveKey({ branch });
         if (active.has(key)) emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
       }

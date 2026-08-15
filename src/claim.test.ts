@@ -20,7 +20,12 @@ function todo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIss
 
 const riskLabels = ["migration", "infra", "security", "breaking"];
 
-const opts = (merged: Set<string> | null = null) => ({ riskLabels, merged, labelFilter: null });
+const opts = (merged: Set<string> | null = null, requireEstimate = false) => ({
+  riskLabels,
+  merged,
+  labelFilter: null,
+  requireEstimate,
+});
 
 test("selectNextClaim picks the highest Linear priority (Urgent=1 before High=2)", () => {
   const picked = selectNextClaim(
@@ -126,4 +131,25 @@ test("selectNextClaim still drops risk labels under an include filter", () => {
     { ...opts(), labelFilter: parseLabelFilter("bot") },
   );
   assert.equal(picked, null);
+});
+
+test("selectNextClaim always skips zero-point container tickets", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "1", estimate: 0 }), todo({ id: "2", estimate: 3 })],
+    opts(),
+  );
+  assert.equal(picked?.identifier, "ENG-2");
+});
+
+test("selectNextClaim skips unestimated tickets when requireEstimate is on", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "1", estimate: null }), todo({ id: "2", estimate: 3 })],
+    opts(null, true),
+  );
+  assert.equal(picked?.identifier, "ENG-2");
+});
+
+test("selectNextClaim keeps unestimated tickets when requireEstimate is off", () => {
+  const picked = selectNextClaim([todo({ id: "1", estimate: null })], opts());
+  assert.equal(picked?.identifier, "ENG-1");
 });

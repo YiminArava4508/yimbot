@@ -10,6 +10,10 @@ export type SelectOptions = {
   merged: Set<string> | null;
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
+  // Skip unestimated tickets (they are the refine step's to size first). Zero
+  // estimates are skipped unconditionally: a 0-point ticket is a decomposed
+  // container whose subtickets carry the work.
+  requireEstimate: boolean;
 };
 
 // Linear's `priority` is inverted (0=None, 1=Urgent … 4=Low). Rank it so
@@ -30,7 +34,9 @@ export function selectNextClaim(
     (t) =>
       labelFilterAllows(opts.labelFilter, t.labels) &&
       !t.labels.some((label) => risky.has(label.toLowerCase())) &&
-      !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged)),
+      !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged)) &&
+      t.estimate !== 0 &&
+      !(opts.requireEstimate && t.estimate === null),
   );
   eligible.sort(
     (a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.sortOrder - b.sortOrder,

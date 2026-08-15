@@ -265,6 +265,8 @@ export type ClaimDeps = {
   riskLabels: string[];
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
+  // Whether the claim step skips tickets with no estimate.
+  requireEstimate: boolean;
   // Ceiling on the personal In-Progress WIP: the claim step acts only while the
   // count is below this. 1 restores the old one-at-a-time behavior.
   maxInProgress: number;
@@ -423,7 +425,12 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     }
   }
 
-  const next = selectNextClaim(inSlice, { riskLabels: deps.riskLabels, merged, labelFilter: deps.labelFilter });
+  const next = selectNextClaim(inSlice, {
+    riskLabels: deps.riskLabels,
+    merged,
+    labelFilter: deps.labelFilter,
+    requireEstimate: deps.requireEstimate,
+  });
   if (!next) return;
 
   // Runs on this one ticket only. claimOnce already returned early at the WIP
@@ -1248,6 +1255,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
     labelFilter: claim.labelFilter,
+    requireEstimate: false,
     maxInProgress: claim.maxInProgress,
     countInProgress: () =>
       countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),

@@ -539,6 +539,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     autoClaim: true,
     riskLabels: ["migration"],
     labelFilter: null,
+    requireEstimate: false,
     maxInProgress: 3,
     countInProgress: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],

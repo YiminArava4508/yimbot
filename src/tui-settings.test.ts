@@ -88,6 +88,10 @@ const baseConfig: YimbotConfig = {
   maxContinuations: 5,
   acJudgeModel: "",
   labelFilter: "",
+  autoRefine: true,
+  refineUsers: "",
+  refineLabelFilter: "",
+  maxRefining: 1,
 };
 
 function testDeps(overrides: Partial<SettingsDeps> = {}): SettingsDeps {

@@ -24,6 +24,10 @@ export type YimbotConfig = {
   maxContinuations: number;
   acJudgeModel: string;
   labelFilter: string;
+  autoRefine: boolean;
+  refineUsers: string;
+  refineLabelFilter: string;
+  maxRefining: number;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -79,10 +83,14 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     AUTO_CONTINUE: String(c.autoContinue),
     MAX_CONTINUATIONS: String(c.maxContinuations),
     AC_JUDGE_MODEL: c.acJudgeModel,
+    AUTO_REFINE: String(c.autoRefine),
+    REFINE_USERS: c.refineUsers,
+    REFINE_LABEL_FILTER: c.refineLabelFilter,
+    MAX_REFINING: String(c.maxRefining),
   };
 }
 
-// The 17 keys this file's generated sections own. Anything else found in an
+// The 21 keys this file's generated sections own. Anything else found in an
 // existing .env is a hand-edited setting (BLOCKED_LABEL, TUI_*, ...) that a
 // regenerated file must not drop.
 const OWNED_ENV_KEYS = new Set([
@@ -103,6 +111,10 @@ const OWNED_ENV_KEYS = new Set([
   "AUTO_CONTINUE",
   "MAX_CONTINUATIONS",
   "AC_JUDGE_MODEL",
+  "AUTO_REFINE",
+  "REFINE_USERS",
+  "REFINE_LABEL_FILTER",
+  "MAX_REFINING",
 ]);
 
 // The KEY=value lines of an existing .env that this file's generated sections
@@ -148,6 +160,12 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `AUTO_CONTINUE=${r.AUTO_CONTINUE}`,
     `MAX_CONTINUATIONS=${r.MAX_CONTINUATIONS}`,
     `AC_JUDGE_MODEL=${r.AC_JUDGE_MODEL}`,
+    "",
+    "# --- Refine step ---",
+    `AUTO_REFINE=${r.AUTO_REFINE}`,
+    `REFINE_USERS=${r.REFINE_USERS}`,
+    `REFINE_LABEL_FILTER=${r.REFINE_LABEL_FILTER}`,
+    `MAX_REFINING=${r.MAX_REFINING}`,
   ];
   if (passthroughLines.length > 0) {
     lines.push("", "# --- Hand-edited settings this file's writer doesn't manage (preserved) ---", ...passthroughLines);
@@ -212,6 +230,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     maxContinuations: Number(or("MAX_CONTINUATIONS", "5")),
     acJudgeModel: or("AC_JUDGE_MODEL", ""),
     labelFilter: or("LABEL_FILTER", ""),
+    autoRefine: !isOff(or("AUTO_REFINE", "true")),
+    refineUsers: or("REFINE_USERS", ""),
+    refineLabelFilter: or("REFINE_LABEL_FILTER", ""),
+    maxRefining: Number(or("MAX_REFINING", "1")),
   };
 }
 
@@ -251,6 +273,10 @@ const ROW_SPECS: { envKey: string; label: string; editor: EditorKind }[] = [
   { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter" },
   { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number" },
   { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle" },
+  { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle" },
+  { envKey: "REFINE_USERS", label: "refine users", editor: "text" },
+  { envKey: "REFINE_LABEL_FILTER", label: "refine tickets", editor: "labelFilter" },
+  { envKey: "MAX_REFINING", label: "refine cap", editor: "number" },
   { envKey: "RISK_LABELS", label: "risk labels", editor: "list" },
   { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number" },
   { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text" },
@@ -273,9 +299,14 @@ function displayValue(envKey: string, value: string): string {
     case "AUTO_CLAIM":
     case "AUTO_CLEANUP":
     case "AUTO_CONTINUE":
+    case "AUTO_REFINE":
       return isOff(value) ? "off" : "on";
     case "AC_JUDGE_MODEL":
       return value || "(claude default)";
+    case "REFINE_USERS":
+      return value || "(this API key)";
+    case "REFINE_LABEL_FILTER":
+      return value ? describeLabelFilter(parseLabelFilter(value)) : "(inherits tickets filter)";
     default:
       return value;
   }
@@ -321,6 +352,7 @@ export function validateDraft(draft: Draft): Record<string, string> {
     switch (envKey) {
       case "MAX_IN_PROGRESS":
       case "MAX_CONTINUATIONS":
+      case "MAX_REFINING":
         if (!isPositiveInt(raw)) errors[envKey] = "must be a positive integer";
         break;
       case "HEARTBEAT_INTERVAL_MINUTES":

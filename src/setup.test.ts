@@ -45,6 +45,10 @@ const sample: YimbotConfig = {
   maxContinuations: 5,
   acJudgeModel: "",
   labelFilter: "",
+  autoRefine: true,
+  refineUsers: "",
+  refineLabelFilter: "",
+  maxRefining: 1,
 };
 
 test("isConfigured requires a non-empty API key", () => {

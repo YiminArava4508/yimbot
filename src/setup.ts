@@ -902,6 +902,10 @@ export async function runSetup(): Promise<YimbotConfig> {
     maxContinuations,
     acJudgeModel,
     labelFilter,
+    autoRefine: true,
+    refineUsers: "",
+    refineLabelFilter: "",
+    maxRefining: 1,
   };
   const existingEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : null;
   writeEnvFile(serializeEnvFile(config, existingEnv ? extractPassthroughLines(existingEnv) : []));

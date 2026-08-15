@@ -3,9 +3,12 @@
 // identifier and slice branch name (one per line).
 import { createSliceSubticket } from "../src/subticket.ts";
 
-const [parent, title, pointsArg] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const claimable = args.includes("--claimable");
+const positional = args.filter((a) => a !== "--claimable");
+const [parent, title, pointsArg] = positional;
 if (!parent || !title) {
-  console.error("Usage: subticket.ts <parent-ticket> <title> [points]");
+  console.error("Usage: subticket.ts <parent-ticket> <title> [points] [--claimable]");
   process.exit(1);
 }
 const points = pointsArg == null ? undefined : Number(pointsArg);
@@ -19,6 +22,10 @@ if (!apiKey) {
   process.exit(1);
 }
 
-const result = await createSliceSubticket(apiKey, parent, title, points);
+const result = await createSliceSubticket(apiKey, parent, title, {
+  points,
+  claimable,
+  todoStateName: process.env.TODO_STATE_NAME?.trim() || undefined,
+});
 console.log(result.identifier);
 console.log(result.branch);

@@ -5,11 +5,12 @@
 # Runs from anywhere (symlinked to ~/create-subticket.sh); resolves back to the
 # yimbot repo so its .env supplies LINEAR_API_KEY.
 #
-# Usage: create-subticket.sh <parent-ticket> <title> [points]
+# Usage: create-subticket.sh <parent-ticket> <title> [points] [--claimable]
 set -euo pipefail
 
+# --claimable doesn't add a positional arg, so the count check still just needs parent + title.
 if [ $# -lt 2 ]; then
-  echo "Usage: $0 <parent-ticket> <title> [points]" >&2
+  echo "Usage: $0 <parent-ticket> <title> [points] [--claimable]" >&2
   exit 1
 fi
 

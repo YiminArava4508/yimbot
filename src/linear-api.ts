@@ -553,6 +553,8 @@ export type SubIssueInput = {
   title: string;
   estimate?: number;
   assigneeId?: string;
+  stateId?: string;
+  cycleId?: string;
 };
 
 export async function createSubIssue(

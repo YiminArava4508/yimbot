@@ -55,12 +55,6 @@ export type CleanupDeps = {
   // Read a worktree's .yimbot-parent-session marker (its parent tmux session),
   // or null if it has none. Marks a worktree as a slice of a split group.
   readParentSession: (worktreePath: string) => string | null;
-  // Whether this worktree's tmux session still hosts live "PR (i/n)" split slice
-  // windows — a marker-independent signal that a split is in progress. Guards the
-  // closed-unmerged reaper so a heartbeat landing before the slice markers are
-  // written (or during a transient marker-read failure) can't tear down the split
-  // parent and kill its slice windows.
-  hasActiveSplitWindows: (worktree: Worktree) => boolean;
   // Whether this worktree is flagged as a split integration parent (its
   // .yimbot-split-parent marker is present). Written before the ticket's PR is
   // closed to start a split, so it spares the parent through the whole split even
@@ -75,14 +69,6 @@ export type CleanupDeps = {
 // so for a long or special-char name the two differ.
 export function sanitizeBranchToSession(branch: string): string {
   return branch.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 50);
-}
-
-// A "PR (i/n)" window is what split-pr.sh names each slice window (pr_window_name),
-// so a session with one is actively hosting a split. Marker-independent, hence a
-// safety net the closed-unmerged reaper leans on when the markers aren't visible.
-const SPLIT_SLICE_WINDOW_RE = /^PR \(\d+\/\d+\)$/;
-export function isSplitSliceWindow(windowName: string): boolean {
-  return SPLIT_SLICE_WINDOW_RE.test(windowName.trim());
 }
 
 // Read a worktree's .yimbot-parent-session marker, written by split-pr.sh when
@@ -418,15 +404,10 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
     if (groupedPaths.has(w.path)) continue;
     // A split parent whose original PR was just closed but whose slice markers
     // aren't visible yet (race, or a transient marker-read failure) would fall
-    // through groupedPaths. Two marker-independent guards spare it: the durable
-    // split-parent marker (written before the PR is closed, so it covers even the
-    // pre-first-slice window) and live "PR (i/n)" slice windows.
+    // through groupedPaths. The durable split-parent marker (written before the
+    // PR is closed, so it covers even the pre-first-slice window) spares it.
     if (deps.isSplitParent(w.path)) {
       deps.log(`kept ${w.branch} (PR closed unmerged but worktree is a split parent)`);
-      continue;
-    }
-    if (deps.hasActiveSplitWindows(w)) {
-      deps.log(`kept ${w.branch} (PR closed unmerged but session has an active split in progress)`);
       continue;
     }
     if (!deps.hasNoUnpushedWork(w.path)) {
@@ -479,10 +460,6 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       // work spares the worktree.
       if (deps.isSplitParent(w.path)) {
         deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but worktree is a split parent)`);
-        continue;
-      }
-      if (deps.hasActiveSplitWindows(w)) {
-        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but session has an active split in progress)`);
         continue;
       }
       if (!deps.hasNoUnpushedWork(w.path)) {

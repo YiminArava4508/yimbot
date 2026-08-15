@@ -193,7 +193,11 @@ the reuse audit above), and only then decide how to slice it into PRs.
      never a reopened closed one), with a series marker `[i/n]` in the title and a
      body that lists every sibling slice branch/PR and its order in the
      series.
-  5. Run `~/split-pr.sh <slice-branch> <i> <n>`.
+  5. Run `~/split-pr.sh <slice-branch> <i> <n>`. This gives the slice its own
+     worktree **and its own tmux session** (named after the slice branch), with
+     a linked Claude session. Never improvise the split yourself by opening
+     tmux windows in the ticket's session or worktree; every slice lives in
+     its own worktree + session, always via the script.
 - Repeat until the whole series is open, then move the ticket to the Review
   column once, not once per slice.
 

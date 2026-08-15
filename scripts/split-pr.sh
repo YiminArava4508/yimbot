@@ -1,7 +1,10 @@
 #!/bin/bash
-# split-pr.sh - add a "PR (i/n)" window to the current tmux session for one slice
-# of a split ticket, with its own Claude session (so the session-to-PR link is
-# 1:1) and a parent-session marker cleanup uses to keep the group together.
+# split-pr.sh - create a full worktree + tmux session for one slice of a split
+# ticket, with its own Claude session (so the session-to-PR link is 1:1) and a
+# parent-session marker cleanup uses to keep the group together. The slice
+# session is named after the slice branch, exactly like a new-session.sh ticket
+# session, so it shows on the board on its own and end-session.sh can tear it
+# down by branch name.
 # Setup only: the caller has already created the slice branch, pushed it, and
 # opened its PR before calling this.
 #
@@ -9,13 +12,13 @@
 #   branch   the slice's branch (already pushed to origin)
 #   index    this slice's number (1-based)
 #   total    total number of slices
-#   session  target tmux session (default: the caller's current session)
+#   session  parent tmux session the slice belongs to
+#            (default: the caller's current session)
 set -uo pipefail
 
 WORKTREES_DIR=${WORKTREES_DIR:-$HOME/Work/worktrees}
 
 # --- pure helpers (sourceable for tests) ---
-pr_window_name() { printf 'PR (%s/%s)' "$1" "$2"; }
 resolve_target_session() {
   if [ -n "${1:-}" ]; then printf '%s' "$1"; else tmux display-message -p '#S'; fi
 }
@@ -37,7 +40,7 @@ fi
 : "${CODEBASE_PATH:?set CODEBASE_PATH to the git repo to branch from}"
 
 SESSION=$(resolve_target_session "$SESSION_ARG")
-[ -n "$SESSION" ] || { echo "ERROR: could not resolve a target tmux session"; exit 1; }
+[ -n "$SESSION" ] || { echo "ERROR: could not resolve a parent tmux session"; exit 1; }
 
 # Reuse new-session.sh's worktree + Claude helpers. NAME differs from BRANCH so
 # create_worktree fetches the (already-pushed) origin branch and tracks it.
@@ -62,14 +65,19 @@ printf '%s\n' "$SESSION" > "$(parent_marker_path "$WORKTREE")"
 INTEGRATION_WT="$WORKTREES_DIR/$(echo "$SESSION" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50)"
 [ -d "$INTEGRATION_WT" ] && : > "$INTEGRATION_WT/.yimbot-split-parent"
 
-# Add the detached window and launch Claude in it. Capture the window id so the
-# "PR (i/n)" display name (spaces/slashes) never has to be used as a target.
-WIN_NAME=$(pr_window_name "$INDEX" "$TOTAL")
-WIN_ID=$(tmux new-window -d -t "$SESSION" -n "$WIN_NAME" -c "$WORKTREE" -P -F '#{window_id}') ||
-  { echo "ERROR: failed to add window to session '$SESSION'"; exit 1; }
-# Link this slice window to its already-open PR with a bare claude (no ticket
+# Create the slice's own detached session, named by branch so teardown(branch)
+# kills it, and launch Claude in it. If the session already exists (a re-run of
+# the split flow) leave it alone rather than stacking a second Claude window.
+if tmux has-session -t "=$BRANCH" 2>/dev/null; then
+  echo "Session '$BRANCH' already exists for slice $INDEX/$TOTAL, leaving it as is"
+  exit 0
+fi
+WIN_ID=$(tmux new-session -d -s "$BRANCH" -c "$WORKTREE" -P -F '#{window_id}') ||
+  { echo "ERROR: failed to create session '$BRANCH'"; exit 1; }
+tmux rename-window -t "$WIN_ID" Claude
+# Link this slice session to its already-open PR with a bare claude (no ticket
 # seed): NAME is blanked so launch_claude_in does not inject the pickup-ticket
 # prompt. PLAN_MODEL/IMPL_MODEL are still honored by launch_claude_in.
 NAME=""
 launch_claude_in "$WIN_ID"
-echo "Added '$WIN_NAME' to session '$SESSION' for branch '$BRANCH'"
+echo "Created session '$BRANCH' (slice $INDEX/$TOTAL of '$SESSION')"

@@ -22,7 +22,6 @@ import {
   type CleanupDeps,
   cleanupOnce,
   isSplitParentWorktree,
-  isSplitSliceWindow,
   type OrphanSweepDeps,
   readParentSession,
   sanitizeBranchToSession,
@@ -687,18 +686,6 @@ export function tmuxWindowExists(session: string, window: string): boolean {
   }
 }
 
-// The window names of a tmux session. Empty when the session or server is absent.
-export function listTmuxWindows(session: string): string[] {
-  try {
-    const out = execFileSync("tmux", ["list-windows", "-t", `=${session}`, "-F", "#{window_name}"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.split("\n").map((s) => s.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
 
 // The session/window name for a PR's fix of a given kind.
 function fixNameForKind(prNumber: number, kind: FixKind): string {
@@ -1150,16 +1137,6 @@ export function startWatcher(config: WatcherConfig): () => void {
     listSessions: listTmuxSessions,
     killSession: killTmuxSession,
     readParentSession,
-    // A worktree dir maps to its tmux session by the sanitize rule (dir ==
-    // sanitize(session)); reverse it against the live sessions, then check that
-    // session for live "PR (i/n)" slice windows.
-    hasActiveSplitWindows: (w) => {
-      const prefix = worktreesDir.endsWith("/") ? worktreesDir : `${worktreesDir}/`;
-      if (!w.path.startsWith(prefix)) return false;
-      const dir = w.path.slice(prefix.length);
-      const session = listTmuxSessions().find((s) => sanitizeBranchToSession(s) === dir);
-      return session != null && listTmuxWindows(session).some(isSplitSliceWindow);
-    },
     isSplitParent: isSplitParentWorktree,
     log: cleanupLog,
   };

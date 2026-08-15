@@ -8,7 +8,6 @@ import {
   type CleanupDeps,
   cleanupOnce,
   groupReady,
-  isSplitSliceWindow,
   type OrphanFacts,
   type OrphanSweepDeps,
   readParentSession,
@@ -300,7 +299,6 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
     listSessions: () => [],
     killSession: (s) => void killed.push(s),
     readParentSession: () => null,
-    hasActiveSplitWindows: () => false,
     isSplitParent: () => false,
     log: (m) => void logs.push(m),
     ...overrides,
@@ -512,23 +510,6 @@ test("cleanupOnce does not reap a split's integration worktree when its dir diff
   assert.equal(torn.includes(dir), false, "integration worktree is spared");
 });
 
-test("cleanupOnce keeps a closed-unmerged worktree whose session still has active split slice windows", async () => {
-  // A heartbeat lands while a split is in progress but the slice markers are not
-  // yet visible (race or transient marker-read failure): the split parent's PR is
-  // closed and ungrouped, but its live "PR (i/n)" windows must still spare it.
-  const { deps: d, torn, logs } = deps({
-    listWorktrees: () => [wt("eng-1")],
-    listMergedPRs: async () => [],
-    listClosedUnmergedPRs: async () => [mpr(10, "eng-1")],
-    hasNoUnpushedWork: () => true,
-    readParentSession: () => null,
-    hasActiveSplitWindows: (w) => w.branch === "eng-1",
-  });
-  await cleanupOnce(d);
-  assert.deepEqual(torn, []);
-  assert.ok(logs.some((l) => /eng-1/.test(l) && /split/.test(l)));
-});
-
 test("cleanupOnce keeps a closed-unmerged worktree flagged as a split parent", async () => {
   // The ticket branch had a PR that was closed to start a split, but no slice
   // worktrees/windows exist yet (the pre-first-slice race). The durable
@@ -538,7 +519,6 @@ test("cleanupOnce keeps a closed-unmerged worktree flagged as a split parent", a
     listMergedPRs: async () => [],
     listClosedUnmergedPRs: async () => [mpr(10, "eng-1")],
     hasNoUnpushedWork: () => true,
-    hasActiveSplitWindows: () => false,
     isSplitParent: (p) => p === `${WT}/eng-1`,
   });
   await cleanupOnce(d);
@@ -546,13 +526,12 @@ test("cleanupOnce keeps a closed-unmerged worktree flagged as a split parent", a
   assert.ok(logs.some((l) => /eng-1/.test(l) && /split/.test(l)));
 });
 
-test("cleanupOnce still reaps a plain closed-unmerged spike (no split windows)", async () => {
+test("cleanupOnce still reaps a plain closed-unmerged spike (not a split parent)", async () => {
   const { deps: d, torn } = deps({
     listWorktrees: () => [wt("eng-1104-spike")],
     listMergedPRs: async () => [],
     listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
     hasNoUnpushedWork: () => true,
-    hasActiveSplitWindows: () => false,
   });
   await cleanupOnce(d);
   assert.deepEqual(torn, ["eng-1104-spike"]);
@@ -714,19 +693,6 @@ test("cleanupOnce spares a completed no-PR worktree flagged as a split parent", 
   assert.ok(logs.some((l) => /eng-1104-spike/.test(l) && /split/.test(l)));
 });
 
-test("isSplitSliceWindow recognizes the 'PR (i/n)' window split-pr.sh creates", () => {
-  assert.equal(isSplitSliceWindow("PR (1/2)"), true);
-  assert.equal(isSplitSliceWindow("PR (10/12)"), true);
-  assert.equal(isSplitSliceWindow(" PR (1/2) "), true);
-});
-
-test("isSplitSliceWindow rejects ordinary window names", () => {
-  assert.equal(isSplitSliceWindow("Claude"), false);
-  assert.equal(isSplitSliceWindow("pr-4730-fix"), false);
-  assert.equal(isSplitSliceWindow("PR"), false);
-  assert.equal(isSplitSliceWindow("PR (a/b)"), false);
-});
-
 // parentOf map helper: slice worktree path -> parent session name.
 function parentOfMap(m: Record<string, string>) {
   return (path: string): string | null => m[path] ?? null;
@@ -843,7 +809,6 @@ function recorderDeps(over: Partial<CleanupDeps> & {
     listSessions: () => over.sessions ?? [],
     killSession: (s) => killed.push(s),
     readParentSession: (p) => over.parents?.[p] ?? null,
-    hasActiveSplitWindows: over.hasActiveSplitWindows ?? (() => false),
     isSplitParent: over.isSplitParent ?? (() => false),
     log: () => {},
   };

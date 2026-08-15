@@ -7,8 +7,6 @@ source "$(dirname "$0")/split-pr.sh"
 fail=0
 assert_eq() { if [ "$1" != "$2" ]; then echo "FAIL: $3 - got [$1] want [$2]"; fail=1; fi; }
 
-assert_eq "$(pr_window_name 1 3)" "PR (1/3)" "window name 1 of 3"
-assert_eq "$(pr_window_name 2 2)" "PR (2/2)" "window name 2 of 2"
 assert_eq "$(resolve_target_session my-session)" "my-session" "explicit session passthrough"
 assert_eq "$(parent_marker_path /home/ymbo/Work/worktrees/eng-1)" "/home/ymbo/Work/worktrees/eng-1/.yimbot-parent-session" "marker path"
 

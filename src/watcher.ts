@@ -39,8 +39,10 @@ import {
   fetchMarkedCommentBody,
   fetchCycleTodoIssues,
   fetchIssueByIdentifier,
+  fetchIssueEstimate,
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
+  fetchUnestimatedIssues,
   type IssueWithBlockers,
   type LinearContext,
   type LinearIssue,
@@ -59,10 +61,12 @@ import {
   type PrReviewDeps,
   reviewOnce,
 } from "./pr-review.ts";
+import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
 export const worktreesDir = join(homedir(), "Work/worktrees");
+export const refineScriptPath = join(homedir(), "refine-session.sh");
 
 // tmux user option + glyph marking a session's feature as ready for the user to
 // run local dev and test. Session-scoped, so it clears for free when the session
@@ -523,6 +527,9 @@ export type WatcherConfig = {
   // for comment fixes, which have no crisp PR-state objective).
   reapStaleMs: number;
   claim: ClaimConfig;
+  // Refine step: unestimated Backlog/Todo tickets get a sizing session before
+  // the claim step may touch them; null disables the step (AUTO_REFINE off).
+  refine: { autoRefine: boolean; maxRefining: number; labelFilter: LabelFilter; assigneeIds: string[] } | null;
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
   prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> | null;
@@ -645,6 +652,18 @@ export function spawnContinuationSession(issueNumber: string, round: number): vo
   proc.once("error", (err) => console.error(`[advance] new-session.sh for '${name}' failed: ${err}`));
   proc.once("exit", (code) => {
     if (code !== 0) console.error(`[advance] new-session.sh for '${name}' exited ${code}`);
+  });
+}
+
+// Launch a refine run: refine-session.sh <identifier>. Detached and
+// fire-and-forget like the other spawners; a failure is logged and the next
+// heartbeat retries (refineOnce re-selects the still-unestimated ticket).
+export function spawnRefineSession(identifier: string): void {
+  const proc = spawn("bash", [refineScriptPath, identifier], { detached: true, stdio: "ignore" });
+  proc.unref();
+  proc.once("error", (err) => console.error(`[refine] refine-session.sh for '${identifier}' failed: ${err}`));
+  proc.once("exit", (code) => {
+    if (code !== 0) console.error(`[refine] refine-session.sh for '${identifier}' exited ${code}`);
   });
 }
 
@@ -836,6 +855,17 @@ export function liveWorktreeKeys(codebasePath: string, dir: string = worktreesDi
   return worktreeKeysUnder(listGitWorktrees(codebasePath), dir);
 }
 
+// Board keys of live refine sessions. Refine rows have no worktree, so the
+// board's live-key filter unions these in to keep them visible while refining.
+export function liveRefineKeys(sessions: string[]): Set<string> {
+  const keys = new Set<string>();
+  for (const s of sessions) {
+    if (!s.startsWith("refine-")) continue;
+    keys.add(deriveKey({ branch: s.slice("refine-".length) }).key);
+  }
+  return keys;
+}
+
 // The live tmux session backing a board row's key, so the TUI can jump to it.
 // Finds the worktree whose branch maps to `key` (the same deriveKey the board
 // uses), then the session for that branch: exact name first, else the identifier
@@ -847,7 +877,10 @@ export function resolveSessionForKey(
   sessions: string[],
 ): string | null {
   const wt = worktrees.find((w) => deriveKey({ branch: w.branch }).key === key);
-  if (!wt) return null;
+  if (!wt) {
+    const refine = `refine-${key.toLowerCase()}`;
+    return sessions.includes(refine) ? refine : null;
+  }
   if (sessions.includes(wt.branch)) return wt.branch;
   const m = WORKTREE_IDENTIFIER_RE.exec(wt.branch.toLowerCase());
   return m ? findExistingSession(m[0], sessions, []) : null;
@@ -1234,6 +1267,32 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: readyLog,
   };
 
+  const refineLog = (msg: string) => console.log(`[refine] ${msg}`);
+  const refineState = freshRefineState();
+  const { refine } = config;
+  const refineDeps: RefineDeps | null = refine && {
+    autoRefine: refine.autoRefine,
+    maxRefining: refine.maxRefining,
+    labelFilter: refine.labelFilter,
+    fetchUnestimated: () =>
+      fetchUnestimatedIssues(config.apiKey, config.progressContext.teamId, refine.assigneeIds),
+    fetchEstimate: (identifier) => fetchIssueEstimate(config.apiKey, identifier),
+    hasSession: tmuxHasSession,
+    spawn: (identifier, title) => {
+      const { key, label } = deriveKey({ identifier });
+      emitEvent({ kind: "refine_started", key, label, title });
+      spawnRefineSession(identifier);
+    },
+    kill: killTmuxSession,
+    markRefined: (identifier, title) => {
+      const { key, label } = deriveKey({ identifier });
+      emitStatus({ kind: "refined", key, label, title });
+    },
+    now: Date.now,
+    reapStaleMs: config.reapStaleMs,
+    log: refineLog,
+  };
+
   // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
@@ -1255,7 +1314,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
     labelFilter: claim.labelFilter,
-    requireEstimate: false,
+    requireEstimate: config.refine?.autoRefine ?? false,
     maxInProgress: claim.maxInProgress,
     countInProgress: () =>
       countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),
@@ -1337,6 +1396,9 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
       if (readyDeps) await readyOnce(readyDeps);
+      // Refine runs right before claim so an estimate that lands this tick is
+      // visible to the claim query on the next one, never mid-selection.
+      if (refineDeps) await refineOnce(refineState, refineDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

@@ -22,6 +22,7 @@ import {
   freshDeployState,
   hasSessionForWorktree,
   isLaunchMarkerActive,
+  liveRefineKeys,
   markFeatureReady,
   parseWorktreePorcelain,
   pollOnce,
@@ -486,6 +487,16 @@ test("resolveSessionForKey returns null when no worktree backs the key", () => {
 test("resolveSessionForKey returns null when the worktree has no live session", () => {
   const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "eng-42-fix-login" }];
   assert.equal(resolveSessionForKey("ENG-42", worktrees, []), null);
+});
+
+test("liveRefineKeys maps refine sessions to board keys", () => {
+  const keys = liveRefineKeys(["refine-eng-9", "eng-12-some-ticket", "refine-sc-4"]);
+  assert.deepEqual(keys, new Set(["ENG-9", "SC-4"]));
+});
+
+test("resolveSessionForKey falls back to a live refine session when no worktree matches", () => {
+  const session = resolveSessionForKey("ENG-9", [], ["refine-eng-9"]);
+  assert.equal(session, "refine-eng-9");
 });
 
 test("markFeatureReady flags the matched session and logs", () => {

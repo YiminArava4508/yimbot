@@ -318,6 +318,11 @@ export const hostLinks: HostLink[] = [
     label: "split-PR launcher (~/split-pr.sh)",
   },
   {
+    source: join(repoRoot, "scripts/create-subticket.sh"),
+    target: join(homedir(), "create-subticket.sh"),
+    label: "split subticket creator (~/create-subticket.sh)",
+  },
+  {
     source: join(repoRoot, "skills/pickup-ticket"),
     target: join(homedir(), ".claude/skills/pickup-ticket"),
     label: "pickup-ticket skill (~/.claude/skills/pickup-ticket)",
@@ -815,6 +820,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), "split-pr.sh"),
       label: "~/split-pr.sh",
       role: "adds a PR window per split slice (required for split PRs)",
+    },
+    {
+      path: join(homedir(), "create-subticket.sh"),
+      label: "~/create-subticket.sh",
+      role: "creates a Linear subticket per split slice (required for split PRs)",
     },
     {
       path: join(homedir(), ".claude/skills/pickup-ticket"),

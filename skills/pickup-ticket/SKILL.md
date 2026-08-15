@@ -183,23 +183,41 @@ the reuse audit above), and only then decide how to slice it into PRs.
   own.** Leave it up as a local integration branch: it is the only place the
   whole app can be run and tested locally, end to end.
 - Every PR is a **new, independent slice branch off `main`**, never a
-  branch stacked on another slice and never a GitHub stacked PR. For each
-  slice:
-  1. Create the slice branch off `main`.
-  2. Cherry-pick the subset of commits for that slice onto it.
-  3. Push the slice branch.
-  4. `gh pr create`, draft in `supervised` mode / non-draft in `autonomous`
+  branch stacked on another slice and never a GitHub stacked PR. Every slice
+  also gets its **own subticket** under the original ticket, and its branch is
+  named after that subticket, so each slice tracks and shows on the board as
+  its own task. For each slice:
+  1. Create the slice's subticket, titled `[i/n] <slice summary>`, with a
+     points estimate sized to the slice:
+     - Linear tickets (`eng-*`): run
+       `~/create-subticket.sh <TICKET> "[i/n] <slice summary>" <points>`.
+       It creates the sub-issue (zeroing the parent ticket's estimate, so
+       points live only on the slices) and prints two lines: the subticket
+       identifier, then the slice branch name. Use that branch name verbatim
+       in the next step.
+     - Shortcut tickets (`sc-*`): create a subtask under the story via the
+       Shortcut MCP (`stories-create-subtask`), set the parent story's
+       estimate to 0 (`stories-update`), and derive the slice branch from the
+       subticket yourself: `<subticket-id>-<title-slug>`, lowercase,
+       alphanumerics and dashes only, max 50 chars.
+  2. Create the slice branch off `main`, named after the subticket as above
+     (never after the parent ticket: the board keys rows by the ticket slug in
+     the branch, so a parent-slug branch would collapse the slices into one
+     row again).
+  3. Cherry-pick the subset of commits for that slice onto it.
+  4. Push the slice branch.
+  5. `gh pr create`, draft in `supervised` mode / non-draft in `autonomous`
      mode exactly as in the single-PR flow above (always a brand-new PR,
      never a reopened closed one), with a series marker `[i/n]` in the title and a
-     body that lists every sibling slice branch/PR and its order in the
-     series.
-  5. Run `~/split-pr.sh <slice-branch> <i> <n>`. This gives the slice its own
+     body that references the slice's subticket and lists every sibling slice
+     branch/PR and its order in the series.
+  6. Run `~/split-pr.sh <slice-branch> <i> <n>`. This gives the slice its own
      worktree **and its own tmux session** (named after the slice branch), with
      a linked Claude session. Never improvise the split yourself by opening
      tmux windows in the ticket's session or worktree; every slice lives in
      its own worktree + session, always via the script.
-- Repeat until the whole series is open, then move the ticket to the Review
-  column once, not once per slice.
+- Repeat until the whole series is open, then move the ticket **and every
+  slice subticket** to the Review column, once each.
 
 Prefer to catch large scope at **plan time**: if the plan clearly exceeds
 ~500 LOC, anticipate the split from the start. Even so, implement the whole

@@ -3,6 +3,9 @@ import { test } from "node:test";
 import {
   countAssignedInState,
   createBlocksRelation,
+  createSubIssue,
+  fetchIssueSplitInfo,
+  setIssueEstimate,
   fetchMarkedCommentBody,
   fetchCycleTodoIssues,
   fetchInProgressIssuesWithBlockers,
@@ -474,4 +477,77 @@ test("fetchIssueByIdentifier returns label names", async () => {
 test("fetchTeamLabels returns the team's label names", async () => {
   const body = { data: { team: { labels: { nodes: [{ name: "bot" }, { name: "infra" }] } } } };
   assert.deepEqual(await fetchTeamLabels("k", "t", fakeFetch(body)), ["bot", "infra"]);
+});
+
+test("fetchIssueSplitInfo returns id, teamId, and assigneeId", async () => {
+  const body = {
+    data: { issue: { id: "uuid-1", team: { id: "team-1" }, assignee: { id: "user-1" } } },
+  };
+  const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
+  assert.deepEqual(info, { id: "uuid-1", teamId: "team-1", assigneeId: "user-1" });
+});
+
+test("fetchIssueSplitInfo returns a null assigneeId for unassigned issues", async () => {
+  const body = { data: { issue: { id: "uuid-1", team: { id: "team-1" }, assignee: null } } };
+  const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
+  assert.equal(info.assigneeId, null);
+});
+
+test("fetchIssueSplitInfo throws entity-not-found when the issue is missing", async () => {
+  await assert.rejects(
+    fetchIssueSplitInfo("k", "ENG-999", fakeFetch({ data: { issue: null } })),
+    /Entity not found/,
+  );
+});
+
+test("createSubIssue sends parentId, teamId, title, estimate, and assignee", async () => {
+  const { fetchImpl, calls } = capturingFetch({
+    data: { issueCreate: { success: true, issue: { id: "uuid-2", identifier: "ENG-2" } } },
+  });
+  const created = await createSubIssue(
+    "k",
+    { teamId: "team-1", parentId: "uuid-1", title: "[1/3] slice", estimate: 2, assigneeId: "user-1" },
+    fetchImpl,
+  );
+  assert.deepEqual(created, { id: "uuid-2", identifier: "ENG-2" });
+  assert.match(calls[0].query as string, /issueCreate/);
+  assert.deepEqual(calls[0].variables, {
+    input: {
+      teamId: "team-1",
+      parentId: "uuid-1",
+      title: "[1/3] slice",
+      estimate: 2,
+      assigneeId: "user-1",
+    },
+  });
+});
+
+test("createSubIssue omits estimate and assignee when not given", async () => {
+  const { fetchImpl, calls } = capturingFetch({
+    data: { issueCreate: { success: true, issue: { id: "uuid-2", identifier: "ENG-2" } } },
+  });
+  await createSubIssue("k", { teamId: "team-1", parentId: "uuid-1", title: "slice" }, fetchImpl);
+  assert.deepEqual(calls[0].variables, {
+    input: { teamId: "team-1", parentId: "uuid-1", title: "slice" },
+  });
+});
+
+test("createSubIssue throws when the mutation reports failure", async () => {
+  const fetchImpl = fakeFetch({ data: { issueCreate: { success: false, issue: null } } });
+  await assert.rejects(
+    createSubIssue("k", { teamId: "t", parentId: "p", title: "slice" }, fetchImpl),
+    /issueCreate failed/,
+  );
+});
+
+test("setIssueEstimate sends an issueUpdate mutation with the estimate", async () => {
+  const { fetchImpl, calls } = capturingFetch({ data: { issueUpdate: { success: true } } });
+  await setIssueEstimate("k", "uuid-1", 0, fetchImpl);
+  assert.match(calls[0].query as string, /issueUpdate/);
+  assert.deepEqual(calls[0].variables, { id: "uuid-1", estimate: 0 });
+});
+
+test("setIssueEstimate throws when the mutation reports failure", async () => {
+  const fetchImpl = fakeFetch({ data: { issueUpdate: { success: false } } });
+  await assert.rejects(setIssueEstimate("k", "uuid-1", 0, fetchImpl), /issueUpdate failed/);
 });

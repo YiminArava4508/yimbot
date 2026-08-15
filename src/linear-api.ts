@@ -434,6 +434,87 @@ export async function fetchIssueStateType(
   return data.issue.state.type;
 }
 
+// The fields needed to hang a sub-issue off an issue: its uuid, team, and
+// assignee (inherited by split-slice subtickets so they stay on the bot's board).
+export type IssueSplitInfo = { id: string; teamId: string; assigneeId: string | null };
+
+export async function fetchIssueSplitInfo(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<IssueSplitInfo> {
+  type Data = {
+    issue: { id: string; team: { id: string }; assignee: { id: string } | null } | null;
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueSplitInfo($id: String!) {
+      issue(id: $id) { id team { id } assignee { id } }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  if (!data.issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  return {
+    id: data.issue.id,
+    teamId: data.issue.team.id,
+    assigneeId: data.issue.assignee?.id ?? null,
+  };
+}
+
+export type SubIssueInput = {
+  teamId: string;
+  parentId: string;
+  title: string;
+  estimate?: number;
+  assigneeId?: string;
+};
+
+export async function createSubIssue(
+  apiKey: string,
+  input: SubIssueInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ id: string; identifier: string }> {
+  type Data = { issueCreate: { success: boolean; issue: { id: string; identifier: string } | null } };
+  const data = await gql<Data>(
+    apiKey,
+    `mutation CreateSubIssue($input: IssueCreateInput!) {
+      issueCreate(input: $input) {
+        success
+        issue { id identifier }
+      }
+    }`,
+    { input },
+    fetchImpl,
+  );
+  if (!data.issueCreate.success || !data.issueCreate.issue) {
+    throw new Error(`issueCreate failed for sub-issue of ${input.parentId}`);
+  }
+  return { id: data.issueCreate.issue.id, identifier: data.issueCreate.issue.identifier };
+}
+
+export async function setIssueEstimate(
+  apiKey: string,
+  issueId: string,
+  estimate: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  type Data = { issueUpdate: { success: boolean } };
+  const data = await gql<Data>(
+    apiKey,
+    `mutation SetEstimate($id: String!, $estimate: Int!) {
+      issueUpdate(id: $id, input: { estimate: $estimate }) { success }
+    }`,
+    { id: issueId, estimate },
+    fetchImpl,
+  );
+  if (!data.issueUpdate.success) {
+    throw new Error(`issueUpdate failed for ${issueId}`);
+  }
+}
+
 export async function upsertMarkedComment(
   apiKey: string,
   issueId: string,

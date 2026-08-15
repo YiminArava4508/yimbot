@@ -149,6 +149,14 @@ test("selectNextClaim skips unestimated tickets when requireEstimate is on", () 
   assert.equal(picked?.identifier, "ENG-2");
 });
 
+test("selectNextClaim skips 0-point container tickets even when requireEstimate is on", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "1", estimate: 0 }), todo({ id: "2", estimate: 3 })],
+    opts(null, true),
+  );
+  assert.equal(picked?.identifier, "ENG-2");
+});
+
 test("selectNextClaim keeps unestimated tickets when requireEstimate is off", () => {
   const picked = selectNextClaim([todo({ id: "1", estimate: null })], opts());
   assert.equal(picked?.identifier, "ENG-1");

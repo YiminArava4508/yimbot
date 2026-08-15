@@ -99,11 +99,28 @@ flowchart TD
 
 - **Start new work (green):** when you move a card to **In Progress**, yimbot
   opens a fresh, isolated copy of the code and has Claude start building it.
+- **Size up new work:** every heartbeat, for each of your unestimated tickets in
+  the team's backlog and to-do (up to the concurrency cap), it opens a
+  `refine-<ticket>` tmux session that reads the ticket and enough of the code to
+  judge its size, then either points it in place or breaks it into pointed,
+  dependency-ordered subtickets under it and points the parent 0. The session
+  never writes code, never opens a branch or PR, and never moves a ticket
+  between columns; it runs in the main checkout at `CODEBASE_PATH` with no
+  worktree. The ticket's row reads **refining** while it works and **refined**
+  once an estimate lands, which is also what ends the session; one that dies or
+  lingers without setting an estimate is torn down and the ticket is picked up
+  again on a later heartbeat. *(optional; settings: `AUTO_REFINE`, on by
+  default; `REFINE_USERS`, comma-separated Linear names or emails, empty means
+  just you; `REFINE_LABEL_FILTER`, same grammar as `LABEL_FILTER` and inherits
+  it when blank; `MAX_REFINING`, defaults to 1)*
 - **Grab the next task (blue):** while you have fewer than your work-in-progress
   limit of tickets in progress, it pulls your top to-do into progress so the
   deploy step picks it up next time. A ticket whose Linear "blocked by" relations
   point at work with no merged PR is skipped, and one already in progress is moved
-  back to to-do. Before claiming, it also reads the picked ticket's description:
+  back to to-do. While the refine step is on, an unestimated ticket is left alone
+  as well: it is the refine step's to size first. A 0-point ticket is always
+  skipped, estimated or not, because a zero marks a decomposed container whose
+  subtickets carry the actual work. Before claiming, it also reads the picked ticket's description:
   when the description states a blocking dependency that was never recorded as a
   relation (for example "must land after ENG-1319"), it creates the real Linear
   relation, leaves a comment explaining what it inferred, and leaves the ticket in

@@ -9,6 +9,7 @@ export type RefineDeps = {
   fetchUnestimated: () => Promise<RefineIssue[]>;
   fetchEstimate: (identifier: string) => Promise<number | null>;
   hasSession: (name: string) => boolean;
+  listSessions: () => string[];
   spawn: (identifier: string, title: string) => void;
   kill: (name: string) => void;
   markRefined: (identifier: string, title: string) => void;
@@ -18,8 +19,8 @@ export type RefineDeps = {
 };
 
 // In-flight refine sessions by ticket identifier. Per-process: after a daemon
-// restart the spawn phase re-adopts any live refine-* session it finds instead
-// of spawning a duplicate.
+// restart the completion sweep re-adopts every live refine-* session it finds,
+// so an orphan is never respawned and always ends up reaped.
 export type RefineState = { inFlight: Map<string, { title: string; startedAt: number }> };
 
 export function freshRefineState(): RefineState {
@@ -36,6 +37,15 @@ export function refineSessionName(identifier: string): string {
 // and this step notices, emits, and reaps.
 export async function refineOnce(state: RefineState, deps: RefineDeps): Promise<void> {
   if (!deps.autoRefine) return;
+
+  // Adopt live refine sessions this process did not start (a restart, or a
+  // ticket that left the unestimated scan) so the sweep below reaps them too.
+  for (const name of deps.listSessions()) {
+    if (!name.startsWith("refine-")) continue;
+    const identifier = name.slice("refine-".length).toUpperCase();
+    if (state.inFlight.has(identifier)) continue;
+    state.inFlight.set(identifier, { title: "", startedAt: deps.now() });
+  }
 
   for (const [identifier, info] of [...state.inFlight]) {
     const name = refineSessionName(identifier);
@@ -75,7 +85,13 @@ export async function refineOnce(state: RefineState, deps: RefineDeps): Promise<
   }
   for (const issue of issues) {
     if (state.inFlight.size >= deps.maxRefining) return;
-    if (state.inFlight.has(issue.identifier)) continue;
+    const adopted = state.inFlight.get(issue.identifier);
+    if (adopted) {
+      // An orphan adopted above has no title; the scan knows it, so the board
+      // row and the refined event get a real label.
+      if (!adopted.title) adopted.title = issue.title;
+      continue;
+    }
     if (!labelFilterAllows(deps.labelFilter, issue.labels)) continue;
     if (deps.hasSession(refineSessionName(issue.identifier))) {
       state.inFlight.set(issue.identifier, { title: issue.title, startedAt: deps.now() });

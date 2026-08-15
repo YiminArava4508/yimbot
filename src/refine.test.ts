@@ -20,6 +20,7 @@ function makeDeps(overrides: Partial<RefineDeps> = {}): RefineDeps & {
     fetchUnestimated: async () => [],
     fetchEstimate: async () => null,
     hasSession: () => true,
+    listSessions: () => [],
     spawn: (id) => spawned.push(id),
     kill: (name) => killed.push(name),
     markRefined: (id) => refined.push(id),
@@ -79,6 +80,24 @@ test("refineOnce frees the slot when the session died without an estimate", asyn
   await refineOnce(state, deps);
   assert.equal(state.inFlight.size, 0);
   assert.deepEqual(deps.refined, []);
+  assert.deepEqual(deps.killed, []);
+});
+
+test("refineOnce adopts an orphaned refine session and reaps it once its estimate landed", async () => {
+  const deps = makeDeps({ listSessions: () => ["refine-eng-7", "eng-9-other"], fetchEstimate: async () => 3 });
+  const state = freshRefineState();
+  await refineOnce(state, deps);
+  assert.deepEqual(deps.refined, ["ENG-7"]);
+  assert.deepEqual(deps.killed, ["refine-eng-7"]);
+  assert.equal(state.inFlight.size, 0);
+});
+
+test("refineOnce keeps an adopted orphan in flight while its ticket is still unestimated", async () => {
+  const deps = makeDeps({ listSessions: () => ["refine-eng-7"] });
+  const state = freshRefineState();
+  await refineOnce(state, deps);
+  assert.deepEqual(deps.killed, []);
+  assert.deepEqual([...state.inFlight.keys()], ["ENG-7"]);
 });
 
 test("refineOnce reaps a session that outlived the stale window", async () => {

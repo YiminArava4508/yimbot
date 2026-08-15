@@ -414,6 +414,12 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
   // agree on which todos are actually in this instance's slice.
   const inSlice = filterByLabel(deps.labelFilter, todos);
 
+  if (deps.requireEstimate) {
+    for (const t of inSlice) {
+      if (t.estimate === null) deps.log(`deferring ${t.identifier}: no estimate (waiting for refine)`);
+    }
+  }
+
   let merged: Set<string> | null = null;
   if (deps.fetchMergedIdentifiers) {
     try {
@@ -861,7 +867,7 @@ export function liveRefineKeys(sessions: string[]): Set<string> {
   const keys = new Set<string>();
   for (const s of sessions) {
     if (!s.startsWith("refine-")) continue;
-    keys.add(deriveKey({ branch: s.slice("refine-".length) }).key);
+    keys.add(deriveKey({ identifier: s.slice("refine-".length) }).key);
   }
   return keys;
 }
@@ -1278,6 +1284,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       fetchUnestimatedIssues(config.apiKey, config.progressContext.teamId, refine.assigneeIds),
     fetchEstimate: (identifier) => fetchIssueEstimate(config.apiKey, identifier),
     hasSession: tmuxHasSession,
+    listSessions: listTmuxSessions,
     spawn: (identifier, title) => {
       const { key, label } = deriveKey({ identifier });
       emitEvent({ kind: "refine_started", key, label, title });

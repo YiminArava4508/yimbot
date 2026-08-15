@@ -32,10 +32,13 @@ session is done and will be reaped.
      under 500 LOC. Slice along feature seams so every slice builds and tests
      green on its own.
    - For each slice, run:
-     `~/create-subticket.sh <TICKET> "<slice title>" <points> --claimable`
-     The subticket lands in Todo and the active cycle, assigned like the
-     parent; the parent's estimate is zeroed automatically (that zero marks it
-     as a refined container the claim step never picks up).
+     `~/create-subticket.sh <TICKET> "<slice title>" <points> --claimable --no-zero-parent`
+     The subticket lands in Todo and the active cycle, assigned like the parent
+     and carrying the parent's labels.
+     Pass `--claimable` only when the parent ticket sits in the Todo column (an
+     unstarted state); when the parent sits in Backlog, omit it so the pointed
+     slices stay unscheduled for a human to plan. `--no-zero-parent` is passed
+     either way.
    - For every pair where one slice needs another's changes merged first, run:
      `~/relate-tickets.sh <blocker-ticket> <blocked-ticket>`
      Wire only real dependencies; unrelated slices stay unblocked so they can
@@ -45,6 +48,11 @@ session is done and will be reaped.
      context (files involved, approach, gotchas) into the subticket
      description by passing it in the title only if short; otherwise add a
      comment on the subticket via the Linear MCP.
+   - **Last action of this step, after every slice and every relation:** run
+     `~/estimate-ticket.sh <TICKET> 0`. That zero is what marks the parent
+     refined (a 0-point container the claim step never picks up), so it must
+     come last: set it earlier and the daemon sees the estimate mid-way and
+     reaps this session before the remaining slices exist.
 
 6. **STOP.** Print a summary: the decision (estimated in place, or the list of
    subtickets with points and blocking order). Do not wait for the daemon; the

@@ -490,8 +490,8 @@ test("resolveSessionForKey returns null when the worktree has no live session", 
 });
 
 test("liveRefineKeys maps refine sessions to board keys", () => {
-  const keys = liveRefineKeys(["refine-eng-9", "eng-12-some-ticket", "refine-sc-4"]);
-  assert.deepEqual(keys, new Set(["ENG-9", "SC-4"]));
+  const keys = liveRefineKeys(["refine-eng-9", "eng-12-some-ticket", "refine-sc-4", "refine-plat-12"]);
+  assert.deepEqual(keys, new Set(["ENG-9", "SC-4", "PLAT-12"]));
 });
 
 test("resolveSessionForKey falls back to a live refine session when no worktree matches", () => {
@@ -613,6 +613,24 @@ test("claimOnce defers a blocked todo and logs it when merged is available", asy
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0);
   assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
+});
+
+test("claimOnce logs unestimated todos it defers to the refine step", async () => {
+  const { deps, moved, logs } = claimDeps({
+    requireEstimate: true,
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, estimate: null })],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l === "deferring ENG-5: no estimate (waiting for refine)"));
+});
+
+test("claimOnce says nothing about unestimated todos while the refine step is off", async () => {
+  const { deps, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, estimate: null })],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.ok(!logs.some((l) => l.includes("no estimate")));
 });
 
 test("claimOnce claims a blocked todo once its blocker is merged", async () => {

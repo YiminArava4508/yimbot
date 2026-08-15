@@ -486,16 +486,48 @@ test("fetchTeamLabels returns the team's label names", async () => {
 
 test("fetchIssueSplitInfo returns id, teamId, and assigneeId", async () => {
   const body = {
-    data: { issue: { id: "uuid-1", team: { id: "team-1", activeCycle: null }, assignee: { id: "user-1" } } },
+    data: {
+      issue: {
+        id: "uuid-1",
+        team: { id: "team-1", activeCycle: null },
+        assignee: { id: "user-1" },
+        labels: { nodes: [] },
+      },
+    },
   };
   const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
-  assert.deepEqual(info, { id: "uuid-1", teamId: "team-1", assigneeId: "user-1", activeCycleId: null });
+  assert.deepEqual(info, {
+    id: "uuid-1",
+    teamId: "team-1",
+    assigneeId: "user-1",
+    activeCycleId: null,
+    labelIds: [],
+  });
 });
 
 test("fetchIssueSplitInfo returns a null assigneeId for unassigned issues", async () => {
-  const body = { data: { issue: { id: "uuid-1", team: { id: "team-1", activeCycle: null }, assignee: null } } };
+  const body = {
+    data: {
+      issue: { id: "uuid-1", team: { id: "team-1", activeCycle: null }, assignee: null, labels: { nodes: [] } },
+    },
+  };
   const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
   assert.equal(info.assigneeId, null);
+});
+
+test("fetchIssueSplitInfo returns the parent's label ids", async () => {
+  const body = {
+    data: {
+      issue: {
+        id: "uuid-1",
+        team: { id: "team-1", activeCycle: null },
+        assignee: null,
+        labels: { nodes: [{ id: "lab-1" }, { id: "lab-2" }] },
+      },
+    },
+  };
+  const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
+  assert.deepEqual(info.labelIds, ["lab-1", "lab-2"]);
 });
 
 test("fetchIssueSplitInfo throws entity-not-found when the issue is missing", async () => {
@@ -584,7 +616,14 @@ test("fetchUsers returns id, name, and email", async () => {
 
 test("fetchIssueSplitInfo returns the team's active cycle id", async () => {
   const body = {
-    data: { issue: { id: "uuid-1", team: { id: "team-1", activeCycle: { id: "cyc-1" } }, assignee: null } },
+    data: {
+      issue: {
+        id: "uuid-1",
+        team: { id: "team-1", activeCycle: { id: "cyc-1" } },
+        assignee: null,
+        labels: { nodes: [] },
+      },
+    },
   };
   const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
   assert.equal(info.activeCycleId, "cyc-1");

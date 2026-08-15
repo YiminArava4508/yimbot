@@ -42,7 +42,12 @@ test("createSliceSubticket creates the sub-issue and zeroes the parent estimate"
       match: /IssueSplitInfo/,
       body: {
         data: {
-          issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: { id: "user-1" } },
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: null },
+            assignee: { id: "user-1" },
+            labels: { nodes: [] },
+          },
         },
       },
     },
@@ -74,7 +79,16 @@ test("createSliceSubticket works without points and without an assignee", async 
   const { fetchImpl, calls } = routingFetch([
     {
       match: /IssueSplitInfo/,
-      body: { data: { issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null } } },
+      body: {
+        data: {
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: null },
+            assignee: null,
+            labels: { nodes: [] },
+          },
+        },
+      },
     },
     {
       match: /issueCreate/,
@@ -96,7 +110,16 @@ test("createSliceSubticket --claimable places the sub-issue in Todo and the acti
   const { fetchImpl, calls } = routingFetch([
     {
       match: /IssueSplitInfo/,
-      body: { data: { issue: { id: "uuid-p", team: { id: "team-1", activeCycle: { id: "cyc-1" } }, assignee: null } } },
+      body: {
+        data: {
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: { id: "cyc-1" } },
+            assignee: null,
+            labels: { nodes: [] },
+          },
+        },
+      },
     },
     {
       match: /TeamStates/,
@@ -115,11 +138,86 @@ test("createSliceSubticket --claimable places the sub-issue in Todo and the acti
   });
 });
 
+test("createSliceSubticket --claimable inherits the parent's labels", async () => {
+  const { fetchImpl, calls } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: null },
+            assignee: null,
+            labels: { nodes: [{ id: "lab-1" }, { id: "lab-2" }] },
+          },
+        },
+      },
+    },
+    {
+      match: /TeamStates/,
+      body: { data: { team: { states: { nodes: [{ id: "st-todo", name: "Todo", type: "unstarted" }] } } } },
+    },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+    { match: /issueUpdate/, body: { data: { issueUpdate: { success: true } } } },
+  ]);
+  await createSliceSubticket("k", "ENG-42", "slice", { claimable: true }, fetchImpl);
+  const create = calls.find((c) => /issueCreate/.test(c.query as string));
+  assert.deepEqual(create?.variables, {
+    input: {
+      teamId: "team-1",
+      parentId: "uuid-p",
+      title: "slice",
+      stateId: "st-todo",
+      labelIds: ["lab-1", "lab-2"],
+    },
+  });
+});
+
+test("createSliceSubticket leaves the parent estimate alone with zeroParent false", async () => {
+  const { fetchImpl, calls } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: null },
+            assignee: null,
+            labels: { nodes: [] },
+          },
+        },
+      },
+    },
+    {
+      match: /TeamStates/,
+      body: { data: { team: { states: { nodes: [{ id: "st-todo", name: "Todo", type: "unstarted" }] } } } },
+    },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+  ]);
+  await createSliceSubticket("k", "ENG-42", "slice", { claimable: true, zeroParent: false }, fetchImpl);
+  assert.equal(calls.filter((c) => /issueUpdate/.test(c.query as string)).length, 0);
+});
+
 test("createSliceSubticket --claimable omits the cycle when the team has none active", async () => {
   const { fetchImpl, calls } = routingFetch([
     {
       match: /IssueSplitInfo/,
-      body: { data: { issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null } } },
+      body: {
+        data: {
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: null },
+            assignee: null,
+            labels: { nodes: [] },
+          },
+        },
+      },
     },
     {
       match: /TeamStates/,
@@ -140,7 +238,16 @@ test("createSliceSubticket --claimable throws when no state matches the todo nam
   const { fetchImpl } = routingFetch([
     {
       match: /IssueSplitInfo/,
-      body: { data: { issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null } } },
+      body: {
+        data: {
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: null },
+            assignee: null,
+            labels: { nodes: [] },
+          },
+        },
+      },
     },
     { match: /TeamStates/, body: { data: { team: { states: { nodes: [{ id: "s", name: "Doing", type: "started" }] } } } } },
   ]);

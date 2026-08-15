@@ -514,7 +514,13 @@ export async function fetchIssueStateType(
 // The fields needed to hang a sub-issue off an issue: its uuid, team,
 // assignee (inherited by split-slice subtickets so they stay on the bot's
 // board), and the team's active cycle (so slices land in the current cycle).
-export type IssueSplitInfo = { id: string; teamId: string; assigneeId: string | null; activeCycleId: string | null };
+export type IssueSplitInfo = {
+  id: string;
+  teamId: string;
+  assigneeId: string | null;
+  activeCycleId: string | null;
+  labelIds: string[];
+};
 
 export async function fetchIssueSplitInfo(
   apiKey: string,
@@ -526,12 +532,13 @@ export async function fetchIssueSplitInfo(
       id: string;
       team: { id: string; activeCycle: { id: string } | null };
       assignee: { id: string } | null;
+      labels: { nodes: { id: string }[] };
     } | null;
   };
   const data = await gql<Data>(
     apiKey,
     `query IssueSplitInfo($id: String!) {
-      issue(id: $id) { id team { id activeCycle { id } } assignee { id } }
+      issue(id: $id) { id team { id activeCycle { id } } assignee { id } labels { nodes { id } } }
     }`,
     { id: identifier },
     fetchImpl,
@@ -544,6 +551,7 @@ export async function fetchIssueSplitInfo(
     teamId: data.issue.team.id,
     assigneeId: data.issue.assignee?.id ?? null,
     activeCycleId: data.issue.team.activeCycle?.id ?? null,
+    labelIds: data.issue.labels.nodes.map((l) => l.id),
   };
 }
 
@@ -555,6 +563,7 @@ export type SubIssueInput = {
   assigneeId?: string;
   stateId?: string;
   cycleId?: string;
+  labelIds?: string[];
 };
 
 export async function createSubIssue(

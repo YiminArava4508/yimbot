@@ -31,6 +31,7 @@ import {
   fetchMarkedCommentBody,
   fetchIssueByIdentifier,
   fetchIssueStateType,
+  fetchUsers,
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
@@ -72,6 +73,18 @@ export async function startDaemon(): Promise<() => void> {
   // stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
   const maxInProgress = Number(envOr("MAX_IN_PROGRESS", "3"));
 
+  // Refine step: size unestimated Backlog/Todo tickets before claim may touch
+  // them. Its own label filter falls back to the worker's LABEL_FILTER, so one
+  // filter serves both unless split explicitly.
+  const autoRefine = !["false", "off", "no", "0"].includes(envOr("AUTO_REFINE", "true").toLowerCase());
+  const refineLabelFilter = process.env.REFINE_LABEL_FILTER?.trim()
+    ? parseLabelFilter(process.env.REFINE_LABEL_FILTER)
+    : labelFilter;
+  const maxRefining = Number(envOr("MAX_REFINING", "1"));
+  if (!Number.isInteger(maxRefining) || maxRefining < 1) {
+    throw new Error("MAX_REFINING must be a positive integer");
+  }
+
   // Cleanup step: on by default, disabled with a recognized off-value. Removes a
   // worktree + session once its PR merges.
   const autoCleanup = !["false", "off", "no", "0"].includes(envOr("AUTO_CLEANUP", "true").toLowerCase());
@@ -104,6 +117,30 @@ export async function startDaemon(): Promise<() => void> {
   const progressContext = await resolveContext(apiKey, teamName, stateName);
   const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
   const todoContext = await resolveContext(apiKey, teamName, todoStateName);
+
+  // REFINE_USERS names/emails resolve to ids once at startup; misses are logged
+  // and dropped, and an empty result falls back to the viewer so a typo never
+  // silently disables the step.
+  let refineAssigneeIds = [progressContext.viewerId];
+  const refineUserNames = envOr("REFINE_USERS", "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (autoRefine && refineUserNames.length > 0) {
+    try {
+      const users = await fetchUsers(apiKey);
+      const resolved = refineUserNames.flatMap((name) => {
+        const match = users.find(
+          (u) => u.name.toLowerCase() === name.toLowerCase() || u.email.toLowerCase() === name.toLowerCase(),
+        );
+        if (!match) {
+          console.log(`[yimbot] refine: no Linear user matches "${name}", skipping`);
+          return [];
+        }
+        return [match.id];
+      });
+      if (resolved.length > 0) refineAssigneeIds = resolved;
+    } catch (err) {
+      console.log(`[yimbot] refine: user resolution failed (${err}); refining for the API key's viewer`);
+    }
+  }
 
   // Checks to drop from every CI rollup read, by CheckRun name or StatusContext
   // context (comma-separated, case-insensitive). A merge queue's own gating check
@@ -293,6 +330,11 @@ export async function startDaemon(): Promise<() => void> {
       ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]`
       : "[yimbot] auto-claim OFF",
   );
+  console.log(
+    autoRefine
+      ? `[yimbot] refine step ON: sizing unestimated Backlog/Todo tickets for ${refineAssigneeIds.length} user(s), up to ${maxRefining} at a time`
+      : "[yimbot] refine step OFF",
+  );
   console.log(`[yimbot] label filter: ${describeLabelFilter(labelFilter)}`);
 
   const stop = startWatcher({
@@ -310,6 +352,9 @@ export async function startDaemon(): Promise<() => void> {
       todoContext,
       progressStateName: stateName,
     },
+    refine: autoRefine
+      ? { autoRefine, maxRefining, labelFilter: refineLabelFilter, assigneeIds: refineAssigneeIds }
+      : null,
     prReview,
     cleanup,
     advance,

@@ -323,6 +323,26 @@ export const hostLinks: HostLink[] = [
     label: "split subticket creator (~/create-subticket.sh)",
   },
   {
+    source: join(repoRoot, "scripts/refine-session.sh"),
+    target: join(homedir(), "refine-session.sh"),
+    label: "refine session launcher (~/refine-session.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/relate-tickets.sh"),
+    target: join(homedir(), "relate-tickets.sh"),
+    label: "blocks-relation writer (~/relate-tickets.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/estimate-ticket.sh"),
+    target: join(homedir(), "estimate-ticket.sh"),
+    label: "estimate setter (~/estimate-ticket.sh)",
+  },
+  {
+    source: join(repoRoot, "skills/refine-ticket"),
+    target: join(homedir(), ".claude/skills/refine-ticket"),
+    label: "refine-ticket skill (~/.claude/skills/refine-ticket)",
+  },
+  {
     source: join(repoRoot, "skills/pickup-ticket"),
     target: join(homedir(), ".claude/skills/pickup-ticket"),
     label: "pickup-ticket skill (~/.claude/skills/pickup-ticket)",
@@ -825,6 +845,26 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), "create-subticket.sh"),
       label: "~/create-subticket.sh",
       role: "creates a Linear subticket per split slice (required for split PRs)",
+    },
+    {
+      path: join(homedir(), "refine-session.sh"),
+      label: "~/refine-session.sh",
+      role: "spawns refine sessions for unestimated tickets (required for refine)",
+    },
+    {
+      path: join(homedir(), "relate-tickets.sh"),
+      label: "~/relate-tickets.sh",
+      role: "wires subticket ordering during refine (required for refine)",
+    },
+    {
+      path: join(homedir(), "estimate-ticket.sh"),
+      label: "~/estimate-ticket.sh",
+      role: "sets estimates during refine (required for refine)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/refine-ticket"),
+      label: "~/.claude/skills/refine-ticket",
+      role: "refine session flow (required for refine)",
     },
     {
       path: join(homedir(), ".claude/skills/pickup-ticket"),

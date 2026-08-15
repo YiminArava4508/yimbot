@@ -18,7 +18,9 @@ export type EventKind =
   | "needs_input"
   | "input_received"
   | "needs_decision"
-  | "review_findings";
+  | "review_findings"
+  | "refine_started"
+  | "refined";
 
 export type YimbotEvent = {
   ts: number;
@@ -89,6 +91,8 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   merged: { status: "merged", terminal: true },
   needs_decision: { status: "needs decision", terminal: false },
   review_findings: { status: "review findings", terminal: false },
+  refine_started: { status: "refining", terminal: false },
+  refined: { status: "refined", terminal: true },
 };
 
 // Takes a plain string, not EventKind: the log persists across versions, so a

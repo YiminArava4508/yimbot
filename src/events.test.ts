@@ -704,3 +704,8 @@ test("statusFor maps the two hand-back kinds", () => {
   assert.deepEqual(statusFor("needs_decision"), { status: "needs decision", terminal: false });
   assert.deepEqual(statusFor("review_findings"), { status: "review findings", terminal: false });
 });
+
+test("refine event kinds map to board statuses", () => {
+  assert.deepEqual(statusFor("refine_started"), { status: "refining", terminal: false });
+  assert.deepEqual(statusFor("refined"), { status: "refined", terminal: true });
+});

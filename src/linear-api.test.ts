@@ -4,7 +4,10 @@ import {
   countAssignedInState,
   createBlocksRelation,
   createSubIssue,
+  fetchIssueEstimate,
   fetchIssueSplitInfo,
+  fetchUnestimatedIssues,
+  fetchUsers,
   setIssueEstimate,
   fetchMarkedCommentBody,
   fetchCycleTodoIssues,
@@ -127,6 +130,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
             description: "some body",
             priority: 2,
             sortOrder: 7.5,
+            estimate: null,
             labels: { nodes: [{ name: "frontend" }, { name: "migration" }] },
             inverseRelations: { nodes: [] },
           },
@@ -147,6 +151,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
       description: "some body",
       priority: 2,
       sortOrder: 7.5,
+      estimate: null,
       labels: ["frontend", "migration"],
       blockedBy: [],
     },
@@ -481,14 +486,14 @@ test("fetchTeamLabels returns the team's label names", async () => {
 
 test("fetchIssueSplitInfo returns id, teamId, and assigneeId", async () => {
   const body = {
-    data: { issue: { id: "uuid-1", team: { id: "team-1" }, assignee: { id: "user-1" } } },
+    data: { issue: { id: "uuid-1", team: { id: "team-1", activeCycle: null }, assignee: { id: "user-1" } } },
   };
   const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
-  assert.deepEqual(info, { id: "uuid-1", teamId: "team-1", assigneeId: "user-1" });
+  assert.deepEqual(info, { id: "uuid-1", teamId: "team-1", assigneeId: "user-1", activeCycleId: null });
 });
 
 test("fetchIssueSplitInfo returns a null assigneeId for unassigned issues", async () => {
-  const body = { data: { issue: { id: "uuid-1", team: { id: "team-1" }, assignee: null } } };
+  const body = { data: { issue: { id: "uuid-1", team: { id: "team-1", activeCycle: null }, assignee: null } } };
   const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
   assert.equal(info.assigneeId, null);
 });
@@ -550,4 +555,46 @@ test("setIssueEstimate sends an issueUpdate mutation with the estimate", async (
 test("setIssueEstimate throws when the mutation reports failure", async () => {
   const fetchImpl = fakeFetch({ data: { issueUpdate: { success: false } } });
   await assert.rejects(setIssueEstimate("k", "uuid-1", 0, fetchImpl), /issueUpdate failed/);
+});
+
+test("fetchUnestimatedIssues queries backlog+unstarted null-estimate issues for the assignees", async () => {
+  const { fetchImpl, calls } = capturingFetch({
+    data: { issues: { nodes: [{ id: "i-1", identifier: "ENG-9", title: "Big one", labels: { nodes: [{ name: "bot" }] } }] } },
+  });
+  const issues = await fetchUnestimatedIssues("k", "team-1", ["u-1", "u-2"], fetchImpl);
+  assert.deepEqual(issues, [{ id: "i-1", identifier: "ENG-9", title: "Big one", labels: ["bot"] }]);
+  assert.match(calls[0].query as string, /estimate: \{ null: true \}/);
+  assert.match(calls[0].query as string, /state: \{ type: \{ in: \["backlog", "unstarted"\] \} \}/);
+  assert.deepEqual(calls[0].variables, { teamId: "team-1", assigneeIds: ["u-1", "u-2"] });
+});
+
+test("fetchIssueEstimate returns the estimate or null", async () => {
+  assert.equal(await fetchIssueEstimate("k", "ENG-9", fakeFetch({ data: { issue: { estimate: 3 } } })), 3);
+  assert.equal(await fetchIssueEstimate("k", "ENG-9", fakeFetch({ data: { issue: { estimate: null } } })), null);
+});
+
+test("fetchIssueEstimate throws entity-not-found when the issue is missing", async () => {
+  await assert.rejects(fetchIssueEstimate("k", "ENG-999", fakeFetch({ data: { issue: null } })), /Entity not found/);
+});
+
+test("fetchUsers returns id, name, and email", async () => {
+  const body = { data: { users: { nodes: [{ id: "u-1", name: "Yimin Arava", email: "yimin@x.com" }] } } };
+  assert.deepEqual(await fetchUsers("k", fakeFetch(body)), [{ id: "u-1", name: "Yimin Arava", email: "yimin@x.com" }]);
+});
+
+test("fetchIssueSplitInfo returns the team's active cycle id", async () => {
+  const body = {
+    data: { issue: { id: "uuid-1", team: { id: "team-1", activeCycle: { id: "cyc-1" } }, assignee: null } },
+  };
+  const info = await fetchIssueSplitInfo("k", "ENG-1", fakeFetch(body));
+  assert.equal(info.activeCycleId, "cyc-1");
+});
+
+test("fetchCycleTodoIssues carries the estimate through", async () => {
+  const node = {
+    id: "i-1", identifier: "ENG-1", title: "t", description: null, priority: 0, sortOrder: 1,
+    estimate: 2, labels: { nodes: [] }, inverseRelations: { nodes: [] },
+  };
+  const issues = await fetchCycleTodoIssues("k", { viewerId: "u", teamId: "t", stateId: "s" }, fakeFetch({ data: { issues: { nodes: [node] } } }));
+  assert.equal(issues[0].estimate, 2);
 });

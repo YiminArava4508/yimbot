@@ -26,6 +26,7 @@ export type CycleTodoIssue = LinearIssue & {
   description: string;
   // Identifiers of tickets this one is blocked by (from inverse "blocks" relations).
   blockedBy: string[];
+  estimate: number | null;
 };
 
 type InverseRelationNodes = { nodes: { type: string; issue: { identifier: string } | null }[] };
@@ -268,6 +269,79 @@ export async function fetchTeamLabels(
   return data.team.labels.nodes.map((l) => l.name);
 }
 
+export type UnestimatedIssue = LinearIssue & { labels: string[] };
+
+// The refine step's work queue: the team's unestimated Backlog/Todo tickets for
+// the configured assignees. Filters by state TYPE (backlog/unstarted), not state
+// name, so it spans both columns without extra config.
+export async function fetchUnestimatedIssues(
+  apiKey: string,
+  teamId: string,
+  assigneeIds: string[],
+  fetchImpl: typeof fetch = fetch,
+): Promise<UnestimatedIssue[]> {
+  type Node = LinearIssue & { labels: { nodes: { name: string }[] } };
+  type Data = { issues: { nodes: Node[] } };
+  const data = await gql<Data>(
+    apiKey,
+    `query UnestimatedIssues($teamId: ID!, $assigneeIds: [ID!]!) {
+      issues(
+        first: 50
+        filter: {
+          team: { id: { eq: $teamId } }
+          assignee: { id: { in: $assigneeIds } }
+          estimate: { null: true }
+          state: { type: { in: ["backlog", "unstarted"] } }
+        }
+      ) {
+        nodes { id identifier title labels { nodes { name } } }
+      }
+    }`,
+    { teamId, assigneeIds },
+    fetchImpl,
+  );
+  return data.issues.nodes.map((n) => ({
+    id: n.id,
+    identifier: n.identifier,
+    title: n.title,
+    labels: n.labels.nodes.map((l) => l.name),
+  }));
+}
+
+export async function fetchIssueEstimate(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<number | null> {
+  type Data = { issue: { estimate: number | null } | null };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueEstimate($id: String!) {
+      issue(id: $id) { estimate }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  if (!data.issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  return data.issue.estimate;
+}
+
+export type LinearUser = { id: string; name: string; email: string };
+
+// Workspace users, for resolving REFINE_USERS names/emails to ids at startup.
+export async function fetchUsers(apiKey: string, fetchImpl: typeof fetch = fetch): Promise<LinearUser[]> {
+  type Data = { users: { nodes: LinearUser[] } };
+  const data = await gql<Data>(
+    apiKey,
+    `query Users { users(first: 100) { nodes { id name email } } }`,
+    {},
+    fetchImpl,
+  );
+  return data.users.nodes;
+}
+
 // The watched team's active-cycle Todo issues assigned to the viewer, enriched
 // with priority, sortOrder, and label names for the claim step to rank. Scoped by
 // team + assignee + state + the currently-active cycle.
@@ -283,6 +357,7 @@ export async function fetchCycleTodoIssues(
     description: string | null;
     priority: number;
     sortOrder: number;
+    estimate: number | null;
     labels: { nodes: { name: string }[] };
     inverseRelations: InverseRelationNodes;
   };
@@ -306,6 +381,7 @@ export async function fetchCycleTodoIssues(
           description
           priority
           sortOrder
+          estimate
           labels { nodes { name } }
           inverseRelations { nodes { type issue { identifier } } }
         }
@@ -321,6 +397,7 @@ export async function fetchCycleTodoIssues(
     description: n.description ?? "",
     priority: n.priority,
     sortOrder: n.sortOrder,
+    estimate: n.estimate ?? null,
     labels: n.labels.nodes.map((l) => l.name),
     blockedBy: blockersFrom(n.inverseRelations),
   }));
@@ -434,9 +511,10 @@ export async function fetchIssueStateType(
   return data.issue.state.type;
 }
 
-// The fields needed to hang a sub-issue off an issue: its uuid, team, and
-// assignee (inherited by split-slice subtickets so they stay on the bot's board).
-export type IssueSplitInfo = { id: string; teamId: string; assigneeId: string | null };
+// The fields needed to hang a sub-issue off an issue: its uuid, team,
+// assignee (inherited by split-slice subtickets so they stay on the bot's
+// board), and the team's active cycle (so slices land in the current cycle).
+export type IssueSplitInfo = { id: string; teamId: string; assigneeId: string | null; activeCycleId: string | null };
 
 export async function fetchIssueSplitInfo(
   apiKey: string,
@@ -444,12 +522,16 @@ export async function fetchIssueSplitInfo(
   fetchImpl: typeof fetch = fetch,
 ): Promise<IssueSplitInfo> {
   type Data = {
-    issue: { id: string; team: { id: string }; assignee: { id: string } | null } | null;
+    issue: {
+      id: string;
+      team: { id: string; activeCycle: { id: string } | null };
+      assignee: { id: string } | null;
+    } | null;
   };
   const data = await gql<Data>(
     apiKey,
     `query IssueSplitInfo($id: String!) {
-      issue(id: $id) { id team { id } assignee { id } }
+      issue(id: $id) { id team { id activeCycle { id } } assignee { id } }
     }`,
     { id: identifier },
     fetchImpl,
@@ -461,6 +543,7 @@ export async function fetchIssueSplitInfo(
     id: data.issue.id,
     teamId: data.issue.team.id,
     assigneeId: data.issue.assignee?.id ?? null,
+    activeCycleId: data.issue.team.activeCycle?.id ?? null,
   };
 }
 

@@ -521,6 +521,7 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
     description: "",
     priority: 0,
     sortOrder: 0,
+    estimate: 2,
     labels: [],
     blockedBy: [],
     ...overrides,

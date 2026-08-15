@@ -137,11 +137,31 @@ test("readyOnce treats no CI (none) as passing", async () => {
   assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
 });
 
-test("readyOnce labels a ready draft PR like any other", async () => {
+test("readyOnce never labels a draft PR, even a ready one", async () => {
   const h = harness({ listOpenPRs: async () => [pr(4706, { isDraft: true })] }, []);
   await readyOnce(h.deps);
-  assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
+  assert.equal(h.added.length, 0);
   assert.equal(h.removed.length, 0);
+});
+
+test("readyOnce strips the label from a labeled draft PR", async () => {
+  const h = harness({ listOpenPRs: async () => [pr(4706, { isDraft: true })] }, [LABEL]);
+  await readyOnce(h.deps);
+  assert.equal(h.added.length, 0);
+  assert.deepEqual(h.removed, [{ n: 4706, label: LABEL }]);
+});
+
+test("readyOnce still reports a draft's verdict so the board shows draft pr", async () => {
+  const seen: { n: number; v: string; hasLabel: boolean; isDraft: boolean }[] = [];
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(4706, { isDraft: true })],
+      onVerdict: (n, v, hasLabel, isDraft) => void seen.push({ n, v, hasLabel, isDraft }),
+    },
+    [LABEL],
+  );
+  await readyOnce(h.deps);
+  assert.deepEqual(seen, [{ n: 4706, v: "ready", hasLabel: true, isDraft: true }]);
 });
 
 test("readyOnce reports isDraft via onVerdict", async () => {

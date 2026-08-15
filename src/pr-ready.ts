@@ -75,11 +75,11 @@ async function classify(prNumber: number, deps: PrReadyDeps): Promise<ReadyVerdi
   return "ready"; // passing or none
 }
 
-// One ready-step tick, run every heartbeat. For each open PR (drafts included:
-// supervised mode opens PRs as drafts and a human marks them ready), keep the
-// ready label in sync with its readiness: add it when the PR is ready and lacks
-// it, remove it on a hard regression when it carries it, and otherwise leave it
-// alone. Stateless: it reconciles against GitHub's live label state every tick,
+// One ready-step tick, run every heartbeat. For each open PR, keep the ready
+// label in sync with its readiness: add it when the PR is ready and lacks it,
+// remove it on a hard regression when it carries it, and otherwise leave it
+// alone. Drafts are classified (so the board can show "draft pr") but never
+// labeled: supervised mode opens PRs as drafts and only a human promotes them. Stateless: it reconciles against GitHub's live label state every tick,
 // so it self-corrects across restarts and only ever writes on a real delta. A
 // readiness read that errors skips the PR for this tick (label left untouched); a
 // label add/remove that errors is logged and the loop continues.
@@ -114,6 +114,20 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
     if (labels.includes(deps.blockedLabel)) continue; // blocked-fix flow owns this PR's labels
     const hasLabel = labels.includes(deps.label);
     deps.onVerdict?.(pr.number, verdict, hasLabel, pr.isDraft);
+    // A draft is a human's to promote: it must never carry the ready label (which
+    // queues it to merge). Skip the add even when ready, and strip a stale label
+    // left from before the PR was converted back to draft.
+    if (pr.isDraft) {
+      if (hasLabel) {
+        try {
+          await deps.removeLabel(pr.number, deps.label);
+          deps.log(`removed ${deps.label} from draft PR #${pr.number}`);
+        } catch (err) {
+          deps.log(`remove label failed for PR #${pr.number}: ${err}`);
+        }
+      }
+      continue;
+    }
     if (verdict === "hold") continue; // board reconciled above; neither add nor remove the label
 
     if (verdict === "ready" && !hasLabel) {

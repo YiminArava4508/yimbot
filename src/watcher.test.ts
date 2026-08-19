@@ -550,7 +550,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     autoClaim: true,
     riskLabels: ["migration"],
     labelFilter: null,
-    requireEstimate: false,
+    requireEstimate: () => false,
     maxEstimate: null,
     maxInProgress: 3,
     countInProgress: async () => 0,
@@ -618,12 +618,26 @@ test("claimOnce defers a blocked todo and logs it when merged is available", asy
 
 test("claimOnce logs unestimated todos it defers to the refine step", async () => {
   const { deps, moved, logs } = claimDeps({
-    requireEstimate: true,
+    requireEstimate: () => true,
     fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, estimate: null })],
   });
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0);
   assert.ok(logs.some((l) => l === "deferring ENG-5: no estimate (waiting for refine)"));
+});
+
+test("claimOnce reads requireEstimate live: unestimated claims once refine is toggled off", async () => {
+  let refineOn = true;
+  const { deps, moved } = claimDeps({
+    requireEstimate: () => refineOn,
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, estimate: null })],
+  });
+  const state = freshClaimState();
+  await claimOnce(state, deps);
+  assert.equal(moved.length, 0);
+  refineOn = false;
+  await claimOnce(state, deps);
+  assert.equal(moved.length, 1);
 });
 
 test("claimOnce says nothing about unestimated todos while the refine step is off", async () => {

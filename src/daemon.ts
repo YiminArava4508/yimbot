@@ -36,6 +36,7 @@ import {
   upsertMarkedComment,
 } from "./linear-api.ts";
 import { readMode } from "./mode.ts";
+import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
@@ -78,7 +79,7 @@ export async function startDaemon(): Promise<() => void> {
   // Refine step: size unestimated Backlog/Todo tickets before claim may touch
   // them. Its own label filter falls back to the worker's LABEL_FILTER, so one
   // filter serves both unless split explicitly.
-  const autoRefine = !["false", "off", "no", "0"].includes(envOr("AUTO_REFINE", "true").toLowerCase());
+  const autoRefine = refineEnvDefault(process.env);
   const refineLabelFilter = process.env.REFINE_LABEL_FILTER?.trim()
     ? parseLabelFilter(process.env.REFINE_LABEL_FILTER)
     : labelFilter;
@@ -125,7 +126,7 @@ export async function startDaemon(): Promise<() => void> {
   // silently disables the step.
   let refineAssigneeIds = [progressContext.viewerId];
   const refineUserNames = envOr("REFINE_USERS", "").split(",").map((s) => s.trim()).filter(Boolean);
-  if (autoRefine && refineUserNames.length > 0) {
+  if (refineUserNames.length > 0) {
     try {
       const users = await fetchUsers(apiKey);
       const resolved = refineUserNames.flatMap((name) => {
@@ -335,9 +336,9 @@ export async function startDaemon(): Promise<() => void> {
       : "[yimbot] auto-claim OFF",
   );
   console.log(
-    autoRefine
-      ? `[yimbot] refine step ON: sizing unestimated Backlog/Todo tickets for ${refineAssigneeIds.length} user(s), up to ${maxRefining} at a time`
-      : "[yimbot] refine step OFF",
+    readRefineEnabled(autoRefine)
+      ? `[yimbot] refine step ON: sizing unestimated Backlog/Todo tickets for ${refineAssigneeIds.length} user(s), up to ${maxRefining} at a time (toggle with 'R' on the board)`
+      : "[yimbot] refine step OFF (toggle with 'R' on the board)",
   );
   console.log(`[yimbot] label filter: ${describeLabelFilter(labelFilter)}`);
 
@@ -357,9 +358,7 @@ export async function startDaemon(): Promise<() => void> {
       todoContext,
       progressStateName: stateName,
     },
-    refine: autoRefine
-      ? { autoRefine, maxRefining, labelFilter: refineLabelFilter, assigneeIds: refineAssigneeIds }
-      : null,
+    refine: { autoRefineDefault: autoRefine, maxRefining, labelFilter: refineLabelFilter, assigneeIds: refineAssigneeIds },
     prReview,
     cleanup,
     advance,

@@ -62,6 +62,7 @@ import {
   reviewOnce,
 } from "./pr-review.ts";
 import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
+import { readRefineEnabled } from "./refine-toggle.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
@@ -269,8 +270,9 @@ export type ClaimDeps = {
   riskLabels: string[];
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
-  // Whether the claim step skips tickets with no estimate.
-  requireEstimate: boolean;
+  // Whether the claim step skips tickets with no estimate. Read per tick so it
+  // tracks the refine toggle without a daemon restart.
+  requireEstimate: () => boolean;
   // Inclusive estimate ceiling (MAX_ESTIMATE); null claims any size.
   maxEstimate: number | null;
   // Ceiling on the personal In-Progress WIP: the claim step acts only while the
@@ -416,7 +418,8 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
   // agree on which todos are actually in this instance's slice.
   const inSlice = filterByLabel(deps.labelFilter, todos);
 
-  if (deps.requireEstimate) {
+  const requireEstimate = deps.requireEstimate();
+  if (requireEstimate) {
     for (const t of inSlice) {
       if (t.estimate === null) deps.log(`deferring ${t.identifier}: no estimate (waiting for refine)`);
     }
@@ -441,7 +444,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     riskLabels: deps.riskLabels,
     merged,
     labelFilter: deps.labelFilter,
-    requireEstimate: deps.requireEstimate,
+    requireEstimate,
     maxEstimate: deps.maxEstimate,
   });
   if (!next) return;
@@ -540,7 +543,9 @@ export type WatcherConfig = {
   claim: ClaimConfig;
   // Refine step: unestimated Backlog/Todo tickets get a sizing session before
   // the claim step may touch them; null disables the step (AUTO_REFINE off).
-  refine: { autoRefine: boolean; maxRefining: number; labelFilter: LabelFilter; assigneeIds: string[] } | null;
+  // autoRefineDefault seeds the live toggle (AUTO_REFINE); the R key on the
+  // board overrides it per tick via the refine toggle file.
+  refine: { autoRefineDefault: boolean; maxRefining: number; labelFilter: LabelFilter; assigneeIds: string[] };
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
   prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> | null;
@@ -1281,8 +1286,9 @@ export function startWatcher(config: WatcherConfig): () => void {
   const refineLog = (msg: string) => console.log(`[refine] ${msg}`);
   const refineState = freshRefineState();
   const { refine } = config;
-  const refineDeps: RefineDeps | null = refine && {
-    autoRefine: refine.autoRefine,
+  const refineEnabled = () => readRefineEnabled(refine.autoRefineDefault);
+  const refineDeps: RefineDeps = {
+    autoRefine: refineEnabled,
     maxRefining: refine.maxRefining,
     labelFilter: refine.labelFilter,
     fetchUnestimated: () =>
@@ -1326,7 +1332,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
     labelFilter: claim.labelFilter,
-    requireEstimate: config.refine?.autoRefine ?? false,
+    requireEstimate: refineEnabled,
     maxEstimate: claim.maxEstimate,
     maxInProgress: claim.maxInProgress,
     countInProgress: () =>
@@ -1411,7 +1417,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (readyDeps) await readyOnce(readyState, readyDeps);
       // Refine runs right before claim so an estimate that lands this tick is
       // visible to the claim query on the next one, never mid-selection.
-      if (refineDeps) await refineOnce(refineState, refineDeps);
+      await refineOnce(refineState, refineDeps);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

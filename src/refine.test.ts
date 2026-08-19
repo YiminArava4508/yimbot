@@ -14,7 +14,7 @@ function makeDeps(overrides: Partial<RefineDeps> = {}): RefineDeps & {
   const killed: string[] = [];
   const refined: string[] = [];
   return {
-    autoRefine: true,
+    autoRefine: () => true,
     maxRefining: 2,
     labelFilter: null,
     fetchUnestimated: async () => [],
@@ -37,9 +37,24 @@ test("refineSessionName lowercases the identifier", () => {
 });
 
 test("refineOnce is a no-op when disabled", async () => {
-  const deps = makeDeps({ autoRefine: false, fetchUnestimated: async () => [issue("ENG-1")] });
+  const deps = makeDeps({ autoRefine: () => false, fetchUnestimated: async () => [issue("ENG-1")] });
   await refineOnce(freshRefineState(), deps);
   assert.deepEqual(deps.spawned, []);
+});
+
+test("refineOnce reads the toggle live: off one tick, on the next", async () => {
+  let on = false;
+  const deps = makeDeps({
+    autoRefine: () => on,
+    fetchUnestimated: async () => [issue("ENG-1")],
+    hasSession: () => false,
+  });
+  const state = freshRefineState();
+  await refineOnce(state, deps);
+  assert.deepEqual(deps.spawned, []);
+  on = true;
+  await refineOnce(state, deps);
+  assert.deepEqual(deps.spawned, ["ENG-1"]);
 });
 
 test("refineOnce spawns sessions up to the cap and tracks them in flight", async () => {

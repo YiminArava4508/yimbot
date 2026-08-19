@@ -3,7 +3,8 @@ import { labelFilterAllows, type LabelFilter } from "./labels.ts";
 export type RefineIssue = { id: string; identifier: string; title: string; labels: string[] };
 
 export type RefineDeps = {
-  autoRefine: boolean;
+  // Read per tick so the TUI's R toggle takes effect without a daemon restart.
+  autoRefine: () => boolean;
   maxRefining: number;
   labelFilter: LabelFilter;
   fetchUnestimated: () => Promise<RefineIssue[]>;
@@ -36,7 +37,7 @@ export function refineSessionName(identifier: string): string {
 // only completion signal: the session sets one (or creates 0-pointed parents)
 // and this step notices, emits, and reaps.
 export async function refineOnce(state: RefineState, deps: RefineDeps): Promise<void> {
-  if (!deps.autoRefine) return;
+  if (!deps.autoRefine()) return;
 
   // Adopt live refine sessions this process did not start (a restart, or a
   // ticket that left the unestimated scan) so the sweep below reaps them too.

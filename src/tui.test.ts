@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindRefineKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -136,6 +136,34 @@ test("footerHint advertises the settings key", () => {
   assert.match(footerHint("Y"), /s settings/);
 });
 
+test("footerHint advertises the refine toggle key", () => {
+  assert.match(footerHint("Y"), /R refine/);
+});
+
+test("bindRefineKey gates S-r while settings is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let toggleCalls = 0;
+  bindRefineKey(fakeScreen, () => settingsOpen, () => toggleCalls++);
+
+  handlers["S-r"]();
+  assert.equal(toggleCalls, 0, "R must not toggle refine while the panel is open");
+
+  settingsOpen = false;
+  handlers["S-r"]();
+  assert.equal(toggleCalls, 1, "R toggles again once the panel is closed");
+});
+
+test("statusContent shows a refine-off chip only while refine is off", () => {
+  assert.match(statusContent("supervised", false, 2, null, 0), /REFINE OFF/);
+  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0), /REFINE/);
+});
+
 test("bindQuitKeys gates q and escape while settings is open, but C-c always fires", () => {
   const handlers: Record<string, () => void> = {};
   const fakeScreen = {
@@ -228,10 +256,10 @@ test("bindFlagKey gates f while settings is open", () => {
 
 test("statusContent shows an unexpired notice and drops it after its ttl", () => {
   const notice = { text: "adding ready label to #481…", until: 10_000 };
-  assert.match(statusContent("supervised", 2, notice, 9_999), /adding ready label to #481/);
-  assert.match(statusContent("supervised", 2, notice, 9_999), /2 active/);
-  assert.doesNotMatch(statusContent("supervised", 2, notice, 10_000), /adding ready label/);
-  assert.doesNotMatch(statusContent("supervised", 2, null, 0), /adding ready label/);
+  assert.match(statusContent("supervised", true, 2, notice, 9_999), /adding ready label to #481/);
+  assert.match(statusContent("supervised", true, 2, notice, 9_999), /2 active/);
+  assert.doesNotMatch(statusContent("supervised", true, 2, notice, 10_000), /adding ready label/);
+  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0), /adding ready label/);
 });
 
 test("handleReadyPress shows a pending notice, then success once the label lands", async () => {

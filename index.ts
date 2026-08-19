@@ -7,6 +7,7 @@ import { envOr } from "./src/env.ts";
 import { emitEvent, emitStatus } from "./src/events.ts";
 import { addLabel, ghRunner } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
+import { readRefineEnabled, refineEnvDefault, toggleRefine, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
@@ -84,8 +85,8 @@ if (process.stdout.isTTY) {
       const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
       return team ? await fetchTeamLabels(apiKey(), team.id) : [];
     },
-    apply: (next, prev) =>
-      applySettings(next, prev, {
+    apply: async (next, prev) => {
+      const result = await applySettings(next, prev, {
         readEnv: () => (existsSync(envPath) ? readFileSync(envPath, "utf8") : null),
         writeEnv: (contents) => writeEnvFile(contents),
         setProcessEnv: (record) => {
@@ -95,7 +96,12 @@ if (process.stdout.isTTY) {
           stop();
           stop = await startDaemon();
         },
-      }),
+      });
+      // The panel's auto-refine choice must win over a previous R toggle, or
+      // the toggle file would silently override what the user just applied.
+      if (result.ok) writeRefineEnabled(next.autoRefine);
+      return result;
+    },
   };
   runTui({
     onQuit: () => {
@@ -125,6 +131,8 @@ if (process.stdout.isTTY) {
     },
     mode: readMode,
     onToggleMode: toggleMode,
+    refineEnabled: () => readRefineEnabled(refineEnvDefault(process.env)),
+    onToggleRefine: () => toggleRefine(refineEnvDefault(process.env)),
     settings,
   });
 } else {

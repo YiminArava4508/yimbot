@@ -21,7 +21,7 @@ export function returnKey(): string {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   m mode   s settings   q quit   prefix+${key} returns here`;
+  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   m mode   R refine   s settings   q quit   prefix+${key} returns here`;
 }
 
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
@@ -58,8 +58,9 @@ export type Notice = { text: string; until: number };
 export const NOTICE_TTL_MS = 5_000;
 export const NOTICE_ERROR_TTL_MS = 15_000;
 
-export function statusContent(mode: Mode, active: number, notice: Notice | null, now: number): string {
-  const base = `${modeContent(mode)} live | ${active} active`;
+export function statusContent(mode: Mode, refineOn: boolean, active: number, notice: Notice | null, now: number): string {
+  const refineChip = refineOn ? "" : "{black-fg}{red-bg} REFINE OFF {/red-bg}{/black-fg} ";
+  const base = `${refineChip}${modeContent(mode)} live | ${active} active`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -189,6 +190,18 @@ export function bindModeKey(
   });
 }
 
+// R (shift-r; lowercase r is the ready key) toggles the refine step, gated
+// like m: the toggle file is read by the daemon per tick, so no restart.
+export function bindRefineKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isSettingsOpen: () => boolean,
+  toggle: () => void,
+): void {
+  screen.key(["S-r"], () => {
+    if (!isSettingsOpen()) toggle();
+  });
+}
+
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
@@ -197,6 +210,8 @@ export function runTui(opts: {
   onAddReadyLabel: (pr: number, key: string, label: string) => Promise<void>;
   mode: () => Mode;
   onToggleMode: () => Mode;
+  refineEnabled: () => boolean;
+  onToggleRefine: () => boolean;
   settings: SettingsDeps;
 }): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
@@ -232,7 +247,7 @@ export function runTui(opts: {
     table.setData(rowsToTable(currentRows, Date.now()));
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
-      daemonStopped ? "daemon stopped" : statusContent(opts.mode(), active, notice, Date.now()),
+      daemonStopped ? "daemon stopped" : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now()),
     );
     screen.render();
   };
@@ -283,6 +298,11 @@ export function runTui(opts: {
 
   bindModeKey(screen, () => settingsOpen, () => {
     opts.onToggleMode();
+    render();
+  });
+
+  bindRefineKey(screen, () => settingsOpen, () => {
+    opts.onToggleRefine();
     render();
   });
 

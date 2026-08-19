@@ -21,7 +21,7 @@ export function returnKey(): string {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   g/G top/bottom   enter open   f flag/unflag   m mode   s settings   q quit   prefix+${key} returns here`;
+  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   m mode   s settings   q quit   prefix+${key} returns here`;
 }
 
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
@@ -129,6 +129,20 @@ export function bindFlagKey(
   });
 }
 
+// r manually adds the ready label to the selected row's PR, gated like f. The
+// operator's escape hatch for a PR that is ready but unlabeled (e.g. the ready
+// step latched it after a removal, or the daemon is supervised): the write is
+// unconditional on readiness because the human is the judge here.
+export function bindReadyKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isSettingsOpen: () => boolean,
+  addReady: () => void,
+): void {
+  screen.key(["r"], () => {
+    if (!isSettingsOpen()) addReady();
+  });
+}
+
 // m toggles the operating mode, gated like f: while the settings panel is
 // open the board is hidden, so mutating global state under it would surprise.
 export function bindModeKey(
@@ -146,6 +160,7 @@ export function runTui(opts: {
   liveKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
+  onAddReadyLabel: (pr: number, key: string, label: string) => void;
   mode: () => Mode;
   onToggleMode: () => Mode;
   settings: SettingsDeps;
@@ -221,6 +236,12 @@ export function runTui(opts: {
     const r = currentRows[table.selected - 1];
     if (!r) return;
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
+  });
+
+  bindReadyKey(screen, () => settingsOpen, () => {
+    const r = currentRows[table.selected - 1];
+    if (!r || r.pr == null) return; // no row selected, or the row has no PR to label
+    opts.onAddReadyLabel(r.pr, r.key, r.label);
   });
 
   bindModeKey(screen, () => settingsOpen, () => {

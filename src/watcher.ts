@@ -50,7 +50,7 @@ import {
   upsertMarkedComment,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
-import { boardReadyToMerge, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
+import { boardReadyToMerge, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 import {
   blockedSessionName,
   ciSessionName,
@@ -569,9 +569,11 @@ export type WatcherConfig = {
     maxRounds: number;
   } | null;
   // gh-backed hooks for the ready step; null disables it (AUTO_READY_LABEL off, or
-  // gh unavailable). When set, each heartbeat keeps the ready label in sync on
-  // each non-draft open PR: present when the PR is clean on all three signals
-  // (no unresolved threads, mergeable, CI passing/none), absent otherwise.
+  // gh unavailable). When set, each heartbeat adds the ready label (autonomous
+  // mode only) to a non-draft open PR that has been clean on all three signals
+  // (no unresolved threads, mergeable, CI passing/none) for soakMs straight,
+  // one PR in the queue at a time. Add-only: the step never removes the label,
+  // and supervised mode never touches it.
   ready: {
     listOpenPRs: () => Promise<OpenPR[]>;
     unresolvedInfo: (n: number) => Promise<UnresolvedInfo>;
@@ -579,9 +581,9 @@ export type WatcherConfig = {
     checksInfo: (n: number) => Promise<ChecksInfo>;
     prLabels: (n: number) => Promise<string[]>;
     addLabel: (n: number, label: string) => Promise<void>;
-    removeLabel: (n: number, label: string) => Promise<void>;
     label: string;
     blockedLabel: string;
+    soakMs: number;
   } | null;
   // gh-backed source for the blocked-by handling (claim deferral + reconcile
   // move-back); null disables both (gh unavailable). Reuses listMyMergedPRs.
@@ -1238,13 +1240,15 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: advanceLog,
   };
 
-  // Ready step (gh-driven): each heartbeat, keep the ready-to-merge label in sync
-  // on each open PR, drafts included. Independent of the fixers, which keep running on
-  // every open PR, so a labeled PR that regresses is still fixed and just loses the
-  // label until it is clean again.
+  // Ready step (gh-driven): each heartbeat, add the ready-to-merge label to clean
+  // open PRs (autonomous mode only; never removed here, and at most once per PR
+  // via the latch in readyState, so a removed label stays removed). Independent
+  // of the fixers, which keep running on every open PR, so a labeled PR that
+  // regresses is still fixed and simply keeps its label while the fixers work.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
-  // Rebuilt from scratch by listOpenPRs each tick, before addLabel/removeLabel
-  // run (see readyOnce), so the wraps below can key events by branch like every
+  const readyState = freshReadyState();
+  // Rebuilt from scratch by listOpenPRs each tick, before addLabel runs (see
+  // readyOnce), so the wraps below can key events by branch like every
   // other step instead of by PR number, letting them unify with the ticket's
   // row. Cleared each tick so closed/merged PRs do not accumulate forever.
   const prBranchByNumber = new Map<number, string>();
@@ -1269,12 +1273,8 @@ export function startWatcher(config: WatcherConfig): () => void {
       emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
-    removeLabel: (n: number, label: string) => {
-      const branch = prBranchByNumber.get(n);
-      const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-      emitStatus({ kind: "ready_regressed", key: k.key, label: k.label, pr: n });
-      return config.ready!.removeLabel(n, label);
-    },
+    mode: readMode,
+    now: () => Date.now(),
     log: readyLog,
   };
 
@@ -1408,7 +1408,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       // which reattach reuses rather than creates.)
       if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
-      if (readyDeps) await readyOnce(readyDeps);
+      if (readyDeps) await readyOnce(readyState, readyDeps);
       // Refine runs right before claim so an estimate that lands this tick is
       // visible to the claim query on the next one, never mid-selection.
       if (refineDeps) await refineOnce(refineState, refineDeps);

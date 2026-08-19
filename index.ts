@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { format } from "node:util";
 import { envOr } from "./src/env.ts";
-import { emitEvent } from "./src/events.ts";
+import { emitEvent, emitStatus } from "./src/events.ts";
+import { addLabel, ghRunner } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
@@ -113,6 +114,12 @@ if (process.stdout.isTTY) {
           ? { kind: "unflagged", key, label }
           : { kind: "flagged", key, label, reason: "manual" },
       ),
+    onAddReadyLabel: (pr, key, label) => {
+      const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
+      addLabel(ghRunner(currentCodebasePath()), pr, readyLabel)
+        .then(() => emitStatus({ kind: "ready_to_merge", key, label, pr }))
+        .catch((err) => console.error(`[tui] manual ${readyLabel} on PR #${pr} failed: ${err}`));
+    },
     onOpenSession: (key) => {
       const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);

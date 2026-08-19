@@ -1,4 +1,5 @@
 import type { ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { Mode } from "./mode.ts";
 
 export type PrReadyDeps = {
   // The viewer's open PRs, drafts included.
@@ -11,14 +12,24 @@ export type PrReadyDeps = {
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
   // The label names currently on a PR.
   prLabels: (prNumber: number) => Promise<string[]>;
-  // Add / remove the ready label on a PR.
+  // Add the ready label to a PR. The ready step never removes the label: once
+  // on (by the bot or a human), only a human or the merge queue takes it off.
   addLabel: (prNumber: number, label: string) => Promise<void>;
-  removeLabel: (prNumber: number, label: string) => Promise<void>;
-  // The label name to keep in sync (e.g. "ready-to-merge").
+  // The label name to add when a PR is ready (e.g. "ready-to-merge").
   label: string;
   // The merge-queue "blocked" label. A PR carrying it is owned by the blocked-fix
   // flow, so the ready step leaves its labels untouched (never re-queues it).
   blockedLabel: string;
+  // How long a PR's ready verdict must hold, uninterrupted, before the label
+  // goes on. A PR that just went green is often about to change again (late
+  // review comment, rebase, sibling merge), so readiness has to soak first.
+  soakMs: number;
+  // Clock, injectable for tests.
+  now: () => number;
+  // The bot's operating mode, read fresh each tick. Supervised leaves the label
+  // entirely alone (a human owns it); autonomous only ever adds it. Verdicts are
+  // reported in both modes so the board stays live.
+  mode: () => Mode;
   // Report the classified verdict each tick, for a PR the ready step owns (any
   // verdict except a blocked PR, whose labels the blocked-fix flow owns). Carries
   // `hasLabel` (does the PR already carry the ready label) so the board can reflect
@@ -32,20 +43,33 @@ export type PrReadyDeps = {
   log: (msg: string) => void;
 };
 
-// Three outcomes that drive the ready label:
-//   ready     - every thread resolved, mergeable, CI green (or none): add the label.
-//   regressed - a hard failure (unresolved thread or failing CI): the label must
-//               come off.
+// Three outcomes. Only `ready` can trigger a label write (an add, in autonomous
+// mode); the other two exist for the board:
+//   ready     - every thread resolved, mergeable, CI green (or none).
+//   regressed - a hard failure (unresolved thread or failing CI). The label
+//               stays put regardless: the ready step never removes it, so a
+//               labeled PR that regresses keeps its queue slot while the fixers
+//               work, and a human-applied label is never second-guessed.
 //   hold      - neither: a still-running CI check, GitHub's not-yet-computed
 //               mergeable state, or a merge conflict (the label-driven conflict
-//               sweep heals those). Leave the label exactly as it is.
-// The `hold` state is what lets the label coexist with a merge queue: once the
-// label triggers the queue, the queue rebases the branch and re-runs CI, which
-// reads back as pending/unknown for a spell. Treating that as `hold` (not
-// `regressed`) keeps the label on, so the PR is never yanked back out of the
-// queue mid-merge. The queue's own gating check is excluded upstream in
-// `checksInfo`, so it never keeps CI perpetually pending here.
+//               sweep heals those). No add: readiness is not yet proven.
 export type ReadyVerdict = "ready" | "regressed" | "hold";
+
+// `latched`: PR numbers that have carried the ready label at least once this
+// daemon run, whether the bot added it or it was observed already on (e.g.
+// human-applied). A latched PR is never labeled again: a removal by a human or
+// the merge queue is final, not fought every heartbeat. In-memory, so after a
+// restart a PR whose label was removed pre-restart could be labeled once more;
+// the latch then re-arms from the live labels on the first tick.
+// `readySince`: when each PR's current uninterrupted run of ready verdicts
+// began, for the soak. Cleared the moment a verdict is anything but ready, so
+// a regression mid-soak restarts the clock. Also in-memory: a restart restarts
+// every soak, which only delays a label, never adds one early.
+export type ReadyState = { latched: Set<number>; readySince: Map<number, number> };
+
+export function freshReadyState(): ReadyState {
+  return { latched: new Set(), readySince: new Map() };
+}
 
 // Whether the board should show a PR as ready-to-merge for a given verdict. True
 // when it is ready, or when it is held but already carries the ready label -- a
@@ -75,15 +99,28 @@ async function classify(prNumber: number, deps: PrReadyDeps): Promise<ReadyVerdi
   return "ready"; // passing or none
 }
 
-// One ready-step tick, run every heartbeat. For each open PR, keep the ready
-// label in sync with its readiness: add it when the PR is ready and lacks it,
-// remove it on a hard regression when it carries it, and otherwise leave it
-// alone. Drafts are classified (so the board can show "draft pr") but never
-// labeled: supervised mode opens PRs as drafts and only a human promotes them. Stateless: it reconciles against GitHub's live label state every tick,
-// so it self-corrects across restarts and only ever writes on a real delta. A
-// readiness read that errors skips the PR for this tick (label left untouched); a
-// label add/remove that errors is logged and the loop continues.
-export async function readyOnce(deps: PrReadyDeps): Promise<void> {
+// One ready-step tick, run every heartbeat. The label write is add-only and
+// autonomous-only: in autonomous mode a ready PR that lacks the label gets it;
+// nothing here ever removes the label, and supervised mode writes nothing at all
+// (the label is a human's to manage there). Every PR is still classified in both
+// modes so the board reflects readiness. Drafts are classified (so the board can
+// show "draft pr") but never labeled: supervised mode opens PRs as drafts and
+// only a human promotes them. Each add happens at most once per PR: the latch
+// in `state` records every PR seen with the label (however it got it), and a
+// latched PR is never re-labeled, so a human or the merge queue taking the
+// label off is final.
+//
+// Adds are also soaked and serialized. Soaked: a PR labels only after its ready
+// verdict has held for soakMs straight (the clock resets on any lapse). Serialized:
+// while any open PR carries the ready or blocked label the step adds nothing --
+// one PR in the queue at a time keeps bot-queued PRs from ever batching against
+// each other -- and at most one PR labels per tick. Humans can still queue more
+// by hand; the bot then waits for the queue to drain.
+//
+// A readiness read that errors skips the PR for this tick; an addLabel that
+// errors is logged, left unlatched, and the next candidate is tried (a failed
+// add queued nothing, so the slot is still free).
+export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<void> {
   let prs: OpenPR[];
   try {
     prs = await deps.listOpenPRs();
@@ -92,6 +129,13 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
     return;
   }
 
+  // Drop soak clocks for PRs no longer open, so merged/closed PRs do not
+  // accumulate in the map forever.
+  const open = new Set(prs.map((p) => p.number));
+  for (const n of state.readySince.keys()) if (!open.has(n)) state.readySince.delete(n);
+
+  let queueOccupied = false;
+  const candidates: number[] = [];
   for (const pr of prs) {
     let verdict: ReadyVerdict;
     try {
@@ -111,39 +155,37 @@ export async function readyOnce(deps: PrReadyDeps): Promise<void> {
       deps.log(`label read failed for PR #${pr.number}: ${err}`);
       continue;
     }
-    if (labels.includes(deps.blockedLabel)) continue; // blocked-fix flow owns this PR's labels
     const hasLabel = labels.includes(deps.label);
-    deps.onVerdict?.(pr.number, verdict, hasLabel, pr.isDraft);
-    // A draft is a human's to promote: it must never carry the ready label (which
-    // queues it to merge). Skip the add even when ready, and strip a stale label
-    // left from before the PR was converted back to draft.
-    if (pr.isDraft) {
-      if (hasLabel) {
-        try {
-          await deps.removeLabel(pr.number, deps.label);
-          deps.log(`removed ${deps.label} from draft PR #${pr.number}`);
-        } catch (err) {
-          deps.log(`remove label failed for PR #${pr.number}: ${err}`);
-        }
-      }
-      continue;
+    const isBlocked = labels.includes(deps.blockedLabel);
+    if (hasLabel) state.latched.add(pr.number); // latch in every mode, blocked PRs included
+    if (hasLabel || isBlocked) queueOccupied = true; // queued now, or blocked and due a re-queue
+    // The soak clock runs in every mode (so a long-ready PR labels promptly after
+    // a switch to autonomous) and resets whenever readiness lapses.
+    if (verdict === "ready") {
+      if (!state.readySince.has(pr.number)) state.readySince.set(pr.number, deps.now());
+    } else {
+      state.readySince.delete(pr.number);
     }
-    if (verdict === "hold") continue; // board reconciled above; neither add nor remove the label
+    if (isBlocked) continue; // blocked-fix flow owns this PR's labels
+    deps.onVerdict?.(pr.number, verdict, hasLabel, pr.isDraft);
+    if (deps.mode() === "supervised") continue; // the label is a human's to manage
+    // A draft is a human's to promote: never add the label (which queues it to
+    // merge). A stale label on a draft is likewise left for a human to clear.
+    if (pr.isDraft) continue;
+    if (verdict !== "ready" || state.latched.has(pr.number)) continue;
+    const soaked = deps.now() - (state.readySince.get(pr.number) ?? deps.now()) >= deps.soakMs;
+    if (soaked) candidates.push(pr.number);
+  }
 
-    if (verdict === "ready" && !hasLabel) {
-      try {
-        await deps.addLabel(pr.number, deps.label);
-        deps.log(`labeled PR #${pr.number} ${deps.label} (ready to merge)`);
-      } catch (err) {
-        deps.log(`add label failed for PR #${pr.number}: ${err}`);
-      }
-    } else if (verdict === "regressed" && hasLabel) {
-      try {
-        await deps.removeLabel(pr.number, deps.label);
-        deps.log(`removed ${deps.label} from PR #${pr.number} (no longer ready)`);
-      } catch (err) {
-        deps.log(`remove label failed for PR #${pr.number}: ${err}`);
-      }
+  if (queueOccupied) return; // one PR in the queue at a time
+  for (const n of candidates) {
+    try {
+      await deps.addLabel(n, deps.label);
+      state.latched.add(n);
+      deps.log(`labeled PR #${n} ${deps.label} (ready to merge)`);
+      return; // at most one add per tick
+    } catch (err) {
+      deps.log(`add label failed for PR #${n}: ${err}`);
     }
   }
 }

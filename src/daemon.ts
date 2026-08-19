@@ -20,7 +20,6 @@ import {
   listMyOpenPRs,
   mergeableInfo,
   prLabels,
-  removeLabel,
   repoSlug,
   unresolvedThreadInfo,
   viewerLogin,
@@ -289,6 +288,8 @@ export async function startDaemon(): Promise<() => void> {
   // review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
   const autoReadyLabel = !["false", "off", "no", "0"].includes(envOr("AUTO_READY_LABEL", "true").toLowerCase());
   const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
+  const readySoakMinutes = Number(envOr("READY_SOAK_MINUTES", "10"));
+  const readySoakMs = (Number.isFinite(readySoakMinutes) && readySoakMinutes >= 0 ? readySoakMinutes : 10) * 60_000;
   const ready =
     autoReadyLabel && prReview
       ? {
@@ -298,14 +299,14 @@ export async function startDaemon(): Promise<() => void> {
           checksInfo: prReview.checksInfo,
           prLabels: (n: number) => prLabels(gh, n),
           addLabel: (n: number, label: string) => addLabel(gh, n, label),
-          removeLabel: (n: number, label: string) => removeLabel(gh, n, label),
           label: readyLabelName,
           blockedLabel: blockedLabelName,
+          soakMs: readySoakMs,
         }
       : null;
   console.log(
     ready
-      ? `[yimbot] ready step ON: syncing "${readyLabelName}" label on clean PRs`
+      ? `[yimbot] ready step ON: adding "${readyLabelName}" label to clean PRs (autonomous only, ${readySoakMs / 60_000}m soak, one queued PR at a time, never removed)`
       : `[yimbot] ready step OFF${autoReadyLabel ? " (gh unavailable)" : ""}`,
   );
 

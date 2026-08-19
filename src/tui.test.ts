@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindModeKey, bindQuitKeys, bindSettingsKey, fmtDuration, footerHint, footerLayout, modeContent, returnKey, rowsToTable } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, modeContent, returnKey, rowsToTable } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -182,6 +182,29 @@ test("bindSettingsKey does not reopen the panel on a second s while it is alread
   settingsOpen = false;
   handlers["s"]();
   assert.equal(openCalls, 2, "s opens again once the panel is closed");
+});
+
+test("footerHint advertises the manual ready-label key", () => {
+  assert.match(footerHint("Y"), /r ready/);
+});
+
+test("bindReadyKey gates r while settings is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let settingsOpen = true;
+  let addCalls = 0;
+  bindReadyKey(fakeScreen, () => settingsOpen, () => addCalls++);
+
+  handlers["r"]();
+  assert.equal(addCalls, 0, "r must not label the hidden board's row while the panel is open");
+
+  settingsOpen = false;
+  handlers["r"]();
+  assert.equal(addCalls, 1, "r labels again once the panel is closed");
 });
 
 test("bindFlagKey gates f while settings is open", () => {

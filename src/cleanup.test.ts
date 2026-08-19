@@ -806,6 +806,35 @@ test("groupReady is ready when every slice is merged OR closed-unmerged", () => 
   assert.equal(groupReady(g, new Set(), new Set(["eng-1-p1", "eng-1-p2"])), false);
 });
 
+test("groupReady is false while the integration branch has an open PR", () => {
+  // A slice PR opened from the integration branch itself (the ENG-1383 incident):
+  // every marked slice resolved, but the integration branch's own PR is open.
+  const g: SplitGroup = {
+    session: "eng-1",
+    integrationBranch: "eng-1",
+    integration: null,
+    sliceBranches: ["eng-1-p1", "eng-1-p2"],
+    slices: [],
+    worktreePaths: [],
+  };
+  const merged = new Set(["eng-1-p1", "eng-1-p2"]);
+  assert.equal(groupReady(g, merged, new Set(), new Set(["eng-1"])), false);
+  // An unrelated open PR does not block.
+  assert.equal(groupReady(g, merged, new Set(), new Set(["eng-9"])), true);
+});
+
+test("groupReady ignores the open set when the integration worktree is missing", () => {
+  const g: SplitGroup = {
+    session: "eng-1",
+    integrationBranch: null,
+    integration: null,
+    sliceBranches: ["eng-1-p1"],
+    slices: [],
+    worktreePaths: [],
+  };
+  assert.equal(groupReady(g, new Set(["eng-1-p1"]), new Set(), new Set(["eng-1"])), true);
+});
+
 test("groupReady is false for a group with no slices", () => {
   const g: SplitGroup = {
     session: "x",
@@ -824,22 +853,24 @@ function recorderDeps(over: Partial<CleanupDeps> & {
   parents?: Record<string, string>;
   sessions?: string[];
 }): { deps: CleanupDeps; tornDown: string[]; killed: string[] } {
+  const { worktrees, merged, parents, sessions, ...rest } = over;
   const tornDown: string[] = [];
   const killed: string[] = [];
   const deps: CleanupDeps = {
-    listWorktrees: () => over.worktrees,
-    listMergedPRs: async () => over.merged,
+    listWorktrees: () => worktrees,
+    listMergedPRs: async () => merged,
     listClosedUnmergedPRs: async () => [],
     listOpenPRs: async () => [],
     issueStateType: async () => null,
     hasNoUnpushedWork: () => true,
     worktreesDir: WT,
     teardown: (b) => tornDown.push(b),
-    listSessions: () => over.sessions ?? [],
+    listSessions: () => sessions ?? [],
     killSession: (s) => killed.push(s),
-    readParentSession: (p) => over.parents?.[p] ?? null,
-    isSplitParent: over.isSplitParent ?? (() => false),
+    readParentSession: (p) => parents?.[p] ?? null,
+    isSplitParent: () => false,
     log: () => {},
+    ...rest,
   };
   return { deps, tornDown, killed };
 }
@@ -853,6 +884,7 @@ test("cleanupOnce tears down a fully-merged split group and its integration bran
     ],
     parents: { [`${WT}/eng-1-p1`]: "eng-1", [`${WT}/eng-1-p2`]: "eng-1" },
     merged: [mpr(1, "eng-1-p1"), mpr(2, "eng-1-p2")],
+    issueStateType: async () => "completed",
   });
   await cleanupOnce(deps);
   assert.deepEqual([...tornDown].sort(), ["eng-1", "eng-1-p1", "eng-1-p2"]);
@@ -886,6 +918,7 @@ test("cleanupOnce kills the session directly when the integration worktree is go
     worktrees: [{ path: `${WT}/eng-1-p1`, branch: "eng-1-p1" }],
     parents: { [`${WT}/eng-1-p1`]: "eng-1" },
     merged: [mpr(1, "eng-1-p1")],
+    issueStateType: async () => "completed",
   });
   await cleanupOnce(deps);
   assert.deepEqual(tornDown, ["eng-1-p1"]);
@@ -904,6 +937,7 @@ test("cleanupOnce tears down a split group when one slice merged and the other w
     listMergedPRs: async () => [mpr(1, "eng-1-p1")],
     listClosedUnmergedPRs: async () => [mpr(2, "eng-1-p2")],
     hasNoUnpushedWork: () => true,
+    issueStateType: async () => "completed",
   });
   await cleanupOnce(d);
   assert.deepEqual([...torn].sort(), ["eng-1", "eng-1-p1", "eng-1-p2"]);
@@ -921,6 +955,7 @@ test("cleanupOnce keeps the whole group when a closed slice has unsaved work", a
     listMergedPRs: async () => [mpr(1, "eng-1-p1")],
     listClosedUnmergedPRs: async () => [mpr(2, "eng-1-p2")],
     hasNoUnpushedWork: (p) => p !== `${WT}/eng-1-p2`, // the closed slice has local work
+    issueStateType: async () => "completed",
   });
   await cleanupOnce(d);
   assert.deepEqual(torn, []);
@@ -939,6 +974,7 @@ test("cleanupOnce keeps the whole group when the integration worktree has unsave
     listMergedPRs: async () => [mpr(1, "eng-1-p1")],
     listClosedUnmergedPRs: async () => [mpr(2, "eng-1-p2")],
     hasNoUnpushedWork: (p) => p !== `${WT}/eng-1`, // integration worktree has local work
+    issueStateType: async () => "completed",
   });
   await cleanupOnce(d);
   assert.deepEqual(torn, []);
@@ -959,9 +995,129 @@ test("cleanupOnce does not gate a merged slice whose upstream is gone (branch de
     listMergedPRs: async () => [mpr(1, "eng-1-p1"), mpr(2, "eng-1-p2")],
     listClosedUnmergedPRs: async () => [],
     hasNoUnpushedWork: (p) => p !== `${WT}/eng-1-p1`, // merged slice's branch gone
+    issueStateType: async () => "completed",
   });
   await cleanupOnce(d);
   assert.deepEqual([...torn].sort(), ["eng-1", "eng-1-p1", "eng-1-p2"]);
+});
+
+test("cleanupOnce keeps a resolved split group while the integration branch has an open PR", async () => {
+  // The ENG-1383 incident: the final slice PR was opened from the integration
+  // branch itself, so it carries no slice marker. Both marked slices merged, but
+  // the group must be spared while that PR is open.
+  const { deps, tornDown, killed } = recorderDeps({
+    worktrees: [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    parents: { [`${WT}/eng-1-p1`]: "eng-1", [`${WT}/eng-1-p2`]: "eng-1" },
+    merged: [mpr(1, "eng-1-p1"), mpr(2, "eng-1-p2")],
+    listOpenPRs: async () => [opr(3, "eng-1")],
+    issueStateType: async () => "completed",
+  });
+  await cleanupOnce(deps);
+  assert.deepEqual(tornDown, []);
+  assert.deepEqual(killed, []);
+});
+
+test("cleanupOnce defers split-group teardown when the open PR list fails, but still reaps normal merged worktrees", async () => {
+  // Without the open set, an open integration-branch PR is invisible, so the
+  // group loop must sit the tick out rather than fall back to slices-only readiness.
+  const { deps, tornDown } = recorderDeps({
+    worktrees: [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-9`, branch: "eng-9" },
+    ],
+    parents: { [`${WT}/eng-1-p1`]: "eng-1" },
+    merged: [mpr(1, "eng-1-p1"), mpr(9, "eng-9")],
+    listOpenPRs: async () => {
+      throw new Error("gh 503");
+    },
+    issueStateType: async () => "completed",
+  });
+  await cleanupOnce(deps);
+  assert.deepEqual(tornDown, ["eng-9"]);
+});
+
+test("cleanupOnce keeps a resolved split group while its ticket is non-terminal", async () => {
+  // PR-set completeness is unknowable while slices are carved sequentially: the
+  // next slice's PR may simply not exist yet. The parent ticket's Linear state is
+  // the authority on "all work done".
+  const looked: string[] = [];
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+    ],
+    readParentSession: (p) => (p === `${WT}/eng-1-p1` ? "eng-1" : null),
+    listMergedPRs: async () => [mpr(1, "eng-1-p1")],
+    issueStateType: async (id) => {
+      looked.push(id);
+      return "started";
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.deepEqual(looked, ["ENG-1"]);
+  assert.ok(logs.some((l) => /eng-1/.test(l) && /started/.test(l)));
+});
+
+test("cleanupOnce keeps a resolved split group when the ticket state lookup fails", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+    ],
+    readParentSession: (p) => (p === `${WT}/eng-1-p1` ? "eng-1" : null),
+    listMergedPRs: async () => [mpr(1, "eng-1-p1")],
+    issueStateType: async () => {
+      throw new Error("linear 500");
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /ENG-1/.test(l) && /linear 500/.test(l)));
+});
+
+test("cleanupOnce skips the ticket gate for a split group whose session maps to no Linear issue", async () => {
+  // A Shortcut (sc-*) or otherwise identifier-less split: issueStateType cannot
+  // answer for it, so the gate is skipped and readiness alone decides, as before.
+  const looked: string[] = [];
+  const { deps, tornDown } = recorderDeps({
+    worktrees: [
+      { path: `${WT}/sc-123-foo`, branch: "sc-123-foo" },
+      { path: `${WT}/sc-123-foo-p1`, branch: "sc-123-foo-p1" },
+    ],
+    parents: { [`${WT}/sc-123-foo-p1`]: "sc-123-foo" },
+    merged: [mpr(1, "sc-123-foo-p1")],
+    issueStateType: async (id) => {
+      looked.push(id);
+      return null;
+    },
+  });
+  await cleanupOnce(deps);
+  assert.deepEqual(tornDown, ["sc-123-foo", "sc-123-foo-p1"]);
+  assert.deepEqual(looked, []);
+});
+
+test("cleanupOnce does not gate a merged integration branch whose upstream is gone", async () => {
+  // Once the integration branch's own PR merges (a slice was opened from it), its
+  // origin branch may be auto-deleted, failing the unpushed-work check forever.
+  // A merged integration worktree is safe to reap and must not wedge the group.
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+    ],
+    readParentSession: (p) => (p === `${WT}/eng-1-p1` ? "eng-1" : null),
+    listMergedPRs: async () => [mpr(1, "eng-1-p1"), mpr(2, "eng-1")],
+    hasNoUnpushedWork: (p) => p !== `${WT}/eng-1`, // upstream gone on the merged integration branch
+    issueStateType: async () => "completed",
+  });
+  await cleanupOnce(d);
+  assert.deepEqual([...torn].sort(), ["eng-1", "eng-1-p1"]);
 });
 
 test("readParentSession returns null when marker file is missing", () => {

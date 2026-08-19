@@ -30,7 +30,10 @@ export type CleanupDeps = {
   listOpenPRs: () => Promise<OpenPR[]>;
   // The Linear workflow state type ("completed", "canceled", "started", ...) of
   // an issue by identifier (ENG-<n>). A terminal type on a no-PR worktree's
-  // ticket means the human closed it out, so the worktree/session can go.
+  // ticket means the human closed it out, so the worktree/session can go. Also
+  // gates split-group teardown: a resolved PR set alone can't prove the split is
+  // done (the next slice's PR may not exist yet), so the group holds until the
+  // parent ticket goes terminal.
   issueStateType: (identifier: string) => Promise<string | null>;
   // Whether a closed PR's worktree holds no work teardown would destroy: a clean
   // tree AND every commit pushed to its own origin branch (the branch survives on
@@ -144,19 +147,23 @@ export function buildSplitGroups(
 // abandoned). Waiting for *every* slice to merge would wedge the whole group
 // forever on one never-merging slice; but a group where nothing has merged is
 // either mid-split (slices still being carved) or fully abandoned, so it is left
-// alone rather than reaped out from under in-progress work. The integration branch
-// has no PR, so it is never part of the check. Whether a closed slice's (or the
+// alone rather than reaped out from under in-progress work. A skill-conformant
+// integration branch has no PR of its own, but a slice PR opened from the
+// integration branch directly carries no slice marker, so an open PR on the
+// integration branch also holds the group. Whether a closed slice's (or the
 // integration worktree's) work is safe to destroy is a separate gate the teardown
 // applies via hasNoUnpushedWork.
 export function groupReady(
   group: SplitGroup,
   mergedBranches: Set<string>,
   closedBranches: Set<string> = new Set(),
+  openBranches: Set<string> = new Set(),
 ): boolean {
   return (
     group.sliceBranches.length > 0 &&
     group.sliceBranches.some((b) => mergedBranches.has(b)) &&
-    group.sliceBranches.every((b) => mergedBranches.has(b) || closedBranches.has(b))
+    group.sliceBranches.every((b) => mergedBranches.has(b) || closedBranches.has(b)) &&
+    (group.integrationBranch === null || !openBranches.has(group.integrationBranch))
   );
 }
 
@@ -365,34 +372,63 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   const closedBranches = new Set(closed.map((p) => p.headRefName));
 
   // Split groups: slices marked with a parent session are torn down only as a
-  // whole, once at least one slice merged and no slice PR is still open (see
-  // groupReady). Both the integration worktree and its slices are excluded from the
-  // per-branch paths below so a single slice resolving never tears the group down early.
+  // whole, once every slice PR resolved with at least one merged, the integration
+  // branch has no open PR (see groupReady), and the parent ticket is Done/Canceled.
+  // Both the integration worktree and its slices are excluded from the per-branch
+  // paths below so a single slice resolving never tears the group down early.
   const groups = buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir);
   const groupedPaths = new Set(groups.flatMap((g) => g.worktreePaths));
 
-  for (const g of groups) {
-    if (!groupReady(g, mergedBranches, closedBranches)) continue; // not resolved yet → wait
-    // Gate only the members not backed by a merged PR — the integration worktree
-    // and any closed slice — on having no unpushed work, so an abandoned slice
-    // never destroys local-only work. Merged members are always safe to reap and
-    // are never gated (their origin branch may already be deleted, which would
-    // fail the check and wedge the group).
-    const guarded = [
-      ...g.slices.filter((s) => !mergedBranches.has(s.branch)),
-      ...(g.integration ? [g.integration] : []),
-    ];
-    if (!guarded.every((w) => deps.hasNoUnpushedWork(w.path))) {
-      deps.log(`kept split group ${g.session} (a closed slice or integration worktree has unsaved work)`);
-      continue;
-    }
-    try {
-      if (g.integrationBranch) deps.teardown(g.integrationBranch);
-      else deps.killSession(g.session);
-      for (const slice of g.sliceBranches) deps.teardown(slice);
-      deps.log(`torn down split group ${g.session} (${g.sliceBranches.length} slice PRs resolved)`);
-    } catch (err) {
-      deps.log(`split-group teardown failed for ${g.session}: ${err}`);
+  // Without the open set, a slice PR opened from the integration branch is
+  // invisible, so falling back to slices-only readiness could reap a live group;
+  // the group loop sits the tick out instead (teardown self-dedupes, so a gh
+  // failure only delays it a heartbeat).
+  if (openBranches === null) {
+    if (groups.length > 0) deps.log(`split-group teardown deferred (open PR list unavailable)`);
+  } else {
+    for (const g of groups) {
+      if (!groupReady(g, mergedBranches, closedBranches, openBranches)) continue; // not resolved yet → wait
+      // Slices are carved sequentially, so a resolved PR set does not mean the work
+      // is done: the next slice's PR may simply not exist yet. The parent ticket's
+      // Linear state is the authority on "all work done" — hold the group until the
+      // ticket goes terminal. Sessions with no Linear identifier (Shortcut splits)
+      // can't be looked up, so readiness alone decides for them, as before.
+      const identifier = issueFromBranch(g.session);
+      if (identifier !== null) {
+        let stateType: string | null;
+        try {
+          stateType = await deps.issueStateType(identifier);
+        } catch (err) {
+          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
+          continue;
+        }
+        if (stateType !== "completed" && stateType !== "canceled") {
+          deps.log(`kept split group ${g.session} (ticket ${identifier} not done: ${stateType})`);
+          continue;
+        }
+      }
+      // Gate only the members not backed by a merged PR — the integration worktree
+      // and any closed slice — on having no unpushed work, so an abandoned slice
+      // never destroys local-only work. Merged members are always safe to reap and
+      // are never gated (their origin branch may already be deleted, which would
+      // fail the check and wedge the group). The integration branch counts as merged
+      // when a slice PR was opened from it and landed.
+      const guarded = [
+        ...g.slices.filter((s) => !mergedBranches.has(s.branch)),
+        ...(g.integration && !mergedBranches.has(g.integration.branch) ? [g.integration] : []),
+      ];
+      if (!guarded.every((w) => deps.hasNoUnpushedWork(w.path))) {
+        deps.log(`kept split group ${g.session} (a closed slice or integration worktree has unsaved work)`);
+        continue;
+      }
+      try {
+        if (g.integrationBranch) deps.teardown(g.integrationBranch);
+        else deps.killSession(g.session);
+        for (const slice of g.sliceBranches) deps.teardown(slice);
+        deps.log(`torn down split group ${g.session} (${g.sliceBranches.length} slice PRs resolved)`);
+      } catch (err) {
+        deps.log(`split-group teardown failed for ${g.session}: ${err}`);
+      }
     }
   }
 

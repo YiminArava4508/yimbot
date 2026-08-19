@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { pullCodebase } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
+import { parseMaxEstimate } from "./claim.ts";
 import { pinEventsLog } from "./events.ts";
 import { envCsvSet, envOr } from "./env.ts";
 import {
@@ -72,6 +73,8 @@ export async function startDaemon(): Promise<() => void> {
   // How many of the viewer's tickets may sit In Progress before the claim step
   // stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
   const maxInProgress = Number(envOr("MAX_IN_PROGRESS", "3"));
+  // Inclusive estimate ceiling on claims; unset claims any size.
+  const maxEstimate = parseMaxEstimate(process.env.MAX_ESTIMATE);
 
   // Refine step: size unestimated Backlog/Todo tickets before claim may touch
   // them. Its own label filter falls back to the worker's LABEL_FILTER, so one
@@ -327,7 +330,7 @@ export async function startDaemon(): Promise<() => void> {
   );
   console.log(
     autoClaim
-      ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]`
+      ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]${maxEstimate !== null ? `; estimates <= ${maxEstimate}` : ""}`
       : "[yimbot] auto-claim OFF",
   );
   console.log(
@@ -349,6 +352,7 @@ export async function startDaemon(): Promise<() => void> {
       riskLabels,
       labelFilter,
       maxInProgress,
+      maxEstimate,
       todoContext,
       progressStateName: stateName,
     },

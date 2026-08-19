@@ -21,6 +21,7 @@ const prev: YimbotConfig = {
   maxContinuations: 5,
   acJudgeModel: "",
   labelFilter: "!bot",
+  maxEstimate: "",
   autoRefine: true,
   refineUsers: "",
   refineLabelFilter: "",

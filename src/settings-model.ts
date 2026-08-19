@@ -24,6 +24,8 @@ export type YimbotConfig = {
   maxContinuations: number;
   acJudgeModel: string;
   labelFilter: string;
+  // Inclusive claim-step estimate ceiling, "" for no cap.
+  maxEstimate: string;
   autoRefine: boolean;
   refineUsers: string;
   refineLabelFilter: string;
@@ -79,6 +81,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     RISK_LABELS: c.riskLabels.join(","),
     MAX_IN_PROGRESS: String(c.maxInProgress),
     LABEL_FILTER: c.labelFilter,
+    MAX_ESTIMATE: c.maxEstimate,
     AUTO_CLEANUP: String(c.autoCleanup),
     AUTO_CONTINUE: String(c.autoContinue),
     MAX_CONTINUATIONS: String(c.maxContinuations),
@@ -90,7 +93,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
   };
 }
 
-// The 21 keys this file's generated sections own. Anything else found in an
+// The 22 keys this file's generated sections own. Anything else found in an
 // existing .env is a hand-edited setting (BLOCKED_LABEL, TUI_*, ...) that a
 // regenerated file must not drop.
 const OWNED_ENV_KEYS = new Set([
@@ -107,6 +110,7 @@ const OWNED_ENV_KEYS = new Set([
   "RISK_LABELS",
   "MAX_IN_PROGRESS",
   "LABEL_FILTER",
+  "MAX_ESTIMATE",
   "AUTO_CLEANUP",
   "AUTO_CONTINUE",
   "MAX_CONTINUATIONS",
@@ -152,6 +156,7 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `RISK_LABELS=${r.RISK_LABELS}`,
     `MAX_IN_PROGRESS=${r.MAX_IN_PROGRESS}`,
     `LABEL_FILTER=${r.LABEL_FILTER}`,
+    `MAX_ESTIMATE=${r.MAX_ESTIMATE}`,
     "",
     "# --- Cleanup step ---",
     `AUTO_CLEANUP=${r.AUTO_CLEANUP}`,
@@ -230,6 +235,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     maxContinuations: Number(or("MAX_CONTINUATIONS", "5")),
     acJudgeModel: or("AC_JUDGE_MODEL", ""),
     labelFilter: or("LABEL_FILTER", ""),
+    maxEstimate: or("MAX_ESTIMATE", ""),
     autoRefine: !isOff(or("AUTO_REFINE", "true")),
     refineUsers: or("REFINE_USERS", ""),
     refineLabelFilter: or("REFINE_LABEL_FILTER", ""),
@@ -271,6 +277,7 @@ const ROW_SPECS: { envKey: string; label: string; editor: EditorKind }[] = [
   { envKey: "TODO_STATE_NAME", label: "todo state", editor: "pickState" },
   { envKey: "REVIEW_STATE_NAME", label: "review state", editor: "pickState" },
   { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter" },
+  { envKey: "MAX_ESTIMATE", label: "max estimate", editor: "number" },
   { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number" },
   { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle" },
   { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle" },
@@ -305,6 +312,8 @@ function displayValue(envKey: string, value: string): string {
       return value || "(claude default)";
     case "REFINE_USERS":
       return value || "(this API key)";
+    case "MAX_ESTIMATE":
+      return value || "(no cap)";
     case "REFINE_LABEL_FILTER":
       return value ? describeLabelFilter(parseLabelFilter(value)) : "(inherits tickets filter)";
     default:
@@ -357,6 +366,9 @@ export function validateDraft(draft: Draft): Record<string, string> {
         break;
       case "HEARTBEAT_INTERVAL_MINUTES":
         if (!isPositiveNumber(raw)) errors[envKey] = "must be a positive number";
+        break;
+      case "MAX_ESTIMATE":
+        if (raw.trim() && !isPositiveInt(raw)) errors[envKey] = "must be a positive integer or empty";
         break;
       case "CODEBASE_PATH":
         if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";

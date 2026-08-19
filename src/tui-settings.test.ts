@@ -88,6 +88,7 @@ const baseConfig: YimbotConfig = {
   maxContinuations: 5,
   acJudgeModel: "",
   labelFilter: "",
+  maxEstimate: "",
   autoRefine: true,
   refineUsers: "",
   refineLabelFilter: "",

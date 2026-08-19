@@ -271,6 +271,8 @@ export type ClaimDeps = {
   labelFilter: LabelFilter;
   // Whether the claim step skips tickets with no estimate.
   requireEstimate: boolean;
+  // Inclusive estimate ceiling (MAX_ESTIMATE); null claims any size.
+  maxEstimate: number | null;
   // Ceiling on the personal In-Progress WIP: the claim step acts only while the
   // count is below this. 1 restores the old one-at-a-time behavior.
   maxInProgress: number;
@@ -440,6 +442,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     merged,
     labelFilter: deps.labelFilter,
     requireEstimate: deps.requireEstimate,
+    maxEstimate: deps.maxEstimate,
   });
   if (!next) return;
 
@@ -514,6 +517,8 @@ export type ClaimConfig = {
   riskLabels: string[];
   labelFilter: LabelFilter;
   maxInProgress: number;
+  // Inclusive estimate ceiling (MAX_ESTIMATE); null claims any size.
+  maxEstimate: number | null;
   // Watched-team Todo context (team + Todo state + viewer) for cycle queries.
   todoContext: LinearContext;
   // State name for the viewer-wide, team-agnostic In-Progress WIP count.
@@ -1322,6 +1327,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     riskLabels: claim.riskLabels,
     labelFilter: claim.labelFilter,
     requireEstimate: config.refine?.autoRefine ?? false,
+    maxEstimate: claim.maxEstimate,
     maxInProgress: claim.maxInProgress,
     countInProgress: () =>
       countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { selectNextClaim } from "./claim.ts";
+import { parseMaxEstimate, selectNextClaim } from "./claim.ts";
 import { parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue } from "./linear-api.ts";
 
@@ -25,6 +25,7 @@ const opts = (merged: Set<string> | null = null, requireEstimate = false) => ({
   merged,
   labelFilter: null,
   requireEstimate,
+  maxEstimate: null,
 });
 
 test("selectNextClaim picks the highest Linear priority (Urgent=1 before High=2)", () => {
@@ -160,4 +161,41 @@ test("selectNextClaim skips 0-point container tickets even when requireEstimate 
 test("selectNextClaim keeps unestimated tickets when requireEstimate is off", () => {
   const picked = selectNextClaim([todo({ id: "1", estimate: null })], opts());
   assert.equal(picked?.identifier, "ENG-1");
+});
+
+test("selectNextClaim skips tickets estimated above maxEstimate", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "big", priority: 1, estimate: 5 }), todo({ id: "small", priority: 2, estimate: 2 })],
+    { ...opts(), maxEstimate: 3 },
+  );
+  assert.equal(picked?.id, "small");
+});
+
+test("selectNextClaim treats maxEstimate as inclusive", () => {
+  const picked = selectNextClaim([todo({ id: "edge", estimate: 3 })], { ...opts(), maxEstimate: 3 });
+  assert.equal(picked?.id, "edge");
+});
+
+test("selectNextClaim ignores estimates when maxEstimate is null", () => {
+  const picked = selectNextClaim([todo({ id: "big", estimate: 8 })], opts());
+  assert.equal(picked?.id, "big");
+});
+
+test("selectNextClaim keeps unestimated tickets under a maxEstimate cap", () => {
+  const picked = selectNextClaim([todo({ id: "unsized", estimate: null })], {
+    ...opts(),
+    maxEstimate: 2,
+  });
+  assert.equal(picked?.id, "unsized");
+});
+
+test("parseMaxEstimate reads a positive integer and treats everything else as no cap", () => {
+  assert.equal(parseMaxEstimate("3"), 3);
+  assert.equal(parseMaxEstimate(" 8 "), 8);
+  assert.equal(parseMaxEstimate(""), null);
+  assert.equal(parseMaxEstimate(undefined), null);
+  assert.equal(parseMaxEstimate("0"), null);
+  assert.equal(parseMaxEstimate("-2"), null);
+  assert.equal(parseMaxEstimate("abc"), null);
+  assert.equal(parseMaxEstimate("2.5"), null);
 });

@@ -14,7 +14,17 @@ export type SelectOptions = {
   // estimates are skipped unconditionally: a 0-point ticket is a decomposed
   // container whose subtickets carry the work.
   requireEstimate: boolean;
+  // Inclusive estimate ceiling (MAX_ESTIMATE); null claims any size. Unestimated
+  // tickets are exempt: requireEstimate owns those.
+  maxEstimate: number | null;
 };
+
+// Parse MAX_ESTIMATE: a positive integer caps claims at that estimate; empty,
+// non-numeric or non-positive values all mean no cap.
+export function parseMaxEstimate(raw: string | undefined): number | null {
+  const n = Number(raw?.trim() || undefined);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+}
 
 // Linear's `priority` is inverted (0=None, 1=Urgent … 4=Low). Rank it so
 // Urgent sorts first and None sorts last, regardless of the numeric value.
@@ -36,7 +46,8 @@ export function selectNextClaim(
       !t.labels.some((label) => risky.has(label.toLowerCase())) &&
       !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged)) &&
       t.estimate !== 0 &&
-      !(opts.requireEstimate && t.estimate === null),
+      !(opts.requireEstimate && t.estimate === null) &&
+      !(opts.maxEstimate !== null && t.estimate !== null && t.estimate > opts.maxEstimate),
   );
   eligible.sort(
     (a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.sortOrder - b.sortOrder,

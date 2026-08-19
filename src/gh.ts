@@ -316,6 +316,45 @@ export async function removeLabel(run: GhRunner, prNumber: number, label: string
   await run(["pr", "edit", String(prNumber), "--remove-label", label]);
 }
 
+// The label names from `gh label list --json name` (an array of {name} rows,
+// unlike the pr view shape parseLabels handles).
+export function parseLabelNames(json: string): string[] {
+  return (JSON.parse(json) as { name: string }[]).map((l) => l.name);
+}
+
+// Whether the repo defines the label. --search fuzzy-matches, so the parsed
+// names are exact-matched here.
+export async function repoLabelExists(run: GhRunner, label: string): Promise<boolean> {
+  const names = parseLabelNames(await run(["label", "list", "--search", label, "--json", "name", "--limit", "100"]));
+  return names.includes(label);
+}
+
+export function parseIsDraft(json: string): boolean {
+  return (JSON.parse(json) as { isDraft: boolean }).isDraft;
+}
+
+export async function prIsDraft(run: GhRunner, prNumber: number): Promise<boolean> {
+  return parseIsDraft(await run(["pr", "view", String(prNumber), "--json", "isDraft"]));
+}
+
+// Promote a draft PR to ready-for-review.
+export async function markPrReadyForReview(run: GhRunner, prNumber: number): Promise<void> {
+  await run(["pr", "ready", String(prNumber)]);
+}
+
+// The TUI's r keypress: put the ready label on a PR, promoting a draft first
+// (labeling a draft would queue a PR the merge queue cannot take). Rejects
+// before any mutation when the repo lacks the label, with a message the status
+// bar can show verbatim; gh's own --add-label failure text names the flag, not
+// the fix.
+export async function applyReadyLabel(run: GhRunner, prNumber: number, label: string): Promise<void> {
+  if (!(await repoLabelExists(run, label))) {
+    throw new Error(`label '${label}' does not exist in the repo`);
+  }
+  if (await prIsDraft(run, prNumber)) await markPrReadyForReview(run, prNumber);
+  await addLabel(run, prNumber, label);
+}
+
 export function parseViewerLogin(json: string): string {
   return (JSON.parse(json) as { data: { viewer: { login: string } } }).data.viewer.login;
 }

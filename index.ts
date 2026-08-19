@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { format } from "node:util";
 import { envOr } from "./src/env.ts";
 import { emitEvent, emitStatus } from "./src/events.ts";
-import { addLabel, ghRunner } from "./src/gh.ts";
+import { applyReadyLabel, ghRunner } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { readRefineEnabled, refineEnvDefault, toggleRefine, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
@@ -122,7 +122,7 @@ if (process.stdout.isTTY) {
       ),
     onAddReadyLabel: async (pr, key, label) => {
       const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
-      await addLabel(ghRunner(currentCodebasePath()), pr, readyLabel);
+      await applyReadyLabel(ghRunner(currentCodebasePath()), pr, readyLabel);
       emitStatus({ kind: "ready_to_merge", key, label, pr });
     },
     onOpenSession: (key) => {

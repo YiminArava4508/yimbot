@@ -2,22 +2,28 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   addLabel,
+  applyReadyLabel,
   blockedInfo,
   checksInfo,
   type GhRunner,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
+  markPrReadyForReview,
   mergeableInfo,
   parseBlockedInfo,
   parseChecksInfo,
+  parseIsDraft,
+  parseLabelNames,
   parseLabels,
   parseMergeableInfo,
   parseClosedUnmergedPRs,
   parseMergedPRs,
   parseOpenPRs,
+  prIsDraft,
   prLabels,
   removeLabel,
+  repoLabelExists,
   repoSlug,
   humanChangesRequested,
   parseHumanChangesRequested,
@@ -444,6 +450,73 @@ test("removeLabel runs pr edit --remove-label for the PR", async () => {
   const { run, calls } = capturingRunner([""]);
   await removeLabel(run, 4706, "ready-to-merge");
   assert.deepEqual(calls[0], ["pr", "edit", "4706", "--remove-label", "ready-to-merge"]);
+});
+
+test("parseLabelNames extracts names from a label list", () => {
+  assert.deepEqual(
+    parseLabelNames(JSON.stringify([{ name: "ready-to-merge" }, { name: "ready-to-merge-later" }])),
+    ["ready-to-merge", "ready-to-merge-later"],
+  );
+});
+
+test("repoLabelExists searches the repo labels and exact-matches the name", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify([{ name: "ready-to-merge-later" }, { name: "ready-to-merge" }])]);
+  assert.equal(await repoLabelExists(run, "ready-to-merge"), true);
+  assert.deepEqual(calls[0], ["label", "list", "--search", "ready-to-merge", "--json", "name", "--limit", "100"]);
+});
+
+test("repoLabelExists is false when the search only fuzzy-matches", async () => {
+  const { run } = capturingRunner([JSON.stringify([{ name: "ready-to-merge-later" }])]);
+  assert.equal(await repoLabelExists(run, "ready-to-merge"), false);
+});
+
+test("parseIsDraft reads the draft flag", () => {
+  assert.equal(parseIsDraft(JSON.stringify({ isDraft: true })), true);
+  assert.equal(parseIsDraft(JSON.stringify({ isDraft: false })), false);
+});
+
+test("prIsDraft requests the isDraft field and parses it", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify({ isDraft: true })]);
+  assert.equal(await prIsDraft(run, 4706), true);
+  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "isDraft"]);
+});
+
+test("markPrReadyForReview runs pr ready for the PR", async () => {
+  const { run, calls } = capturingRunner([""]);
+  await markPrReadyForReview(run, 4706);
+  assert.deepEqual(calls[0], ["pr", "ready", "4706"]);
+});
+
+test("applyReadyLabel rejects with a clear error when the repo lacks the label", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify([])]);
+  await assert.rejects(
+    applyReadyLabel(run, 4706, "ready-to-merge"),
+    /label 'ready-to-merge' does not exist in the repo/,
+  );
+  assert.equal(calls.length, 1); // stopped at the label list, no pr mutation
+});
+
+test("applyReadyLabel promotes a draft PR before labeling it", async () => {
+  const { run, calls } = capturingRunner([
+    JSON.stringify([{ name: "ready-to-merge" }]),
+    JSON.stringify({ isDraft: true }),
+    "",
+    "",
+  ]);
+  await applyReadyLabel(run, 4706, "ready-to-merge");
+  assert.deepEqual(calls[2], ["pr", "ready", "4706"]);
+  assert.deepEqual(calls[3], ["pr", "edit", "4706", "--add-label", "ready-to-merge"]);
+});
+
+test("applyReadyLabel labels a non-draft PR without touching draft state", async () => {
+  const { run, calls } = capturingRunner([
+    JSON.stringify([{ name: "ready-to-merge" }]),
+    JSON.stringify({ isDraft: false }),
+    "",
+  ]);
+  await applyReadyLabel(run, 4706, "ready-to-merge");
+  assert.deepEqual(calls[2], ["pr", "edit", "4706", "--add-label", "ready-to-merge"]);
+  assert.equal(calls.length, 3);
 });
 
 test("parseViewerLogin extracts the login", () => {

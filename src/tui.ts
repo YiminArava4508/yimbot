@@ -49,6 +49,40 @@ export function footerLayout(key: string): Record<string, unknown> {
   };
 }
 
+// A transient acknowledgment in the status bar. The ready keypress used to be
+// silent: success only mattered if the row's status string changed (emitStatus
+// dedupes), and failure went to console.error, which a blessed screen swallows.
+// The notice is the immediate, unconditional feedback channel for it.
+export type Notice = { text: string; until: number };
+
+export const NOTICE_TTL_MS = 5_000;
+export const NOTICE_ERROR_TTL_MS = 15_000;
+
+export function statusContent(mode: Mode, active: number, notice: Notice | null, now: number): string {
+  const base = `${modeContent(mode)} live | ${active} active`;
+  return notice && now < notice.until ? `${base} | ${notice.text}` : base;
+}
+
+export async function handleReadyPress(
+  row: BoardRow | undefined,
+  addReady: (pr: number, key: string, label: string) => Promise<void>,
+  setNotice: (text: string, ttlMs: number) => void,
+): Promise<void> {
+  if (!row) return;
+  if (row.pr == null) {
+    setNotice("{red-fg}selected row has no PR to mark ready{/red-fg}", NOTICE_ERROR_TTL_MS);
+    return;
+  }
+  setNotice(`adding ready label to #${row.pr}…`, NOTICE_TTL_MS);
+  try {
+    await addReady(row.pr, row.key, row.label);
+    setNotice(`{green-fg}#${row.pr} marked ready{/green-fg}`, NOTICE_TTL_MS);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setNotice(`{red-fg}ready label on #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
+  }
+}
+
 function fmtTime(ts: number): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -160,7 +194,7 @@ export function runTui(opts: {
   liveKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
-  onAddReadyLabel: (pr: number, key: string, label: string) => void;
+  onAddReadyLabel: (pr: number, key: string, label: string) => Promise<void>;
   mode: () => Mode;
   onToggleMode: () => Mode;
   settings: SettingsDeps;
@@ -192,14 +226,19 @@ export function runTui(opts: {
   // is confirmed down. The panel itself closes on esc/w regardless of draft
   // state, so this has to outlive it to keep showing on the board.
   let daemonStopped = false;
+  let notice: Notice | null = null;
   const render = () => {
     currentRows = filterToLiveWorktrees(reduceRows(readEvents(), Date.now()), opts.liveKeys());
     table.setData(rowsToTable(currentRows, Date.now()));
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
-      daemonStopped ? "daemon stopped" : `${modeContent(opts.mode())} live | ${active} active`,
+      daemonStopped ? "daemon stopped" : statusContent(opts.mode(), active, notice, Date.now()),
     );
     screen.render();
+  };
+  const setNotice = (text: string, ttlMs: number) => {
+    notice = { text, until: Date.now() + ttlMs };
+    render();
   };
 
   const onEvent = (_ev: YimbotEvent) => render();
@@ -239,9 +278,7 @@ export function runTui(opts: {
   });
 
   bindReadyKey(screen, () => settingsOpen, () => {
-    const r = currentRows[table.selected - 1];
-    if (!r || r.pr == null) return; // no row selected, or the row has no PR to label
-    opts.onAddReadyLabel(r.pr, r.key, r.label);
+    void handleReadyPress(currentRows[table.selected - 1], opts.onAddReadyLabel, setNotice);
   });
 
   bindModeKey(screen, () => settingsOpen, () => {

@@ -114,11 +114,10 @@ if (process.stdout.isTTY) {
           ? { kind: "unflagged", key, label }
           : { kind: "flagged", key, label, reason: "manual" },
       ),
-    onAddReadyLabel: (pr, key, label) => {
+    onAddReadyLabel: async (pr, key, label) => {
       const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
-      addLabel(ghRunner(currentCodebasePath()), pr, readyLabel)
-        .then(() => emitStatus({ kind: "ready_to_merge", key, label, pr }))
-        .catch((err) => console.error(`[tui] manual ${readyLabel} on PR #${pr} failed: ${err}`));
+      await addLabel(ghRunner(currentCodebasePath()), pr, readyLabel);
+      emitStatus({ kind: "ready_to_merge", key, label, pr });
     },
     onOpenSession: (key) => {
       const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());

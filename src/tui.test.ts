@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, modeContent, returnKey, rowsToTable } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -224,6 +224,60 @@ test("bindFlagKey gates f while settings is open", () => {
   settingsOpen = false;
   handlers["f"]();
   assert.equal(toggleCalls, 1, "f flags again once the panel is closed");
+});
+
+test("statusContent shows an unexpired notice and drops it after its ttl", () => {
+  const notice = { text: "adding ready label to #481…", until: 10_000 };
+  assert.match(statusContent("supervised", 2, notice, 9_999), /adding ready label to #481/);
+  assert.match(statusContent("supervised", 2, notice, 9_999), /2 active/);
+  assert.doesNotMatch(statusContent("supervised", 2, notice, 10_000), /adding ready label/);
+  assert.doesNotMatch(statusContent("supervised", 2, null, 0), /adding ready label/);
+});
+
+test("handleReadyPress shows a pending notice, then success once the label lands", async () => {
+  const notices: string[] = [];
+  await handleReadyPress(
+    row({ pr: 481 }),
+    () => Promise.resolve(),
+    (text) => notices.push(text),
+  );
+  assert.equal(notices.length, 2);
+  assert.match(notices[0], /#481/);
+  assert.match(notices[1], /#481 marked ready/);
+});
+
+test("handleReadyPress surfaces the failure instead of losing it to console", async () => {
+  const notices: string[] = [];
+  await handleReadyPress(
+    row({ pr: 481 }),
+    () => Promise.reject(new Error("gh exited 1")),
+    (text) => notices.push(text),
+  );
+  assert.equal(notices.length, 2);
+  assert.match(notices[1], /failed/);
+  assert.match(notices[1], /gh exited 1/);
+});
+
+test("handleReadyPress tells the operator when the row has no PR to label", async () => {
+  const notices: string[] = [];
+  let added = false;
+  await handleReadyPress(
+    row({}),
+    () => {
+      added = true;
+      return Promise.resolve();
+    },
+    (text) => notices.push(text),
+  );
+  assert.equal(added, false, "no PR means no label write");
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /no PR/);
+});
+
+test("handleReadyPress does nothing with no row selected", async () => {
+  const notices: string[] = [];
+  await handleReadyPress(undefined, () => Promise.resolve(), (text) => notices.push(text));
+  assert.deepEqual(notices, []);
 });
 
 // A minimal EventEmitter standing in for a TTY stream, sized to the columns

@@ -45,6 +45,7 @@ const sample: YimbotConfig = {
   maxContinuations: 5,
   acJudgeModel: "",
   labelFilter: "",
+  maxEstimate: "",
   autoRefine: true,
   refineUsers: "",
   refineLabelFilter: "",
@@ -372,6 +373,12 @@ test("hostLinks installs the receiving-code-review skill", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/receiving-code-review"));
   assert.ok(link, "receiving-code-review skill host link is present");
   assert.ok(link!.source.endsWith("skills/receiving-code-review"), "sourced from skills/receiving-code-review");
+});
+
+test("hostLinks installs the daily-standup skill", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/daily-standup"));
+  assert.ok(link, "daily-standup skill host link is present");
+  assert.ok(link!.source.endsWith("skills/daily-standup"), "sourced from skills/daily-standup");
 });
 
 test("hostLinks installs the session deny-list settings", () => {

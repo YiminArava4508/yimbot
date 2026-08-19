@@ -378,6 +378,11 @@ export const hostLinks: HostLink[] = [
     label: "receiving-code-review skill (~/.claude/skills/receiving-code-review)",
   },
   {
+    source: join(repoRoot, "skills/daily-standup"),
+    target: join(homedir(), ".claude/skills/daily-standup"),
+    label: "daily-standup skill (~/.claude/skills/daily-standup)",
+  },
+  {
     source: join(repoRoot, "settings/session-settings.json"),
     target: join(homedir(), ".config/yimbot/session-settings.json"),
     label: "session deny-list (~/.config/yimbot/session-settings.json)",
@@ -942,6 +947,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     maxContinuations,
     acJudgeModel,
     labelFilter,
+    maxEstimate: current.maxEstimate,
     autoRefine: true,
     refineUsers: "",
     refineLabelFilter: "",

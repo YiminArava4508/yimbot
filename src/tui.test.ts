@@ -159,9 +159,16 @@ test("bindRefineKey gates S-r while settings is open", () => {
   assert.equal(toggleCalls, 1, "R toggles again once the panel is closed");
 });
 
-test("statusContent shows a refine-off chip only while refine is off", () => {
-  assert.match(statusContent("supervised", false, 2, null, 0), /REFINE OFF/);
-  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0), /REFINE/);
+test("statusContent shows a red refine-off chip while refine is off", () => {
+  const off = statusContent("supervised", false, 2, null, 0);
+  assert.match(off, /REFINE OFF/);
+  assert.match(off, /red-bg/);
+});
+
+test("statusContent shows a green refine-on chip while refine is on", () => {
+  const on = statusContent("supervised", true, 2, null, 0);
+  assert.match(on, /REFINE ON/);
+  assert.match(on, /green-bg.*REFINE ON/);
 });
 
 test("bindQuitKeys gates q and escape while settings is open, but C-c always fires", () => {

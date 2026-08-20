@@ -59,7 +59,9 @@ export const NOTICE_TTL_MS = 5_000;
 export const NOTICE_ERROR_TTL_MS = 15_000;
 
 export function statusContent(mode: Mode, refineOn: boolean, active: number, notice: Notice | null, now: number): string {
-  const refineChip = refineOn ? "" : "{black-fg}{red-bg} REFINE OFF {/red-bg}{/black-fg} ";
+  const refineChip = refineOn
+    ? "{black-fg}{green-bg} REFINE ON {/green-bg}{/black-fg} "
+    : "{black-fg}{red-bg} REFINE OFF {/red-bg}{/black-fg} ";
   const base = `${refineChip}${modeContent(mode)} live | ${active} active`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }

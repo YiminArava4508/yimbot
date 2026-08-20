@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindRefineKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -136,27 +136,8 @@ test("footerHint advertises the settings key", () => {
   assert.match(footerHint("Y"), /s settings/);
 });
 
-test("footerHint advertises the refine toggle key", () => {
-  assert.match(footerHint("Y"), /R refine/);
-});
-
-test("bindRefineKey gates S-r while settings is open", () => {
-  const handlers: Record<string, () => void> = {};
-  const fakeScreen = {
-    key: (keys: string[], fn: () => void) => {
-      for (const k of keys) handlers[k] = fn;
-    },
-  };
-  let settingsOpen = true;
-  let toggleCalls = 0;
-  bindRefineKey(fakeScreen, () => settingsOpen, () => toggleCalls++);
-
-  handlers["S-r"]();
-  assert.equal(toggleCalls, 0, "R must not toggle refine while the panel is open");
-
-  settingsOpen = false;
-  handlers["S-r"]();
-  assert.equal(toggleCalls, 1, "R toggles again once the panel is closed");
+test("footerHint no longer advertises a refine key (refine lives in settings)", () => {
+  assert.doesNotMatch(footerHint("Y"), /refine/);
 });
 
 test("statusContent shows a red refine-off chip while refine is off", () => {

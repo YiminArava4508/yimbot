@@ -47,6 +47,24 @@ Never report backlog tickets that have no session.
    omit it when its branch has no commits beyond what the split children
    already merged or opened; when unsure, report it.
 
+   Never call a PR "merged" or "landed" from events alone. A `merged` event
+   can point at a PR that was closed unmerged (e.g. superseded by a split
+   sibling). Before reporting any PR as merged, verify with:
+
+   ```bash
+   gh pr view <number> --json state,mergedAt
+   ```
+
+   Only `state: MERGED` counts as landed. `CLOSED` with a null `mergedAt` is
+   abandoned or superseded: say "PR #NNNN closed (superseded by #MMMM)" if a
+   sibling landed the work, otherwise report the ticket as not done.
+
+   A board ticket with **no matching worktree and no tmux session**
+   (`tmux ls` has no session whose name starts with the lowercased ticket
+   key) is a dead session: the event log went stale without a terminal
+   event. Report it as "stalled, session killed, needs restart", not as in
+   progress.
+
 3. **Ticket titles.** Event rows carry `label`/`title`, but titles there are
    slugged lowercase and truncated. Fetch the real title from Linear whenever
    the event title looks cut off, using the `LINEAR_API_KEY` in yimbot's
@@ -64,7 +82,7 @@ Never report backlog tickets that have no session.
 
 | Board status (after the live-PR check) | Reported as | % |
 |---|---|---|
-| merged | merged (mention, then drop next day) | 100 |
+| merged (verified `state: MERGED`, not just the event) | merged (mention, then drop next day) | 100 |
 | ready to merge / in merge queue | ready to merge | 90 |
 | unblocking (merge queue kicked it out) | unblocking merge queue | 85 |
 | addressing review / review findings | addressing review | 75 |
@@ -73,6 +91,7 @@ Never report backlog tickets that have no session.
 | working, PR open | in progress | 50 |
 | working, no PR yet | in progress | 30 |
 | needs decision | blocked on decision (say on what) | keep last % |
+| dead session (no worktree, no tmux) | stalled, session killed, needs restart | 0 |
 
 A split ticket's % is its furthest-along open child.
 

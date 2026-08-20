@@ -7,7 +7,7 @@ import { envOr } from "./src/env.ts";
 import { emitEvent, emitStatus } from "./src/events.ts";
 import { applyReadyLabel, ghRunner } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
-import { readRefineEnabled, refineEnvDefault, toggleRefine, writeRefineEnabled } from "./src/refine-toggle.ts";
+import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
@@ -97,8 +97,8 @@ if (process.stdout.isTTY) {
           stop = await startDaemon();
         },
       });
-      // The panel's auto-refine choice must win over a previous R toggle, or
-      // the toggle file would silently override what the user just applied.
+      // The panel's auto-refine choice must win over a toggle file left by an
+      // older session, or it would silently override what the user just applied.
       if (result.ok) writeRefineEnabled(next.autoRefine);
       return result;
     },
@@ -132,7 +132,6 @@ if (process.stdout.isTTY) {
     mode: readMode,
     onToggleMode: toggleMode,
     refineEnabled: () => readRefineEnabled(refineEnvDefault(process.env)),
-    onToggleRefine: () => toggleRefine(refineEnvDefault(process.env)),
     settings,
   });
 } else {

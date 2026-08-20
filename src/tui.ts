@@ -21,7 +21,7 @@ export function returnKey(): string {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   m mode   R refine   s settings   q quit   prefix+${key} returns here`;
+  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   m mode   s settings   q quit   prefix+${key} returns here`;
 }
 
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
@@ -192,18 +192,6 @@ export function bindModeKey(
   });
 }
 
-// R (shift-r; lowercase r is the ready key) toggles the refine step, gated
-// like m: the toggle file is read by the daemon per tick, so no restart.
-export function bindRefineKey(
-  screen: { key: (keys: string[], fn: () => void) => void },
-  isSettingsOpen: () => boolean,
-  toggle: () => void,
-): void {
-  screen.key(["S-r"], () => {
-    if (!isSettingsOpen()) toggle();
-  });
-}
-
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
@@ -213,7 +201,6 @@ export function runTui(opts: {
   mode: () => Mode;
   onToggleMode: () => Mode;
   refineEnabled: () => boolean;
-  onToggleRefine: () => boolean;
   settings: SettingsDeps;
 }): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
@@ -300,11 +287,6 @@ export function runTui(opts: {
 
   bindModeKey(screen, () => settingsOpen, () => {
     opts.onToggleMode();
-    render();
-  });
-
-  bindRefineKey(screen, () => settingsOpen, () => {
-    opts.onToggleRefine();
     render();
   });
 

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readRefineEnabled, refineEnvDefault, refineToggleFilePath, toggleRefine, writeRefineEnabled } from "./refine-toggle.ts";
+import { readRefineEnabled, refineEnvDefault, refineToggleFilePath, writeRefineEnabled } from "./refine-toggle.ts";
 
 function withTempLog(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "yimbot-refine-toggle-"));
@@ -46,21 +46,6 @@ test("readRefineEnabled treats garbage or whitespace as the default", () => {
     assert.equal(readRefineEnabled(true), true);
     writeFileSync(refineToggleFilePath(), "  off \n");
     assert.equal(readRefineEnabled(true), false);
-  });
-});
-
-test("toggleRefine flips, persists, and returns the new state", () => {
-  withTempLog(() => {
-    assert.equal(toggleRefine(true), false);
-    assert.equal(readFileSync(refineToggleFilePath(), "utf8").trim(), "off");
-    assert.equal(toggleRefine(true), true);
-    assert.equal(readRefineEnabled(false), true);
-  });
-});
-
-test("toggleRefine from a missing file flips the default", () => {
-  withTempLog(() => {
-    assert.equal(toggleRefine(false), true);
   });
 });
 

@@ -289,7 +289,7 @@ export function isFlagged(row: BoardRow): boolean {
 export function reduceRows(
   events: YimbotEvent[],
   now: number,
-  opts: { keepMergedMs?: number; maxRows?: number } = {},
+  opts: { keepMergedMs?: number; maxRows?: number; manualLiveKeys?: Set<string> } = {},
 ): BoardRow[] {
   const keepMergedMs = opts.keepMergedMs ?? keepMergedMsDefault();
   const maxRows = opts.maxRows ?? maxRowsDefault();
@@ -320,7 +320,13 @@ export function reduceRows(
     row.flagged = row.flagReasons.length > 0;
   }
 
-  let rows = [...byKey.values()].filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
+  // A terminal key whose worktree still has a live session is manual work in
+  // progress (cleanup declined the teardown), not history: show it as working
+  // instead of "merged"/aging it out. `manualLiveKeys` carries those keys.
+  const manualLive = opts.manualLiveKeys ?? new Set<string>();
+  let rows = [...byKey.values()]
+    .map((r) => (r.terminal && manualLive.has(r.key) ? { ...r, status: "working (manual)", terminal: false } : r))
+    .filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
   rows.sort((a, b) => b.ts - a.ts);
 
   while (rows.length > maxRows) {

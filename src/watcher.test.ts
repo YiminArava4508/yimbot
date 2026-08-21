@@ -23,6 +23,7 @@ import {
   hasSessionForWorktree,
   isLaunchMarkerActive,
   liveRefineKeys,
+  manuallyLiveKeys,
   markFeatureReady,
   parseWorktreePorcelain,
   pollOnce,
@@ -88,6 +89,19 @@ test("worktreeKeysUnder derives ticket keys for worktrees under the dir only", (
     "/home/u/Work/worktrees",
   );
   assert.deepEqual([...keys].sort(), ["ENG-1417", "docs/readme-diagrams", "release-thing"]);
+});
+
+test("manuallyLiveKeys keeps only worktrees under the dir that have a live session", () => {
+  const keys = manuallyLiveKeys(
+    [
+      { path: "/home/u/Work/worktrees/eng-1383-phase-1-agent-profile", branch: "eng-1383-profile-bio-dialog" },
+      { path: "/home/u/Work/worktrees/eng-1417-polish", branch: "eng-1417-polish" }, // no session
+      { path: "/home/u/Work/gemini", branch: "main" }, // outside dir
+    ],
+    ["eng-1383-phase-1-agent-profile", "unrelated-session"],
+    "/home/u/Work/worktrees",
+  );
+  assert.deepEqual([...keys], ["ENG-1383"]);
 });
 
 test("pollOnce launches new issues and marks them seen", async () => {

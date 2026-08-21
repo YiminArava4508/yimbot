@@ -31,9 +31,9 @@ export type CleanupDeps = {
   // The Linear workflow state type ("completed", "canceled", "started", ...) of
   // an issue by identifier (ENG-<n>). A terminal type on a no-PR worktree's
   // ticket means the human closed it out, so the worktree/session can go. Also
-  // gates split-group teardown: a resolved PR set alone can't prove the split is
-  // done (the next slice's PR may not exist yet), so the group holds until the
-  // parent ticket goes terminal.
+  // gates split-group teardown and the closed-unmerged reap: a resolved PR set
+  // alone can't prove the work is done (the next slice's or the successor PR may
+  // not exist yet), so both hold until the ticket goes terminal.
   issueStateType: (identifier: string) => Promise<string | null>;
   // Whether a closed PR's worktree holds no work teardown would destroy: a clean
   // tree AND every commit pushed to its own origin branch (the branch survives on
@@ -448,25 +448,56 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   // worktree + branch-named session, but only when no unpushed work would be lost
   // (clean tree, everything on origin). A live session does NOT spare it (unlike
   // the orphan sweep) — the teardown kills it. The closed-PR set was fetched above.
-  for (const w of selectMergedWorktrees(worktrees, closedBranches, deps.worktreesDir)) {
-    if (groupedPaths.has(w.path)) continue;
-    // A split parent whose original PR was just closed but whose slice markers
-    // aren't visible yet (race, or a transient marker-read failure) would fall
-    // through groupedPaths. The durable split-parent marker (written before the
-    // PR is closed, so it covers even the pre-first-slice window) spares it.
-    if (deps.isSplitParent(w.path)) {
-      deps.log(`kept ${w.branch} (PR closed unmerged but worktree is a split parent)`);
-      continue;
-    }
-    if (!deps.hasNoUnpushedWork(w.path)) {
-      deps.log(`kept ${w.branch} (PR closed unmerged but worktree has unsaved work)`);
-      continue;
-    }
-    try {
-      deps.teardown(w.branch);
-      deps.log(`torn down ${w.branch} (PR closed unmerged, no unsaved work)`);
-    } catch (err) {
-      deps.log(`teardown failed for ${w.branch}: ${err}`);
+  // A closed PR alone cannot prove the branch is done: a mid-review refactor closes
+  // the old PR and opens a successor from the same branch, or hasn't opened it yet.
+  // So an open PR on the branch holds the worktree, and a Linear-backed branch also
+  // holds until its ticket goes terminal (mirroring the split-group gate). Without
+  // the open set an open successor is invisible, so the path sits the tick out.
+  const closedWorktrees = selectMergedWorktrees(worktrees, closedBranches, deps.worktreesDir).filter(
+    (w) => !groupedPaths.has(w.path),
+  );
+  if (openBranches === null) {
+    if (closedWorktrees.length > 0) deps.log(`closed-unmerged teardown deferred (open PR list unavailable)`);
+  } else {
+    for (const w of closedWorktrees) {
+      if (openBranches.has(w.branch)) {
+        deps.log(`kept ${w.branch} (PR closed unmerged but branch has an open PR)`);
+        continue;
+      }
+      // A split parent whose original PR was just closed but whose slice markers
+      // aren't visible yet (race, or a transient marker-read failure) would fall
+      // through groupedPaths. The durable split-parent marker (written before the
+      // PR is closed, so it covers even the pre-first-slice window) spares it.
+      if (deps.isSplitParent(w.path)) {
+        deps.log(`kept ${w.branch} (PR closed unmerged but worktree is a split parent)`);
+        continue;
+      }
+      // Branches with no Linear identifier (Shortcut, ad-hoc) can't be looked up,
+      // so PR state alone decides for them, as in the split-group path.
+      const identifier = issueFromBranch(w.branch);
+      if (identifier !== null) {
+        let stateType: string | null;
+        try {
+          stateType = await deps.issueStateType(identifier);
+        } catch (err) {
+          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
+          continue;
+        }
+        if (stateType !== "completed" && stateType !== "canceled") {
+          deps.log(`kept ${w.branch} (PR closed unmerged but ticket ${identifier} not done: ${stateType})`);
+          continue;
+        }
+      }
+      if (!deps.hasNoUnpushedWork(w.path)) {
+        deps.log(`kept ${w.branch} (PR closed unmerged but worktree has unsaved work)`);
+        continue;
+      }
+      try {
+        deps.teardown(w.branch);
+        deps.log(`torn down ${w.branch} (PR closed unmerged, no unsaved work)`);
+      } catch (err) {
+        deps.log(`teardown failed for ${w.branch}: ${err}`);
+      }
     }
   }
 

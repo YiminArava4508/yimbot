@@ -471,6 +471,7 @@ test("cleanupOnce tears down a closed-unmerged worktree when it is fully pushed"
     listWorktrees: () => [wt("eng-1104-spike")],
     listMergedPRs: async () => [],
     listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    issueStateType: async () => "completed",
     hasNoUnpushedWork: () => true,
   });
   await cleanupOnce(d);
@@ -482,6 +483,7 @@ test("cleanupOnce keeps a closed-unmerged worktree that has unpushed work", asyn
     listWorktrees: () => [wt("eng-1104-spike")],
     listMergedPRs: async () => [],
     listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    issueStateType: async () => "completed",
     hasNoUnpushedWork: () => false,
   });
   await cleanupOnce(d);
@@ -495,6 +497,7 @@ test("cleanupOnce only runs the unpushed-work check on closed-unmerged branches"
     listWorktrees: () => [wt("eng-1-a"), wt("eng-2-b"), wt("eng-1104-spike")],
     listMergedPRs: async () => [mpr(2, "eng-2-b")],
     listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    issueStateType: async (id) => (id === "ENG-1104" ? "completed" : null),
     hasNoUnpushedWork: (path) => {
       checked.push(path.slice(path.lastIndexOf("/") + 1));
       return true;
@@ -560,10 +563,103 @@ test("cleanupOnce still reaps a plain closed-unmerged spike (not a split parent)
     listWorktrees: () => [wt("eng-1104-spike")],
     listMergedPRs: async () => [],
     listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    issueStateType: async () => "completed",
     hasNoUnpushedWork: () => true,
   });
   await cleanupOnce(d);
   assert.deepEqual(torn, ["eng-1104-spike"]);
+});
+
+test("cleanupOnce keeps a closed-unmerged worktree whose branch has an open successor PR", async () => {
+  // A mid-review refactor: the old PR is closed and a new one opened from the
+  // same branch. The open PR must hold the worktree even with the ticket done.
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-50-refactor")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(100, "eng-50-refactor")],
+    listOpenPRs: async () => [opr(101, "eng-50-refactor")],
+    issueStateType: async () => "completed",
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-50-refactor/.test(l) && /open/.test(l)));
+});
+
+test("cleanupOnce defers the closed-unmerged reap when the open PR list fails", async () => {
+  // Without the open set, an open successor PR on the branch is invisible;
+  // reaping could kill a live session, so the path sits the tick out.
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    listOpenPRs: async () => {
+      throw new Error("gh 503");
+    },
+    issueStateType: async () => "completed",
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /closed-unmerged teardown deferred/.test(l)));
+});
+
+test("cleanupOnce holds a closed-unmerged worktree until its ticket goes terminal", async () => {
+  // The old PR was closed but the ticket is still in progress: the session may
+  // be mid-refactor toward a successor PR that does not exist yet.
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    issueStateType: async () => "started",
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /eng-1104-spike/.test(l) && /not done/.test(l)));
+});
+
+test("cleanupOnce reaps a closed-unmerged worktree once its ticket is canceled", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    issueStateType: async () => "canceled",
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["eng-1104-spike"]);
+});
+
+test("cleanupOnce defers a closed-unmerged worktree when the issue state lookup fails", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-1104-spike")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "eng-1104-spike")],
+    issueStateType: async () => {
+      throw new Error("linear down");
+    },
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => /linear down/.test(l)));
+});
+
+test("cleanupOnce reaps a closed-unmerged worktree with no Linear identifier by PR state alone", async () => {
+  // A branch with no eng-<n> prefix (Shortcut, ad-hoc) cannot be looked up;
+  // readiness alone decides for it, as in the split-group path.
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("spike-experiment")],
+    listMergedPRs: async () => [],
+    listClosedUnmergedPRs: async () => [mpr(4880, "spike-experiment")],
+    issueStateType: async () => {
+      throw new Error("must not be called");
+    },
+    hasNoUnpushedWork: () => true,
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["spike-experiment"]);
 });
 
 test("cleanupOnce still reaps merged worktrees when the closed-PR list fails", async () => {

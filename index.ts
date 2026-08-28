@@ -108,25 +108,25 @@ if (process.stdout.isTTY) {
     },
   };
   const execFileAsync = promisify(execFile);
+  // Same headless claude -p shape as the daemon's judgeRun; the given model env
+  // overrides, falling back to the judge's model knob.
+  const runHeadless = (model: string) => async (prompt: string) => {
+    const args = ["-p", prompt];
+    if (model) args.push("--model", model);
+    const { stdout } = await execFileAsync("claude", args, {
+      cwd: currentCodebasePath(),
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 120_000,
+    });
+    return stdout;
+  };
   const reviewDeps = (pr: number): ReviewDeps => {
     const run = ghRunner(currentCodebasePath());
     return {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
-      // Same headless claude -p shape as the daemon's judgeRun; REVIEW_GROUP_MODEL
-      // overrides, falling back to the judge's model knob.
-      runGrouping: async (prompt) => {
-        const args = ["-p", prompt];
-        const model = envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""));
-        if (model) args.push("--model", model);
-        const { stdout } = await execFileAsync("claude", args, {
-          cwd: currentCodebasePath(),
-          maxBuffer: 10 * 1024 * 1024,
-          timeout: 120_000,
-        });
-        return stdout;
-      },
+      runGrouping: (prompt) => runHeadless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
       markReady: () => markPrReadyForReview(run, pr),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
@@ -164,6 +164,11 @@ if (process.stdout.isTTY) {
     refineEnabled: () => readRefineEnabled(refineEnvDefault(process.env)),
     settings,
     reviewDeps,
+    orderDeps: {
+      fetchMeta: (pr) => prReviewMeta(ghRunner(currentCodebasePath()), pr),
+      run: (prompt) =>
+        runHeadless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
+    },
   });
 } else {
   const stop = await startDaemon();

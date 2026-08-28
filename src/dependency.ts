@@ -1,3 +1,5 @@
+import { extractJsonObject } from "./json-extract.ts";
+
 const IDENTIFIER_RE = /\b[A-Z]{2,}-\d+\b/;
 const EXACT_IDENTIFIER_RE = /^[A-Z]{2,}-\d+$/;
 
@@ -44,15 +46,8 @@ export function buildDependencyPrompt(identifier: string, lines: string[]): stri
 }
 
 export function parseDependencies(stdout: string, self: string, normalized: string): string[] {
-  const start = stdout.indexOf("{");
-  const end = stdout.lastIndexOf("}");
-  if (start === -1 || end <= start) return [];
-  let obj: unknown;
-  try {
-    obj = JSON.parse(stdout.slice(start, end + 1));
-  } catch {
-    return [];
-  }
+  const obj = extractJsonObject(stdout);
+  if (obj === null) return [];
   const raw = (obj as { blockedBy?: unknown }).blockedBy;
   if (!Array.isArray(raw)) return [];
 

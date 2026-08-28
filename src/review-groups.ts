@@ -3,6 +3,7 @@
 // files into ordered, contextualized groups. Paths and diffstats only, never
 // diff bodies: enough signal to group, small enough to stay one prompt.
 import type { FileDiff } from "./review-diff.ts";
+import { extractJsonObject } from "./json-extract.ts";
 
 export type ReviewGroup = { title: string; context: string; files: string[] };
 export type ReviewGroups = { summary: string; groups: ReviewGroup[] };
@@ -36,15 +37,8 @@ export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
 // the caller can fall back. Unknown and duplicate paths are dropped; files
 // the model forgot land in a trailing "Other changes" group.
 export function parseGroups(stdout: string, diffPaths: string[]): ReviewGroups | null {
-  const start = stdout.indexOf("{");
-  const end = stdout.lastIndexOf("}");
-  if (start === -1 || end <= start) return null;
-  let obj: unknown;
-  try {
-    obj = JSON.parse(stdout.slice(start, end + 1));
-  } catch {
-    return null;
-  }
+  const obj = extractJsonObject(stdout);
+  if (obj === null) return null;
   const o = obj as { summary?: unknown; groups?: unknown };
   if (!Array.isArray(o.groups)) return null;
   const known = new Set(diffPaths);

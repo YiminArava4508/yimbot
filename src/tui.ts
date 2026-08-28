@@ -2,8 +2,9 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
-import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, statusFor, type BoardRow, type YimbotEvent } from "./events.ts";
 import type { Mode } from "./mode.ts";
+import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 
@@ -35,7 +36,129 @@ export function screenTerm(term: string | undefined): string | undefined {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   R review   m mode   s settings   q quit   prefix+${key} returns here`;
+  return `j/k move   tab pane   enter open   f flag/unflag   r ready   R review   m mode   s settings   q quit   prefix+${key} returns here`;
+}
+
+// A draft_pr event is a supervised draft whose ready verdict held (threads
+// resolved, mergeable, CI green): waiting on a human review, so its status is
+// the review section's membership test. Derived from the STATUS map rather than
+// repeating the display string here.
+const REVIEW_STATUS = statusFor("draft_pr")?.status ?? "draft pr";
+
+export function partitionRows(rows: BoardRow[]): { review: BoardRow[]; rest: BoardRow[] } {
+  const review: BoardRow[] = [];
+  const rest: BoardRow[] = [];
+  for (const r of rows) (r.status === REVIEW_STATUS ? review : rest).push(r);
+  return { review, rest };
+}
+
+export type ReviewEntry = { row: BoardRow; reason: string };
+
+// Sort the review rows by the fetched order, reasons attached. A null order
+// (still fetching) and any row the order missed keep board order with a "…"
+// placeholder, so the section is usable before the AI order lands.
+export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): ReviewEntry[] {
+  const reasonByPr = new Map((order ?? []).map((e) => [e.pr, e.reason]));
+  const rank = new Map((order ?? []).map((e, i) => [e.pr, i]));
+  const ordered: ReviewEntry[] = [];
+  const unranked: ReviewEntry[] = [];
+  for (const row of review) {
+    const r = row.pr != null ? rank.get(row.pr) : undefined;
+    const entry = { row, reason: row.pr != null ? (reasonByPr.get(row.pr) ?? "…") : "…" };
+    if (r !== undefined) ordered.push(entry);
+    else unranked.push(entry);
+  }
+  ordered.sort((a, b) => rank.get(a.row.pr!)! - rank.get(b.row.pr!)!);
+  return [...ordered, ...unranked];
+}
+
+// WAIT is time since the row's last event (when it went ready for review), the
+// natural review-priority signal; FLAG/REASON mirror the main board so a draft
+// whose session raised a flag stays visible while it sits here.
+export function reviewTable(entries: ReviewEntry[], now: number = Date.now()): string[][] {
+  const header = ["#", "PR", "TICKET", "TITLE", "WAIT", "FLAG", "REASON", "WHY"];
+  const body = entries.map((e, i) => [
+    String(i + 1),
+    e.row.pr != null ? `#${e.row.pr}` : "",
+    e.row.label,
+    e.row.title ?? "",
+    fmtDuration(now - e.row.ts),
+    isFlagged(e.row) ? "{red-fg}⚑{/red-fg}" : "",
+    e.row.flagReasons.length > 0 ? `{red-fg}${e.row.flagReasons.join(",")}{/red-fg}` : "",
+    e.reason,
+  ]);
+  return [header, ...body];
+}
+
+// Vertical layout of the split board: section header line, review table sized
+// to its rows (plus its column header), then the main board from boardTop down
+// to the footer. With nothing to review the section collapses entirely and the
+// board keeps its original top. Visible review rows are clamped to roughly half
+// the screen (the list scrolls the rest) so a long queue can never push the
+// board off-screen or paint over the footer.
+export function reviewSectionLayout(
+  count: number,
+  screenHeight: number,
+): {
+  header: { top: number; left: number; height: number };
+  table: { top: number; left: number; right: number; height: number };
+  boardTop: number;
+} {
+  const maxVisible = Math.max(1, Math.floor((screenHeight - 4) / 2));
+  const visible = Math.min(count, maxVisible);
+  return {
+    header: { top: 1, left: 0, height: 1 },
+    table: { top: 2, left: 0, right: 0, height: visible + 1 },
+    boardTop: count === 0 ? 1 : visible + 3,
+  };
+}
+
+export type Pane = "review" | "board";
+
+// The pane keypresses should act on. An empty pane can never hold the focus:
+// with every row a ready draft the board is empty, and without this the
+// operator's f/r/R/enter would silently no-op against it.
+export function resolvePane(current: Pane, reviewCount: number, boardCount: number): Pane {
+  if (reviewCount === 0) return "board";
+  if (boardCount === 0) return "review";
+  return current;
+}
+
+// Keep focusedPane honest against blessed's own focus: a mouse click on a list
+// item calls focus() on that list (neo-blessed list.js), which the tab binding
+// alone would not see, leaving keypresses acting on the other pane's selection.
+export function bindPaneFocusSync(
+  board: { on: (ev: string, fn: () => void) => void },
+  review: { on: (ev: string, fn: () => void) => void },
+  set: (pane: Pane) => void,
+): void {
+  board.on("focus", () => set("board"));
+  review.on("focus", () => set("review"));
+}
+
+// The row the operator's keypress should act on: each pane keeps its own blessed
+// selection (1-based, row 0 is the column header), and the focused pane wins.
+export function selectedBoardRow(
+  pane: Pane,
+  reviewEntries: ReviewEntry[],
+  reviewSelected: number,
+  boardRows: BoardRow[],
+  boardSelected: number,
+): BoardRow | undefined {
+  if (pane === "review") return reviewEntries[reviewSelected - 1]?.row;
+  return boardRows[boardSelected - 1];
+}
+
+// Tab flips focus between the review pane and the board, gated like every other
+// board key: an open overlay owns the keyboard.
+export function bindPaneToggle(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  toggle: () => void,
+): void {
+  screen.key(["tab"], () => {
+    if (!isOverlayOpen()) toggle();
+  });
 }
 
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
@@ -234,6 +357,9 @@ export function runTui(opts: {
   refineEnabled: () => boolean;
   settings: SettingsDeps;
   reviewDeps: (pr: number) => ReviewDeps;
+  // Feeds the READY TO REVIEW section's AI ordering: per-PR meta reads and the
+  // headless prompt runner (same claude -p shape as the review grouping).
+  orderDeps: OrderSourceDeps;
 }): void {
   const term = screenTerm(process.env.TERM);
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true, ...(term ? { term } : {}) });
@@ -253,12 +379,39 @@ export function runTui(opts: {
   });
   table.focus();
 
+  const reviewHeader = blessed.text({
+    parent: screen,
+    top: 1,
+    left: 0,
+    height: 1,
+    tags: true,
+    hidden: true,
+    content: "",
+  });
+  const reviewList = blessed.listtable({
+    parent: screen,
+    top: 2,
+    left: 0,
+    right: 0,
+    height: 2,
+    tags: true,
+    align: "left",
+    keys: true,
+    vi: true,
+    mouse: true,
+    hidden: true,
+    style: { header: { bold: true }, cell: { selected: { inverse: true } } },
+  });
+
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
   const status = blessed.text({ parent: screen, top: 0, right: 0, tags: true, content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout(returnKey()) });
   void footer;
 
   let currentRows: BoardRow[] = [];
+  let currentBoard: BoardRow[] = [];
+  let currentReview: ReviewEntry[] = [];
+  let focusedPane: Pane = "board";
   // Set when a settings apply's rollback restart also failed, so the daemon
   // is confirmed down. The panel itself closes on esc/w regardless of draft
   // state, so this has to outlive it to keep showing on the board.
@@ -269,7 +422,32 @@ export function runTui(opts: {
       reduceRows(readEvents(), Date.now(), { manualLiveKeys: opts.manualLiveKeys() }),
       opts.liveKeys(),
     );
-    table.setData(rowsToTable(currentRows, Date.now()));
+    const { review, rest } = partitionRows(currentRows);
+    orderFetcher.ensure(review.map((r) => r.pr).filter((n): n is number => n != null));
+    currentReview = applyOrder(review, orderFetcher.get());
+    currentBoard = rest;
+    const layout = reviewSectionLayout(currentReview.length, Number(screen.rows) || 24);
+    if (currentReview.length === 0) {
+      reviewHeader.hide();
+      reviewList.hide();
+    } else {
+      reviewHeader.setContent(`{bold}READY TO REVIEW (${currentReview.length}){/bold}`);
+      reviewList.height = layout.table.height;
+      reviewList.setData(reviewTable(currentReview));
+      // While an overlay is open both panes stay hidden (the overlay owns the
+      // screen); the close callback re-renders, which shows them again.
+      if (!isOverlayOpen()) {
+        reviewHeader.show();
+        reviewList.show();
+      }
+    }
+    table.top = layout.boardTop;
+    table.setData(rowsToTable(currentBoard, Date.now()));
+    const pane = resolvePane(focusedPane, currentReview.length, currentBoard.length);
+    if (pane !== focusedPane) {
+      focusedPane = pane;
+      if (!isOverlayOpen()) focusedWidget().focus();
+    }
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
       daemonStopped ? "daemon stopped" : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now()),
@@ -280,6 +458,12 @@ export function runTui(opts: {
     notice = { text, until: Date.now() + ttlMs };
     render();
   };
+  const orderFetcher = makeOrderFetcher({ ...opts.orderDeps, onUpdate: () => render() });
+  const selRow = () => selectedBoardRow(focusedPane, currentReview, reviewList.selected, currentBoard, table.selected);
+  const focusedWidget = () => (focusedPane === "review" ? reviewList : table);
+  bindPaneFocusSync(table, reviewList, (p) => {
+    focusedPane = p;
+  });
 
   const onEvent = (_ev: YimbotEvent) => render();
   bus.on("event", onEvent);
@@ -296,17 +480,26 @@ export function runTui(opts: {
   const isOverlayOpen = () => settingsOpen || reviewOpen;
   bindQuitKeys(screen, isOverlayOpen, quit);
 
+  const hidePanes = () => {
+    table.hide();
+    reviewHeader.hide();
+    reviewList.hide();
+  };
+  const showPanes = () => {
+    table.show();
+    focusedWidget().focus();
+  };
+
   bindSettingsKey(screen, isOverlayOpen, () => {
     settingsOpen = true;
-    table.hide();
+    hidePanes();
     openSettings(
       screen,
       opts.settings,
       (stopped) => {
         settingsOpen = false;
         daemonStopped = stopped;
-        table.show();
-        table.focus();
+        showPanes();
         render();
       },
       daemonStopped,
@@ -314,13 +507,13 @@ export function runTui(opts: {
   });
 
   bindFlagKey(screen, isOverlayOpen, () => {
-    const r = currentRows[table.selected - 1];
+    const r = selRow();
     if (!r) return;
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
   });
 
   bindReadyKey(screen, isOverlayOpen, () => {
-    void handleReadyPress(currentRows[table.selected - 1], opts.onAddReadyLabel, setNotice);
+    void handleReadyPress(selRow(), opts.onAddReadyLabel, setNotice);
   });
 
   bindModeKey(screen, isOverlayOpen, () => {
@@ -328,29 +521,36 @@ export function runTui(opts: {
     render();
   });
 
+  bindPaneToggle(screen, isOverlayOpen, () => {
+    if (currentReview.length === 0) return;
+    focusedPane = focusedPane === "review" ? "board" : "review";
+    focusedWidget().focus();
+    screen.render();
+  });
+
   bindReviewKey(screen, isOverlayOpen, () => {
-    const r = currentRows[table.selected - 1];
+    const r = selRow();
     if (!r) return;
     if (r.pr == null) {
       setNotice("{red-fg}selected row has no PR to review{/red-fg}", NOTICE_ERROR_TTL_MS);
       return;
     }
     reviewOpen = true;
-    table.hide();
+    hidePanes();
     openReview(screen, opts.reviewDeps(r.pr), (noticeMsg, isError) => {
       reviewOpen = false;
-      table.show();
-      table.focus();
+      showPanes();
       if (noticeMsg) setNotice(noticeMsg, isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);
       else render();
     });
   });
 
-  table.on("select", () => {
-    const r = currentRows[table.selected - 1];
+  const openSelectedSession = (r: BoardRow | undefined) => {
     if (!r) return;
     opts.onOpenSession(r.key, r.label);
-  });
+  };
+  table.on("select", () => openSelectedSession(currentBoard[table.selected - 1]));
+  reviewList.on("select", () => openSelectedSession(currentReview[reviewList.selected - 1]?.row));
 
   render();
 }

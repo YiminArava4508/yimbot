@@ -22,10 +22,10 @@ export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
     "",
     "Group these files into a guided review plan: related files together, ordered so the",
     "core change reads first and collateral (tests, wiring, fixtures, docs) after.",
-    "For each group write one or two sentences of context: what the group changes and",
-    "what a reviewer should look for.",
+    "For each group write two or three sentences of context: what the group changes,",
+    "why, and what a reviewer should verify in it.",
     "Reply with ONLY a JSON object, no prose:",
-    '{"summary": "<one paragraph on what this PR does>",',
+    '{"summary": "<2-3 sentences for a reviewer new to this codebase: what the PR does and how the pieces fit together>",',
     ' "groups": [{"title": "<short label>", "context": "<what to look for>", "files": ["<path>", ...]}, ...]}',
     "Every file must appear in exactly one group. Use only the paths listed above.",
   ].join("\n");

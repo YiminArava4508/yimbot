@@ -425,6 +425,31 @@ test("reduceRows: non-terminal rows never age out", () => {
   assert.equal(rows[0].status, "working");
 });
 
+test("reduceRows: a merged key with live manual work shows working (manual) instead of aging out", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "merged", ts: 10 })], 1000, {
+    keepMergedMs: 100,
+    manualLiveKeys: new Set(["A"]),
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "working (manual)");
+  assert.equal(rows[0].terminal, false);
+});
+
+test("reduceRows: manual conversion applies inside the merged linger window too", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "merged", ts: 10 })], 50, {
+    keepMergedMs: 100,
+    manualLiveKeys: new Set(["A"]),
+  });
+  assert.equal(rows[0].status, "working (manual)");
+});
+
+test("reduceRows: manual live keys leave non-terminal rows untouched", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "task_started", ts: 10 })], 50, {
+    manualLiveKeys: new Set(["A"]),
+  });
+  assert.equal(rows[0].status, "working");
+});
+
 test("reduceRows: maxRows drops oldest terminal first", () => {
   const events = [
     ev({ key: "OLD-MERGED", label: "OLD-MERGED", kind: "merged", ts: 1 }),

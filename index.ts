@@ -25,6 +25,7 @@ import {
   listTmuxSessions,
   liveRefineKeys,
   liveWorktreeKeys,
+  manuallyLiveKeys,
   resolveSessionForKey,
   switchToSession,
   unbindReturnKey,
@@ -142,6 +143,7 @@ if (process.stdout.isTTY) {
       for (const k of liveRefineKeys(listTmuxSessions())) keys.add(k);
       return keys;
     },
+    manualLiveKeys: () => manuallyLiveKeys(listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
     onToggleFlag: (key, label, flagged) =>
       emitEvent(
         flagged

@@ -18,6 +18,12 @@ test("groupingPrompt names the PR and lists every path with its diffstat", () =>
   assert.ok(p.includes("ONLY a JSON object"));
 });
 
+test("groupingPrompt asks for a reviewer-oriented summary and per-group verification hints", () => {
+  const p = groupingPrompt(PR, FILES);
+  assert.ok(p.includes("new to this codebase"));
+  assert.ok(p.includes("verify"));
+});
+
 test("parseGroups survives prose around the JSON", () => {
   const raw = 'Sure! Here you go:\n{"summary":"s","groups":[{"title":"core","context":"c","files":["src/widget.ts","src/widget.test.ts","docs/widget.md"]}]}\nDone.';
   const g = parseGroups(raw, PATHS);

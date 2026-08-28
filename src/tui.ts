@@ -223,6 +223,9 @@ export function bindReviewKey(
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
+  // Keys of worktrees whose tmux session is still live: their merged rows
+  // render as "working (manual)" instead of aging off the board.
+  manualLiveKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
   onAddReadyLabel: (pr: number, key: string, label: string) => Promise<void>;
@@ -262,7 +265,10 @@ export function runTui(opts: {
   let daemonStopped = false;
   let notice: Notice | null = null;
   const render = () => {
-    currentRows = filterToLiveWorktrees(reduceRows(readEvents(), Date.now()), opts.liveKeys());
+    currentRows = filterToLiveWorktrees(
+      reduceRows(readEvents(), Date.now(), { manualLiveKeys: opts.manualLiveKeys() }),
+      opts.liveKeys(),
+    );
     table.setData(rowsToTable(currentRows, Date.now()));
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(

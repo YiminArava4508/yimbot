@@ -873,6 +873,18 @@ export function liveWorktreeKeys(codebasePath: string, dir: string = worktreesDi
   return worktreeKeysUnder(listGitWorktrees(codebasePath), dir);
 }
 
+// Board keys of worktrees under `dir` that still have a live tmux session — the
+// keys the TUI treats as manual work in progress: their terminal (merged) rows
+// render as "working (manual)" instead of aging off the board, since cleanup
+// only leaves a merged key's worktree + session alive when someone is still on it.
+export function manuallyLiveKeys(worktrees: Worktree[], sessions: string[], dir: string = worktreesDir): Set<string> {
+  const keys = new Set<string>();
+  for (const key of worktreeKeysUnder(worktrees, dir)) {
+    if (resolveSessionForKey(key, worktrees, sessions)) keys.add(key);
+  }
+  return keys;
+}
+
 // Board keys of live refine sessions. Refine rows have no worktree, so the
 // board's live-key filter unions these in to keep them visible while refining.
 export function liveRefineKeys(sessions: string[]): Set<string> {

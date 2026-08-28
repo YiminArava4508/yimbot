@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseUnifiedDiff, escapeTags, renderFileDiff, type FileDiff } from "./review-diff.ts";
+import { parseUnifiedDiff, escapeTags, languageFor, renderFileDiff, type FileDiff } from "./review-diff.ts";
 
 const TWO_FILE_DIFF = [
   "diff --git a/src/a.ts b/src/a.ts",
@@ -101,23 +101,79 @@ test("escapeTags neutralizes blessed tag braces", () => {
   assert.equal(escapeTags("const x = {a: 1};"), "const x = {open}a: 1{close};");
 });
 
-test("renderFileDiff colors adds green, dels red, hunks cyan, and skips meta", () => {
+test("renderFileDiff keeps the header, hunks cyan, and skips meta", () => {
   const [f] = parseUnifiedDiff(TWO_FILE_DIFF);
   const out = renderFileDiff(f);
   assert.equal(out[0], "{bold}src/a.ts{/bold}  {green-fg}+2{/green-fg} {red-fg}-1{/red-fg}");
   assert.ok(out.includes("{cyan-fg}@@ -1,3 +1,4 @@{/cyan-fg}"));
-  assert.ok(out.includes("{green-fg}+const fresh = 2;{/green-fg}"));
-  assert.ok(out.includes("{red-fg}-const old = 2;{/red-fg}"));
-  assert.ok(out.includes(" const keep = 1;"));
   assert.ok(!out.some((l) => l.includes("index 1111111")));
 });
 
-test("renderFileDiff escapes braces inside code lines", () => {
+test("languageFor maps known extensions and returns null otherwise", () => {
+  assert.equal(languageFor("src/a.ts"), "typescript");
+  assert.equal(languageFor("web/App.tsx"), "typescript");
+  assert.equal(languageFor("lib/x.js"), "javascript");
+  assert.equal(languageFor("tool.py"), "python");
+  assert.equal(languageFor("run.sh"), "bash");
+  assert.equal(languageFor("data.json"), "json");
+  assert.equal(languageFor("README.md"), "markdown");
+  assert.equal(languageFor("ci.yml"), "yaml");
+  assert.equal(languageFor("main.go"), "go");
+  assert.equal(languageFor("lib.rs"), "rust");
+  assert.equal(languageFor("style.css"), "css");
+  assert.equal(languageFor("logo.png"), null);
+  assert.equal(languageFor("Makefile"), null);
+});
+
+test("renderFileDiff syntax-highlights recognized files with tinted add/del lines", () => {
+  const [f] = parseUnifiedDiff(TWO_FILE_DIFF);
+  const out = renderFileDiff(f);
+  const add = out.find((l) => l.includes("fresh"));
+  assert.ok(add);
+  assert.ok(add.startsWith("{22-bg}{green-fg}+{/green-fg}"));
+  assert.ok(add.endsWith("{/22-bg}"));
+  assert.ok(add.includes("{magenta-fg}const{/magenta-fg}"));
+  assert.ok(!add.includes("{green-fg}+const"));
+  const del = out.find((l) => l.includes("old = "));
+  assert.ok(del);
+  assert.ok(del.startsWith("{52-bg}{red-fg}-{/red-fg}"));
+  assert.ok(del.endsWith("{/52-bg}"));
+  const ctx = out.find((l) => l.includes("keep"));
+  assert.ok(ctx);
+  assert.ok(ctx.startsWith(" "));
+  assert.ok(ctx.includes("{magenta-fg}const{/magenta-fg}"));
+});
+
+test("renderFileDiff emits only blessed tags, no raw ANSI escapes or sentinels", () => {
+  const [f] = parseUnifiedDiff(TWO_FILE_DIFF);
+  for (const line of renderFileDiff(f)) {
+    assert.ok(!line.includes(String.fromCharCode(27)));
+    assert.ok(!line.includes(String.fromCharCode(1)));
+    assert.ok(!line.includes(String.fromCharCode(2)));
+  }
+});
+
+test("renderFileDiff escapes braces inside highlighted code lines", () => {
   const f: FileDiff = {
     path: "x.ts", oldPath: "x.ts", status: "modified", additions: 1, deletions: 0,
     lines: [{ kind: "add", text: "+const o = {};" }],
   };
-  assert.ok(renderFileDiff(f).includes("{green-fg}+const o = {open}{close};{/green-fg}"));
+  const [, line] = renderFileDiff(f);
+  assert.ok(line.includes("{open}"));
+  assert.ok(line.includes("{close}"));
+});
+
+test("renderFileDiff falls back to whole-line coloring for unrecognized files", () => {
+  const f: FileDiff = {
+    path: "notes.zzz", oldPath: "notes.zzz", status: "modified", additions: 1, deletions: 1,
+    lines: [
+      { kind: "add", text: "+hello there" },
+      { kind: "del", text: "-goodbye" },
+    ],
+  };
+  const out = renderFileDiff(f);
+  assert.ok(out.includes("{green-fg}+hello there{/green-fg}"));
+  assert.ok(out.includes("{red-fg}-goodbye{/red-fg}"));
 });
 
 test("renderFileDiff shows the rename arrow and a binary stub", () => {

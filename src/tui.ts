@@ -21,6 +21,16 @@ export function returnKey(): string {
   return envOr("TUI_RETURN_KEY", "Y");
 }
 
+// blessed cannot parse tmux's terminfo entry on this ncurses generation and
+// silently falls back to 8 colors, which flattens the review diff's 256-color
+// line tints to black and grey comments to invisible. Inside tmux the
+// xterm-256color entry parses fine and is what tmux emulates anyway, so
+// borrow it; any other terminal keeps its real TERM.
+export function screenTerm(term: string | undefined): string | undefined {
+  if (term !== undefined && term.startsWith("tmux")) return "xterm-256color";
+  return undefined;
+}
+
 export function footerHint(key: string): string {
   return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   R review   m mode   s settings   q quit   prefix+${key} returns here`;
 }
@@ -219,7 +229,8 @@ export function runTui(opts: {
   settings: SettingsDeps;
   reviewDeps: (pr: number) => ReviewDeps;
 }): void {
-  const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
+  const term = screenTerm(process.env.TERM);
+  const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true, ...(term ? { term } : {}) });
 
   const table = blessed.listtable({
     parent: screen,

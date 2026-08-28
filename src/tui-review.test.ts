@@ -1,15 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import blessed from "neo-blessed";
 import {
   diffPaneLines,
   flattenFiles,
   groupOf,
   nextUnviewed,
+  openReview,
   placeholderGroups,
   planLines,
   reviewFooterHint,
   reviewHeader,
   reviewLayout,
+  type ReviewDeps,
 } from "./tui-review.ts";
 import type { FileDiff } from "./review-diff.ts";
 
@@ -86,4 +90,156 @@ test("reviewLayout pins the panes: plan left 30%, diff filling the rest", () => 
   assert.equal(l.diff.left, "30%");
   assert.equal(l.header.height, 1);
   assert.equal(l.footer.bottom, 0);
+});
+
+// A minimal EventEmitter standing in for a TTY stream, mirroring the harness in
+// tui.test.ts, sized so blessed renders headlessly without touching a real fd.
+function fakeTty(columns: number, rows: number) {
+  class FakeStream extends EventEmitter {
+    columns = columns;
+    rows = rows;
+    isTTY = true;
+    writable = true;
+    write() {
+      return true;
+    }
+    setRawMode() {}
+    pause() {}
+    resume() {}
+    ref() {}
+    unref() {}
+    end() {}
+  }
+  return { input: new FakeStream(), output: new FakeStream() };
+}
+
+// Emit a keypress on the currently focused widget, matching how the real
+// screen dispatches: screen.js only forwards keypress to screen.focused, so
+// this exercises exactly the routing openSettings' key handlers rely on.
+function press(screen: any, name: string) {
+  screen.focused.emit("keypress", name.length === 1 ? name : "", { name, full: name });
+}
+
+const flush = () => new Promise((r) => setImmediate(r));
+
+function makeScreen() {
+  const { input, output } = fakeTty(120, 40);
+  return blessed.screen({ input, output, terminal: "xterm", smartCSR: true }) as any;
+}
+
+const DIFF = [
+  "diff --git a/src/a.ts b/src/a.ts",
+  "index 1..2 100644",
+  "--- a/src/a.ts",
+  "+++ b/src/a.ts",
+  "@@ -1,1 +1,1 @@",
+  "-old",
+  "+new",
+  "diff --git a/src/b.ts b/src/b.ts",
+  "index 1..2 100644",
+  "--- a/src/b.ts",
+  "+++ b/src/b.ts",
+  "@@ -1,1 +1,1 @@",
+  "-x",
+  "+y",
+  "",
+].join("\n");
+
+const GROUP_JSON = JSON.stringify({
+  summary: "s",
+  groups: [{ title: "core", context: "look here", files: ["src/b.ts", "src/a.ts"] }],
+});
+
+function testDeps(overrides: Partial<ReviewDeps> = {}): ReviewDeps & { saved: [string, Set<string>][] } {
+  const saved: [string, Set<string>][] = [];
+  return {
+    pr: 42,
+    fetchDiff: async () => DIFF,
+    fetchMeta: async () => ({ title: "t", body: "b", isDraft: true, headSha: "sha1" }),
+    runGrouping: async () => GROUP_JSON,
+    markReady: async () => {},
+    loadViewed: () => new Set(),
+    saveViewed: (sha, viewed) => { saved.push([sha, new Set(viewed)]); },
+    saved,
+    ...overrides,
+  };
+}
+
+test("openReview renders the AI plan and space marks viewed, saves, and advances", async () => {
+  const screen = makeScreen();
+  const deps = testDeps();
+  let closed = false;
+  openReview(screen, deps, () => { closed = true; });
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  assert.ok(plan.getContent().includes("core"));
+  // AI ordered b before a; selection starts on the first file, src/b.ts.
+  press(screen, "space");
+  await flush();
+  assert.equal(deps.saved.length, 1);
+  assert.deepEqual(deps.saved[0], ["sha1", new Set(["src/b.ts"])]);
+  assert.ok(!closed);
+  screen.destroy();
+});
+
+test("openReview y marks ready only when all files are viewed and closes with a notice", async () => {
+  const screen = makeScreen();
+  let readied = 0;
+  const deps = testDeps({ markReady: async () => { readied++; } });
+  const closes: [string | null, boolean][] = [];
+  openReview(screen, deps, (notice, isError) => closes.push([notice, isError]));
+  await flush();
+  await flush();
+  press(screen, "y");
+  await flush();
+  assert.equal(readied, 0);
+  press(screen, "space");
+  press(screen, "space");
+  await flush();
+  press(screen, "y");
+  await flush();
+  await flush();
+  assert.equal(readied, 1);
+  assert.equal(closes.length, 1);
+  assert.ok(closes[0][0]?.includes("#42"));
+  assert.equal(closes[0][1], false);
+  screen.destroy();
+});
+
+test("openReview escape closes and saves, and a failed diff fetch closes with an error", async () => {
+  const screen = makeScreen();
+  const deps = testDeps();
+  const closes: [string | null, boolean][] = [];
+  openReview(screen, deps, (notice, isError) => closes.push([notice, isError]));
+  await flush();
+  await flush();
+  press(screen, "escape");
+  assert.equal(closes.length, 1);
+  assert.equal(closes[0][0], null);
+  screen.destroy();
+
+  const screen2 = makeScreen();
+  const failing = testDeps({ fetchDiff: async () => { throw new Error("no such PR"); } });
+  const closes2: [string | null, boolean][] = [];
+  openReview(screen2, failing, (notice, isError) => closes2.push([notice, isError]));
+  await flush();
+  await flush();
+  assert.equal(closes2.length, 1);
+  assert.ok(closes2[0][0]?.includes("no such PR"));
+  assert.equal(closes2[0][1], true);
+  screen2.destroy();
+});
+
+test("openReview falls back to directory groups when the AI call fails", async () => {
+  const screen = makeScreen();
+  const deps = testDeps({ runGrouping: async () => { throw new Error("claude down"); } });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  assert.ok(plan.getContent().includes("src"));
+  const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
+  assert.ok(footer.getContent().includes("grouped by directory"));
+  screen.destroy();
 });

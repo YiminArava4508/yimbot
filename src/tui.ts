@@ -91,25 +91,43 @@ export function reviewTable(entries: ReviewEntry[], now: number = Date.now()): s
 }
 
 // Vertical layout of the split board: section header line, review table sized
-// to its rows (plus its column header), then the main board from boardTop down
-// to the footer. With nothing to review the section collapses entirely and the
-// board keeps its original top. Visible review rows are clamped to roughly half
-// the screen (the list scrolls the rest) so a long queue can never push the
-// board off-screen or paint over the footer.
+// to its rows (plus its column header), a horizontal rule with one blank margin
+// row on each side, then the main board from boardTop down to the footer. With
+// nothing to review the section collapses entirely (separator: null) and the
+// board keeps its original top. Visible review rows are clamped so the board
+// always keeps its column header plus two rows above the footer, and on a
+// screen too small to afford the rule and margins those three rows are dropped
+// (separator: null) rather than squeezing the board out.
 export function reviewSectionLayout(
   count: number,
   screenHeight: number,
 ): {
   header: { top: number; left: number; height: number };
   table: { top: number; left: number; right: number; height: number };
+  separator: { top: number } | null;
   boardTop: number;
 } {
-  const maxVisible = Math.max(1, Math.floor((screenHeight - 4) / 2));
+  const headerTop = 1;
+  const tableTop = headerTop + 1;
+  const margin = 1;
+  const boardMinHeight = 3; // column header + two rows
+  const footerRows = 1;
+  // Rows a single visible review row costs beyond the review rows themselves:
+  // title, section header, column header, footer, plus the margined rule when
+  // it fits (dropped below 11 rows, where it would eat the board's minimum).
+  const ruleRows = margin + 1 + margin;
+  const withRule = screenHeight >= tableTop + 1 + 1 + ruleRows + boardMinHeight + footerRows;
+  const chrome = tableTop + 1 + (withRule ? ruleRows : 0) + footerRows;
+  const maxVisible = Math.max(1, Math.min(Math.floor((screenHeight - chrome) / 2), screenHeight - chrome - boardMinHeight));
   const visible = Math.min(count, maxVisible);
+  const tableHeight = visible + 1;
+  const separatorTop = tableTop + tableHeight + margin;
+  const boardTop = withRule ? separatorTop + margin + 1 : tableTop + tableHeight;
   return {
-    header: { top: 1, left: 0, height: 1 },
-    table: { top: 2, left: 0, right: 0, height: visible + 1 },
-    boardTop: count === 0 ? 1 : visible + 3,
+    header: { top: headerTop, left: 0, height: 1 },
+    table: { top: tableTop, left: 0, right: 0, height: tableHeight },
+    separator: count > 0 && withRule ? { top: separatorTop } : null,
+    boardTop: count === 0 ? 1 : boardTop,
   };
 }
 
@@ -403,6 +421,17 @@ export function runTui(opts: {
     style: { header: { bold: true }, cell: { selected: { inverse: true } } },
   });
 
+  // Positioned by render() from reviewSectionLayout before it is ever shown.
+  const separator = blessed.line({
+    parent: screen,
+    orientation: "horizontal",
+    left: 0,
+    right: 0,
+    hidden: true,
+    style: { fg: "grey" },
+  });
+  const reviewWidgets = [reviewHeader, reviewList, separator];
+
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
   const status = blessed.text({ parent: screen, top: 0, right: 0, tags: true, content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout(returnKey()) });
@@ -428,17 +457,19 @@ export function runTui(opts: {
     currentBoard = rest;
     const layout = reviewSectionLayout(currentReview.length, Number(screen.rows) || 24);
     if (currentReview.length === 0) {
-      reviewHeader.hide();
-      reviewList.hide();
+      for (const w of reviewWidgets) w.hide();
     } else {
       reviewHeader.setContent(`{bold}READY TO REVIEW (${currentReview.length}){/bold}`);
       reviewList.height = layout.table.height;
       reviewList.setData(reviewTable(currentReview));
+      if (layout.separator) separator.top = layout.separator.top;
       // While an overlay is open both panes stay hidden (the overlay owns the
       // screen); the close callback re-renders, which shows them again.
       if (!isOverlayOpen()) {
         reviewHeader.show();
         reviewList.show();
+        if (layout.separator) separator.show();
+        else separator.hide();
       }
     }
     table.top = layout.boardTop;
@@ -468,6 +499,9 @@ export function runTui(opts: {
   const onEvent = (_ev: YimbotEvent) => render();
   bus.on("event", onEvent);
   const refreshTimer = setInterval(render, refreshMs());
+  // Reposition the absolutely-placed section immediately on a terminal resize
+  // instead of leaving stale rows painted until the next tick.
+  screen.on("resize", render);
 
   const quit = () => {
     clearInterval(refreshTimer);
@@ -482,9 +516,10 @@ export function runTui(opts: {
 
   const hidePanes = () => {
     table.hide();
-    reviewHeader.hide();
-    reviewList.hide();
+    for (const w of reviewWidgets) w.hide();
   };
+  // The review trio is deliberately not shown here: the render() every caller
+  // issues right after restores exactly the widgets the current layout wants.
   const showPanes = () => {
     table.show();
     focusedWidget().focus();

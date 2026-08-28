@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseUnifiedDiff } from "./review-diff.ts";
+import { parseUnifiedDiff, escapeTags, renderFileDiff, type FileDiff } from "./review-diff.ts";
 
 const TWO_FILE_DIFF = [
   "diff --git a/src/a.ts b/src/a.ts",
@@ -95,4 +95,38 @@ test("parseUnifiedDiff does not misread a hunk body line starting with --- as a 
   const [f] = parseUnifiedDiff(diff);
   assert.equal(f.deletions, 1);
   assert.equal(f.additions, 1);
+});
+
+test("escapeTags neutralizes blessed tag braces", () => {
+  assert.equal(escapeTags("const x = {a: 1};"), "const x = {open}a: 1{close};");
+});
+
+test("renderFileDiff colors adds green, dels red, hunks cyan, and skips meta", () => {
+  const [f] = parseUnifiedDiff(TWO_FILE_DIFF);
+  const out = renderFileDiff(f);
+  assert.equal(out[0], "{bold}src/a.ts{/bold}  {green-fg}+2{/green-fg} {red-fg}-1{/red-fg}");
+  assert.ok(out.includes("{cyan-fg}@@ -1,3 +1,4 @@{/cyan-fg}"));
+  assert.ok(out.includes("{green-fg}+const fresh = 2;{/green-fg}"));
+  assert.ok(out.includes("{red-fg}-const old = 2;{/red-fg}"));
+  assert.ok(out.includes(" const keep = 1;"));
+  assert.ok(!out.some((l) => l.includes("index 1111111")));
+});
+
+test("renderFileDiff escapes braces inside code lines", () => {
+  const f: FileDiff = {
+    path: "x.ts", oldPath: "x.ts", status: "modified", additions: 1, deletions: 0,
+    lines: [{ kind: "add", text: "+const o = {};" }],
+  };
+  assert.ok(renderFileDiff(f).includes("{green-fg}+const o = {open}{close};{/green-fg}"));
+});
+
+test("renderFileDiff shows the rename arrow and a binary stub", () => {
+  const renamed: FileDiff = {
+    path: "b.ts", oldPath: "a.ts", status: "renamed", additions: 0, deletions: 0, lines: [],
+  };
+  assert.ok(renderFileDiff(renamed)[0].includes("a.ts -> b.ts"));
+  const binary: FileDiff = {
+    path: "logo.png", oldPath: "logo.png", status: "binary", additions: 0, deletions: 0, lines: [],
+  };
+  assert.ok(renderFileDiff(binary).includes("{grey-fg}binary file, no text diff{/grey-fg}"));
 });

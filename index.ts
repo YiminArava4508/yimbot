@@ -2,10 +2,11 @@
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { format } from "node:util";
+import { format, promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { envOr } from "./src/env.ts";
 import { emitEvent, emitStatus } from "./src/events.ts";
-import { applyReadyLabel, ghRunner } from "./src/gh.ts";
+import { applyReadyLabel, ghRunner, markPrReadyForReview, prDiff, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
@@ -15,6 +16,8 @@ import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
+import { readViewed, writeViewed } from "./src/review-state.ts";
+import type { ReviewDeps } from "./src/tui-review.ts";
 import {
   bindReturnKey,
   currentTmuxPane,
@@ -103,6 +106,31 @@ if (process.stdout.isTTY) {
       return result;
     },
   };
+  const execFileAsync = promisify(execFile);
+  const reviewDeps = (pr: number): ReviewDeps => {
+    const run = ghRunner(currentCodebasePath());
+    return {
+      pr,
+      fetchDiff: () => prDiff(run, pr),
+      fetchMeta: () => prReviewMeta(run, pr),
+      // Same headless claude -p shape as the daemon's judgeRun; REVIEW_GROUP_MODEL
+      // overrides, falling back to the judge's model knob.
+      runGrouping: async (prompt) => {
+        const args = ["-p", prompt];
+        const model = envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""));
+        if (model) args.push("--model", model);
+        const { stdout } = await execFileAsync("claude", args, {
+          cwd: currentCodebasePath(),
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 120_000,
+        });
+        return stdout;
+      },
+      markReady: () => markPrReadyForReview(run, pr),
+      loadViewed: (headSha) => readViewed(pr, headSha),
+      saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
+    };
+  };
   runTui({
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
@@ -133,6 +161,7 @@ if (process.stdout.isTTY) {
     onToggleMode: toggleMode,
     refineEnabled: () => readRefineEnabled(refineEnvDefault(process.env)),
     settings,
+    reviewDeps,
   });
 } else {
   const stop = await startDaemon();

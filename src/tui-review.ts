@@ -1,0 +1,311 @@
+// src/tui-review.ts
+// Guided review overlay: a plan pane (AI-ordered groups of changed files) and
+// a diff pane, over the board the way the settings panel is. Everything that
+// can be pure is exported below and unit-tested; the blessed shell stays thin.
+import blessed from "neo-blessed";
+import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./review-diff.ts";
+import { fetchGroups } from "./review-groups.ts";
+import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
+
+export function flattenFiles(groups: ReviewGroup[]): string[] {
+  return groups.flatMap((g) => g.files);
+}
+
+export function groupOf(groups: ReviewGroup[], path: string): ReviewGroup | null {
+  return groups.find((g) => g.files.includes(path)) ?? null;
+}
+
+// The next unviewed file after `from`, wrapping; `from` itself when every
+// file is viewed so space on the last file does not jump anywhere.
+export function nextUnviewed(files: string[], viewed: Set<string>, from: number): number {
+  for (let step = 1; step <= files.length; step++) {
+    const i = (from + step) % files.length;
+    if (!viewed.has(files[i])) return i;
+  }
+  return from;
+}
+
+export function placeholderGroups(paths: string[]): ReviewGroups {
+  return { summary: "", groups: [{ title: "organizing review…", context: "", files: paths }] };
+}
+
+export function planLines(
+  groups: ReviewGroup[],
+  viewed: Set<string>,
+  selectedPath: string | null,
+): { lines: string[]; selectedLine: number } {
+  const lines: string[] = [];
+  let selectedLine = -1;
+  for (const g of groups) {
+    lines.push(`{bold}${escapeTags(g.title)}{/bold}`);
+    for (const f of g.files) {
+      const mark = viewed.has(f) ? " {green-fg}✓{/green-fg} " : "   ";
+      if (f === selectedPath) {
+        selectedLine = lines.length;
+        lines.push(`{inverse}${mark}${escapeTags(f)}{/inverse}`);
+      } else {
+        lines.push(`${mark}${escapeTags(f)}`);
+      }
+    }
+  }
+  return { lines, selectedLine };
+}
+
+export function diffPaneLines(group: ReviewGroup | null, fd: FileDiff | null): string[] {
+  const out: string[] = [];
+  if (group && group.context) {
+    out.push(`{grey-fg}${escapeTags(group.context)}{/grey-fg}`, "");
+  }
+  if (fd) out.push(...renderFileDiff(fd));
+  else out.push("{grey-fg}loading diff…{/grey-fg}");
+  return out;
+}
+
+export function reviewHeader(pr: number, title: string, viewedCount: number, total: number): string {
+  return `PR #${pr}  ${escapeTags(title)}  |  ${viewedCount}/${total} viewed`;
+}
+
+export function reviewFooterHint(s: {
+  total: number;
+  loaded: boolean;
+  allViewed: boolean;
+  isDraft: boolean;
+  diffFocused: boolean;
+}): string {
+  if (!s.loaded) return "loading…   q back";
+  if (s.total === 0) return "no changes in this PR   q back";
+  let done = "";
+  if (s.allViewed && s.isDraft) done = "   {green-fg}y mark PR ready{/green-fg}";
+  else if (s.allViewed) done = "   {green-fg}review complete{/green-fg}";
+  if (s.diffFocused) return `j/k scroll   space viewed   tab file list${done}   q back`;
+  return `j/k file   space viewed   g/G first/last   tab diff${done}   q back`;
+}
+
+// Same discipline as footerLayout/settingsPanelLayout: exported plain records
+// so the layout test exercises these exact objects. keys+vi on the diff pane
+// gives blessed's own j/k scrolling when it is focused; the plan pane's keys
+// are handled by openReview so headers can be skipped during selection.
+export function reviewLayout(): Record<"header" | "plan" | "diff" | "footer", Record<string, unknown>> {
+  return {
+    header: { top: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true },
+    plan: {
+      top: 1, left: 0, width: "30%", bottom: 1, tags: true,
+      scrollable: true, alwaysScroll: true,
+      border: { type: "line" }, label: " review plan ",
+    },
+    diff: {
+      top: 1, left: "30%", right: 0, bottom: 1, tags: true, keys: true, vi: true,
+      scrollable: true, alwaysScroll: true,
+      border: { type: "line" }, label: " diff ",
+      scrollbar: { ch: " ", style: { inverse: true } },
+    },
+    footer: { bottom: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true, style: { fg: "white" } },
+  };
+}
+
+export type ReviewDeps = {
+  pr: number;
+  fetchDiff: () => Promise<string>;
+  fetchMeta: () => Promise<{ title: string; body: string; isDraft: boolean; headSha: string }>;
+  runGrouping: (prompt: string) => Promise<string>;
+  markReady: () => Promise<void>;
+  loadViewed: (headSha: string) => Set<string>;
+  saveViewed: (headSha: string, viewed: Set<string>) => void;
+};
+
+export function openReview(
+  screen: unknown,
+  deps: ReviewDeps,
+  onClose: (notice: string | null, isError: boolean) => void,
+): void {
+  const s: any = screen;
+  const layout = reviewLayout();
+  const header: any = blessed.text({ parent: s, ...layout.header, content: `PR #${deps.pr}  loading…` });
+  const plan: any = blessed.box({ parent: s, ...layout.plan });
+  const diff: any = blessed.box({ parent: s, ...layout.diff });
+  const footer: any = blessed.text({ parent: s, ...layout.footer });
+  plan.focus();
+
+  let meta: { title: string; body: string; isDraft: boolean; headSha: string } | null = null;
+  let fileDiffs: FileDiff[] = [];
+  let groups: ReviewGroups | null = null;
+  let viewed = new Set<string>();
+  let selectedPath: string | null = null;
+  // True once the operator has navigated or toggled a file (set inside
+  // select(), whose only callers are the plan keypress handler and
+  // toggleViewed's advance). Once true, a fresh group load must not snap the
+  // selection back to the new order's first file out from under them.
+  let userSelected = false;
+  let diffFocused = false;
+  let diffLoaded = false;
+  let usedFallback = false;
+  let readying = false;
+  // Guards late async resolutions (grouping, markReady) after close, same as
+  // the settings panel's `closed` flag.
+  let closed = false;
+
+  const currentGroups = (): ReviewGroups => {
+    if (groups) return groups;
+    return placeholderGroups(fileDiffs.map((f) => f.path));
+  };
+  const files = () => flattenFiles(currentGroups().groups);
+  const allViewed = () => {
+    const fs = files();
+    return fs.length > 0 && fs.every((f) => viewed.has(f));
+  };
+
+  function paint(footerOverride?: string): void {
+    if (closed) return;
+    const g = currentGroups();
+    const fs = files();
+    if (selectedPath === null || !fs.includes(selectedPath)) selectedPath = fs[0] ?? null;
+    const title = meta ? meta.title : "loading…";
+    header.setContent(reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length));
+    const { lines, selectedLine } = planLines(g.groups, viewed, selectedPath);
+    plan.setContent(lines.join("\n"));
+    if (selectedLine >= 0) plan.scrollTo(selectedLine);
+    const fd = fileDiffs.find((f) => f.path === selectedPath) ?? null;
+    diff.setContent(diffPaneLines(selectedPath ? groupOf(g.groups, selectedPath) : null, fd).join("\n"));
+    let hint = footerOverride;
+    if (hint === undefined) {
+      hint = reviewFooterHint({
+        total: fs.length,
+        loaded: diffLoaded,
+        allViewed: allViewed(),
+        isDraft: meta?.isDraft ?? false,
+        diffFocused,
+      });
+      if (usedFallback) hint = `{red-fg}AI grouping failed, grouped by directory{/red-fg}   ${hint}`;
+    }
+    footer.setContent(hint);
+    s.render();
+  }
+
+  function close(notice: string | null, isError: boolean): void {
+    if (closed) return;
+    closed = true;
+    if (meta) deps.saveViewed(meta.headSha, viewed);
+    header.detach();
+    plan.detach();
+    diff.detach();
+    footer.detach();
+    s.render();
+    onClose(notice, isError);
+  }
+
+  function select(idx: number): void {
+    const fs = files();
+    if (fs.length === 0) return;
+    const clamped = Math.max(0, Math.min(fs.length - 1, idx));
+    selectedPath = fs[clamped];
+    userSelected = true;
+    diff.scrollTo(0);
+    paint();
+  }
+
+  function selectedIndex(): number {
+    return selectedPath === null ? 0 : Math.max(0, files().indexOf(selectedPath));
+  }
+
+  function toggleViewed(): void {
+    if (selectedPath === null) return;
+    if (viewed.has(selectedPath)) viewed.delete(selectedPath);
+    else viewed.add(selectedPath);
+    if (meta) deps.saveViewed(meta.headSha, viewed);
+    select(nextUnviewed(files(), viewed, selectedIndex()));
+  }
+
+  function markReady(): void {
+    if (readying || !allViewed() || !meta?.isDraft) return;
+    readying = true;
+    paint(`marking #${deps.pr} ready…`);
+    deps.markReady().then(
+      () => close(`{green-fg}#${deps.pr} marked ready{/green-fg}`, false),
+      (err: unknown) => {
+        readying = false;
+        const msg = err instanceof Error ? err.message : String(err);
+        paint(`{red-fg}mark ready failed: ${msg}{/red-fg}`);
+      },
+    );
+  }
+
+  plan.on("keypress", (_ch: string, key: { name: string; full?: string; shift?: boolean }) => {
+    if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
+    else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
+    else if (key.name === "g" && key.shift) select(files().length - 1);
+    else if (key.name === "g") select(0);
+    else if (key.name === "space") toggleViewed();
+    else if (key.name === "y") markReady();
+    else if (key.name === "tab") {
+      diffFocused = true;
+      diff.focus();
+      paint();
+    } else if (key.name === "q" || key.name === "escape") close(null, false);
+  });
+
+  diff.on("keypress", (_ch: string, key: { name: string }) => {
+    if (key.name === "tab") {
+      diffFocused = false;
+      plan.focus();
+      paint();
+    } else if (key.name === "space") toggleViewed();
+    else if (key.name === "y") markReady();
+    else if (key.name === "q" || key.name === "escape") close(null, false);
+  });
+
+  paint();
+
+  const metaP = deps.fetchMeta();
+  const diffP = deps.fetchDiff();
+  metaP.then(
+    (m) => {
+      if (closed) return;
+      meta = m;
+      const hadUnsaved = viewed.size > 0;
+      viewed = new Set([...deps.loadViewed(m.headSha), ...viewed]);
+      if (hadUnsaved) deps.saveViewed(m.headSha, viewed);
+      paint();
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      close(`{red-fg}PR #${deps.pr} metadata failed: ${msg}{/red-fg}`, true);
+    },
+  );
+  diffP.then(
+    (raw) => {
+      if (closed) return;
+      fileDiffs = parseUnifiedDiff(raw);
+      diffLoaded = true;
+      paint();
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      close(`{red-fg}diff for #${deps.pr} failed: ${msg}{/red-fg}`, true);
+    },
+  );
+  // Grouping needs the diff's file list and the PR title/body, so it starts
+  // once both land; the placeholder group keeps the diff readable meanwhile.
+  Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
+    if (closed || rawDiff === null) return;
+    if (fileDiffs.length === 0) {
+      groups = { summary: "", groups: [] };
+      paint();
+      return;
+    }
+    const stats = fileDiffs.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions }));
+    const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, stats);
+    if (closed) return;
+    groups = res.groups;
+    usedFallback = res.usedFallback;
+    // The placeholder shown while grouping was in flight may have already
+    // auto-selected its first file; once the real order lands, re-pick the
+    // first file under that order, but only if the operator has not already
+    // navigated or toggled a file, or a live selection would get yanked out
+    // from under them.
+    if (!userSelected) selectedPath = null;
+    paint();
+  }).catch(() => {
+    // metaP rejection: already reported and closed by metaP.then's own
+    // rejection handler above.
+  });
+}

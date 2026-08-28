@@ -394,9 +394,11 @@ test("bindReviewKey opens only when no overlay is open", () => {
   assert.equal(opened, 1);
 });
 
-test("screenTerm borrows xterm-256color only under tmux", () => {
+test("screenTerm borrows xterm-256color only for 256-color multiplexer terms", () => {
   assert.equal(screenTerm("tmux-256color"), "xterm-256color");
-  assert.equal(screenTerm("tmux"), "xterm-256color");
+  assert.equal(screenTerm("screen-256color"), "xterm-256color");
+  assert.equal(screenTerm("tmux"), undefined);
+  assert.equal(screenTerm("screen"), undefined);
   assert.equal(screenTerm("xterm-256color"), undefined);
   assert.equal(screenTerm("alacritty"), undefined);
   assert.equal(screenTerm(undefined), undefined);

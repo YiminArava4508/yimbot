@@ -23,11 +23,14 @@ export function returnKey(): string {
 
 // blessed cannot parse tmux's terminfo entry on this ncurses generation and
 // silently falls back to 8 colors, which flattens the review diff's 256-color
-// line tints to black and grey comments to invisible. Inside tmux the
-// xterm-256color entry parses fine and is what tmux emulates anyway, so
-// borrow it; any other terminal keeps its real TERM.
+// line tints to black and grey comments to invisible. For a TERM that itself
+// claims 256 colors, the xterm-256color entry parses fine and is what tmux
+// emulates anyway, so borrow it; a bare "tmux" means the outer terminal was
+// not judged 256-capable, so it, like every other TERM, is left alone.
 export function screenTerm(term: string | undefined): string | undefined {
-  if (term !== undefined && term.startsWith("tmux")) return "xterm-256color";
+  if (term === undefined) return undefined;
+  const multiplexer = term.startsWith("tmux") || term.startsWith("screen");
+  if (multiplexer && term.includes("256color")) return "xterm-256color";
   return undefined;
 }
 

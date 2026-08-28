@@ -1,7 +1,7 @@
 // src/review-diff.ts
 // Pure parser for `gh pr diff` output (git unified diff format). No fs, no
 // subprocess: raw text in, per-file structures out, so tests stay hermetic.
-import { highlight as cliHighlight } from "cli-highlight";
+import { DEFAULT_THEME, highlight as cliHighlight } from "cli-highlight";
 
 export type DiffLineKind = "add" | "del" | "ctx" | "hunk" | "meta";
 export type DiffLine = { kind: DiffLineKind; text: string };
@@ -95,24 +95,36 @@ const MARK_OPEN = String.fromCharCode(1);
 const MARK_CLOSE = String.fromCharCode(2);
 const tokenColor = (name: string) => (s: string) =>
   `${MARK_OPEN}${name}${MARK_CLOSE}${s}${MARK_OPEN}/${name}${MARK_CLOSE}`;
+const plainToken = (s: string) => s;
+// cli-highlight resolves each token as theme[token] || DEFAULT_THEME[token],
+// so any token missing here falls through to its chalk-based default and
+// leaks raw ANSI into the pane. Seed every DEFAULT_THEME key as plain first
+// so the fallback can never fire, then color the tokens we care about.
 const HL_THEME: Record<string, (s: string) => string> = {
+  ...Object.fromEntries(Object.keys(DEFAULT_THEME).map((k) => [k, plainToken])),
   keyword: tokenColor("magenta"),
   literal: tokenColor("magenta"),
   built_in: tokenColor("cyan"),
   type: tokenColor("cyan"),
   attr: tokenColor("cyan"),
+  attribute: tokenColor("cyan"),
+  tag: tokenColor("cyan"),
   link: tokenColor("cyan"),
   number: tokenColor("yellow"),
   symbol: tokenColor("yellow"),
   bullet: tokenColor("yellow"),
   string: tokenColor("green"),
+  addition: tokenColor("green"),
   regexp: tokenColor("red"),
+  deletion: tokenColor("red"),
   comment: tokenColor("grey"),
   meta: tokenColor("grey"),
   doctag: tokenColor("grey"),
   title: tokenColor("blue"),
   section: tokenColor("blue"),
   name: tokenColor("blue"),
+  class: tokenColor("blue"),
+  function: tokenColor("blue"),
 };
 const MARK_RE = new RegExp(`${MARK_OPEN}(/?)([a-z]+)${MARK_CLOSE}`, "g");
 
@@ -123,12 +135,17 @@ const MARK_RE = new RegExp(`${MARK_OPEN}(/?)([a-z]+)${MARK_CLOSE}`, "g");
 const ADD_BG = "22";
 const DEL_BG = "52";
 
-function highlightCode(code: string, language: string): string {
+// Diff lines are highlighted one at a time, so hljs has no cross-line state:
+// the continuation lines of a multi-line string or comment can tokenize as
+// plain code. An accepted tradeoff of line-based diff highlighting.
+// Returns null when highlight.js rejects the input, so the caller can fall
+// back to the same whole-line coloring unrecognized files get.
+function highlightCode(code: string, language: string): string | null {
   try {
     const marked = cliHighlight(code, { language, ignoreIllegals: true, theme: HL_THEME });
     return escapeTags(marked).replace(MARK_RE, (_m, slash, name) => `{${slash}${name}-fg}`);
   } catch {
-    return escapeTags(code);
+    return null;
   }
 }
 
@@ -149,14 +166,14 @@ export function renderFileDiff(fd: FileDiff): string[] {
       out.push(`{cyan-fg}${escapeTags(l.text)}{/cyan-fg}`);
       continue;
     }
-    if (lang === null || l.text === "") {
+    const code = lang === null || l.text === "" ? null : highlightCode(l.text.slice(1), lang);
+    if (code === null) {
       const esc = escapeTags(l.text);
       if (l.kind === "add") out.push(`{green-fg}${esc}{/green-fg}`);
       else if (l.kind === "del") out.push(`{red-fg}${esc}{/red-fg}`);
       else out.push(esc);
       continue;
     }
-    const code = highlightCode(l.text.slice(1), lang);
     if (l.kind === "add") out.push(`{${ADD_BG}-bg}{green-fg}+{/green-fg}${code}{/${ADD_BG}-bg}`);
     else if (l.kind === "del") out.push(`{${DEL_BG}-bg}{red-fg}-{/red-fg}${code}{/${DEL_BG}-bg}`);
     else out.push(`${l.text[0]}${code}`);

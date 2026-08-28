@@ -145,11 +145,37 @@ test("renderFileDiff syntax-highlights recognized files with tinted add/del line
 });
 
 test("renderFileDiff emits only blessed tags, no raw ANSI escapes or sentinels", () => {
-  const [f] = parseUnifiedDiff(TWO_FILE_DIFF);
-  for (const line of renderFileDiff(f)) {
-    assert.ok(!line.includes(String.fromCharCode(27)));
-    assert.ok(!line.includes(String.fromCharCode(1)));
-    assert.ok(!line.includes(String.fromCharCode(2)));
+  // class/function/tag/emphasis tokens are the ones cli-highlight's own
+  // chalk default theme would color if the custom theme misses them, which
+  // would leak raw ANSI; exercise them across ts, xml, and markdown.
+  const diff = [
+    "diff --git a/w.ts b/w.ts",
+    "index 1..2 100644",
+    "--- a/w.ts",
+    "+++ b/w.ts",
+    "@@ -1,2 +1,2 @@",
+    "+class Foo extends Bar { method(x: number) { return x; } }",
+    "+function make(n: number): Foo { return new Foo(n); }",
+    "diff --git a/p.html b/p.html",
+    "index 1..2 100644",
+    "--- a/p.html",
+    "+++ b/p.html",
+    "@@ -1,1 +1,1 @@",
+    '+<div class="x"><em>hi</em></div>',
+    "diff --git a/n.md b/n.md",
+    "index 1..2 100644",
+    "--- a/n.md",
+    "+++ b/n.md",
+    "@@ -1,1 +1,1 @@",
+    "+some *bold* and _italic_ text",
+    "",
+  ].join("\n");
+  for (const f of parseUnifiedDiff(diff).concat(parseUnifiedDiff(TWO_FILE_DIFF))) {
+    for (const line of renderFileDiff(f)) {
+      assert.ok(!line.includes(String.fromCharCode(27)), `ANSI escape leaked: ${JSON.stringify(line)}`);
+      assert.ok(!line.includes(String.fromCharCode(1)));
+      assert.ok(!line.includes(String.fromCharCode(2)));
+    }
   }
 });
 

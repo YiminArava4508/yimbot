@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import blessed from "neo-blessed";
 import {
   diffPaneLines,
+  fileAtPlanLine,
   flattenFiles,
   groupOf,
   guideLines,
@@ -59,6 +60,16 @@ test("planLines returns selectedLine -1 when nothing is selected", () => {
   assert.equal(planLines(GROUPS, new Set(), null).selectedLine, -1);
 });
 
+test("fileAtPlanLine maps plan lines to files and headers/out-of-range to null", () => {
+  assert.equal(fileAtPlanLine(GROUPS, 0), null);
+  assert.equal(fileAtPlanLine(GROUPS, 1), "src/a.ts");
+  assert.equal(fileAtPlanLine(GROUPS, 2), "src/b.ts");
+  assert.equal(fileAtPlanLine(GROUPS, 3), null);
+  assert.equal(fileAtPlanLine(GROUPS, 4), "src/a.test.ts");
+  assert.equal(fileAtPlanLine(GROUPS, 5), null);
+  assert.equal(fileAtPlanLine(GROUPS, -1), null);
+});
+
 test("diffPaneLines renders just the diff, guidance lives in the guide band", () => {
   const fd: FileDiff = {
     path: "src/a.ts", oldPath: "src/a.ts", status: "modified", additions: 0, deletions: 0, lines: [],
@@ -84,18 +95,18 @@ test("guideLines shows the fallback warning when AI grouping failed", () => {
 
 test("guideLines renders the selected group's guidance first, then the summary dim", () => {
   const out = guideLines({ summary: "adds a widget", group: GROUPS[0], loaded: true, usedFallback: false });
-  assert.equal(out[0], "{bold}core{/bold}: the change itself");
+  assert.equal(out[0], "{cyan-fg}{bold}core{/bold}{/cyan-fg}: the change itself");
   assert.equal(out[1], "{grey-fg}adds a widget{/grey-fg}");
 });
 
 test("guideLines skips empty summary and empty context", () => {
   assert.deepEqual(
     guideLines({ summary: "", group: GROUPS[0], loaded: true, usedFallback: false }),
-    ["{bold}core{/bold}: the change itself"],
+    ["{cyan-fg}{bold}core{/bold}{/cyan-fg}: the change itself"],
   );
   assert.deepEqual(
     guideLines({ summary: "s", group: GROUPS[1], loaded: true, usedFallback: false }),
-    ["{bold}tests{/bold}", "{grey-fg}s{/grey-fg}"],
+    ["{cyan-fg}{bold}tests{/bold}{/cyan-fg}", "{grey-fg}s{/grey-fg}"],
   );
   assert.deepEqual(guideLines({ summary: "", group: null, loaded: true, usedFallback: false }), []);
 });
@@ -355,6 +366,39 @@ test("openReview: space in the diff pane marks the file viewed and saves", async
   assert.deepEqual(deps.saved[0], ["sha1", new Set(["src/b.ts"])]);
   const plan = screen.children.find((c: any) => c.options.label === " review plan ");
   assert.ok(plan.getContent().includes("✓"));
+  screen.destroy();
+});
+
+test("openReview: focus moving between panes syncs the footer hint (click auto-focus)", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  const diff = screen.children.find((c: any) => c.options.label === " diff ");
+  const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
+  // A click on a pane focuses it via screen's element-click auto-focus, which
+  // never went through the tab handler; the hint must follow real focus.
+  diff.focus();
+  assert.ok(footer.getContent().includes("j/k scroll"));
+  plan.focus();
+  assert.ok(footer.getContent().includes("g/G first/last"));
+  screen.destroy();
+});
+
+test("openReview: clicking a plan row selects that file so space marks the right one", async () => {
+  const screen = makeScreen();
+  const deps = testDeps();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  // AI order: header line, src/b.ts, src/a.ts; click the src/a.ts row.
+  plan.emit("click", { y: plan.atop + plan.itop + 2 });
+  press(screen, "space");
+  await flush();
+  assert.equal(deps.saved.length, 1);
+  assert.deepEqual(deps.saved[0], ["sha1", new Set(["src/a.ts"])]);
   screen.destroy();
 });
 

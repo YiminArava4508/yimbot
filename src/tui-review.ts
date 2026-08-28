@@ -129,6 +129,11 @@ export function openReview(
   let groups: ReviewGroups | null = null;
   let viewed = new Set<string>();
   let selectedPath: string | null = null;
+  // True once the operator has navigated or toggled a file (set inside
+  // select(), whose only callers are the plan keypress handler and
+  // toggleViewed's advance). Once true, a fresh group load must not snap the
+  // selection back to the new order's first file out from under them.
+  let userSelected = false;
   let diffFocused = false;
   let usedFallback = false;
   let readying = false;
@@ -184,6 +189,7 @@ export function openReview(
     if (fs.length === 0) return;
     const clamped = Math.max(0, Math.min(fs.length - 1, idx));
     selectedPath = fs[clamped];
+    userSelected = true;
     diff.scrollTo(0);
     paint();
   }
@@ -240,12 +246,18 @@ export function openReview(
 
   const metaP = deps.fetchMeta();
   const diffP = deps.fetchDiff();
-  metaP.then((m) => {
-    if (closed) return;
-    meta = m;
-    viewed = deps.loadViewed(m.headSha);
-    paint();
-  });
+  metaP.then(
+    (m) => {
+      if (closed) return;
+      meta = m;
+      viewed = deps.loadViewed(m.headSha);
+      paint();
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      close(`{red-fg}PR #${deps.pr} metadata failed: ${msg}{/red-fg}`, true);
+    },
+  );
   diffP.then(
     (raw) => {
       if (closed) return;
@@ -257,13 +269,6 @@ export function openReview(
       close(`{red-fg}diff for #${deps.pr} failed: ${msg}{/red-fg}`, true);
     },
   );
-  // A failed fetchMeta must not become an unhandled rejection: report and
-  // close, mirroring the diff-fetch failure path above.
-  metaP.catch((err: unknown) => {
-    if (closed) return;
-    const msg = err instanceof Error ? err.message : String(err);
-    close(`{red-fg}PR #${deps.pr} metadata failed: ${msg}{/red-fg}`, true);
-  });
   // Grouping needs the diff's file list and the PR title/body, so it starts
   // once both land; the placeholder group keeps the diff readable meanwhile.
   Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
@@ -275,11 +280,13 @@ export function openReview(
     usedFallback = res.usedFallback;
     // The placeholder shown while grouping was in flight may have already
     // auto-selected its first file; once the real order lands, re-pick the
-    // first file under that order rather than keeping a stale auto-pick.
-    selectedPath = null;
+    // first file under that order, but only if the operator has not already
+    // navigated or toggled a file, or a live selection would get yanked out
+    // from under them.
+    if (!userSelected) selectedPath = null;
     paint();
   }).catch(() => {
-    // metaP rejection: the meta fetch failing means gh is broken; the diff
-    // fetch will have failed too and already closed the view.
+    // metaP rejection: already reported and closed by metaP.then's own
+    // rejection handler above.
   });
 }

@@ -243,3 +243,44 @@ test("openReview falls back to directory groups when the AI call fails", async (
   assert.ok(footer.getContent().includes("grouped by directory"));
   screen.destroy();
 });
+
+test("openReview closes with an error notice when fetchMeta rejects, and produces no unhandled rejection", async () => {
+  const screen = makeScreen();
+  const failing = testDeps({ fetchMeta: async () => { throw new Error("gh unreachable"); } });
+  const closes: [string | null, boolean][] = [];
+  openReview(screen, failing, (notice, isError) => closes.push([notice, isError]));
+  await flush();
+  await flush();
+  assert.equal(closes.length, 1);
+  assert.ok(closes[0][0]?.includes("gh unreachable"));
+  assert.equal(closes[0][1], true);
+  screen.destroy();
+});
+
+test("openReview keeps the operator's selection when real groups land after they navigated", async () => {
+  const screen = makeScreen();
+  let resolveGrouping: (v: string) => void = () => {};
+  const deps = testDeps({
+    runGrouping: () => new Promise((resolve) => { resolveGrouping = resolve; }),
+  });
+  openReview(screen, deps, () => {});
+  await flush();
+  // Placeholder groups are up now (diff parse order: src/a.ts, src/b.ts),
+  // selection auto-picked src/a.ts; "k" is a no-op move but still operator-
+  // driven, marking the selection as no longer up for grabs.
+  press(screen, "k");
+  resolveGrouping(GROUP_JSON); // AI order is src/b.ts first, src/a.ts second
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  const content = plan.getContent();
+  assert.ok(content.includes("core"), "real AI groups must have loaded");
+  // getContent() returns tags already rendered to ANSI; reverse-video is
+  // \x1b[7m ... \x1b[27m, so this locates the selected (inverse) row.
+  assert.ok(
+    content.includes("\x1b[7m   src/a.ts\x1b[27m"),
+    "selection must stay on the operator's file, not snap to the AI order's first file",
+  );
+  assert.ok(!content.includes("\x1b[7m   src/b.ts\x1b[27m"));
+  screen.destroy();
+});

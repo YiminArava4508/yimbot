@@ -77,11 +77,22 @@ test("reviewHeader shows PR, title and progress", () => {
 });
 
 test("reviewFooterHint offers y only when all viewed and draft", () => {
-  const base = { total: 3, allViewed: false, isDraft: true, diffFocused: false };
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, diffFocused: false };
   assert.ok(!reviewFooterHint(base).includes("y mark PR ready"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true, isDraft: false }).includes("review complete"));
-  assert.ok(reviewFooterHint({ ...base, total: 0 }).includes("loading"));
+  assert.ok(reviewFooterHint({ ...base, loaded: false }).includes("loading"));
+  assert.ok(reviewFooterHint({ ...base, total: 0 }).includes("no changes"));
+});
+
+test("reviewFooterHint describes scrolling and the file-list tab when the diff pane is focused", () => {
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, diffFocused: true };
+  const hint = reviewFooterHint(base);
+  assert.ok(hint.includes("j/k scroll"));
+  assert.ok(hint.includes("space viewed"));
+  assert.ok(hint.includes("tab file list"));
+  assert.ok(!hint.includes("g/G first/last"));
+  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
 });
 
 test("reviewLayout pins the panes: plan left 30%, diff filling the rest", () => {
@@ -282,5 +293,85 @@ test("openReview keeps the operator's selection when real groups land after they
     "selection must stay on the operator's file, not snap to the AI order's first file",
   );
   assert.ok(!content.includes("\x1b[7m   src/b.ts\x1b[27m"));
+  screen.destroy();
+});
+
+test("openReview: space in the diff pane marks the file viewed and saves", async () => {
+  const screen = makeScreen();
+  const deps = testDeps();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  press(screen, "tab");
+  press(screen, "space");
+  await flush();
+  assert.equal(deps.saved.length, 1);
+  assert.deepEqual(deps.saved[0], ["sha1", new Set(["src/b.ts"])]);
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  assert.ok(plan.getContent().includes("✓"));
+  screen.destroy();
+});
+
+test("openReview: y in the diff pane marks ready once all files are viewed", async () => {
+  const screen = makeScreen();
+  let readied = 0;
+  const deps = testDeps({ markReady: async () => { readied++; } });
+  const closes: [string | null, boolean][] = [];
+  openReview(screen, deps, (notice, isError) => closes.push([notice, isError]));
+  await flush();
+  await flush();
+  press(screen, "tab");
+  press(screen, "space");
+  press(screen, "space");
+  await flush();
+  press(screen, "y");
+  await flush();
+  await flush();
+  assert.equal(readied, 1);
+  assert.equal(closes.length, 1);
+  screen.destroy();
+});
+
+test("openReview keeps a mark toggled before meta arrives and persists it once meta lands", async () => {
+  const screen = makeScreen();
+  let resolveMeta: (v: { title: string; body: string; isDraft: boolean; headSha: string }) => void = () => {};
+  const deps = testDeps({
+    fetchMeta: () => new Promise((resolve) => { resolveMeta = resolve; }),
+  });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  // Placeholder groups are up (no meta yet); mark the first file viewed. No
+  // meta means toggleViewed cannot persist it yet.
+  press(screen, "space");
+  await flush();
+  assert.equal(deps.saved.length, 0);
+  resolveMeta({ title: "t", body: "b", isDraft: true, headSha: "sha1" });
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  assert.ok(plan.getContent().includes("✓"), "the pre-meta mark must survive meta's union");
+  assert.ok(
+    deps.saved.some(([sha, viewed]) => sha === "sha1" && viewed.size > 0),
+    "the surviving mark must be persisted once meta lands",
+  );
+  screen.destroy();
+});
+
+test("openReview shows a no-changes footer and skips grouping for an empty diff", async () => {
+  const screen = makeScreen();
+  let grouped = 0;
+  const deps = testDeps({
+    fetchDiff: async () => "",
+    runGrouping: async () => { grouped++; return GROUP_JSON; },
+  });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  await flush();
+  await flush();
+  const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
+  assert.ok(footer.getContent().includes("no changes in this PR"));
+  assert.equal(grouped, 0);
   screen.destroy();
 });

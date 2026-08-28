@@ -67,16 +67,18 @@ export function reviewHeader(pr: number, title: string, viewedCount: number, tot
 
 export function reviewFooterHint(s: {
   total: number;
+  loaded: boolean;
   allViewed: boolean;
   isDraft: boolean;
   diffFocused: boolean;
 }): string {
-  if (s.total === 0) return "loading…   q back";
-  const focus = s.diffFocused ? "tab file list" : "tab diff";
+  if (!s.loaded) return "loading…   q back";
+  if (s.total === 0) return "no changes in this PR   q back";
   let done = "";
   if (s.allViewed && s.isDraft) done = "   {green-fg}y mark PR ready{/green-fg}";
   else if (s.allViewed) done = "   {green-fg}review complete{/green-fg}";
-  return `j/k file   space viewed   g/G first/last   ${focus}${done}   q back`;
+  if (s.diffFocused) return `j/k scroll   space viewed   tab file list${done}   q back`;
+  return `j/k file   space viewed   g/G first/last   tab diff${done}   q back`;
 }
 
 // Same discipline as footerLayout/settingsPanelLayout: exported plain records
@@ -135,6 +137,7 @@ export function openReview(
   // selection back to the new order's first file out from under them.
   let userSelected = false;
   let diffFocused = false;
+  let diffLoaded = false;
   let usedFallback = false;
   let readying = false;
   // Guards late async resolutions (grouping, markReady) after close, same as
@@ -165,7 +168,13 @@ export function openReview(
     diff.setContent(diffPaneLines(selectedPath ? groupOf(g.groups, selectedPath) : null, fd).join("\n"));
     let hint = footerOverride;
     if (hint === undefined) {
-      hint = reviewFooterHint({ total: fs.length, allViewed: allViewed(), isDraft: meta?.isDraft ?? false, diffFocused });
+      hint = reviewFooterHint({
+        total: fs.length,
+        loaded: diffLoaded,
+        allViewed: allViewed(),
+        isDraft: meta?.isDraft ?? false,
+        diffFocused,
+      });
       if (usedFallback) hint = `{red-fg}AI grouping failed, grouped by directory{/red-fg}   ${hint}`;
     }
     footer.setContent(hint);
@@ -239,7 +248,9 @@ export function openReview(
       diffFocused = false;
       plan.focus();
       paint();
-    } else if (key.name === "q" || key.name === "escape") close(null, false);
+    } else if (key.name === "space") toggleViewed();
+    else if (key.name === "y") markReady();
+    else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
   paint();
@@ -250,7 +261,9 @@ export function openReview(
     (m) => {
       if (closed) return;
       meta = m;
-      viewed = deps.loadViewed(m.headSha);
+      const hadUnsaved = viewed.size > 0;
+      viewed = new Set([...deps.loadViewed(m.headSha), ...viewed]);
+      if (hadUnsaved) deps.saveViewed(m.headSha, viewed);
       paint();
     },
     (err: unknown) => {
@@ -262,6 +275,7 @@ export function openReview(
     (raw) => {
       if (closed) return;
       fileDiffs = parseUnifiedDiff(raw);
+      diffLoaded = true;
       paint();
     },
     (err: unknown) => {
@@ -273,6 +287,11 @@ export function openReview(
   // once both land; the placeholder group keeps the diff readable meanwhile.
   Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
     if (closed || rawDiff === null) return;
+    if (fileDiffs.length === 0) {
+      groups = { summary: "", groups: [] };
+      paint();
+      return;
+    }
     const stats = fileDiffs.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions }));
     const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, stats);
     if (closed) return;

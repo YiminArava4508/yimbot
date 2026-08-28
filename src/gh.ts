@@ -13,7 +13,7 @@ export type GhRunner = (args: string[]) => Promise<string>;
 
 export function ghRunner(cwd: string): GhRunner {
   return async (args) => {
-    const { stdout } = await execFileAsync("gh", args, { cwd, encoding: "utf8" });
+    const { stdout } = await execFileAsync("gh", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
     return stdout;
   };
 }

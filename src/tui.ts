@@ -4,6 +4,7 @@ import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
 import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 import type { Mode } from "./mode.ts";
+import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 
 // How often the board repaints on its own, independent of daemon events. Without
@@ -21,7 +22,7 @@ export function returnKey(): string {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   m mode   s settings   q quit   prefix+${key} returns here`;
+  return `j/k move   g/G top/bottom   enter open   f flag/unflag   r ready   R review   m mode   s settings   q quit   prefix+${key} returns here`;
 }
 
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
@@ -122,47 +123,48 @@ export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[
 
 // screen.key's handler runs before the focused widget's own keypress handling
 // (see neo-blessed's screen.js _listenKeys: it emits on the screen first, then
-// on screen.focused). While the settings panel is open, the panel's own list
-// owns q/escape (list.js maps them to cancelSelected, which drives the
-// unsaved-changes double-escape prompt), so the board must not act on them
-// here. C-c stays a hard quit regardless.
+// on screen.focused). While any overlay (settings or review) is open, the
+// overlay's own widgets own q/escape (e.g. list.js maps them to
+// cancelSelected, which drives the settings panel's unsaved-changes
+// double-escape prompt), so the board must not act on them here. C-c stays a
+// hard quit regardless.
 export function bindQuitKeys(
   screen: { key: (keys: string[], fn: () => void) => void },
-  isSettingsOpen: () => boolean,
+  isOverlayOpen: () => boolean,
   quit: () => void,
 ): void {
   screen.key(["q", "escape"], () => {
-    if (!isSettingsOpen()) quit();
+    if (!isOverlayOpen()) quit();
   });
   screen.key(["C-c"], quit);
 }
 
-// Gated the same way as bindQuitKeys: without this, a second s while the
-// panel is already open attaches a second list/footer pair on top of the
-// first (openSettings has no idea it is already open), and the first pair is
-// then permanently unreachable since only the panel that receives the close
-// ever detaches its own widgets.
+// Gated the same way as bindQuitKeys: without this, a second s while any
+// overlay (settings or review) is already open attaches a second list/footer
+// pair on top of the first (openSettings has no idea it is already open), and
+// the first pair is then permanently unreachable since only the overlay that
+// receives the close ever detaches its own widgets.
 export function bindSettingsKey(
   screen: { key: (keys: string[], fn: () => void) => void },
-  isSettingsOpen: () => boolean,
+  isOverlayOpen: () => boolean,
   openPanel: () => void,
 ): void {
   screen.key(["s"], () => {
-    if (!isSettingsOpen()) openPanel();
+    if (!isOverlayOpen()) openPanel();
   });
 }
 
-// Gated the same way as bindQuitKeys/bindSettingsKey: while the panel's list
-// or a picker is focused, grabKeys is false, so without this gate f would
-// still reach the screen-level handler and flag/unflag the hidden board's
-// selected row out from under the operator.
+// Gated the same way as bindQuitKeys/bindSettingsKey: while any overlay
+// (settings or review) has focus, grabKeys is false, so without this gate f
+// would still reach the screen-level handler and flag/unflag the hidden
+// board's selected row out from under the operator.
 export function bindFlagKey(
   screen: { key: (keys: string[], fn: () => void) => void },
-  isSettingsOpen: () => boolean,
+  isOverlayOpen: () => boolean,
   toggle: () => void,
 ): void {
   screen.key(["f"], () => {
-    if (!isSettingsOpen()) toggle();
+    if (!isOverlayOpen()) toggle();
   });
 }
 
@@ -172,23 +174,36 @@ export function bindFlagKey(
 // unconditional on readiness because the human is the judge here.
 export function bindReadyKey(
   screen: { key: (keys: string[], fn: () => void) => void },
-  isSettingsOpen: () => boolean,
+  isOverlayOpen: () => boolean,
   addReady: () => void,
 ): void {
   screen.key(["r"], () => {
-    if (!isSettingsOpen()) addReady();
+    if (!isOverlayOpen()) addReady();
   });
 }
 
-// m toggles the operating mode, gated like f: while the settings panel is
-// open the board is hidden, so mutating global state under it would surprise.
+// m toggles the operating mode, gated like f: while any overlay (settings or
+// review) is open the board is hidden, so mutating global state under it
+// would surprise.
 export function bindModeKey(
   screen: { key: (keys: string[], fn: () => void) => void },
-  isSettingsOpen: () => boolean,
+  isOverlayOpen: () => boolean,
   toggle: () => void,
 ): void {
   screen.key(["m"], () => {
-    if (!isSettingsOpen()) toggle();
+    if (!isOverlayOpen()) toggle();
+  });
+}
+
+// R (shift-r) opens the guided review overlay for the selected row's PR,
+// gated like s: a second R while any overlay is open would stack widgets.
+export function bindReviewKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  open: () => void,
+): void {
+  screen.key(["S-r"], () => {
+    if (!isOverlayOpen()) open();
   });
 }
 
@@ -202,6 +217,7 @@ export function runTui(opts: {
   onToggleMode: () => Mode;
   refineEnabled: () => boolean;
   settings: SettingsDeps;
+  reviewDeps: (pr: number) => ReviewDeps;
 }): void {
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true });
 
@@ -256,9 +272,11 @@ export function runTui(opts: {
     opts.onQuit();
   };
   let settingsOpen = false;
-  bindQuitKeys(screen, () => settingsOpen, quit);
+  let reviewOpen = false;
+  const isOverlayOpen = () => settingsOpen || reviewOpen;
+  bindQuitKeys(screen, isOverlayOpen, quit);
 
-  bindSettingsKey(screen, () => settingsOpen, () => {
+  bindSettingsKey(screen, isOverlayOpen, () => {
     settingsOpen = true;
     table.hide();
     openSettings(
@@ -275,19 +293,37 @@ export function runTui(opts: {
     );
   });
 
-  bindFlagKey(screen, () => settingsOpen, () => {
+  bindFlagKey(screen, isOverlayOpen, () => {
     const r = currentRows[table.selected - 1];
     if (!r) return;
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
   });
 
-  bindReadyKey(screen, () => settingsOpen, () => {
+  bindReadyKey(screen, isOverlayOpen, () => {
     void handleReadyPress(currentRows[table.selected - 1], opts.onAddReadyLabel, setNotice);
   });
 
-  bindModeKey(screen, () => settingsOpen, () => {
+  bindModeKey(screen, isOverlayOpen, () => {
     opts.onToggleMode();
     render();
+  });
+
+  bindReviewKey(screen, isOverlayOpen, () => {
+    const r = currentRows[table.selected - 1];
+    if (!r) return;
+    if (r.pr == null) {
+      setNotice("{red-fg}selected row has no PR to review{/red-fg}", NOTICE_ERROR_TTL_MS);
+      return;
+    }
+    reviewOpen = true;
+    table.hide();
+    openReview(screen, opts.reviewDeps(r.pr), (noticeMsg, isError) => {
+      reviewOpen = false;
+      table.show();
+      table.focus();
+      if (noticeMsg) setNotice(noticeMsg, isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);
+      else render();
+    });
   });
 
   table.on("select", () => {

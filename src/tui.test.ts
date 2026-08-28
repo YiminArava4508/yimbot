@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -375,4 +375,21 @@ test("footer clips at a narrow width with a long custom key, still sparing the t
   const lastTableRow = lines[rows - 2];
   assert.match(lastTableRow, /ENG-\d+/, "the table's last row must survive, not be painted over");
   assert.equal(lines.length, rows);
+});
+
+test("footerHint names the review key", () => {
+  assert.ok(footerHint("Y").includes("R review"));
+});
+
+test("bindReviewKey opens only when no overlay is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const screen = { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } };
+  let opened = 0;
+  let overlay = false;
+  bindReviewKey(screen, () => overlay, () => { opened++; });
+  handlers["S-r"]();
+  assert.equal(opened, 1);
+  overlay = true;
+  handlers["S-r"]();
+  assert.equal(opened, 1);
 });

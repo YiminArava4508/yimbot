@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, statusContent } from "./tui.ts";
+import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, screenTerm, statusContent } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -392,4 +392,14 @@ test("bindReviewKey opens only when no overlay is open", () => {
   overlay = true;
   handlers["S-r"]();
   assert.equal(opened, 1);
+});
+
+test("screenTerm borrows xterm-256color only for 256-color multiplexer terms", () => {
+  assert.equal(screenTerm("tmux-256color"), "xterm-256color");
+  assert.equal(screenTerm("screen-256color"), "xterm-256color");
+  assert.equal(screenTerm("tmux"), undefined);
+  assert.equal(screenTerm("screen"), undefined);
+  assert.equal(screenTerm("xterm-256color"), undefined);
+  assert.equal(screenTerm("alacritty"), undefined);
+  assert.equal(screenTerm(undefined), undefined);
 });

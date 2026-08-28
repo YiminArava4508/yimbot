@@ -4,6 +4,7 @@ node_modules/
 daemon.log
 daemon.log.bak.*
 events.jsonl
+review-state.json
 docs/superpowers/
 mode
 refine

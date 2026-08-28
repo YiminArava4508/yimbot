@@ -51,13 +51,29 @@ export function planLines(
   return { lines, selectedLine };
 }
 
-export function diffPaneLines(group: ReviewGroup | null, fd: FileDiff | null): string[] {
+export function diffPaneLines(fd: FileDiff | null): string[] {
+  if (fd) return renderFileDiff(fd);
+  return ["{grey-fg}loading diff…{/grey-fg}"];
+}
+
+// The guide band's content: the selected file's group context, then the AI's
+// PR summary. The band is a fixed-height box that clips rather than scrolls,
+// so the group line (the per-selection guidance) renders first and only the
+// summary risks getting cut on narrow terminals.
+export function guideLines(s: {
+  summary: string;
+  group: ReviewGroup | null;
+  loaded: boolean;
+  usedFallback: boolean;
+}): string[] {
+  if (!s.loaded) return ["{grey-fg}organizing review…{/grey-fg}"];
+  if (s.usedFallback) return ["{red-fg}AI grouping failed, grouped by directory{/red-fg}"];
   const out: string[] = [];
-  if (group && group.context) {
-    out.push(`{grey-fg}${escapeTags(group.context)}{/grey-fg}`, "");
+  if (s.group) {
+    const title = `{bold}${escapeTags(s.group.title)}{/bold}`;
+    out.push(s.group.context ? `${title}: ${escapeTags(s.group.context)}` : title);
   }
-  if (fd) out.push(...renderFileDiff(fd));
-  else out.push("{grey-fg}loading diff…{/grey-fg}");
+  if (s.summary) out.push(`{grey-fg}${escapeTags(s.summary)}{/grey-fg}`);
   return out;
 }
 
@@ -85,16 +101,20 @@ export function reviewFooterHint(s: {
 // so the layout test exercises these exact objects. keys+vi on the diff pane
 // gives blessed's own j/k scrolling when it is focused; the plan pane's keys
 // are handled by openReview so headers can be skipped during selection.
-export function reviewLayout(): Record<"header" | "plan" | "diff" | "footer", Record<string, unknown>> {
+export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "footer", Record<string, unknown>> {
   return {
     header: { top: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true },
+    guide: {
+      top: 1, left: 0, width: "100%", height: 5, tags: true,
+      border: { type: "line" }, label: " guide ",
+    },
     plan: {
-      top: 1, left: 0, width: "30%", bottom: 1, tags: true,
+      top: 6, left: 0, width: "30%", bottom: 1, tags: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " review plan ",
     },
     diff: {
-      top: 1, left: "30%", right: 0, bottom: 1, tags: true, keys: true, vi: true,
+      top: 6, left: "30%", right: 0, bottom: 1, tags: true, keys: true, vi: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " diff ",
       scrollbar: { ch: " ", style: { inverse: true } },
@@ -121,6 +141,7 @@ export function openReview(
   const s: any = screen;
   const layout = reviewLayout();
   const header: any = blessed.text({ parent: s, ...layout.header, content: `PR #${deps.pr}  loading…` });
+  const guide: any = blessed.box({ parent: s, ...layout.guide });
   const plan: any = blessed.box({ parent: s, ...layout.plan });
   const diff: any = blessed.box({ parent: s, ...layout.diff });
   const footer: any = blessed.text({ parent: s, ...layout.footer });
@@ -165,7 +186,13 @@ export function openReview(
     plan.setContent(lines.join("\n"));
     if (selectedLine >= 0) plan.scrollTo(selectedLine);
     const fd = fileDiffs.find((f) => f.path === selectedPath) ?? null;
-    diff.setContent(diffPaneLines(selectedPath ? groupOf(g.groups, selectedPath) : null, fd).join("\n"));
+    guide.setContent(guideLines({
+      summary: g.summary,
+      group: selectedPath ? groupOf(g.groups, selectedPath) : null,
+      loaded: groups !== null,
+      usedFallback,
+    }).join("\n"));
+    diff.setContent(diffPaneLines(fd).join("\n"));
     let hint = footerOverride;
     if (hint === undefined) {
       hint = reviewFooterHint({
@@ -175,7 +202,6 @@ export function openReview(
         isDraft: meta?.isDraft ?? false,
         diffFocused,
       });
-      if (usedFallback) hint = `{red-fg}AI grouping failed, grouped by directory{/red-fg}   ${hint}`;
     }
     footer.setContent(hint);
     s.render();
@@ -186,6 +212,7 @@ export function openReview(
     closed = true;
     if (meta) deps.saveViewed(meta.headSha, viewed);
     header.detach();
+    guide.detach();
     plan.detach();
     diff.detach();
     footer.detach();

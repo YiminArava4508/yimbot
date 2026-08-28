@@ -6,6 +6,7 @@ import {
   diffPaneLines,
   flattenFiles,
   groupOf,
+  guideLines,
   nextUnviewed,
   openReview,
   placeholderGroups,
@@ -58,18 +59,45 @@ test("planLines returns selectedLine -1 when nothing is selected", () => {
   assert.equal(planLines(GROUPS, new Set(), null).selectedLine, -1);
 });
 
-test("diffPaneLines leads with the group context, dim, then the rendered diff", () => {
+test("diffPaneLines renders just the diff, guidance lives in the guide band", () => {
   const fd: FileDiff = {
     path: "src/a.ts", oldPath: "src/a.ts", status: "modified", additions: 0, deletions: 0, lines: [],
   };
-  const out = diffPaneLines(GROUPS[0], fd);
-  assert.equal(out[0], "{grey-fg}the change itself{/grey-fg}");
-  assert.equal(out[1], "");
-  assert.ok(out[2].includes("src/a.ts"));
+  const out = diffPaneLines(fd);
+  assert.ok(out[0].includes("src/a.ts"));
 });
 
 test("diffPaneLines shows a loading stub without a diff", () => {
-  assert.ok(diffPaneLines(null, null)[0].includes("loading"));
+  assert.ok(diffPaneLines(null)[0].includes("loading"));
+});
+
+test("guideLines shows organizing while groups are in flight", () => {
+  const out = guideLines({ summary: "", group: null, loaded: false, usedFallback: false });
+  assert.equal(out.length, 1);
+  assert.ok(out[0].includes("organizing review"));
+});
+
+test("guideLines shows the fallback warning when AI grouping failed", () => {
+  const out = guideLines({ summary: "", group: GROUPS[1], loaded: true, usedFallback: true });
+  assert.equal(out[0], "{red-fg}AI grouping failed, grouped by directory{/red-fg}");
+});
+
+test("guideLines renders the selected group's guidance first, then the summary dim", () => {
+  const out = guideLines({ summary: "adds a widget", group: GROUPS[0], loaded: true, usedFallback: false });
+  assert.equal(out[0], "{bold}core{/bold}: the change itself");
+  assert.equal(out[1], "{grey-fg}adds a widget{/grey-fg}");
+});
+
+test("guideLines skips empty summary and empty context", () => {
+  assert.deepEqual(
+    guideLines({ summary: "", group: GROUPS[0], loaded: true, usedFallback: false }),
+    ["{bold}core{/bold}: the change itself"],
+  );
+  assert.deepEqual(
+    guideLines({ summary: "s", group: GROUPS[1], loaded: true, usedFallback: false }),
+    ["{bold}tests{/bold}", "{grey-fg}s{/grey-fg}"],
+  );
+  assert.deepEqual(guideLines({ summary: "", group: null, loaded: true, usedFallback: false }), []);
 });
 
 test("reviewHeader shows PR, title and progress", () => {
@@ -95,9 +123,14 @@ test("reviewFooterHint describes scrolling and the file-list tab when the diff p
   assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
 });
 
-test("reviewLayout pins the panes: plan left 30%, diff filling the rest", () => {
+test("reviewLayout pins the panes: guide band on top, plan left 30%, diff filling the rest", () => {
   const l = reviewLayout();
+  assert.equal(l.guide.top, 1);
+  assert.equal(l.guide.height, 5);
+  assert.equal(l.guide.width, "100%");
+  assert.equal(l.plan.top, 6);
   assert.equal(l.plan.width, "30%");
+  assert.equal(l.diff.top, 6);
   assert.equal(l.diff.left, "30%");
   assert.equal(l.header.height, 1);
   assert.equal(l.footer.bottom, 0);
@@ -185,6 +218,9 @@ test("openReview renders the AI plan and space marks viewed, saves, and advances
   await flush();
   const plan = screen.children.find((c: any) => c.options.label === " review plan ");
   assert.ok(plan.getContent().includes("core"));
+  const guide = screen.children.find((c: any) => c.options.label === " guide ");
+  assert.ok(guide.getContent().includes("s"), "guide band must show the PR summary");
+  assert.ok(guide.getContent().includes("look here"), "guide band must show the group context");
   // AI ordered b before a; selection starts on the first file, src/b.ts.
   press(screen, "space");
   await flush();
@@ -250,8 +286,10 @@ test("openReview falls back to directory groups when the AI call fails", async (
   await flush();
   const plan = screen.children.find((c: any) => c.options.label === " review plan ");
   assert.ok(plan.getContent().includes("src"));
+  const guide = screen.children.find((c: any) => c.options.label === " guide ");
+  assert.ok(guide.getContent().includes("grouped by directory"));
   const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
-  assert.ok(footer.getContent().includes("grouped by directory"));
+  assert.ok(!footer.getContent().includes("grouped by directory"));
   screen.destroy();
 });
 

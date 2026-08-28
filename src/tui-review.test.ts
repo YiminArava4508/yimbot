@@ -46,12 +46,12 @@ test("placeholderGroups puts every path under one organizing group", () => {
   assert.deepEqual(g.groups[0].files, ["a.ts", "b.ts"]);
 });
 
-test("planLines renders bold headers, viewed checks, and an inverse selected line", () => {
+test("planLines renders cyan group headers distinct from plain file names", () => {
   const { lines, selectedLine } = planLines(GROUPS, new Set(["src/b.ts"]), "src/a.ts");
-  assert.equal(lines[0], "{bold}core{/bold}");
+  assert.equal(lines[0], "{cyan-fg}{bold}core{/bold}{/cyan-fg}");
   assert.equal(lines[1], "{inverse}   src/a.ts{/inverse}");
   assert.equal(lines[2], " {green-fg}✓{/green-fg} src/b.ts");
-  assert.equal(lines[3], "{bold}tests{/bold}");
+  assert.equal(lines[3], "{cyan-fg}{bold}tests{/bold}{/cyan-fg}");
   assert.equal(selectedLine, 1);
 });
 
@@ -134,6 +134,14 @@ test("reviewLayout pins the panes: guide band on top, plan left 30%, diff fillin
   assert.equal(l.diff.left, "30%");
   assert.equal(l.header.height, 1);
   assert.equal(l.footer.bottom, 0);
+});
+
+test("reviewLayout makes both panes wheel-scrollable", () => {
+  const l = reviewLayout();
+  assert.equal(l.plan.mouse, true);
+  assert.equal(l.plan.scrollable, true);
+  assert.equal(l.diff.mouse, true);
+  assert.equal(l.diff.scrollable, true);
 });
 
 // A minimal EventEmitter standing in for a TTY stream, mirroring the harness in

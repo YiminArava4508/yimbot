@@ -37,7 +37,7 @@ export function planLines(
   const lines: string[] = [];
   let selectedLine = -1;
   for (const g of groups) {
-    lines.push(`{bold}${escapeTags(g.title)}{/bold}`);
+    lines.push(`{cyan-fg}{bold}${escapeTags(g.title)}{/bold}{/cyan-fg}`);
     for (const f of g.files) {
       const mark = viewed.has(f) ? " {green-fg}✓{/green-fg} " : "   ";
       if (f === selectedPath) {
@@ -101,6 +101,7 @@ export function reviewFooterHint(s: {
 // so the layout test exercises these exact objects. keys+vi on the diff pane
 // gives blessed's own j/k scrolling when it is focused; the plan pane's keys
 // are handled by openReview so headers can be skipped during selection.
+// mouse on both panes adds wheel scrolling without needing tab focus.
 export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "footer", Record<string, unknown>> {
   return {
     header: { top: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true },
@@ -109,12 +110,12 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "f
       border: { type: "line" }, label: " guide ",
     },
     plan: {
-      top: 6, left: 0, width: "30%", bottom: 1, tags: true,
+      top: 6, left: 0, width: "30%", bottom: 1, tags: true, mouse: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " review plan ",
     },
     diff: {
-      top: 6, left: "30%", right: 0, bottom: 1, tags: true, keys: true, vi: true,
+      top: 6, left: "30%", right: 0, bottom: 1, tags: true, keys: true, vi: true, mouse: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " diff ",
       scrollbar: { ch: " ", style: { inverse: true } },

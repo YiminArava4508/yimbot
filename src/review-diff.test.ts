@@ -125,19 +125,19 @@ test("languageFor maps known extensions and returns null otherwise", () => {
   assert.equal(languageFor("Makefile"), null);
 });
 
-test("renderFileDiff syntax-highlights recognized files with tinted add/del lines", () => {
+test("renderFileDiff syntax-highlights recognized files with marker-only add/del lines", () => {
   const [f] = parseUnifiedDiff(TWO_FILE_DIFF);
   const out = renderFileDiff(f);
   const add = out.find((l) => l.includes("fresh"));
   assert.ok(add);
-  assert.ok(add.startsWith("{22-bg}{green-fg}+{/green-fg}"));
-  assert.ok(add.endsWith("{/22-bg}"));
+  assert.ok(add.startsWith("{green-fg}+{/green-fg}"));
+  assert.ok(!add.includes("-bg}"));
   assert.ok(add.includes("{magenta-fg}const{/magenta-fg}"));
   assert.ok(!add.includes("{green-fg}+const"));
   const del = out.find((l) => l.includes("old = "));
   assert.ok(del);
-  assert.ok(del.startsWith("{52-bg}{red-fg}-{/red-fg}"));
-  assert.ok(del.endsWith("{/52-bg}"));
+  assert.ok(del.startsWith("{red-fg}-{/red-fg}"));
+  assert.ok(!del.includes("-bg}"));
   const ctx = out.find((l) => l.includes("keep"));
   assert.ok(ctx);
   assert.ok(ctx.startsWith(" "));

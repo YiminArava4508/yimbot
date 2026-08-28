@@ -128,13 +128,6 @@ const HL_THEME: Record<string, (s: string) => string> = {
 };
 const MARK_RE = new RegExp(`${MARK_OPEN}(/?)([a-z]+)${MARK_CLOSE}`, "g");
 
-// Numeric 256-color indexes, not hex: blessed's hex matcher collapses these
-// dark values to black, while numeric tags pass through. 22 (dark green) and
-// 52 (dark red) are the pairing delta uses for line backgrounds on dark
-// terminals; an 8-color terminal reduces them to plain green/red.
-const ADD_BG = "22";
-const DEL_BG = "52";
-
 // Diff lines are highlighted one at a time, so hljs has no cross-line state:
 // the continuation lines of a multi-line string or comment can tokenize as
 // plain code. An accepted tradeoff of line-based diff highlighting.
@@ -174,8 +167,8 @@ export function renderFileDiff(fd: FileDiff): string[] {
       else out.push(esc);
       continue;
     }
-    if (l.kind === "add") out.push(`{${ADD_BG}-bg}{green-fg}+{/green-fg}${code}{/${ADD_BG}-bg}`);
-    else if (l.kind === "del") out.push(`{${DEL_BG}-bg}{red-fg}-{/red-fg}${code}{/${DEL_BG}-bg}`);
+    if (l.kind === "add") out.push(`{green-fg}+{/green-fg}${code}`);
+    else if (l.kind === "del") out.push(`{red-fg}-{/red-fg}${code}`);
     else out.push(`${l.text[0]}${code}`);
   }
   if (fd.status === "binary") out.push("{grey-fg}binary file, no text diff{/grey-fg}");

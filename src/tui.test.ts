@@ -452,28 +452,49 @@ test("reviewTable keeps the flag marker and reasons visible for flagged drafts",
   assert.equal(body[6], "{red-fg}input{/red-fg}");
 });
 
-test("reviewSectionLayout stacks header, table and board without overlap", () => {
+test("reviewSectionLayout stacks header, table, margined separator and board without overlap", () => {
   const l = reviewSectionLayout(2, 24);
   assert.equal(l.header.top, 1);
   assert.equal(l.table.top, 2);
   assert.equal(l.table.height, 3); // column header + 2 rows
-  assert.equal(l.boardTop, 5);
+  assert.ok(l.separator);
+  assert.equal(l.separator.top, l.table.top + l.table.height + 1); // one blank margin row above the rule
+  assert.equal(l.boardTop, l.separator.top + 2); // one blank margin row below it
 });
 
-test("reviewSectionLayout with no review rows gives the board the whole body", () => {
-  assert.equal(reviewSectionLayout(0, 24).boardTop, 1);
+test("reviewSectionLayout with no review rows gives the board the whole body and no rule", () => {
+  const l = reviewSectionLayout(0, 24);
+  assert.equal(l.boardTop, 1);
+  assert.equal(l.separator, null);
 });
 
 test("reviewSectionLayout clamps a long queue so the board keeps roughly half the screen", () => {
   const l = reviewSectionLayout(20, 24);
-  assert.equal(l.table.height, 11); // 10 visible rows + column header, list scrolls the rest
-  assert.equal(l.boardTop, 13);
+  assert.equal(l.table.height, 9); // 8 visible rows + column header, list scrolls the rest
+  assert.equal(l.boardTop, 14);
 });
 
-test("reviewSectionLayout keeps at least one visible review row on a tiny terminal", () => {
-  const l = reviewSectionLayout(20, 6);
-  assert.equal(l.table.height, 2);
-  assert.equal(l.boardTop, 4);
+test("reviewSectionLayout always leaves the board at least its header and two rows above the footer", () => {
+  for (let screenHeight = 8; screenHeight <= 40; screenHeight++) {
+    for (const count of [1, 3, 20]) {
+      const l = reviewSectionLayout(count, screenHeight);
+      const boardHeight = screenHeight - 1 - l.boardTop; // board runs to bottom: 1
+      assert.ok(boardHeight >= 3, `board squeezed to ${boardHeight} rows at height ${screenHeight}, count ${count}`);
+      if (l.separator) {
+        assert.equal(l.separator.top, l.table.top + l.table.height + 1);
+        assert.equal(l.boardTop, l.separator.top + 2);
+      } else {
+        assert.equal(l.boardTop, l.table.top + l.table.height);
+      }
+    }
+  }
+});
+
+test("reviewSectionLayout drops the rule and margins when the screen cannot afford them", () => {
+  const l = reviewSectionLayout(20, 10);
+  assert.equal(l.separator, null);
+  assert.equal(l.boardTop, l.table.top + l.table.height);
+  assert.ok(reviewSectionLayout(20, 11).separator, "an 11-row screen fits the margined rule");
 });
 
 test("footerHint advertises the pane-switch key", () => {

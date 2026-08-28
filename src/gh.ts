@@ -364,3 +364,22 @@ export function parseViewerLogin(json: string): string {
 export async function viewerLogin(run: GhRunner): Promise<string> {
   return parseViewerLogin(await run(["api", "graphql", "-f", "query=query{viewer{login}}"]));
 }
+
+// The PR's raw unified diff, for the guided review view. Returned verbatim;
+// src/review-diff.ts owns the parsing.
+export async function prDiff(run: GhRunner, prNumber: number): Promise<string> {
+  return run(["pr", "diff", String(prNumber)]);
+}
+
+export type PrReviewMeta = { title: string; body: string; isDraft: boolean; headSha: string };
+
+export function parsePrReviewMeta(json: string): PrReviewMeta {
+  const d = JSON.parse(json) as { title: string; body?: string; isDraft: boolean; headRefOid: string };
+  return { title: d.title, body: d.body ?? "", isDraft: d.isDraft, headSha: d.headRefOid };
+}
+
+// One pr view for everything the review overlay needs: title/body feed the
+// grouping prompt, isDraft gates the ready action, headSha keys viewed marks.
+export async function prReviewMeta(run: GhRunner, prNumber: number): Promise<PrReviewMeta> {
+  return parsePrReviewMeta(await run(["pr", "view", String(prNumber), "--json", "title,body,isDraft,headRefOid"]));
+}

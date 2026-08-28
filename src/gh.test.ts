@@ -20,8 +20,10 @@ import {
   parseClosedUnmergedPRs,
   parseMergedPRs,
   parseOpenPRs,
+  prDiff,
   prIsDraft,
   prLabels,
+  parsePrReviewMeta,
   removeLabel,
   repoLabelExists,
   repoSlug,
@@ -531,4 +533,27 @@ test("viewerLogin queries the graphql viewer", async () => {
   };
   assert.equal(await viewerLogin(run), "yimbot");
   assert.ok(sawArgs.includes("graphql"));
+});
+
+test("prDiff passes the PR number to gh pr diff and returns raw stdout", async () => {
+  const calls: string[][] = [];
+  const run = async (args: string[]) => {
+    calls.push(args);
+    return "diff --git a/x b/x\n";
+  };
+  const out = await prDiff(run, 42);
+  assert.equal(out, "diff --git a/x b/x\n");
+  assert.deepEqual(calls, [["pr", "diff", "42"]]);
+});
+
+test("parsePrReviewMeta maps title, body, isDraft and headRefOid", () => {
+  const meta = parsePrReviewMeta(
+    JSON.stringify({ title: "t", body: "b", isDraft: true, headRefOid: "abc" }),
+  );
+  assert.deepEqual(meta, { title: "t", body: "b", isDraft: true, headSha: "abc" });
+});
+
+test("parsePrReviewMeta defaults a missing body to empty", () => {
+  const meta = parsePrReviewMeta(JSON.stringify({ title: "t", isDraft: false, headRefOid: "abc" }));
+  assert.equal(meta.body, "");
 });

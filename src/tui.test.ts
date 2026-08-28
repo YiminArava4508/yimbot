@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { bindFlagKey, bindModeKey, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, returnKey, rowsToTable, screenTerm, statusContent } from "./tui.ts";
+import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, fmtDuration, footerHint, footerLayout, handleReadyPress, modeContent, resolvePane,partitionRows, returnKey, reviewSectionLayout, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -392,6 +392,141 @@ test("bindReviewKey opens only when no overlay is open", () => {
   overlay = true;
   handlers["S-r"]();
   assert.equal(opened, 1);
+});
+
+test("partitionRows splits draft-pr rows from the rest, preserving order", () => {
+  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
+  const b = row({ key: "ENG-2", status: "working" });
+  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
+  const { review, rest } = partitionRows([a, b, c]);
+  assert.deepEqual(review.map((r) => r.key), ["ENG-1", "ENG-3"]);
+  assert.deepEqual(rest.map((r) => r.key), ["ENG-2"]);
+});
+
+test("applyOrder sorts rows by the order entries and carries their reasons", () => {
+  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
+  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
+  const out = applyOrder([a, c], [{ pr: 12, reason: "base" }, { pr: 11, reason: "on top" }]);
+  assert.deepEqual(out.map((e) => e.row.pr), [12, 11]);
+  assert.deepEqual(out.map((e) => e.reason), ["base", "on top"]);
+});
+
+test("applyOrder with no order yet keeps board order and shows a pending reason", () => {
+  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
+  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
+  const out = applyOrder([a, c], null);
+  assert.deepEqual(out.map((e) => e.row.pr), [11, 12]);
+  assert.deepEqual(out.map((e) => e.reason), ["…", "…"]);
+});
+
+test("applyOrder appends rows the order forgot, in board order", () => {
+  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
+  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
+  const d = row({ key: "ENG-4", status: "draft pr", pr: 13 });
+  const out = applyOrder([a, c, d], [{ pr: 13, reason: "r" }]);
+  assert.deepEqual(out.map((e) => e.row.pr), [13, 11, 12]);
+  assert.deepEqual(out.map((e) => e.reason), ["r", "…", "…"]);
+});
+
+test("applyOrder keeps a row without a PR at the end rather than dropping it", () => {
+  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
+  const weird = row({ key: "ENG-9", status: "draft pr", pr: undefined });
+  const out = applyOrder([a, weird], [{ pr: 11, reason: "r" }]);
+  assert.deepEqual(out.map((e) => e.row.key), ["ENG-1", "ENG-9"]);
+});
+
+test("reviewTable numbers entries from 1 and renders PR, ticket, title, wait time and reason", () => {
+  const a = row({ key: "ENG-1", label: "ENG-1", status: "draft pr", pr: 11, title: "client", ts: 60_000 });
+  const t = reviewTable([{ row: a, reason: "base of the stack" }], 120_000);
+  assert.deepEqual(t[0], ["#", "PR", "TICKET", "TITLE", "WAIT", "FLAG", "REASON", "WHY"]);
+  assert.deepEqual(t[1], ["1", "#11", "ENG-1", "client", "1m", "", "", "base of the stack"]);
+});
+
+test("reviewTable keeps the flag marker and reasons visible for flagged drafts", () => {
+  const a = row({
+    key: "ENG-1", label: "ENG-1", status: "draft pr", pr: 11,
+    flagged: true, flagReasons: ["input"],
+  });
+  const [, body] = reviewTable([{ row: a, reason: "r" }], 0);
+  assert.equal(body[5], "{red-fg}⚑{/red-fg}");
+  assert.equal(body[6], "{red-fg}input{/red-fg}");
+});
+
+test("reviewSectionLayout stacks header, table and board without overlap", () => {
+  const l = reviewSectionLayout(2, 24);
+  assert.equal(l.header.top, 1);
+  assert.equal(l.table.top, 2);
+  assert.equal(l.table.height, 3); // column header + 2 rows
+  assert.equal(l.boardTop, 5);
+});
+
+test("reviewSectionLayout with no review rows gives the board the whole body", () => {
+  assert.equal(reviewSectionLayout(0, 24).boardTop, 1);
+});
+
+test("reviewSectionLayout clamps a long queue so the board keeps roughly half the screen", () => {
+  const l = reviewSectionLayout(20, 24);
+  assert.equal(l.table.height, 11); // 10 visible rows + column header, list scrolls the rest
+  assert.equal(l.boardTop, 13);
+});
+
+test("reviewSectionLayout keeps at least one visible review row on a tiny terminal", () => {
+  const l = reviewSectionLayout(20, 6);
+  assert.equal(l.table.height, 2);
+  assert.equal(l.boardTop, 4);
+});
+
+test("footerHint advertises the pane-switch key", () => {
+  assert.ok(footerHint("Y").includes("tab pane"));
+});
+
+test("footerHint fits a 130-column terminal so the tail hints survive wrap:false", () => {
+  assert.ok(footerHint("Y").length <= 130, `footer is ${footerHint("Y").length} chars`);
+});
+
+test("bindPaneToggle gates tab while an overlay is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const screen = { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } };
+  let toggles = 0;
+  let overlay = false;
+  bindPaneToggle(screen, () => overlay, () => { toggles++; });
+  handlers["tab"]();
+  assert.equal(toggles, 1);
+  overlay = true;
+  handlers["tab"]();
+  assert.equal(toggles, 1);
+});
+
+test("selectedBoardRow reads from the focused pane's own selection", () => {
+  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
+  const b = row({ key: "ENG-2", status: "working" });
+  const review = [{ row: a, reason: "" }];
+  assert.equal(selectedBoardRow("review", review, 1, [b], 1), a);
+  assert.equal(selectedBoardRow("board", review, 1, [b], 1), b);
+  assert.equal(selectedBoardRow("review", [], 1, [b], 1), undefined);
+  assert.equal(selectedBoardRow("board", review, 1, [], 1), undefined);
+});
+
+test("resolvePane forces the pane with rows when the other is empty", () => {
+  assert.equal(resolvePane("board", 2, 0), "review");
+  assert.equal(resolvePane("review", 0, 3), "board");
+  assert.equal(resolvePane("board", 2, 2), "board");
+  assert.equal(resolvePane("review", 2, 2), "review");
+  assert.equal(resolvePane("review", 0, 0), "board");
+});
+
+test("bindPaneFocusSync tracks blessed focus, so a mouse click that moves focus moves the pane", () => {
+  const { input, output } = fakeTty(80, 24);
+  const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true });
+  const board = blessed.listtable({ parent: screen, top: 5, height: 5, keys: true, mouse: true });
+  const review = blessed.listtable({ parent: screen, top: 0, height: 5, keys: true, mouse: true });
+  let pane = "board";
+  bindPaneFocusSync(board, review, (p) => { pane = p; });
+  review.focus(); // what neo-blessed list.js does on item mousedown
+  assert.equal(pane, "review");
+  board.focus();
+  assert.equal(pane, "board");
+  screen.destroy();
 });
 
 test("screenTerm borrows xterm-256color only for 256-color multiplexer terms", () => {

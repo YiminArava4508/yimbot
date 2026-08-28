@@ -1,4 +1,5 @@
 import type { AC, Judgment } from "./acceptance.ts";
+import { extractJsonObject } from "./json-extract.ts";
 
 export type JudgeRunner = (prompt: string) => Promise<string>;
 
@@ -17,15 +18,8 @@ export function buildJudgePrompt(open: AC[]): string {
 }
 
 export function parseJudgment(stdout: string): Judgment {
-  const start = stdout.indexOf("{");
-  const end = stdout.lastIndexOf("}");
-  if (start === -1 || end <= start) return { satisfied: [], skipped: [] };
-  let obj: unknown;
-  try {
-    obj = JSON.parse(stdout.slice(start, end + 1));
-  } catch {
-    return { satisfied: [], skipped: [] };
-  }
+  const obj = extractJsonObject(stdout);
+  if (obj === null) return { satisfied: [], skipped: [] };
   const o = obj as { satisfied?: unknown; skipped?: unknown };
   const satisfied = Array.isArray(o.satisfied) ? o.satisfied.filter((x): x is string => typeof x === "string") : [];
   const skipped = Array.isArray(o.skipped)

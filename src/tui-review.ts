@@ -40,7 +40,8 @@ export function planLines(
     lines.push(`{yellow-fg}{bold}${escapeTags(g.title)}{/bold}{/yellow-fg}`);
     for (const f of g.files) {
       const mark = viewed.has(f) ? " {green-fg}✓{/green-fg} " : "   ";
-      const name = `{cyan-fg}${escapeTags(f)}{/cyan-fg}`;
+      const color = viewed.has(f) ? "green-fg" : "cyan-fg";
+      const name = `{${color}}${escapeTags(f)}{/${color}}`;
       if (f === selectedPath) {
         selectedLine = lines.length;
         lines.push(`{inverse}${mark}${name}{/inverse}`);

@@ -47,13 +47,18 @@ test("placeholderGroups puts every path under one organizing group", () => {
   assert.deepEqual(g.groups[0].files, ["a.ts", "b.ts"]);
 });
 
-test("planLines colors group titles yellow and files cyan so they read apart", () => {
+test("planLines colors group titles yellow, files cyan, and viewed files green", () => {
   const { lines, selectedLine } = planLines(GROUPS, new Set(["src/b.ts"]), "src/a.ts");
   assert.equal(lines[0], "{yellow-fg}{bold}core{/bold}{/yellow-fg}");
   assert.equal(lines[1], "{inverse}   {cyan-fg}src/a.ts{/cyan-fg}{/inverse}");
-  assert.equal(lines[2], " {green-fg}✓{/green-fg} {cyan-fg}src/b.ts{/cyan-fg}");
+  assert.equal(lines[2], " {green-fg}✓{/green-fg} {green-fg}src/b.ts{/green-fg}");
   assert.equal(lines[3], "{yellow-fg}{bold}tests{/bold}{/yellow-fg}");
   assert.equal(selectedLine, 1);
+});
+
+test("planLines keeps a viewed selected file green under the inverse highlight", () => {
+  const { lines } = planLines(GROUPS, new Set(["src/a.ts"]), "src/a.ts");
+  assert.equal(lines[1], "{inverse} {green-fg}✓{/green-fg} {green-fg}src/a.ts{/green-fg}{/inverse}");
 });
 
 test("planLines returns selectedLine -1 when nothing is selected", () => {

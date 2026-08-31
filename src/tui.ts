@@ -452,6 +452,9 @@ export function runTui(opts: {
       vi: true,
       mouse: true,
       border: { type: "line" },
+      // A bordered listtable defaults to drawing cell borders between every
+      // column, which turns the pane into a full grid; keep the flat look.
+      noCellBorders: true,
       style: {
         header: { bold: true },
         cell: { selected: { inverse: true } },

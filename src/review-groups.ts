@@ -1,5 +1,5 @@
 // src/review-groups.ts
-// The guided review's AI step: one headless prompt that organizes changed
+// The review's AI step: one headless prompt that organizes changed
 // files into ordered, contextualized groups. Paths and diffstats only, never
 // diff bodies: enough signal to group, small enough to stay one prompt.
 import type { FileDiff } from "./review-diff.ts";
@@ -9,24 +9,63 @@ export type ReviewGroup = { title: string; context: string; files: string[] };
 export type ReviewGroups = { summary: string; groups: ReviewGroup[] };
 export type GroupingRunner = (prompt: string) => Promise<string>;
 export type PrMeta = { number: number; title: string; body: string };
-export type FileStat = Pick<FileDiff, "path" | "additions" | "deletions">;
+export type FileStat = Pick<FileDiff, "path" | "additions" | "deletions" | "status"> & { hunks: string[] };
+
+const HUNK_CAP = 8;
+
+// Hunk-header contexts ("@@ ... @@ function foo(") are the cheapest symbol-level
+// signal git gives us: enough to tell which files touch the same code without
+// shipping diff bodies.
+export function fileStats(diffs: FileDiff[]): FileStat[] {
+  return diffs.map((d) => {
+    const hunks: string[] = [];
+    for (const l of d.lines) {
+      if (l.kind !== "hunk") continue;
+      const ctx = l.text.replace(/^@@[^@]*@@ ?/, "").trim();
+      if (ctx !== "" && !hunks.includes(ctx)) hunks.push(ctx);
+      if (hunks.length === HUNK_CAP) break;
+    }
+    return { path: d.path, additions: d.additions, deletions: d.deletions, status: d.status, hunks };
+  });
+}
+
+function fileLine(f: FileStat): string {
+  const stat = f.status === "modified" ? "" : `${f.status}, `;
+  const head = `- ${f.path} (${stat}+${f.additions}/-${f.deletions})`;
+  if (f.hunks.length === 0) return head;
+  return `${head}\n  in: ${f.hunks.join("; ")}`;
+}
 
 export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
-  const list = files.map((f) => `- ${f.path} (+${f.additions}/-${f.deletions})`).join("\n");
+  const list = files.map(fileLine).join("\n");
   return [
-    `You are organizing a code review of PR #${pr.number}: ${pr.title}.`,
+    `You are a principal engineer planning a code review of PR #${pr.number}: ${pr.title}.`,
     "PR description:",
     pr.body || "(none)",
     "",
-    "Changed files:",
+    "Changed files (status when not modified, diffstat, and the enclosing symbols git saw change):",
     list,
     "",
-    "Group these files into a guided review plan: related files together, ordered so the",
-    "core change reads first and collateral (tests, wiring, fixtures, docs) after.",
-    "For each group write two or three sentences of context: what the group changes,",
-    "why, and what a reviewer should verify in it.",
+    "Build the review plan the way a senior reviewer reads a change:",
+    "- Find the heart of the PR first: the files where behavior or a contract actually",
+    "  changes. Every other file is collateral in service of that change.",
+    "- Group by concern, not by directory or file type: a group is one reviewable idea",
+    "  (a schema change plus its call sites, a bug fix plus the test that pins it).",
+    "  The symbol hints above tell you which files touch the same code.",
+    "- Order groups so understanding compounds: contracts, types, and schemas first,",
+    "  then core logic, then wiring and call sites, then tests, then the rest.",
+    "- Quarantine purely mechanical churn (lockfiles, generated code, snapshots,",
+    "  renames, formatting-only edits) in a final group titled so the reviewer knows",
+    "  to skim it.",
+    "- Keep each group reviewable: prefer 1-6 files, splitting a bigger concern into",
+    "  narrower ones.",
+    "For each group write two or three sentences of context: what it changes, why (from",
+    "the PR description), and what specifically to verify: name the invariants, edge",
+    "cases, error paths, or compatibility concerns at stake, and call out risk",
+    "(migrations, auth, concurrency, public API changes) explicitly. Do not restate",
+    "the file list.",
     "Reply with ONLY a JSON object, no prose:",
-    '{"summary": "<2-3 sentences for a reviewer new to this codebase: what the PR does and how the pieces fit together>",',
+    '{"summary": "<2-3 sentences for a reviewer new to this codebase: what the PR does, how the pieces fit together, and where the risk is>",',
     ' "groups": [{"title": "<short label>", "context": "<what to look for>", "files": ["<path>", ...]}, ...]}',
     "Every file must appear in exactly one group. Use only the paths listed above.",
   ].join("\n");

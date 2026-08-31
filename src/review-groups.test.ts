@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fallbackGroups, fetchGroups, groupingPrompt, parseGroups } from "./review-groups.ts";
+import { fallbackGroups, fetchGroups, fileStats, groupingPrompt, parseGroups } from "./review-groups.ts";
+import type { FileDiff } from "./review-diff.ts";
 
 const PR = { number: 42, title: "add widget", body: "makes widgets" };
 const FILES = [
-  { path: "src/widget.ts", additions: 10, deletions: 2 },
-  { path: "src/widget.test.ts", additions: 30, deletions: 0 },
-  { path: "docs/widget.md", additions: 5, deletions: 1 },
+  { path: "src/widget.ts", additions: 10, deletions: 2, status: "modified" as const, hunks: ["function makeWidget(", "class WidgetStore {"] },
+  { path: "src/widget.test.ts", additions: 30, deletions: 0, status: "added" as const, hunks: [] },
+  { path: "docs/widget.md", additions: 5, deletions: 1, status: "modified" as const, hunks: [] },
 ];
 const PATHS = FILES.map((f) => f.path);
 
@@ -14,14 +15,50 @@ test("groupingPrompt names the PR and lists every path with its diffstat", () =>
   const p = groupingPrompt(PR, FILES);
   assert.ok(p.includes("PR #42: add widget"));
   assert.ok(p.includes("makes widgets"));
-  for (const f of FILES) assert.ok(p.includes(`- ${f.path} (+${f.additions}/-${f.deletions})`));
+  assert.ok(p.includes("- src/widget.ts (+10/-2)"));
   assert.ok(p.includes("ONLY a JSON object"));
+});
+
+test("groupingPrompt marks non-modified statuses and lists hunk contexts under the file", () => {
+  const p = groupingPrompt(PR, FILES);
+  assert.ok(p.includes("- src/widget.test.ts (added, +30/-0)"));
+  assert.ok(!p.includes("(modified"));
+  assert.ok(p.includes("in: function makeWidget(; class WidgetStore {"));
+});
+
+test("groupingPrompt codifies the review methodology", () => {
+  const p = groupingPrompt(PR, FILES);
+  assert.ok(p.includes("heart of the PR"));
+  assert.ok(p.includes("concern, not by directory"));
+  assert.ok(p.includes("contracts"));
+  assert.ok(p.includes("mechanical"));
+  assert.ok(p.includes("1-6 files"));
 });
 
 test("groupingPrompt asks for a reviewer-oriented summary and per-group verification hints", () => {
   const p = groupingPrompt(PR, FILES);
   assert.ok(p.includes("new to this codebase"));
   assert.ok(p.includes("verify"));
+});
+
+test("fileStats extracts capped, deduped hunk contexts and skips bare hunk headers", () => {
+  const lines = (texts: string[]) => texts.map((text) => ({ kind: "hunk" as const, text }));
+  const diffs: FileDiff[] = [
+    {
+      path: "src/a.ts", oldPath: "src/a.ts", status: "modified", additions: 3, deletions: 1,
+      lines: [
+        ...lines(["@@ -1,4 +1,5 @@ function foo() {", "@@ -9,2 +10,3 @@ function foo() {", "@@ -20,1 +21,1 @@"]),
+        { kind: "add", text: "+x" },
+        ...lines(Array.from({ length: 10 }, (_, i) => `@@ -1,1 +1,1 @@ fn${i}(`)),
+      ],
+    },
+  ];
+  const [s] = fileStats(diffs);
+  assert.equal(s.path, "src/a.ts");
+  assert.equal(s.status, "modified");
+  assert.equal(s.hunks[0], "function foo() {");
+  assert.equal(new Set(s.hunks).size, s.hunks.length);
+  assert.ok(s.hunks.length <= 8);
 });
 
 test("parseGroups survives prose around the JSON", () => {

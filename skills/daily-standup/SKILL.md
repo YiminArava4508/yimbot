@@ -6,10 +6,15 @@ user-invocable: true
 
 # Daily standup
 
-Produce a paste-ready async standup message: one line per ticket on the yimbot
-board with a progress %, PR state, and what happens next. The board is the set
-of active ticket sessions, NOT the assignee's full Linear or Shortcut backlog.
-Never report backlog tickets that have no session.
+Produce a paste-ready async standup message for a product audience: short,
+grouped by workstream, in plain language. The board is the set of active
+ticket sessions, NOT the assignee's full Linear or Shortcut backlog. Never
+report backlog tickets that have no session.
+
+Report only tickets that are both **in progress** (Linear state type `started`,
+e.g. In Progress / In Review) and **in the current Linear cycle**. Drop rows
+whose ticket is Done, Todo/unstarted, or in a past or future cycle, even if the
+board still lists them; drop silently, the message stays clean.
 
 ## Gather board state
 
@@ -65,44 +70,53 @@ Never report backlog tickets that have no session.
    event. Report it as "stalled, session killed, needs restart", not as in
    progress.
 
-3. **Ticket titles.** Event rows carry `label`/`title`, but titles there are
-   slugged lowercase and truncated. Fetch the real title from Linear whenever
-   the event title looks cut off, using the `LINEAR_API_KEY` in yimbot's
-   `.env`. Extract it with
+3. **Ticket titles, state, and cycle.** Event rows carry `label`/`title`, but
+   titles there are slugged lowercase and truncated. Fetch every board ticket
+   from Linear (real title, state type, cycle) using the `LINEAR_API_KEY` in
+   yimbot's `.env`. Extract it with
    `grep '^LINEAR_API_KEY=' .env | cut -d= -f2-` (never `source .env`; values
    contain unquoted spaces), then:
 
    ```bash
    curl -s -H "Authorization: $KEY" -H "Content-Type: application/json" \
      https://api.linear.app/graphql \
-     -d '{"query":"{ issue(id: \"ENG-1234\") { identifier title state { name } } }"}'
+     -d '{"query":"{ issue(id: \"ENG-1234\") { identifier title state { name type } cycle { number startsAt endsAt } } }"}'
    ```
 
-## Progress %
+   The current cycle is the one whose `startsAt`/`endsAt` bracket today. Keep
+   the ticket only when `state.type == "started"` AND its cycle is current.
 
-| Board status (after the live-PR check) | Reported as | % |
-|---|---|---|
-| merged (verified `state: MERGED`, not just the event) | merged (mention, then drop next day) | 100 |
-| ready to merge / in merge queue | ready to merge | 90 |
-| unblocking (merge queue kicked it out) | unblocking merge queue | 85 |
-| addressing review / review findings | addressing review | 75 |
-| fixing CI / resolving conflict | fixing CI, resolving conflict | 70 |
-| draft pr | waiting self review | 60 |
-| working, PR open | in progress | 50 |
-| working, no PR yet | in progress | 30 |
-| needs decision | blocked on decision (say on what) | keep last % |
-| dead session (no worktree, no tmux) | stalled, session killed, needs restart | 0 |
+## Status wording
 
-A split ticket's % is its furthest-along open child.
+Translate engineering state into product language; the technical detail above
+is input, not output. Never mention PR numbers, draft status, CI, worktrees,
+branches, or merge queues in the message.
+
+| Board status (after the live-PR check) | Say |
+|---|---|
+| merged (verified `state: MERGED`) | shipped |
+| ready to merge / in merge queue | landing today |
+| addressing review / review findings | in review, addressing feedback |
+| fixing CI / resolving conflict / blocked_fix | in final review, fixing test failures |
+| draft pr | in final review |
+| working (PR open or not) | in progress |
+| needs decision | blocked: <the decision needed, in plain terms> |
+| dead session | paused, needs a restart on my side |
 
 ## Message shape
 
 ```
-**Daily standup: yimbot**
-- **ENG-1234** <short title> - **NN%** - PR #NNNN <state>, <next step or blocker>
+**Standup - <Mon DD>**
+
+**<Workstream>** - <on track | at risk | blocked>
+- <outcome in plain language>, <status>.
+- Next up: <what starts next>.
 ```
 
-Plain hyphens as separators, never em dashes. Sorted by % descending (ties by
-higher ticket number first), one line per ticket, each line under ~140
-characters. Deliver the message as text to
-copy-paste; post it to a channel only when asked and told which channel.
+Group tickets into 2-4 workstreams by feature or initiative (sibling tickets
+from one epic or split are one workstream); infer groupings from ticket titles
+and Linear projects. Lead each bullet with the user-facing outcome, not the
+implementation. One bullet may cover several tickets. Keep the whole message
+under ~10 lines; no ticket keys unless asked. Plain hyphens, never em dashes.
+Flag risks and blockers on the workstream line, never buried. Deliver as text
+to copy-paste; post to a channel only when asked and told which channel.

@@ -36,20 +36,27 @@ export function screenTerm(term: string | undefined): string | undefined {
 }
 
 export function footerHint(key: string): string {
-  return `j/k move   tab pane   enter open   f flag/unflag   r ready   R review   m mode   s settings   q quit   prefix+${key} returns here`;
+  return `j/k move   ^hjkl/tab pane   enter open   f flag/unflag   r ready   R review   m mode   s settings   q quit   prefix+${key} returns here`;
 }
 
 // A draft_pr event is a supervised draft whose ready verdict held (threads
 // resolved, mergeable, CI green): waiting on a human review, so its status is
-// the review section's membership test. Derived from the STATUS map rather than
-// repeating the display string here.
+// the review pane's membership test. ready_to_merge feeds the merge pane the
+// same way. Both derived from the STATUS map rather than repeating the display
+// strings here.
 const REVIEW_STATUS = statusFor("draft_pr")?.status ?? "draft pr";
+const MERGE_STATUS = statusFor("ready_to_merge")?.status ?? "ready to merge";
 
-export function partitionRows(rows: BoardRow[]): { review: BoardRow[]; rest: BoardRow[] } {
+export function partitionRows(rows: BoardRow[]): { review: BoardRow[]; merge: BoardRow[]; tasks: BoardRow[] } {
   const review: BoardRow[] = [];
-  const rest: BoardRow[] = [];
-  for (const r of rows) (r.status === REVIEW_STATUS ? review : rest).push(r);
-  return { review, rest };
+  const merge: BoardRow[] = [];
+  const tasks: BoardRow[] = [];
+  for (const r of rows) {
+    if (r.status === REVIEW_STATUS) review.push(r);
+    else if (r.status === MERGE_STATUS) merge.push(r);
+    else tasks.push(r);
+  }
+  return { review, merge, tasks };
 }
 
 export type ReviewEntry = { row: BoardRow; reason: string };
@@ -90,85 +97,119 @@ export function reviewTable(entries: ReviewEntry[], now: number = Date.now()): s
   return [header, ...body];
 }
 
-// Vertical layout of the split board: section header line, review table sized
-// to its rows (plus its column header), a horizontal rule with one blank margin
-// row on each side, then the main board from boardTop down to the footer. With
-// nothing to review the section collapses entirely (separator: null) and the
-// board keeps its original top. Visible review rows are clamped so the board
-// always keeps its column header plus two rows above the footer, and on a
-// screen too small to afford the rule and margins those three rows are dropped
-// (separator: null) rather than squeezing the board out.
-export function reviewSectionLayout(
-  count: number,
+// WAIT mirrors the review pane: time since the row went ready to merge.
+export function mergeTable(rows: BoardRow[], now: number = Date.now()): string[][] {
+  const header = ["PR", "TICKET", "TITLE", "WAIT", "FLAG", "REASON"];
+  const body = rows.map((r) => [
+    r.pr != null ? `#${r.pr}` : "",
+    r.label,
+    r.title ?? "",
+    fmtDuration(now - r.ts),
+    isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
+    r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
+  ]);
+  return [header, ...body];
+}
+
+// The board's geometry: two bordered columns (tasks left, ready to review
+// right) filling the body, and a full-width ready-to-merge pane pinned above
+// the footer. The merge pane sizes to its rows (column header + 2 border rows)
+// but never past a third of the screen, and disappears entirely when empty so
+// the columns get the whole body back.
+export function boardLayout(
+  mergeCount: number,
   screenHeight: number,
 ): {
-  header: { top: number; left: number; height: number };
-  table: { top: number; left: number; right: number; height: number };
-  separator: { top: number } | null;
-  boardTop: number;
+  tasks: { top: number; left: number; width: string; bottom: number };
+  review: { top: number; left: string; right: number; bottom: number };
+  merge: { left: number; right: number; bottom: number; height: number } | null;
 } {
-  const headerTop = 1;
-  const tableTop = headerTop + 1;
-  const margin = 1;
-  const boardMinHeight = 3; // column header + two rows
   const footerRows = 1;
-  // Rows a single visible review row costs beyond the review rows themselves:
-  // title, section header, column header, footer, plus the margined rule when
-  // it fits (dropped below 11 rows, where it would eat the board's minimum).
-  const ruleRows = margin + 1 + margin;
-  const withRule = screenHeight >= tableTop + 1 + 1 + ruleRows + boardMinHeight + footerRows;
-  const chrome = tableTop + 1 + (withRule ? ruleRows : 0) + footerRows;
-  const maxVisible = Math.max(1, Math.min(Math.floor((screenHeight - chrome) / 2), screenHeight - chrome - boardMinHeight));
-  const visible = Math.min(count, maxVisible);
-  const tableHeight = visible + 1;
-  const separatorTop = tableTop + tableHeight + margin;
-  const boardTop = withRule ? separatorTop + margin + 1 : tableTop + tableHeight;
+  let mergeHeight = 0;
+  if (mergeCount > 0) {
+    const cap = Math.max(4, Math.floor(screenHeight / 3));
+    mergeHeight = Math.min(mergeCount + 3, cap);
+  }
+  const columnBottom = footerRows + mergeHeight;
   return {
-    header: { top: headerTop, left: 0, height: 1 },
-    table: { top: tableTop, left: 0, right: 0, height: tableHeight },
-    separator: count > 0 && withRule ? { top: separatorTop } : null,
-    boardTop: count === 0 ? 1 : boardTop,
+    tasks: { top: 1, left: 0, width: "50%", bottom: columnBottom },
+    review: { top: 1, left: "50%", right: 0, bottom: columnBottom },
+    merge: mergeCount > 0 ? { left: 0, right: 0, bottom: footerRows, height: mergeHeight } : null,
   };
 }
 
-export type Pane = "review" | "board";
+export type Pane = "tasks" | "review" | "merge";
+export type PaneCounts = Record<Pane, number>;
+
+// Each pane's resting outline; the focused pane turns white so the operator
+// can see where their keys land.
+export const PANE_BORDER: Record<Pane, string> = { tasks: "grey", review: "yellow", merge: "green" };
+
+export function paneBorderColor(pane: Pane, focused: boolean): string {
+  return focused ? "white" : PANE_BORDER[pane];
+}
 
 // The pane keypresses should act on. An empty pane can never hold the focus:
-// with every row a ready draft the board is empty, and without this the
-// operator's f/r/R/enter would silently no-op against it.
-export function resolvePane(current: Pane, reviewCount: number, boardCount: number): Pane {
-  if (reviewCount === 0) return "board";
-  if (boardCount === 0) return "review";
+// with every row a ready draft the tasks pane can be empty, and without this
+// the operator's f/r/R/enter would silently no-op against it.
+export function resolvePane(current: Pane, counts: PaneCounts): Pane {
+  if (counts[current] > 0) return current;
+  for (const p of ["tasks", "review", "merge"] as const) if (counts[p] > 0) return p;
+  return "tasks";
+}
+
+// nvim-style directional focus between the panes: left/right across the
+// columns, down to the merge pane, up out of it (tasks first, review when
+// tasks is empty). A move onto an empty pane stays put.
+export function movePane(current: Pane, dir: "left" | "right" | "up" | "down", counts: PaneCounts): Pane {
+  let target: Pane | null = null;
+  if (dir === "left" && current === "review") target = "tasks";
+  else if (dir === "right" && current === "tasks") target = "review";
+  else if (dir === "down" && current !== "merge") target = "merge";
+  else if (dir === "up" && current === "merge") target = counts.tasks > 0 ? "tasks" : "review";
+  if (target !== null && counts[target] > 0) return target;
+  return current;
+}
+
+// Tab's fallback cycle through the panes, skipping empty ones.
+export function nextPane(current: Pane, counts: PaneCounts): Pane {
+  const order: Pane[] = ["tasks", "review", "merge"];
+  const i = order.indexOf(current);
+  for (let step = 1; step <= order.length; step++) {
+    const p = order[(i + step) % order.length];
+    if (counts[p] > 0) return p;
+  }
   return current;
 }
 
 // Keep focusedPane honest against blessed's own focus: a mouse click on a list
-// item calls focus() on that list (neo-blessed list.js), which the tab binding
-// alone would not see, leaving keypresses acting on the other pane's selection.
+// item calls focus() on that list (neo-blessed list.js), which the key bindings
+// alone would not see, leaving keypresses acting on another pane's selection.
 export function bindPaneFocusSync(
-  board: { on: (ev: string, fn: () => void) => void },
-  review: { on: (ev: string, fn: () => void) => void },
+  widgets: Record<Pane, { on: (ev: string, fn: () => void) => void }>,
   set: (pane: Pane) => void,
 ): void {
-  board.on("focus", () => set("board"));
-  review.on("focus", () => set("review"));
+  for (const pane of Object.keys(widgets) as Pane[]) {
+    widgets[pane].on("focus", () => set(pane));
+  }
 }
 
 // The row the operator's keypress should act on: each pane keeps its own blessed
 // selection (1-based, row 0 is the column header), and the focused pane wins.
 export function selectedBoardRow(
   pane: Pane,
-  reviewEntries: ReviewEntry[],
-  reviewSelected: number,
-  boardRows: BoardRow[],
-  boardSelected: number,
+  panes: {
+    tasks: { rows: BoardRow[]; selected: number };
+    review: { entries: ReviewEntry[]; selected: number };
+    merge: { rows: BoardRow[]; selected: number };
+  },
 ): BoardRow | undefined {
-  if (pane === "review") return reviewEntries[reviewSelected - 1]?.row;
-  return boardRows[boardSelected - 1];
+  if (pane === "review") return panes.review.entries[panes.review.selected - 1]?.row;
+  return panes[pane].rows[panes[pane].selected - 1];
 }
 
-// Tab flips focus between the review pane and the board, gated like every other
-// board key: an open overlay owns the keyboard.
+// Tab cycles focus through the panes, gated like every other board key: an
+// open overlay owns the keyboard.
 export function bindPaneToggle(
   screen: { key: (keys: string[], fn: () => void) => void },
   isOverlayOpen: () => boolean,
@@ -177,6 +218,25 @@ export function bindPaneToggle(
   screen.key(["tab"], () => {
     if (!isOverlayOpen()) toggle();
   });
+}
+
+// Ctrl+H and Ctrl+J reach blessed as their control characters (0x08 and 0x0a),
+// named "backspace" and "linefeed", so those aliases are bound alongside the
+// C- names some terminals send instead. The board has no text input, so a real
+// Backspace key doubling as pane-left is harmless.
+export function bindPaneNavKeys(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  move: (dir: "left" | "right" | "up" | "down") => void,
+): void {
+  const bind = (keys: string[], dir: "left" | "right" | "up" | "down") =>
+    screen.key(keys, () => {
+      if (!isOverlayOpen()) move(dir);
+    });
+  bind(["C-h", "backspace"], "left");
+  bind(["C-l"], "right");
+  bind(["C-j", "linefeed"], "down");
+  bind(["C-k"], "up");
 }
 
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
@@ -375,62 +435,36 @@ export function runTui(opts: {
   refineEnabled: () => boolean;
   settings: SettingsDeps;
   reviewDeps: (pr: number) => ReviewDeps;
-  // Feeds the READY TO REVIEW section's AI ordering: per-PR meta reads and the
+  // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
   // headless prompt runner (same claude -p shape as the review grouping).
   orderDeps: OrderSourceDeps;
 }): void {
   const term = screenTerm(process.env.TERM);
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true, ...(term ? { term } : {}) });
 
-  const table = blessed.listtable({
-    parent: screen,
-    top: 1,
-    left: 0,
-    right: 0,
-    bottom: 1,
-    tags: true,
-    align: "left",
-    keys: true,
-    vi: true,
-    mouse: true,
-    style: { header: { bold: true }, cell: { selected: { inverse: true } } },
-  });
-  table.focus();
-
-  const reviewHeader = blessed.text({
-    parent: screen,
-    top: 1,
-    left: 0,
-    height: 1,
-    tags: true,
-    hidden: true,
-    content: "",
-  });
-  const reviewList = blessed.listtable({
-    parent: screen,
-    top: 2,
-    left: 0,
-    right: 0,
-    height: 2,
-    tags: true,
-    align: "left",
-    keys: true,
-    vi: true,
-    mouse: true,
-    hidden: true,
-    style: { header: { bold: true }, cell: { selected: { inverse: true } } },
-  });
-
-  // Positioned by render() from reviewSectionLayout before it is ever shown.
-  const separator = blessed.line({
-    parent: screen,
-    orientation: "horizontal",
-    left: 0,
-    right: 0,
-    hidden: true,
-    style: { fg: "grey" },
-  });
-  const reviewWidgets = [reviewHeader, reviewList, separator];
+  const makePane = (pane: Pane, position: Record<string, unknown>) =>
+    blessed.listtable({
+      parent: screen,
+      ...position,
+      tags: true,
+      align: "left",
+      keys: true,
+      vi: true,
+      mouse: true,
+      border: { type: "line" },
+      style: {
+        header: { bold: true },
+        cell: { selected: { inverse: true } },
+        border: { fg: PANE_BORDER[pane] },
+        label: { fg: PANE_BORDER[pane] },
+      },
+    });
+  // Positions are re-fit by render() from boardLayout on every repaint.
+  const tasksPane = makePane("tasks", { top: 1, left: 0, width: "50%", bottom: 1 });
+  const reviewPane = makePane("review", { top: 1, left: "50%", right: 0, bottom: 1 });
+  const mergePane = makePane("merge", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
+  const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane };
+  tasksPane.focus();
 
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
   const status = blessed.text({ parent: screen, top: 0, right: 0, tags: true, content: "live" });
@@ -438,46 +472,55 @@ export function runTui(opts: {
   void footer;
 
   let currentRows: BoardRow[] = [];
-  let currentBoard: BoardRow[] = [];
+  let currentTasks: BoardRow[] = [];
+  let currentMerge: BoardRow[] = [];
   let currentReview: ReviewEntry[] = [];
-  let focusedPane: Pane = "board";
+  let focusedPane: Pane = "tasks";
   // Set when a settings apply's rollback restart also failed, so the daemon
   // is confirmed down. The panel itself closes on esc/w regardless of draft
   // state, so this has to outlive it to keep showing on the board.
   let daemonStopped = false;
   let notice: Notice | null = null;
+  const paneCounts = (): PaneCounts => ({
+    tasks: currentTasks.length,
+    review: currentReview.length,
+    merge: currentMerge.length,
+  });
   const render = () => {
     currentRows = filterToLiveWorktrees(
       reduceRows(readEvents(), Date.now(), { manualLiveKeys: opts.manualLiveKeys() }),
       opts.liveKeys(),
     );
-    const { review, rest } = partitionRows(currentRows);
+    const { review, merge, tasks } = partitionRows(currentRows);
     orderFetcher.ensure(review.map((r) => r.pr).filter((n): n is number => n != null));
     currentReview = applyOrder(review, orderFetcher.get());
-    currentBoard = rest;
-    const layout = reviewSectionLayout(currentReview.length, Number(screen.rows) || 24);
-    if (currentReview.length === 0) {
-      for (const w of reviewWidgets) w.hide();
+    currentTasks = tasks;
+    currentMerge = merge;
+    const now = Date.now();
+    const layout = boardLayout(merge.length, Number(screen.rows) || 24);
+    tasksPane.bottom = layout.tasks.bottom;
+    reviewPane.bottom = layout.review.bottom;
+    tasksPane.setLabel(` tasks (${tasks.length}) `);
+    reviewPane.setLabel(` ready to review (${currentReview.length}) `);
+    tasksPane.setData(rowsToTable(tasks, now));
+    reviewPane.setData(reviewTable(currentReview, now));
+    if (layout.merge) {
+      mergePane.height = layout.merge.height;
+      mergePane.setLabel(` ready to merge (${merge.length}) `);
+      mergePane.setData(mergeTable(merge, now));
+      // While an overlay is open every pane stays hidden (the overlay owns
+      // the screen); the close callback re-renders, which shows them again.
+      if (!isOverlayOpen()) mergePane.show();
     } else {
-      reviewHeader.setContent(`{bold}READY TO REVIEW (${currentReview.length}){/bold}`);
-      reviewList.height = layout.table.height;
-      reviewList.setData(reviewTable(currentReview));
-      if (layout.separator) separator.top = layout.separator.top;
-      // While an overlay is open both panes stay hidden (the overlay owns the
-      // screen); the close callback re-renders, which shows them again.
-      if (!isOverlayOpen()) {
-        reviewHeader.show();
-        reviewList.show();
-        if (layout.separator) separator.show();
-        else separator.hide();
-      }
+      mergePane.hide();
     }
-    table.top = layout.boardTop;
-    table.setData(rowsToTable(currentBoard, Date.now()));
-    const pane = resolvePane(focusedPane, currentReview.length, currentBoard.length);
+    const pane = resolvePane(focusedPane, paneCounts());
     if (pane !== focusedPane) {
       focusedPane = pane;
       if (!isOverlayOpen()) focusedWidget().focus();
+    }
+    for (const p of ["tasks", "review", "merge"] as const) {
+      paneWidgets[p].style.border.fg = paneBorderColor(p, p === focusedPane);
     }
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
@@ -490,9 +533,19 @@ export function runTui(opts: {
     render();
   };
   const orderFetcher = makeOrderFetcher({ ...opts.orderDeps, onUpdate: () => render() });
-  const selRow = () => selectedBoardRow(focusedPane, currentReview, reviewList.selected, currentBoard, table.selected);
-  const focusedWidget = () => (focusedPane === "review" ? reviewList : table);
-  bindPaneFocusSync(table, reviewList, (p) => {
+  const selRow = () =>
+    selectedBoardRow(focusedPane, {
+      tasks: { rows: currentTasks, selected: tasksPane.selected },
+      review: { entries: currentReview, selected: reviewPane.selected },
+      merge: { rows: currentMerge, selected: mergePane.selected },
+    });
+  const focusedWidget = () => paneWidgets[focusedPane];
+  const focusPane = (p: Pane) => {
+    focusedPane = p;
+    focusedWidget().focus();
+    render();
+  };
+  bindPaneFocusSync(paneWidgets, (p) => {
     focusedPane = p;
   });
 
@@ -515,13 +568,13 @@ export function runTui(opts: {
   bindQuitKeys(screen, isOverlayOpen, quit);
 
   const hidePanes = () => {
-    table.hide();
-    for (const w of reviewWidgets) w.hide();
+    for (const p of ["tasks", "review", "merge"] as const) paneWidgets[p].hide();
   };
-  // The review trio is deliberately not shown here: the render() every caller
-  // issues right after restores exactly the widgets the current layout wants.
+  // The merge pane is deliberately not shown here: the render() every caller
+  // issues right after restores it only when it has rows.
   const showPanes = () => {
-    table.show();
+    tasksPane.show();
+    reviewPane.show();
     focusedWidget().focus();
   };
 
@@ -557,10 +610,13 @@ export function runTui(opts: {
   });
 
   bindPaneToggle(screen, isOverlayOpen, () => {
-    if (currentReview.length === 0) return;
-    focusedPane = focusedPane === "review" ? "board" : "review";
-    focusedWidget().focus();
-    screen.render();
+    const next = nextPane(focusedPane, paneCounts());
+    if (next !== focusedPane) focusPane(next);
+  });
+
+  bindPaneNavKeys(screen, isOverlayOpen, (dir) => {
+    const next = movePane(focusedPane, dir, paneCounts());
+    if (next !== focusedPane) focusPane(next);
   });
 
   bindReviewKey(screen, isOverlayOpen, () => {
@@ -584,8 +640,9 @@ export function runTui(opts: {
     if (!r) return;
     opts.onOpenSession(r.key, r.label);
   };
-  table.on("select", () => openSelectedSession(currentBoard[table.selected - 1]));
-  reviewList.on("select", () => openSelectedSession(currentReview[reviewList.selected - 1]?.row));
+  tasksPane.on("select", () => openSelectedSession(currentTasks[tasksPane.selected - 1]));
+  reviewPane.on("select", () => openSelectedSession(currentReview[reviewPane.selected - 1]?.row));
+  mergePane.on("select", () => openSelectedSession(currentMerge[mergePane.selected - 1]));
 
   render();
 }

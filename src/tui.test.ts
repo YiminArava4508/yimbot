@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, reviewOnlyGuard, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, readyKeyGuard, resolvePane, reviewOnlyGuard, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -107,16 +107,17 @@ test("footerHint is a lean legend: help and quit everywhere, the rest lives unde
   }
 });
 
-test("footerHint shows r/R only for the review pane, matching where they act", () => {
+test("footerHint shows r/R where they act: both on review, r alone on merge", () => {
   assert.match(footerHint("review"), /r ready {3}R review/);
   assert.doesNotMatch(footerHint("tasks"), /r ready|R review/);
-  assert.doesNotMatch(footerHint("merge"), /r ready|R review/);
+  assert.match(footerHint("merge"), /r ready/);
+  assert.doesNotMatch(footerHint("merge"), /R review/);
 });
 
 test("helpLines carries every keybind the footer no longer shows", () => {
   const text = helpLines("F12").join("\n");
   for (const needle of [
-    "j/k", "^h/^l/^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "?", "q", "prefix+F12",
+    "j/k", "^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "?", "q", "prefix+F12",
   ]) {
     assert.ok(text.includes(needle), `help must mention ${needle}`);
   }
@@ -500,48 +501,35 @@ test("reviewTable keeps the flag marker and reasons visible for flagged drafts",
   assert.equal(body[6], "{red-fg}input{/red-fg}");
 });
 
-test("boardLayout with no merge rows runs both columns down to the footer", () => {
-  const l = boardLayout(0, 24);
-  assert.equal(l.merge, null);
-  assert.deepEqual(l.tasks, { top: 1, left: 0, width: "50%", bottom: 1 });
-  assert.deepEqual(l.review, { top: 1, left: "50%", right: 0, bottom: 1 });
-});
-
-test("boardLayout sizes the merge pane to its rows and lifts the columns above it", () => {
-  const l = boardLayout(2, 24);
-  assert.ok(l.merge);
-  // 2 rows + column header + 2 border rows.
-  assert.equal(l.merge.height, 5);
+test("boardLayout reserves an equal third of the body for every pane", () => {
+  const l = boardLayout(24);
+  // Body is 22 rows (title + footer), a third is 7; tasks keeps the remainder.
+  assert.equal(l.merge.height, 7);
   assert.equal(l.merge.bottom, 1);
-  assert.equal(l.tasks.bottom, 6);
-  assert.equal(l.review.bottom, 6);
+  assert.equal(l.review.height, 7);
+  assert.equal(l.review.bottom, 8);
+  assert.deepEqual(l.tasks, { top: 1, left: 0, right: 0, bottom: 15 });
 });
 
-test("boardLayout caps the merge pane at a third of the screen so the columns keep room", () => {
-  const l = boardLayout(20, 24);
-  assert.equal(l.merge?.height, 8);
-  assert.equal(l.tasks.bottom, 9);
-  // Even on a tiny screen the pane keeps one visible row.
-  assert.equal(boardLayout(20, 10).merge?.height, 4);
+test("boardLayout keeps every pane at least one visible row on a tiny screen", () => {
+  const l = boardLayout(10);
+  assert.equal(l.merge.height, 4);
+  assert.equal(l.review.height, 4);
 });
 
-test("movePane moves between the columns and the merge pane, skipping empty targets", () => {
+test("movePane moves up and down the stack, skipping empty panes", () => {
   const all: PaneCounts = { tasks: 2, review: 1, merge: 1 };
-  assert.equal(movePane("tasks", "right", all), "review");
-  assert.equal(movePane("review", "left", all), "tasks");
-  assert.equal(movePane("tasks", "down", all), "merge");
+  assert.equal(movePane("tasks", "down", all), "review");
   assert.equal(movePane("review", "down", all), "merge");
-  assert.equal(movePane("merge", "up", all), "tasks");
+  assert.equal(movePane("merge", "up", all), "review");
+  assert.equal(movePane("review", "up", all), "tasks");
   // Edges stay put.
-  assert.equal(movePane("tasks", "left", all), "tasks");
-  assert.equal(movePane("review", "right", all), "review");
+  assert.equal(movePane("tasks", "up", all), "tasks");
   assert.equal(movePane("merge", "down", all), "merge");
-  // Empty targets are not focusable.
-  assert.equal(movePane("tasks", "right", { tasks: 2, review: 0, merge: 1 }), "tasks");
-  assert.equal(movePane("tasks", "down", { tasks: 2, review: 1, merge: 0 }), "tasks");
-  // Up from merge prefers tasks but falls back to review.
-  assert.equal(movePane("merge", "up", { tasks: 0, review: 1, merge: 1 }), "review");
-  assert.equal(movePane("merge", "up", { tasks: 0, review: 0, merge: 1 }), "merge");
+  // Empty panes are skipped over, not landed on.
+  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 1 }), "merge");
+  assert.equal(movePane("merge", "up", { tasks: 2, review: 0, merge: 1 }), "tasks");
+  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 0 }), "tasks");
 });
 
 test("nextPane cycles tasks, review, merge and skips empty panes", () => {
@@ -560,28 +548,25 @@ test("paneBorderColor gives each pane its own outline and white to the focused o
   assert.equal(paneBorderColor("review", true), "white");
 });
 
-test("bindPaneNavKeys maps ctrl-hjkl (and their control-char aliases) to moves, gated by overlays", () => {
+test("bindPaneNavKeys maps ctrl-jk (and the linefeed alias) to moves, gated by overlays", () => {
   const handlers: Record<string, () => void> = {};
   const screen = { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } };
   const moves: string[] = [];
   let overlay = false;
   bindPaneNavKeys(screen, () => overlay, (dir) => moves.push(dir));
-  handlers["C-h"]();
-  handlers["C-l"]();
   handlers["C-j"]();
   handlers["C-k"]();
-  assert.deepEqual(moves, ["left", "right", "down", "up"]);
-  // Ctrl+H arrives as backspace and Ctrl+J as linefeed in most terminals.
-  handlers["backspace"]();
+  assert.deepEqual(moves, ["down", "up"]);
+  // Ctrl+J arrives as linefeed in most terminals.
   handlers["linefeed"]();
-  assert.deepEqual(moves.slice(4), ["left", "down"]);
+  assert.deepEqual(moves.slice(2), ["down"]);
   overlay = true;
-  handlers["C-l"]();
-  assert.equal(moves.length, 6);
+  handlers["C-j"]();
+  assert.equal(moves.length, 3);
 });
 
 test("the pane-switch keys moved to the help overlay", () => {
-  assert.ok(helpLines("Y").join("\n").includes("^h/^l/^j/^k"));
+  assert.ok(helpLines("Y").join("\n").includes("^j/^k"));
 });
 
 test("footerHint fits a 130-column terminal so the tail hints survive wrap:false", () => {
@@ -617,10 +602,16 @@ test("selectedBoardRow reads from the focused pane's own selection", () => {
   assert.equal(selectedBoardRow("tasks", { ...panes, tasks: { rows: [], selected: 1 } }), undefined);
 });
 
-test("reviewOnlyGuard blocks r/R outside the review pane with a notice", () => {
+test("reviewOnlyGuard blocks R outside the review pane with a notice", () => {
   assert.equal(reviewOnlyGuard("review"), null);
   assert.match(reviewOnlyGuard("tasks") ?? "", /ready to review pane/);
   assert.match(reviewOnlyGuard("merge") ?? "", /ready to review pane/);
+});
+
+test("readyKeyGuard allows r on the review and merge panes, blocks it on tasks", () => {
+  assert.equal(readyKeyGuard("review"), null);
+  assert.equal(readyKeyGuard("merge"), null);
+  assert.match(readyKeyGuard("tasks") ?? "", /review or ready to merge/);
 });
 
 test("resolvePane forces a pane with rows when the current one is empty", () => {

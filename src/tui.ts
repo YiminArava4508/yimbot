@@ -36,21 +36,23 @@ export function screenTerm(term: string | undefined): string | undefined {
 }
 
 // A lean legend: the full keybind list lives under ?, the footer only names
-// help, quit, and the review pane's contextual r/R (they act nowhere else).
+// help, quit, and the contextual r/R where they act (r on review and merge,
+// R on review alone).
 export function footerHint(pane: Pane): string {
-  const reviewKeys = pane === "review" ? "r ready   R review   " : "";
-  return `${reviewKeys}? help   q quit`;
+  if (pane === "review") return "r ready   R review   ? help   q quit";
+  if (pane === "merge") return "r ready   ? help   q quit";
+  return "? help   q quit";
 }
 
 // The help overlay's body: every keybind, one per line, aligned.
 export function helpLines(key: string): string[] {
   const binds: [string, string][] = [
     ["j/k", "move selection"],
-    ["^h/^l/^j/^k", "switch pane (tab cycles)"],
+    ["^j/^k", "switch pane (tab cycles)"],
     ["enter", "open the row's tmux session"],
     ["f", "flag/unflag the selected row"],
-    ["r", "add the ready label (review pane)"],
-    ["R", "guided review (review pane)"],
+    ["r", "add the ready label (review/merge panes)"],
+    ["R", "review (review pane)"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
     [`prefix+${key}`, "return here from a session"],
@@ -151,30 +153,23 @@ export function mergeTable(rows: BoardRow[], now: number = Date.now()): string[]
   return [header, ...body];
 }
 
-// The board's geometry: two bordered columns (tasks left, ready to review
-// right) filling the body, and a full-width ready-to-merge pane pinned above
-// the footer. The merge pane sizes to its rows (column header + 2 border rows)
-// but never past a third of the screen, and disappears entirely when empty so
-// the columns get the whole body back.
-export function boardLayout(
-  mergeCount: number,
-  screenHeight: number,
-): {
-  tasks: { top: number; left: number; width: string; bottom: number };
-  review: { top: number; left: string; right: number; bottom: number };
-  merge: { left: number; right: number; bottom: number; height: number } | null;
+// The board's geometry: three full-width bordered panes stacked top to
+// bottom -- tasks, ready to review, ready to merge. Each keeps an equal third
+// of the body (tasks takes the remainder) whether or not it has rows, so the
+// panes never jump around as PRs move between them. The floor of 4 keeps one
+// data row visible (header + 2 border rows) on a tiny screen.
+export function boardLayout(screenHeight: number): {
+  tasks: { top: number; left: number; right: number; bottom: number };
+  review: { left: number; right: number; bottom: number; height: number };
+  merge: { left: number; right: number; bottom: number; height: number };
 } {
   const footerRows = 1;
-  let mergeHeight = 0;
-  if (mergeCount > 0) {
-    const cap = Math.max(4, Math.floor(screenHeight / 3));
-    mergeHeight = Math.min(mergeCount + 3, cap);
-  }
-  const columnBottom = footerRows + mergeHeight;
+  const titleRows = 1;
+  const third = Math.max(4, Math.floor((screenHeight - titleRows - footerRows) / 3));
   return {
-    tasks: { top: 1, left: 0, width: "50%", bottom: columnBottom },
-    review: { top: 1, left: "50%", right: 0, bottom: columnBottom },
-    merge: mergeCount > 0 ? { left: 0, right: 0, bottom: footerRows, height: mergeHeight } : null,
+    tasks: { top: titleRows, left: 0, right: 0, bottom: footerRows + 2 * third },
+    review: { left: 0, right: 0, bottom: footerRows + third, height: third },
+    merge: { left: 0, right: 0, bottom: footerRows, height: third },
   };
 }
 
@@ -198,24 +193,31 @@ export function resolvePane(current: Pane, counts: PaneCounts): Pane {
   return "tasks";
 }
 
-// r (ready label) and R (guided review) only make sense on a PR that is
-// waiting for review, so both act only while the review pane holds focus;
-// elsewhere they return the notice to show instead.
+// R (review) only makes sense on a PR that is waiting for review, so it acts
+// only while the review pane holds focus; elsewhere it returns the notice to
+// show instead.
 export function reviewOnlyGuard(pane: Pane): string | null {
   if (pane === "review") return null;
-  return "{yellow-fg}r/R act on the ready to review pane (^hjkl to move){/yellow-fg}";
+  return "{yellow-fg}R acts on the ready to review pane (^j/^k to move){/yellow-fg}";
 }
 
-// nvim-style directional focus between the panes: left/right across the
-// columns, down to the merge pane, up out of it (tasks first, review when
-// tasks is empty). A move onto an empty pane stays put.
-export function movePane(current: Pane, dir: "left" | "right" | "up" | "down", counts: PaneCounts): Pane {
-  let target: Pane | null = null;
-  if (dir === "left" && current === "review") target = "tasks";
-  else if (dir === "right" && current === "tasks") target = "review";
-  else if (dir === "down" && current !== "merge") target = "merge";
-  else if (dir === "up" && current === "merge") target = counts.tasks > 0 ? "tasks" : "review";
-  if (target !== null && counts[target] > 0) return target;
+// r (ready label) also covers the merge pane: a row latched at "ready to
+// merge" whose label was removed on GitHub sits there, and r is the escape
+// hatch that re-adds it.
+export function readyKeyGuard(pane: Pane): string | null {
+  if (pane === "review" || pane === "merge") return null;
+  return "{yellow-fg}r acts on the ready to review or ready to merge panes (^j/^k to move){/yellow-fg}";
+}
+
+// Directional focus down and up the stacked panes, skipping empty ones (an
+// empty pane is hidden, so landing on it would focus nothing visible). No
+// non-empty pane in that direction stays put.
+export function movePane(current: Pane, dir: "up" | "down", counts: PaneCounts): Pane {
+  const order: Pane[] = ["tasks", "review", "merge"];
+  const step = dir === "down" ? 1 : -1;
+  for (let i = order.indexOf(current) + step; i >= 0 && i < order.length; i += step) {
+    if (counts[order[i]] > 0) return order[i];
+  }
   return current;
 }
 
@@ -268,21 +270,17 @@ export function bindPaneToggle(
   });
 }
 
-// Ctrl+H and Ctrl+J reach blessed as their control characters (0x08 and 0x0a),
-// named "backspace" and "linefeed", so those aliases are bound alongside the
-// C- names some terminals send instead. The board has no text input, so a real
-// Backspace key doubling as pane-left is harmless.
+// Ctrl+J reaches blessed as its control character (0x0a), named "linefeed",
+// so that alias is bound alongside the C- name some terminals send instead.
 export function bindPaneNavKeys(
   screen: { key: (keys: string[], fn: () => void) => void },
   isOverlayOpen: () => boolean,
-  move: (dir: "left" | "right" | "up" | "down") => void,
+  move: (dir: "up" | "down") => void,
 ): void {
-  const bind = (keys: string[], dir: "left" | "right" | "up" | "down") =>
+  const bind = (keys: string[], dir: "up" | "down") =>
     screen.key(keys, () => {
       if (!isOverlayOpen()) move(dir);
     });
-  bind(["C-h", "backspace"], "left");
-  bind(["C-l"], "right");
   bind(["C-j", "linefeed"], "down");
   bind(["C-k"], "up");
 }
@@ -458,7 +456,7 @@ export function bindModeKey(
   });
 }
 
-// R (shift-r) opens the guided review overlay for the selected row's PR,
+// R (shift-r) opens the review overlay for the selected row's PR,
 // gated like s: a second R while any overlay is open would stack widgets.
 export function bindReviewKey(
   screen: { key: (keys: string[], fn: () => void) => void },
@@ -512,8 +510,8 @@ export function runTui(opts: {
       },
     });
   // Positions are re-fit by render() from boardLayout on every repaint.
-  const tasksPane = makePane("tasks", { top: 1, left: 0, width: "50%", bottom: 1 });
-  const reviewPane = makePane("review", { top: 1, left: "50%", right: 0, bottom: 1 });
+  const tasksPane = makePane("tasks", { top: 1, left: 0, right: 0, bottom: 1 });
+  const reviewPane = makePane("review", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
   const mergePane = makePane("merge", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
   const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane };
   tasksPane.focus();
@@ -548,22 +546,23 @@ export function runTui(opts: {
     currentTasks = tasks;
     currentMerge = merge;
     const now = Date.now();
-    const layout = boardLayout(merge.length, Number(screen.rows) || 24);
+    const layout = boardLayout(Number(screen.rows) || 24);
     tasksPane.bottom = layout.tasks.bottom;
-    reviewPane.bottom = layout.review.bottom;
     tasksPane.setLabel(` tasks (${tasks.length}) `);
-    reviewPane.setLabel(` ready to review (${currentReview.length}) `);
     tasksPane.setData(rowsToTable(tasks, now));
+    reviewPane.height = layout.review.height;
+    reviewPane.bottom = layout.review.bottom;
+    reviewPane.setLabel(` ready to review (${currentReview.length}) `);
     reviewPane.setData(reviewTable(currentReview, now));
-    if (layout.merge) {
-      mergePane.height = layout.merge.height;
-      mergePane.setLabel(` ready to merge (${merge.length}) `);
-      mergePane.setData(mergeTable(merge, now));
-      // While an overlay is open every pane stays hidden (the overlay owns
-      // the screen); the close callback re-renders, which shows them again.
-      if (!isOverlayOpen()) mergePane.show();
-    } else {
-      mergePane.hide();
+    mergePane.height = layout.merge.height;
+    mergePane.bottom = layout.merge.bottom;
+    mergePane.setLabel(` ready to merge (${merge.length}) `);
+    mergePane.setData(mergeTable(merge, now));
+    // While an overlay is open every pane stays hidden (the overlay owns
+    // the screen); the close callback re-renders, which shows them again.
+    if (!isOverlayOpen()) {
+      reviewPane.show();
+      mergePane.show();
     }
     const pane = resolvePane(focusedPane, paneCounts());
     if (pane !== focusedPane) {
@@ -652,11 +651,10 @@ export function runTui(opts: {
   const hidePanes = () => {
     for (const p of ["tasks", "review", "merge"] as const) paneWidgets[p].hide();
   };
-  // The merge pane is deliberately not shown here: the render() every caller
-  // issues right after restores it only when it has rows.
+  // The review and merge panes are deliberately not shown here: the render()
+  // every caller issues right after restores them only when they have rows.
   const showPanes = () => {
     tasksPane.show();
-    reviewPane.show();
     focusedWidget().focus();
   };
 
@@ -683,7 +681,7 @@ export function runTui(opts: {
   });
 
   bindReadyKey(screen, isOverlayOpen, () => {
-    const blocked = reviewOnlyGuard(focusedPane);
+    const blocked = readyKeyGuard(focusedPane);
     if (blocked) {
       setNotice(blocked, NOTICE_TTL_MS);
       return;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, reviewOnlyGuard, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, reviewOnlyGuard, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -98,22 +98,42 @@ test("returnKey honors TUI_RETURN_KEY and falls back when it is blank", () => {
   }
 });
 
-test("footerHint keeps the existing hints and names the return key in every pane", () => {
+test("footerHint is a lean legend: help and quit everywhere, the rest lives under ?", () => {
   for (const pane of ["tasks", "review", "merge"] as const) {
-    const hint = footerHint("F12", pane);
-    assert.match(hint, /j\/k move/);
-    assert.match(hint, /enter open/);
-    assert.match(hint, /f flag\/unflag/);
-    assert.match(hint, /m mode/);
+    const hint = footerHint(pane);
+    assert.match(hint, /\? help/);
     assert.match(hint, /q quit/);
-    assert.match(hint, /prefix\+F12 returns here/);
+    assert.doesNotMatch(hint, /j\/k move|f flag|m mode|s settings|returns here|tab pane/);
   }
 });
 
 test("footerHint shows r/R only for the review pane, matching where they act", () => {
-  assert.match(footerHint("Y", "review"), /r ready {3}R review/);
-  assert.doesNotMatch(footerHint("Y", "tasks"), /r ready|R review/);
-  assert.doesNotMatch(footerHint("Y", "merge"), /r ready|R review/);
+  assert.match(footerHint("review"), /r ready {3}R review/);
+  assert.doesNotMatch(footerHint("tasks"), /r ready|R review/);
+  assert.doesNotMatch(footerHint("merge"), /r ready|R review/);
+});
+
+test("helpLines carries every keybind the footer no longer shows", () => {
+  const text = helpLines("F12").join("\n");
+  for (const needle of [
+    "j/k", "^h/^l/^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "?", "q", "prefix+F12",
+  ]) {
+    assert.ok(text.includes(needle), `help must mention ${needle}`);
+  }
+  assert.match(text, /review pane/);
+});
+
+test("bindHelpKey opens only when no overlay is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const screen = { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } };
+  let opened = 0;
+  let overlay = false;
+  bindHelpKey(screen, () => overlay, () => { opened++; });
+  handlers["?"]();
+  assert.equal(opened, 1);
+  overlay = true;
+  handlers["?"]();
+  assert.equal(opened, 1);
 });
 
 test("modeContent highlights each mode distinctly", () => {
@@ -140,12 +160,13 @@ test("bindModeKey gates m while settings is open", () => {
   assert.equal(toggleCalls, 1, "m toggles again once the panel is closed");
 });
 
-test("footerHint advertises the settings key", () => {
-  assert.match(footerHint("Y", "tasks"), /s settings/);
+test("the settings key moved to the help overlay", () => {
+  assert.doesNotMatch(footerHint("tasks"), /s settings/);
+  assert.match(helpLines("Y").join("\n"), /settings/);
 });
 
 test("footerHint no longer advertises a refine key (refine lives in settings)", () => {
-  assert.doesNotMatch(footerHint("Y", "review"), /refine/);
+  assert.doesNotMatch(footerHint("review"), /refine/);
 });
 
 test("statusContent shows a red refine-off chip while refine is off", () => {
@@ -208,8 +229,8 @@ test("bindSettingsKey does not reopen the panel on a second s while it is alread
   assert.equal(openCalls, 2, "s opens again once the panel is closed");
 });
 
-test("footerHint advertises the manual ready-label key", () => {
-  assert.match(footerHint("Y", "review"), /r ready/);
+test("footerHint advertises the manual ready-label key on the review pane", () => {
+  assert.match(footerHint("review"), /r ready/);
 });
 
 test("bindReadyKey gates r while settings is open", () => {
@@ -334,7 +355,7 @@ function fakeTty(columns: number, rows: number) {
 // footerLayout() (production's own object, not a copy), so a regression in
 // that layout fails this test. Enough data rows are given to fill the table
 // area regardless of terminal height.
-function renderBoardLines(columns: number, rows: number, key: string): string[] {
+function renderBoardLines(columns: number, rows: number): string[] {
   const { input, output } = fakeTty(columns, rows);
   const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true, fullUnicode: true });
   const table = blessed.listtable({
@@ -353,7 +374,7 @@ function renderBoardLines(columns: number, rows: number, key: string): string[] 
   const data = [["TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG"]];
   for (let i = 0; i < rows; i++) data.push([`09:${i}`, "1m", "working", `ENG-${i}`, "", `row ${i}`, ""]);
   table.setData(data);
-  blessed.text({ parent: screen, ...footerLayout(key) });
+  blessed.text({ parent: screen, ...footerLayout() });
   screen.render();
   const lines = screen.lines.map((line: [number, string][]) =>
     line.map((cell) => cell[1]).join("").replace(/\s+$/, ""),
@@ -365,7 +386,7 @@ function renderBoardLines(columns: number, rows: number, key: string): string[] 
 test("footer at height 1 clips instead of wrapping, so it never covers the table's last row", () => {
   const columns = 80;
   const rows = 24;
-  const lines = renderBoardLines(columns, rows, returnKey());
+  const lines = renderBoardLines(columns, rows);
   // table is `bottom: 1`, so its content fills up to one row above the
   // screen's last row; that row must still show a ticket, not footer text.
   const lastTableRow = lines[rows - 2];
@@ -376,17 +397,17 @@ test("footer at height 1 clips instead of wrapping, so it never covers the table
   assert.equal(lines.length, rows);
 });
 
-test("footer clips at a narrow width with a long custom key, still sparing the table's last row", () => {
+test("footer clips at a narrow width, still sparing the table's last row", () => {
   const columns = 60;
   const rows = 20;
-  const lines = renderBoardLines(columns, rows, "C-M-Space"); // 95-char hint, well past 60 columns
+  const lines = renderBoardLines(columns, rows);
   const lastTableRow = lines[rows - 2];
   assert.match(lastTableRow, /ENG-\d+/, "the table's last row must survive, not be painted over");
   assert.equal(lines.length, rows);
 });
 
 test("footerHint names the review key", () => {
-  assert.ok(footerHint("Y", "review").includes("R review"));
+  assert.ok(footerHint("review").includes("R review"));
 });
 
 test("bindReviewKey opens only when no overlay is open", () => {
@@ -559,12 +580,12 @@ test("bindPaneNavKeys maps ctrl-hjkl (and their control-char aliases) to moves, 
   assert.equal(moves.length, 6);
 });
 
-test("footerHint advertises the pane-switch keys", () => {
-  assert.ok(footerHint("Y", "merge").includes("^hjkl/tab pane"));
+test("the pane-switch keys moved to the help overlay", () => {
+  assert.ok(helpLines("Y").join("\n").includes("^h/^l/^j/^k"));
 });
 
 test("footerHint fits a 130-column terminal so the tail hints survive wrap:false", () => {
-  assert.ok(footerHint("Y", "review").length <= 130, `footer is ${footerHint("Y", "review").length} chars`);
+  assert.ok(footerHint("review").length <= 130, `footer is ${footerHint("review").length} chars`);
 });
 
 test("bindPaneToggle gates tab while an overlay is open", () => {

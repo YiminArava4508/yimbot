@@ -35,11 +35,42 @@ export function screenTerm(term: string | undefined): string | undefined {
   return undefined;
 }
 
-// The legend follows the focused pane: r/R act only on the review pane, so
-// only its hint advertises them.
-export function footerHint(key: string, pane: Pane): string {
+// A lean legend: the full keybind list lives under ?, the footer only names
+// help, quit, and the review pane's contextual r/R (they act nowhere else).
+export function footerHint(pane: Pane): string {
   const reviewKeys = pane === "review" ? "r ready   R review   " : "";
-  return `j/k move   ^hjkl/tab pane   enter open   f flag/unflag   ${reviewKeys}m mode   s settings   q quit   prefix+${key} returns here`;
+  return `${reviewKeys}? help   q quit`;
+}
+
+// The help overlay's body: every keybind, one per line, aligned.
+export function helpLines(key: string): string[] {
+  const binds: [string, string][] = [
+    ["j/k", "move selection"],
+    ["^h/^l/^j/^k", "switch pane (tab cycles)"],
+    ["enter", "open the row's tmux session"],
+    ["f", "flag/unflag the selected row"],
+    ["r", "add the ready label (review pane)"],
+    ["R", "guided review (review pane)"],
+    ["m", "toggle supervised/autonomous"],
+    ["s", "settings"],
+    [`prefix+${key}`, "return here from a session"],
+    ["?", "toggle this help"],
+    ["q", "quit"],
+  ];
+  const pad = Math.max(...binds.map(([k]) => k.length));
+  return binds.map(([k, desc]) => `{bold}${k.padEnd(pad)}{/bold}  ${desc}`);
+}
+
+// ? opens the help overlay, gated like s: a second ? while any overlay is
+// open would stack widgets.
+export function bindHelpKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  open: () => void,
+): void {
+  screen.key(["?"], () => {
+    if (!isOverlayOpen()) open();
+  });
 }
 
 // A draft_pr event is a supervised draft whose ready verdict held (threads
@@ -269,7 +300,7 @@ export function modeContent(mode: Mode): string {
 // wrapping. blessed.text defaults to shrink: true, which would otherwise grow
 // the element upward from bottom: 0 into the table's last row (bottom: 1).
 // Exported so the layout test below exercises this exact object, not a copy.
-export function footerLayout(key: string): Record<string, unknown> {
+export function footerLayout(): Record<string, unknown> {
   return {
     bottom: 0,
     left: 0,
@@ -277,7 +308,7 @@ export function footerLayout(key: string): Record<string, unknown> {
     height: 1,
     wrap: false,
     // The initial focused pane; render() re-fits the legend to the pane.
-    content: footerHint(key, "tasks"),
+    content: footerHint("tasks"),
     style: { fg: "white" },
   };
 }
@@ -489,7 +520,7 @@ export function runTui(opts: {
 
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
   const status = blessed.text({ parent: screen, top: 0, right: 0, tags: true, content: "live" });
-  const footer = blessed.text({ parent: screen, ...footerLayout(returnKey()) });
+  const footer = blessed.text({ parent: screen, ...footerLayout() });
 
   let currentRows: BoardRow[] = [];
   let currentTasks: BoardRow[] = [];
@@ -542,7 +573,7 @@ export function runTui(opts: {
     for (const p of ["tasks", "review", "merge"] as const) {
       paneWidgets[p].style.border.fg = paneBorderColor(p, p === focusedPane);
     }
-    footer.setContent(footerHint(returnKey(), focusedPane));
+    footer.setContent(footerHint(focusedPane));
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
       daemonStopped ? "daemon stopped" : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now()),
@@ -585,8 +616,38 @@ export function runTui(opts: {
   };
   let settingsOpen = false;
   let reviewOpen = false;
-  const isOverlayOpen = () => settingsOpen || reviewOpen;
+  let helpOpen = false;
+  const isOverlayOpen = () => settingsOpen || reviewOpen || helpOpen;
   bindQuitKeys(screen, isOverlayOpen, quit);
+
+  // The help box floats over the board (panes stay visible under it), owns
+  // the keyboard while open, and closes on ?, q or escape.
+  bindHelpKey(screen, isOverlayOpen, () => {
+    helpOpen = true;
+    const lines = helpLines(returnKey());
+    const visibleLen = (l: string) => l.replace(/\{[^{}]*\}/g, "").length;
+    const box: any = blessed.box({
+      parent: screen,
+      top: "center",
+      left: "center",
+      width: Math.max(...lines.map(visibleLen)) + 4,
+      height: lines.length + 2,
+      tags: true,
+      keys: true,
+      border: { type: "line" },
+      label: " help ",
+      content: lines.join("\n"),
+    });
+    box.focus();
+    box.on("keypress", (ch: string, k: { name?: string }) => {
+      if (ch !== "?" && k?.name !== "q" && k?.name !== "escape") return;
+      helpOpen = false;
+      box.detach();
+      focusedWidget().focus();
+      render();
+    });
+    screen.render();
+  });
 
   const hidePanes = () => {
     for (const p of ["tasks", "review", "merge"] as const) paneWidgets[p].hide();

@@ -394,25 +394,32 @@ test("bindReviewKey opens only when no overlay is open", () => {
   assert.equal(opened, 1);
 });
 
-test("partitionRows splits draft-pr and ready-to-merge rows from the tasks, preserving order", () => {
+test("partitionRows splits draft-pr, ready-to-merge and merged rows from the tasks, preserving order", () => {
   const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
   const b = row({ key: "ENG-2", status: "working" });
   const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
   const d = row({ key: "ENG-4", status: "ready to merge", pr: 13 });
-  const { review, merge, tasks } = partitionRows([a, b, c, d]);
+  const e = row({ key: "ENG-5", status: "merged", pr: 14, terminal: true });
+  const { review, merge, tasks } = partitionRows([a, b, c, d, e]);
   assert.deepEqual(review.map((r) => r.key), ["ENG-1", "ENG-3"]);
-  assert.deepEqual(merge.map((r) => r.key), ["ENG-4"]);
+  assert.deepEqual(merge.map((r) => r.key), ["ENG-4", "ENG-5"]);
   assert.deepEqual(tasks.map((r) => r.key), ["ENG-2"]);
 });
 
-test("mergeTable renders PR, ticket, title, wait time and flag columns", () => {
+test("mergeTable renders PR, ticket, title, status, wait time and flag columns", () => {
   const a = row({
     key: "ENG-4", label: "ENG-4", status: "ready to merge", pr: 13, title: "bump deps", ts: 60_000,
     flagged: true, flagReasons: ["ci"],
   });
   const t = mergeTable([a], 120_000);
-  assert.deepEqual(t[0], ["PR", "TICKET", "TITLE", "WAIT", "FLAG", "REASON"]);
-  assert.deepEqual(t[1], ["#13", "ENG-4", "bump deps", "1m", "{red-fg}⚑{/red-fg}", "{red-fg}ci{/red-fg}"]);
+  assert.deepEqual(t[0], ["PR", "TICKET", "TITLE", "STATUS", "WAIT", "FLAG", "REASON"]);
+  assert.deepEqual(t[1], ["#13", "ENG-4", "bump deps", "ready to merge", "1m", "{red-fg}⚑{/red-fg}", "{red-fg}ci{/red-fg}"]);
+});
+
+test("mergeTable dims a merged row's status like the tasks pane does", () => {
+  const a = row({ key: "ENG-5", label: "ENG-5", status: "merged", pr: 14, terminal: true });
+  const [, body] = mergeTable([a], 0);
+  assert.equal(body[3], "{grey-fg}merged{/grey-fg}");
 });
 
 test("applyOrder sorts rows by the order entries and carries their reasons", () => {

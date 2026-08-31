@@ -45,7 +45,10 @@ export function footerHint(key: string): string {
 // same way. Both derived from the STATUS map rather than repeating the display
 // strings here.
 const REVIEW_STATUS = statusFor("draft_pr")?.status ?? "draft pr";
-const MERGE_STATUS = statusFor("ready_to_merge")?.status ?? "ready to merge";
+const MERGE_STATUSES = new Set([
+  statusFor("ready_to_merge")?.status ?? "ready to merge",
+  statusFor("merged")?.status ?? "merged",
+]);
 
 export function partitionRows(rows: BoardRow[]): { review: BoardRow[]; merge: BoardRow[]; tasks: BoardRow[] } {
   const review: BoardRow[] = [];
@@ -53,7 +56,7 @@ export function partitionRows(rows: BoardRow[]): { review: BoardRow[]; merge: Bo
   const tasks: BoardRow[] = [];
   for (const r of rows) {
     if (r.status === REVIEW_STATUS) review.push(r);
-    else if (r.status === MERGE_STATUS) merge.push(r);
+    else if (MERGE_STATUSES.has(r.status)) merge.push(r);
     else tasks.push(r);
   }
   return { review, merge, tasks };
@@ -97,13 +100,16 @@ export function reviewTable(entries: ReviewEntry[], now: number = Date.now()): s
   return [header, ...body];
 }
 
-// WAIT mirrors the review pane: time since the row went ready to merge.
+// WAIT mirrors the review pane: time since the row's last event (went ready
+// to merge, or merged). STATUS tells the two apart, merged dimmed the same
+// way the tasks pane dims terminal rows.
 export function mergeTable(rows: BoardRow[], now: number = Date.now()): string[][] {
-  const header = ["PR", "TICKET", "TITLE", "WAIT", "FLAG", "REASON"];
+  const header = ["PR", "TICKET", "TITLE", "STATUS", "WAIT", "FLAG", "REASON"];
   const body = rows.map((r) => [
     r.pr != null ? `#${r.pr}` : "",
     r.label,
     r.title ?? "",
+    r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
     fmtDuration(now - r.ts),
     isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
     r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",

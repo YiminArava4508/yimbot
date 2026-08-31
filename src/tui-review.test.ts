@@ -6,6 +6,7 @@ import {
   diffPaneLines,
   flattenFiles,
   groupOf,
+  guideHeight,
   guideLines,
   nextUnviewed,
   openReview,
@@ -46,12 +47,12 @@ test("placeholderGroups puts every path under one organizing group", () => {
   assert.deepEqual(g.groups[0].files, ["a.ts", "b.ts"]);
 });
 
-test("planLines renders bold headers, viewed checks, and an inverse selected line", () => {
+test("planLines colors group titles yellow and files cyan so they read apart", () => {
   const { lines, selectedLine } = planLines(GROUPS, new Set(["src/b.ts"]), "src/a.ts");
-  assert.equal(lines[0], "{bold}core{/bold}");
-  assert.equal(lines[1], "{inverse}   src/a.ts{/inverse}");
-  assert.equal(lines[2], " {green-fg}✓{/green-fg} src/b.ts");
-  assert.equal(lines[3], "{bold}tests{/bold}");
+  assert.equal(lines[0], "{yellow-fg}{bold}core{/bold}{/yellow-fg}");
+  assert.equal(lines[1], "{inverse}   {cyan-fg}src/a.ts{/cyan-fg}{/inverse}");
+  assert.equal(lines[2], " {green-fg}✓{/green-fg} {cyan-fg}src/b.ts{/cyan-fg}");
+  assert.equal(lines[3], "{yellow-fg}{bold}tests{/bold}{/yellow-fg}");
   assert.equal(selectedLine, 1);
 });
 
@@ -98,6 +99,20 @@ test("guideLines skips empty summary and empty context", () => {
     ["{bold}tests{/bold}", "{grey-fg}s{/grey-fg}"],
   );
   assert.deepEqual(guideLines({ summary: "", group: null, loaded: true, usedFallback: false }), []);
+});
+
+test("guideHeight fits the wrapped content between a floor of 3 and the cap", () => {
+  // Two short lines on a wide band: 2 content rows + 2 border rows, floored at 3.
+  assert.equal(guideHeight(["a", "b"], 100, 20), 4);
+  assert.equal(guideHeight([], 100, 20), 3);
+  assert.equal(guideHeight(["a"], 100, 20), 3);
+  // A 25-char line on a 10-wide band word-wraps to 3 rows: 3 + 2 borders.
+  assert.equal(guideHeight(["aaaa bbbb cccc dddd eeee"], 10, 20), 5);
+  // The cap wins when content would eat the screen.
+  assert.equal(guideHeight(Array(30).fill("x"), 100, 8), 8);
+  // Tags and escaped braces do not count toward the visible width.
+  assert.equal(guideHeight([`{bold}${"x".repeat(10)}{/bold}`], 10, 20), 3);
+  assert.equal(guideHeight(["{open}x{close}"], 3, 20), 3);
 });
 
 test("reviewHeader shows PR, title and progress", () => {
@@ -230,6 +245,29 @@ test("openReview renders the AI plan and space marks viewed, saves, and advances
   screen.destroy();
 });
 
+test("openReview sizes the guide band to its content and shifts the panes below it", async () => {
+  const screen = makeScreen();
+  // ~360 visible chars of summary on a 118-wide inner band wraps to 4 rows,
+  // plus the group line: 5 content rows + 2 borders.
+  const longSummary = Array(40).fill("word like").join(" ");
+  const deps = testDeps({
+    runGrouping: async () => JSON.stringify({
+      summary: longSummary,
+      groups: [{ title: "core", context: "look here", files: ["src/b.ts", "src/a.ts"] }],
+    }),
+  });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  const guide = screen.children.find((c: any) => c.options.label === " guide ");
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  const diff = screen.children.find((c: any) => c.options.label === " diff ");
+  assert.equal(guide.height, 7, "guide band must grow to hold the whole guide");
+  assert.equal(plan.top, 8, "plan pane must start right under the grown guide");
+  assert.equal(diff.top, 8, "diff pane must start right under the grown guide");
+  screen.destroy();
+});
+
 test("openReview y marks ready only when all files are viewed and closes with a notice", async () => {
   const screen = makeScreen();
   let readied = 0;
@@ -325,12 +363,13 @@ test("openReview keeps the operator's selection when real groups land after they
   const content = plan.getContent();
   assert.ok(content.includes("core"), "real AI groups must have loaded");
   // getContent() returns tags already rendered to ANSI; reverse-video is
-  // \x1b[7m ... \x1b[27m, so this locates the selected (inverse) row.
+  // \x1b[7m ... \x1b[27m, so this locates the selected (inverse) row. The
+  // file name itself sits inside cyan-fg, hence the regex across the SGRs.
   assert.ok(
-    content.includes("\x1b[7m   src/a.ts\x1b[27m"),
+    /\x1b\[7m {3}\x1b\[[0-9;]*msrc\/a\.ts/.test(content),
     "selection must stay on the operator's file, not snap to the AI order's first file",
   );
-  assert.ok(!content.includes("\x1b[7m   src/b.ts\x1b[27m"));
+  assert.ok(!/\x1b\[7m {3}\x1b\[[0-9;]*msrc\/b\.ts/.test(content));
   screen.destroy();
 });
 

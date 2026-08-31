@@ -37,14 +37,15 @@ export function planLines(
   const lines: string[] = [];
   let selectedLine = -1;
   for (const g of groups) {
-    lines.push(`{bold}${escapeTags(g.title)}{/bold}`);
+    lines.push(`{yellow-fg}{bold}${escapeTags(g.title)}{/bold}{/yellow-fg}`);
     for (const f of g.files) {
       const mark = viewed.has(f) ? " {green-fg}✓{/green-fg} " : "   ";
+      const name = `{cyan-fg}${escapeTags(f)}{/cyan-fg}`;
       if (f === selectedPath) {
         selectedLine = lines.length;
-        lines.push(`{inverse}${mark}${escapeTags(f)}{/inverse}`);
+        lines.push(`{inverse}${mark}${name}{/inverse}`);
       } else {
-        lines.push(`${mark}${escapeTags(f)}`);
+        lines.push(`${mark}${name}`);
       }
     }
   }
@@ -57,9 +58,8 @@ export function diffPaneLines(fd: FileDiff | null): string[] {
 }
 
 // The guide band's content: the selected file's group context, then the AI's
-// PR summary. The band is a fixed-height box that clips rather than scrolls,
-// so the group line (the per-selection guidance) renders first and only the
-// summary risks getting cut on narrow terminals.
+// PR summary. paint() sizes the band to this content via guideHeight, so
+// nothing gets clipped up to the cap.
 export function guideLines(s: {
   summary: string;
   group: ReviewGroup | null;
@@ -75,6 +75,33 @@ export function guideLines(s: {
   }
   if (s.summary) out.push(`{grey-fg}${escapeTags(s.summary)}{/grey-fg}`);
   return out;
+}
+
+// Greedy word wrap, matching how blessed wraps box content: break at the last
+// space that fits, hard-break a single overlong word. Measures visible width,
+// so tags are stripped and escapeTags' {open}/{close} count as one char each.
+function wrappedRows(line: string, width: number): number {
+  let text = line
+    .replaceAll("{open}", "\u0000")
+    .replaceAll("{close}", "\u0000")
+    .replace(/\{[^{}]*\}/g, "");
+  if (width <= 0 || text.length <= width) return 1;
+  let rows = 0;
+  while (text.length > width) {
+    let cut = text.lastIndexOf(" ", width);
+    if (cut <= 0) cut = width;
+    rows++;
+    text = text.slice(cut).replace(/^ +/, "");
+  }
+  return rows + 1;
+}
+
+// Border-inclusive height the guide band needs to show all of `lines` on a
+// band `innerWidth` columns wide, floored at 3 (one content row) and clamped
+// to maxHeight so a long summary cannot crowd out the plan and diff panes.
+export function guideHeight(lines: string[], innerWidth: number, maxHeight: number): number {
+  const rows = lines.reduce((n, l) => n + wrappedRows(l, innerWidth), 0);
+  return Math.min(maxHeight, Math.max(3, rows + 2));
 }
 
 export function reviewHeader(pr: number, title: string, viewedCount: number, total: number): string {
@@ -104,6 +131,8 @@ export function reviewFooterHint(s: {
 export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "footer", Record<string, unknown>> {
   return {
     header: { top: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true },
+    // guide.height and the panes' top are initial values; paint() re-fits
+    // them to the guide's content via guideHeight on every repaint.
     guide: {
       top: 1, left: 0, width: "100%", height: 5, tags: true,
       border: { type: "line" }, label: " guide ",
@@ -186,12 +215,19 @@ export function openReview(
     plan.setContent(lines.join("\n"));
     if (selectedLine >= 0) plan.scrollTo(selectedLine);
     const fd = fileDiffs.find((f) => f.path === selectedPath) ?? null;
-    guide.setContent(guideLines({
+    const gl = guideLines({
       summary: g.summary,
       group: selectedPath ? groupOf(g.groups, selectedPath) : null,
       loaded: groups !== null,
       usedFallback,
-    }).join("\n"));
+    });
+    guide.setContent(gl.join("\n"));
+    // Grow the band to fit the whole guide (cap: half the screen), and keep
+    // the plan and diff panes pinned right under it.
+    const gh = guideHeight(gl, s.width - 2, Math.max(5, Math.floor(s.height / 2)));
+    guide.height = gh;
+    plan.top = 1 + gh;
+    diff.top = 1 + gh;
     diff.setContent(diffPaneLines(fd).join("\n"));
     let hint = footerOverride;
     if (hint === undefined) {

@@ -1,10 +1,10 @@
 // src/tui-review.ts
-// Guided review overlay: a plan pane (AI-ordered groups of changed files) and
+// Review overlay: a plan pane (AI-ordered groups of changed files) and
 // a diff pane, over the board the way the settings panel is. Everything that
 // can be pure is exported below and unit-tested; the blessed shell stays thin.
 import blessed from "neo-blessed";
 import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./review-diff.ts";
-import { fetchGroups } from "./review-groups.ts";
+import { fetchGroups, fileStats } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
 
 export function flattenFiles(groups: ReviewGroup[]): string[] {
@@ -125,6 +125,16 @@ export function reviewFooterHint(s: {
   return `j/k file   space viewed   g/G first/last   tab diff${done}   q back`;
 }
 
+// Same rule as the board's paneBorderColor: the focused pane turns white so
+// the operator can see where their keys land, the rest rest grey.
+export function reviewPaneBorderColor(focused: boolean): string {
+  return focused ? "white" : "grey";
+}
+
+// Fresh object per pane: blessed keeps the passed style by reference, so a
+// shared one would repaint every border when paint() recolors the focused one.
+const paneStyle = () => ({ border: { fg: "grey" }, label: { fg: "grey" } });
+
 // Same discipline as footerLayout/settingsPanelLayout: exported plain records
 // so the layout test exercises these exact objects. keys+vi on the diff pane
 // gives blessed's own j/k scrolling when it is focused; the plan pane's keys
@@ -136,17 +146,17 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "f
     // them to the guide's content via guideHeight on every repaint.
     guide: {
       top: 1, left: 0, width: "100%", height: 5, tags: true,
-      border: { type: "line" }, label: " guide ",
+      border: { type: "line" }, label: " guide ", style: paneStyle(),
     },
     plan: {
       top: 6, left: 0, width: "30%", bottom: 1, tags: true,
       scrollable: true, alwaysScroll: true,
-      border: { type: "line" }, label: " review plan ",
+      border: { type: "line" }, label: " review plan ", style: paneStyle(),
     },
     diff: {
       top: 6, left: "30%", right: 0, bottom: 1, tags: true, keys: true, vi: true,
       scrollable: true, alwaysScroll: true,
-      border: { type: "line" }, label: " diff ",
+      border: { type: "line" }, label: " diff ", style: paneStyle(),
       scrollbar: { ch: " ", style: { inverse: true } },
     },
     footer: { bottom: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true, style: { fg: "white" } },
@@ -230,6 +240,8 @@ export function openReview(
     plan.top = 1 + gh;
     diff.top = 1 + gh;
     diff.setContent(diffPaneLines(fd).join("\n"));
+    plan.style.border.fg = reviewPaneBorderColor(!diffFocused);
+    diff.style.border.fg = reviewPaneBorderColor(diffFocused);
     let hint = footerOverride;
     if (hint === undefined) {
       hint = reviewFooterHint({
@@ -356,8 +368,7 @@ export function openReview(
       paint();
       return;
     }
-    const stats = fileDiffs.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions }));
-    const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, stats);
+    const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, fileStats(fileDiffs));
     if (closed) return;
     groups = res.groups;
     usedFallback = res.usedFallback;

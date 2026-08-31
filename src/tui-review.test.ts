@@ -15,6 +15,7 @@ import {
   reviewFooterHint,
   reviewHeader,
   reviewLayout,
+  reviewPaneBorderColor,
   type ReviewDeps,
 } from "./tui-review.ts";
 import type { FileDiff } from "./review-diff.ts";
@@ -156,6 +157,18 @@ test("reviewLayout pins the panes: guide band on top, plan left 30%, diff fillin
   assert.equal(l.footer.bottom, 0);
 });
 
+test("reviewLayout gives the panes resting grey borders and labels like the board", () => {
+  const l = reviewLayout();
+  for (const pane of ["guide", "plan", "diff"] as const) {
+    assert.deepEqual(l[pane].style, { border: { fg: "grey" }, label: { fg: "grey" } });
+  }
+});
+
+test("reviewPaneBorderColor turns the focused pane white and rests grey", () => {
+  assert.equal(reviewPaneBorderColor(true), "white");
+  assert.equal(reviewPaneBorderColor(false), "grey");
+});
+
 // A minimal EventEmitter standing in for a TTY stream, mirroring the harness in
 // tui.test.ts, sized so blessed renders headlessly without touching a real fd.
 function fakeTty(columns: number, rows: number) {
@@ -270,6 +283,22 @@ test("openReview sizes the guide band to its content and shifts the panes below 
   assert.equal(guide.height, 7, "guide band must grow to hold the whole guide");
   assert.equal(plan.top, 8, "plan pane must start right under the grown guide");
   assert.equal(diff.top, 8, "diff pane must start right under the grown guide");
+  screen.destroy();
+});
+
+test("openReview highlights the focused pane's border, tab moves it", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  const diff = screen.children.find((c: any) => c.options.label === " diff ");
+  assert.equal(plan.style.border.fg, "white");
+  assert.equal(diff.style.border.fg, "grey");
+  press(screen, "tab");
+  await flush();
+  assert.equal(plan.style.border.fg, "grey");
+  assert.equal(diff.style.border.fg, "white");
   screen.destroy();
 });
 

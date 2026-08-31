@@ -1,5 +1,5 @@
 // src/review-state.ts
-// Viewed-file marks for guided reviews, persisted next to the events log
+// Viewed-file marks for reviews, persisted next to the events log
 // (the mode/refine file pattern) so a review survives closing the TUI.
 // Keyed by "<pr>:<headSha>": a new push changes the SHA, orphaning the old
 // marks, so a re-review of new code starts clean.

@@ -365,7 +365,7 @@ export async function viewerLogin(run: GhRunner): Promise<string> {
   return parseViewerLogin(await run(["api", "graphql", "-f", "query=query{viewer{login}}"]));
 }
 
-// The PR's raw unified diff, for the guided review view. Returned verbatim;
+// The PR's raw unified diff, for the review view. Returned verbatim;
 // src/review-diff.ts owns the parsing.
 export async function prDiff(run: GhRunner, prNumber: number): Promise<string> {
   return run(["pr", "diff", String(prNumber)]);

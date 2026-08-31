@@ -98,14 +98,22 @@ test("returnKey honors TUI_RETURN_KEY and falls back when it is blank", () => {
   }
 });
 
-test("footerHint keeps the existing hints and names the return key", () => {
-  const hint = footerHint("F12");
-  assert.match(hint, /j\/k move/);
-  assert.match(hint, /enter open/);
-  assert.match(hint, /f flag\/unflag/);
-  assert.match(hint, /m mode/);
-  assert.match(hint, /q quit/);
-  assert.match(hint, /prefix\+F12 returns here/);
+test("footerHint keeps the existing hints and names the return key in every pane", () => {
+  for (const pane of ["tasks", "review", "merge"] as const) {
+    const hint = footerHint("F12", pane);
+    assert.match(hint, /j\/k move/);
+    assert.match(hint, /enter open/);
+    assert.match(hint, /f flag\/unflag/);
+    assert.match(hint, /m mode/);
+    assert.match(hint, /q quit/);
+    assert.match(hint, /prefix\+F12 returns here/);
+  }
+});
+
+test("footerHint shows r/R only for the review pane, matching where they act", () => {
+  assert.match(footerHint("Y", "review"), /r ready {3}R review/);
+  assert.doesNotMatch(footerHint("Y", "tasks"), /r ready|R review/);
+  assert.doesNotMatch(footerHint("Y", "merge"), /r ready|R review/);
 });
 
 test("modeContent highlights each mode distinctly", () => {
@@ -133,11 +141,11 @@ test("bindModeKey gates m while settings is open", () => {
 });
 
 test("footerHint advertises the settings key", () => {
-  assert.match(footerHint("Y"), /s settings/);
+  assert.match(footerHint("Y", "tasks"), /s settings/);
 });
 
 test("footerHint no longer advertises a refine key (refine lives in settings)", () => {
-  assert.doesNotMatch(footerHint("Y"), /refine/);
+  assert.doesNotMatch(footerHint("Y", "review"), /refine/);
 });
 
 test("statusContent shows a red refine-off chip while refine is off", () => {
@@ -201,7 +209,7 @@ test("bindSettingsKey does not reopen the panel on a second s while it is alread
 });
 
 test("footerHint advertises the manual ready-label key", () => {
-  assert.match(footerHint("Y"), /r ready/);
+  assert.match(footerHint("Y", "review"), /r ready/);
 });
 
 test("bindReadyKey gates r while settings is open", () => {
@@ -378,7 +386,7 @@ test("footer clips at a narrow width with a long custom key, still sparing the t
 });
 
 test("footerHint names the review key", () => {
-  assert.ok(footerHint("Y").includes("R review"));
+  assert.ok(footerHint("Y", "review").includes("R review"));
 });
 
 test("bindReviewKey opens only when no overlay is open", () => {
@@ -552,11 +560,11 @@ test("bindPaneNavKeys maps ctrl-hjkl (and their control-char aliases) to moves, 
 });
 
 test("footerHint advertises the pane-switch keys", () => {
-  assert.ok(footerHint("Y").includes("^hjkl/tab pane"));
+  assert.ok(footerHint("Y", "merge").includes("^hjkl/tab pane"));
 });
 
 test("footerHint fits a 130-column terminal so the tail hints survive wrap:false", () => {
-  assert.ok(footerHint("Y").length <= 130, `footer is ${footerHint("Y").length} chars`);
+  assert.ok(footerHint("Y", "review").length <= 130, `footer is ${footerHint("Y", "review").length} chars`);
 });
 
 test("bindPaneToggle gates tab while an overlay is open", () => {

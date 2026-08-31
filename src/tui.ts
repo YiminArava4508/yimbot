@@ -35,8 +35,11 @@ export function screenTerm(term: string | undefined): string | undefined {
   return undefined;
 }
 
-export function footerHint(key: string): string {
-  return `j/k move   ^hjkl/tab pane   enter open   f flag/unflag   r ready   R review   m mode   s settings   q quit   prefix+${key} returns here`;
+// The legend follows the focused pane: r/R act only on the review pane, so
+// only its hint advertises them.
+export function footerHint(key: string, pane: Pane): string {
+  const reviewKeys = pane === "review" ? "r ready   R review   " : "";
+  return `j/k move   ^hjkl/tab pane   enter open   f flag/unflag   ${reviewKeys}m mode   s settings   q quit   prefix+${key} returns here`;
 }
 
 // A draft_pr event is a supervised draft whose ready verdict held (threads
@@ -273,7 +276,8 @@ export function footerLayout(key: string): Record<string, unknown> {
     width: "100%",
     height: 1,
     wrap: false,
-    content: footerHint(key),
+    // The initial focused pane; render() re-fits the legend to the pane.
+    content: footerHint(key, "tasks"),
     style: { fg: "white" },
   };
 }
@@ -486,7 +490,6 @@ export function runTui(opts: {
   const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
   const status = blessed.text({ parent: screen, top: 0, right: 0, tags: true, content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout(returnKey()) });
-  void footer;
 
   let currentRows: BoardRow[] = [];
   let currentTasks: BoardRow[] = [];
@@ -539,6 +542,7 @@ export function runTui(opts: {
     for (const p of ["tasks", "review", "merge"] as const) {
       paneWidgets[p].style.border.fg = paneBorderColor(p, p === focusedPane);
     }
+    footer.setContent(footerHint(returnKey(), focusedPane));
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
       daemonStopped ? "daemon stopped" : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now()),

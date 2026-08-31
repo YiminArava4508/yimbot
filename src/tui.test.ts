@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, reviewOnlyGuard, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -579,6 +579,12 @@ test("selectedBoardRow reads from the focused pane's own selection", () => {
   assert.equal(selectedBoardRow("merge", panes), c);
   assert.equal(selectedBoardRow("review", { ...panes, review: { entries: [], selected: 1 } }), undefined);
   assert.equal(selectedBoardRow("tasks", { ...panes, tasks: { rows: [], selected: 1 } }), undefined);
+});
+
+test("reviewOnlyGuard blocks r/R outside the review pane with a notice", () => {
+  assert.equal(reviewOnlyGuard("review"), null);
+  assert.match(reviewOnlyGuard("tasks") ?? "", /ready to review pane/);
+  assert.match(reviewOnlyGuard("merge") ?? "", /ready to review pane/);
 });
 
 test("resolvePane forces a pane with rows when the current one is empty", () => {

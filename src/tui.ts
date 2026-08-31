@@ -158,6 +158,14 @@ export function resolvePane(current: Pane, counts: PaneCounts): Pane {
   return "tasks";
 }
 
+// r (ready label) and R (guided review) only make sense on a PR that is
+// waiting for review, so both act only while the review pane holds focus;
+// elsewhere they return the notice to show instead.
+export function reviewOnlyGuard(pane: Pane): string | null {
+  if (pane === "review") return null;
+  return "{yellow-fg}r/R act on the ready to review pane (^hjkl to move){/yellow-fg}";
+}
+
 // nvim-style directional focus between the panes: left/right across the
 // columns, down to the merge pane, up out of it (tasks first, review when
 // tasks is empty). A move onto an empty pane stays put.
@@ -604,6 +612,11 @@ export function runTui(opts: {
   });
 
   bindReadyKey(screen, isOverlayOpen, () => {
+    const blocked = reviewOnlyGuard(focusedPane);
+    if (blocked) {
+      setNotice(blocked, NOTICE_TTL_MS);
+      return;
+    }
     void handleReadyPress(selRow(), opts.onAddReadyLabel, setNotice);
   });
 
@@ -623,6 +636,11 @@ export function runTui(opts: {
   });
 
   bindReviewKey(screen, isOverlayOpen, () => {
+    const blocked = reviewOnlyGuard(focusedPane);
+    if (blocked) {
+      setNotice(blocked, NOTICE_TTL_MS);
+      return;
+    }
     const r = selRow();
     if (!r) return;
     if (r.pr == null) {

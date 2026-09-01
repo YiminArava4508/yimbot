@@ -121,6 +121,8 @@ function lineToTags(line: { getCell(x: number): Cell | undefined }, cols: number
 
 // The visible screen following output (baseY), not the scroll viewport: the
 // pane always shows claude's latest lines, like a terminal without scrollback.
+// term.buffer is a proposed API, so the caller's Terminal must be constructed
+// with allowProposedApi: true or this throws.
 export function termToLines(term: Terminal, showCursor: boolean): string[] {
   const buf = term.buffer.active;
   const out: string[] = [];

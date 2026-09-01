@@ -193,9 +193,10 @@ export type OrphanFacts = {
 };
 
 // Worktrees to re-couple with a session: a session-less worktree older than one
-// heartbeat (past the launch race), with no launch in progress, that is not part
-// of a split group and whose PR has not resolved (merged/closed — those are the
-// cleanup step's to tear down, and reattaching one would race that teardown).
+// heartbeat (past the launch race), with no launch in progress, that is not a
+// split group's integration worktree and whose PR has not resolved (merged/closed
+// — those are the cleanup step's to tear down, and reattaching one would race
+// that teardown).
 // No inert gate: reattaching never destroys work, and the tmux session persists
 // even if the resume finds no prior conversation, so an empty worktree is
 // re-coupled once, not looped over. Any guard failing spares it.
@@ -227,7 +228,8 @@ export type OrphanSweepDeps = {
   // teardown. Empty on a fetch failure, so a transient gh error only defers a
   // re-couple, never resurrects a resolved worktree.
   resolvedBranches: () => Promise<Set<string>>;
-  // A worktree's .yimbot-parent-session marker, to exclude split-group members.
+  // A worktree's .yimbot-parent-session marker, to find each split group's
+  // integration worktree (the only member the sweep excludes).
   readParentSession: (worktreePath: string) => string | null;
   // Whether a live session belongs to the ticket owning this worktree dir name.
   // Prefix-matched (not exact) so the 50-char worktree/full session-name split
@@ -277,9 +279,15 @@ export async function sweepOrphanWorktrees(deps: OrphanSweepDeps): Promise<void>
   }
 
   const prefix = deps.worktreesDir.endsWith("/") ? deps.worktreesDir : `${deps.worktreesDir}/`;
+  // Only a group's integration worktree is off-limits: its session is the split's
+  // parent, torn down with the group as a whole. Slices get their own branch-named
+  // sessions (split-pr.sh mirrors new-session.sh), so a session-less slice with an
+  // open PR re-couples like any ticket; the resolved guard below already spares
+  // slices whose PR merged/closed, and group teardown only runs once every slice
+  // is resolved, so a reattached slice can never race it.
   const grouped = new Set(
-    buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir).flatMap(
-      (g) => g.worktreePaths,
+    buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir).flatMap((g) =>
+      g.integration ? [g.integration.path] : [],
     ),
   );
 

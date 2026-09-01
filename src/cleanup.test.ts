@@ -211,13 +211,23 @@ test("sweepOrphanWorktrees spares a worktree younger than minAgeMs", async () =>
   assert.deepEqual(reattached, []);
 });
 
-test("sweepOrphanWorktrees spares a split-group slice", async () => {
+test("sweepOrphanWorktrees re-couples a session-less slice with an open PR, spares the integration worktree", async () => {
   const { deps, reattached } = sweepDeps({
     worktrees: [wt("eng-1"), wt("eng-1-p1")],
     parents: { [`${WT}/eng-1-p1`]: "eng-1" },
   });
   await sweepOrphanWorktrees(deps);
-  assert.equal(reattached.includes("eng-1-p1"), false, "the slice is spared");
+  assert.deepEqual(reattached, ["eng-1-p1"]);
+});
+
+test("sweepOrphanWorktrees spares a resolved split slice (cleanup's to tear down)", async () => {
+  const { deps, reattached } = sweepDeps({
+    worktrees: [wt("eng-1"), wt("eng-1-p1")],
+    parents: { [`${WT}/eng-1-p1`]: "eng-1" },
+    resolved: new Set(["eng-1-p1"]),
+  });
+  await sweepOrphanWorktrees(deps);
+  assert.deepEqual(reattached, []);
 });
 
 test("sweepOrphanWorktrees ignores worktrees outside the worktrees dir", async () => {

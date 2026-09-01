@@ -276,6 +276,8 @@ function testDeps(overrides: Partial<ReviewDeps> = {}): ReviewDeps & { saved: [s
     markReady: async () => {},
     loadViewed: () => new Set(),
     saveViewed: (sha, viewed) => { saved.push([sha, new Set(viewed)]); },
+    claudeSession: () => null,
+    writeContext: () => {},
     saved,
     ...overrides,
   };

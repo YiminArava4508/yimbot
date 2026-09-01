@@ -392,7 +392,12 @@ export function openReview(
   });
 
   claude.on("keypress", (ch: string, key: { sequence?: string }) => {
-    if (!session) return;
+    if (!session) {
+      focused = "plan";
+      plan.focus();
+      paint();
+      return;
+    }
     if (claudeKeyAction(key) === "unfocus") {
       focused = "plan";
       plan.focus();
@@ -405,7 +410,9 @@ export function openReview(
 
   plan.on("click", () => focusPane("plan"));
   diff.on("click", () => focusPane("diff"));
-  claude.on("click", () => focusPane("claude"));
+  claude.on("click", () => {
+    if (session) focusPane("claude");
+  });
 
   paint();
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, readyKeyGuard, resolvePane, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, readyKeyGuard, resolvePane, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -403,6 +403,37 @@ function renderBoardLines(columns: number, rows: number): string[] {
   return lines;
 }
 
+// Renders just the header row plus the bordered tasks pane beneath it, using
+// production's own titleLayout/statusLayout objects, so an inset regression
+// fails this test.
+function renderHeaderLines(columns: number, rows: number): string[] {
+  const { input, output } = fakeTty(columns, rows);
+  const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true, fullUnicode: true });
+  blessed.listtable({
+    parent: screen,
+    top: 1,
+    left: 0,
+    right: 0,
+    bottom: 1,
+    tags: true,
+    border: { type: "line" },
+    noCellBorders: true,
+    data: [["TICKET"], ["ENG-1"]],
+  });
+  blessed.text({ parent: screen, ...titleLayout(), content: "yimbot" });
+  blessed.text({
+    parent: screen,
+    ...statusLayout(),
+    content: statusContent("supervised", true, 3, null, Date.now()),
+  });
+  screen.render();
+  const lines = screen.lines.map((line: [number, string][]) =>
+    line.map((cell) => cell[1]).join("").replace(/\s+$/, ""),
+  );
+  screen.destroy();
+  return lines;
+}
+
 test("footer at height 1 clips instead of wrapping, so it never covers the table's last row", () => {
   const columns = 80;
   const rows = 24;
@@ -424,6 +455,26 @@ test("footer clips at a narrow width, still sparing the table's last row", () =>
   const lastTableRow = lines[rows - 2];
   assert.match(lastTableRow, /ENG-\d+/, "the table's last row must survive, not be painted over");
   assert.equal(lines.length, rows);
+});
+
+test("titleLayout and statusLayout inset the header inside the pane's border", () => {
+  assert.equal(titleLayout().left, headerInset);
+  assert.equal(statusLayout().right, headerInset);
+  assert.ok(headerInset >= 2, "must clear the pane border (col 0) plus a margin");
+});
+
+test("the header row sits inside the pane below it, not over its border columns", () => {
+  const columns = 80;
+  const lines = renderHeaderLines(columns, 24);
+  const header = lines[0];
+  const paneTop = lines[1];
+  // the pane's border owns column 0 and the last column; the header must start
+  // inside them with a margin, and end before the right border's margin.
+  assert.equal(header.indexOf("yimbot"), headerInset);
+  assert.ok(paneTop.length >= columns - 1, "the pane border should span the width");
+  const padded = header.padEnd(columns, " ");
+  assert.equal(padded.slice(columns - headerInset), " ".repeat(headerInset), "right margin must be blank");
+  assert.match(header, /active/);
 });
 
 test("footerHint names the review key", () => {

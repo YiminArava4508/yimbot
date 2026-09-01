@@ -285,6 +285,21 @@ export function modeContent(mode: Mode): string {
     : "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}";
 }
 
+// The header row above the tasks pane. The panes below are bordered at column 0
+// and the last column, so "yimbot" and the status chips are inset past that
+// border plus one column of margin: the header then reads as sitting inside the
+// pane below instead of hanging off the screen edges. Exported so the layout
+// tests exercise these exact objects, not copies.
+export const headerInset = 2;
+
+export function titleLayout(): Record<string, unknown> {
+  return { top: 0, left: headerInset };
+}
+
+export function statusLayout(): Record<string, unknown> {
+  return { top: 0, right: headerInset, tags: true };
+}
+
 // height: 1 + wrap: false so a hint too long for the terminal clips instead of
 // wrapping. blessed.text defaults to shrink: true, which would otherwise grow
 // the element upward from bottom: 0 into the table's last row (bottom: 1).
@@ -512,8 +527,8 @@ export function runTui(opts: {
   const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane };
   tasksPane.focus();
 
-  const title = blessed.text({ parent: screen, top: 0, left: 0, content: "yimbot" });
-  const status = blessed.text({ parent: screen, top: 0, right: 0, tags: true, content: "live" });
+  const title = blessed.text({ parent: screen, ...titleLayout(), content: "yimbot" });
+  const status = blessed.text({ parent: screen, ...statusLayout(), content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout() });
 
   let currentRows: BoardRow[] = [];

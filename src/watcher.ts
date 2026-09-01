@@ -9,7 +9,7 @@ import {
   parseAcceptanceCriteria,
   renderAcComment,
 } from "./acceptance.ts";
-import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
+import { mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
 import { filterByLabel, type LabelFilter } from "./labels.ts";
 import {
@@ -285,6 +285,8 @@ export type ClaimDeps = {
   // Merged ticket identifiers for the blocked-by filter. Absent when gh is
   // unavailable, in which case the filter is skipped.
   fetchMergedIdentifiers?: () => Promise<Set<string>>;
+  // State names that count as a blocker's work having landed (clearedStateNames).
+  clearedStates: Set<string>;
   // Move the chosen ticket into the watched "In Progress" state, so the
   // deploy step picks it up on the next poll.
   moveToInProgress: (issue: CycleTodoIssue) => Promise<void>;
@@ -434,15 +436,15 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
       return;
     }
     for (const t of inSlice) {
-      if (isBlocked(t.blockedBy, merged)) {
-        deps.log(`deferring ${t.identifier}: blocked by ${t.blockedBy.join(", ")} (unmerged)`);
-      }
+      const holdouts = unsatisfiedBlockers(t.blockedBy, merged, deps.clearedStates);
+      if (holdouts) deps.log(`deferring ${t.identifier}: blocked by ${holdouts}`);
     }
   }
 
   const next = selectNextClaim(inSlice, {
     riskLabels: deps.riskLabels,
     merged,
+    clearedStates: deps.clearedStates,
     labelFilter: deps.labelFilter,
     requireEstimate,
     maxEstimate: deps.maxEstimate,
@@ -470,6 +472,8 @@ export type ReconcileDeps = {
   fetchInProgress: () => Promise<IssueWithBlockers[]>;
   // Merged ticket identifiers, for the blocked check.
   fetchMergedIdentifiers: () => Promise<Set<string>>;
+  // State names that count as a blocker's work having landed (clearedStateNames).
+  clearedStates: Set<string>;
   // Move a blocked issue back to Todo.
   moveToTodo: (issueId: string) => Promise<void>;
   // Drop an issue id from the deploy latch so it relaunches once unblocked.
@@ -503,12 +507,12 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
   }
 
   for (const issue of issues) {
-    if (!isBlocked(issue.blockedBy, merged)) continue;
-    const unmerged = issue.blockedBy.filter((id) => !merged.has(id.toUpperCase())).join(", ");
+    const holdouts = unsatisfiedBlockers(issue.blockedBy, merged, deps.clearedStates);
+    if (!holdouts) continue;
     try {
       await deps.moveToTodo(issue.id);
       deps.unlatchDeploy(issue.id);
-      deps.log(`moved ${issue.identifier} back to Todo: blocked by ${unmerged} (unmerged)`);
+      deps.log(`moved ${issue.identifier} back to Todo: blocked by ${holdouts}`);
     } catch (err) {
       deps.log(`failed to move ${issue.identifier} back: ${err}`);
     }
@@ -540,6 +544,10 @@ export type WatcherConfig = {
   // stale, regardless of PR state (backstop for bailed/crashed/stuck sessions and
   // for comment fixes, which have no crisp PR-state objective).
   reapStaleMs: number;
+  // Linear state names that mean a blocker's work has landed: the merge state
+  // and the post-merge review state. Completed and canceled states always count,
+  // so they are not listed here.
+  clearedStates: Set<string>;
   claim: ClaimConfig;
   // Refine step: unestimated Backlog/Todo tickets get a sizing session before
   // the claim step may touch them; null disables the step (AUTO_REFINE off).
@@ -602,8 +610,23 @@ export type WatcherConfig = {
   } | null;
 };
 
+// Env for a daemon-spawned session launch: SESSION_DETACH tells new-session.sh to
+// leave the new session in the background rather than switching the client onto it.
+// The daemon inherits the board's TMUX, so without this every ticket or PR fix
+// launch would pull the user off whatever they were doing.
+export function detachedSessionEnv(
+  base: NodeJS.ProcessEnv,
+  extra: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  return { ...base, ...extra, SESSION_DETACH: "1" };
+}
+
 export function launchSession(name: string): Promise<void> {
-  const proc = spawn("bash", [sessionScriptPath, name], { detached: true, stdio: "ignore" });
+  const proc = spawn("bash", [sessionScriptPath, name], {
+    detached: true,
+    stdio: "ignore",
+    env: detachedSessionEnv(process.env),
+  });
   proc.unref();
   // spawn() reports failures like ENOENT asynchronously via 'error'; wait for
   // the 'spawn' event so callers can treat a failed launch as an error and retry.
@@ -631,7 +654,7 @@ export function reattachSession(branch: string): void {
   const proc = spawn("bash", [sessionScriptPath, branch], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, SESSION_RESUME: "1" },
+    env: detachedSessionEnv(process.env, { SESSION_RESUME: "1" }),
   });
   proc.unref();
   proc.once("error", (err) => console.error(`[reattach] new-session.sh for '${branch}' failed: ${err}`));
@@ -646,7 +669,11 @@ export function reattachSession(branch: string): void {
 // pr-<n>-fix session. Detached and fire-and-forget — a spawn failure is logged,
 // and the next heartbeat retries (nothing was created, so the guard won't block).
 export function spawnFixSession(name: string, branch: string): void {
-  const proc = spawn("bash", [sessionScriptPath, name, branch], { detached: true, stdio: "ignore" });
+  const proc = spawn("bash", [sessionScriptPath, name, branch], {
+    detached: true,
+    stdio: "ignore",
+    env: detachedSessionEnv(process.env),
+  });
   proc.unref();
   proc.once("error", (err) => console.error(`[review] new-session.sh for '${name}' failed: ${err}`));
   proc.once("exit", (code) => {
@@ -665,7 +692,11 @@ export function continuationSessionName(issueNumber: string, round: number): str
 // pickup-ticket skill scoped by the issue's open ACs.
 export function spawnContinuationSession(issueNumber: string, round: number): void {
   const name = continuationSessionName(issueNumber, round);
-  const proc = spawn("bash", [sessionScriptPath, name], { detached: true, stdio: "ignore" });
+  const proc = spawn("bash", [sessionScriptPath, name], {
+    detached: true,
+    stdio: "ignore",
+    env: detachedSessionEnv(process.env),
+  });
   proc.unref();
   proc.once("error", (err) => console.error(`[advance] new-session.sh for '${name}' failed: ${err}`));
   proc.once("exit", (code) => {
@@ -1351,6 +1382,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     fetchMergedIdentifiers,
+    clearedStates: config.clearedStates,
     moveToInProgress: async (issue) => {
       await moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId);
       const { key, label } = deriveKey({ identifier: issue.identifier });
@@ -1388,6 +1420,7 @@ export function startWatcher(config: WatcherConfig): () => void {
         await fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
       ),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
+    clearedStates: config.clearedStates,
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,

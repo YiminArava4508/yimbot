@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
+import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
@@ -318,9 +319,14 @@ export async function startDaemon(): Promise<() => void> {
   // blocker can live on the other instance's slice of the board. Filtering it
   // would leave a ticket blocked forever behind a merged bot PR.
   const blocked = prReview ? { listMergedPRs: () => listMyMergedPRs(gh) } : null;
+  // A blocker stops blocking once it reaches the merge state: Done is too late,
+  // since that column means released. The review state counts too (it is past
+  // merge), as does any completed/canceled state, by type.
+  const mergedStateName = envOr("MERGED_STATE_NAME", "Merged");
+  const clearedStates = clearedStateNames(mergedStateName, reviewStateName);
   console.log(
     blocked
-      ? "[yimbot] blocked-by handling ON: deferring + moving back tickets blocked by an unmerged PR"
+      ? `[yimbot] blocked-by handling ON: deferring + moving back tickets whose blocker is short of "${mergedStateName}"`
       : "[yimbot] blocked-by handling OFF (gh unavailable)",
   );
 
@@ -349,6 +355,7 @@ export async function startDaemon(): Promise<() => void> {
     reviewContext,
     heartbeatIntervalMinutes,
     reapStaleMs: reapStaleMinutes * 60 * 1000,
+    clearedStates,
     claim: {
       autoClaim,
       riskLabels,

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { clearedStateNames } from "./blocked.ts";
 import { filterByLabel, parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
 import {
@@ -31,6 +32,7 @@ import {
   reconcileBlockedInProgress,
   type ReconcileDeps,
   resolveSessionForKey,
+  detachedSessionEnv,
   returnKeyBindArgs,
   returnKeyUnbindArgs,
   sanitizeBranchToSession,
@@ -553,6 +555,15 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
   };
 }
 
+// A blocker still in flight: short of the merge state, so it blocks.
+const blocker = (identifier: string, stateName = "In Review") => ({
+  identifier,
+  stateName,
+  stateType: "started",
+});
+
+const cleared = clearedStateNames("Merged", "Deployed To Nonprod");
+
 function claimDeps(overrides: Partial<ClaimDeps> = {}): {
   deps: ClaimDeps;
   moved: CycleTodoIssue[];
@@ -569,6 +580,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     maxInProgress: 3,
     countInProgress: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
+    clearedStates: cleared,
     moveToInProgress: async (issue) => void moved.push(issue),
     log: (msg) => void logs.push(msg),
     ...overrides,
@@ -620,14 +632,14 @@ test("claimOnce skips (no pick) when In-Progress count is at the cap", async () 
   assert.equal(moved.length, 0);
 });
 
-test("claimOnce defers a blocked todo and logs it when merged is available", async () => {
+test("claimOnce defers a blocked todo and logs its blocker's state", async () => {
   const { deps, moved, logs } = claimDeps({
-    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"] })],
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4")] })],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0);
-  assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
+  assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4 (In Review)")));
 });
 
 test("claimOnce logs unestimated todos it defers to the refine step", async () => {
@@ -662,9 +674,20 @@ test("claimOnce says nothing about unestimated todos while the refine step is of
   assert.ok(!logs.some((l) => l.includes("no estimate")));
 });
 
-test("claimOnce claims a blocked todo once its blocker is merged", async () => {
+test("claimOnce claims a blocked todo once its blocker reaches the merge state", async () => {
   const { deps, moved } = claimDeps({
-    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"] })],
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4", "Merged")] }),
+    ],
+    fetchMergedIdentifiers: async () => new Set<string>(),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((i) => i.id), ["5"]);
+});
+
+test("claimOnce still claims when the blocker's PR merged before its ticket moved", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4")] })],
     fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
   });
   await claimOnce(freshClaimState(), deps);
@@ -675,8 +698,8 @@ test("claimOnce only logs deferrals for todos in this instance's LABEL_FILTER sl
   const { deps, logs } = claimDeps({
     labelFilter: parseLabelFilter("!bot"),
     fetchCycleTodos: async () => [
-      cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"], labels: ["bot"] }),
-      cycleTodo({ id: "6", priority: 2, blockedBy: ["ENG-4"] }),
+      cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4")], labels: ["bot"] }),
+      cycleTodo({ id: "6", priority: 2, blockedBy: [blocker("ENG-4")] }),
     ],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
@@ -760,6 +783,7 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
   const deps: ReconcileDeps = {
     fetchInProgress: async () => [],
     fetchMergedIdentifiers: async () => new Set<string>(),
+    clearedStates: cleared,
     moveToTodo: async (id) => void movedBack.push(id),
     unlatchDeploy: (id) => void unlatched.push(id),
     log: (msg) => void logs.push(msg),
@@ -771,23 +795,24 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
 test("reconcile moves a blocked In-Progress ticket back and unlatches, never tearing down", async () => {
   const { deps, movedBack, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: [blocker("ENG-4")] },
     ],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
   await reconcileBlockedInProgress(deps);
   assert.deepEqual(movedBack, ["i-5"]);
   assert.deepEqual(unlatched, ["i-5"]);
-  assert.ok(logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4")));
+  assert.ok(
+    logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4 (In Review)")),
+  );
 });
 
 test("reconcile leaves unblocked and no-blocker tickets alone", async () => {
   const { deps, movedBack } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: [blocker("ENG-4", "Merged")] },
       { id: "i-6", identifier: "ENG-6", title: "t", labels: [], blockedBy: [] },
     ],
-    fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
   });
   await reconcileBlockedInProgress(deps);
   assert.equal(movedBack.length, 0);
@@ -807,7 +832,7 @@ test("reconcile swallows a fetch failure without throwing", async () => {
 test("reconcile does not unlatch when the move fails", async () => {
   const { deps, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: [blocker("ENG-4")] },
     ],
     moveToTodo: async () => {
       throw new Error("move boom");
@@ -818,6 +843,17 @@ test("reconcile does not unlatch when the move fails", async () => {
   assert.ok(logs.some((l) => l.includes("failed to move ENG-5 back")));
 });
 
+test("detachedSessionEnv flags the launch as detached so new-session.sh never switches the client", () => {
+  const env = detachedSessionEnv({ PATH: "/usr/bin", TMUX: "/tmp/tmux-1000/default,9,0" });
+  assert.equal(env.SESSION_DETACH, "1");
+  assert.equal(env.PATH, "/usr/bin");
+  assert.equal(env.TMUX, "/tmp/tmux-1000/default,9,0");
+});
+test("detachedSessionEnv merges extra vars alongside the flag", () => {
+  const env = detachedSessionEnv({ PATH: "/usr/bin" }, { SESSION_RESUME: "1" });
+  assert.equal(env.SESSION_DETACH, "1");
+  assert.equal(env.SESSION_RESUME, "1");
+});
 test("returnKeyBindArgs targets the board pane so the window and pane are selected too", () => {
   assert.deepEqual(returnKeyBindArgs("%36", "Y"), [
     "bind-key", "-T", "prefix", "Y", "switch-client", "-t", "%36",

@@ -190,6 +190,20 @@ HOOK_LOG2=$(mktemp)
 assert_eq "$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim(); const o=JSON.parse(l); process.stdout.write(o.key)' "$HOOK_LOG2")" 'weird"branch' "malformed-char branch key round-trips through valid JSON"
 rm -rf "$HOOK_REPO" "$HOOK_LOG" "$HOOK_LOG2"
 
+# attach_mode decides how a finished launch is handed over. SESSION_DETACH (set by
+# every daemon-spawned launch) wins over an inherited TMUX, so the board's client
+# is never yanked off whatever the user is doing.
+assert_defined attach_mode
+assert_eq "$(SESSION_DETACH=1 TMUX=/tmp/tmux-1000/default,123,0 attach_mode)" "detach" "SESSION_DETACH wins over an inherited TMUX"
+assert_eq "$(unset SESSION_DETACH; TMUX=/tmp/tmux-1000/default,123,0 attach_mode)" "switch" "inside tmux without the flag, switch the client"
+assert_eq "$(unset SESSION_DETACH TMUX; attach_mode < /dev/null)" "detach" "headless with no tty stays detached"
+assert_eq "$(SESSION_DETACH=1 attach_mode)" "detach" "SESSION_DETACH detaches outside tmux too"
+# A terminal on stdin and no tmux means a person ran the script by hand: attach.
+if command -v script >/dev/null 2>&1; then
+  ATTACH_TTY=$(script -qec "unset SESSION_DETACH TMUX; bash -c 'source $(dirname "$0")/new-session.sh; attach_mode'" /dev/null 2>/dev/null | tr -d '\r\n')
+  assert_eq "$ATTACH_TTY" "attach" "a tty with no tmux attaches"
+fi
+
 # The session settings file parses and wires both attention hooks to the emitter.
 SETTINGS_JSON="$(cd "$(dirname "$0")" && pwd)/../settings/session-settings.json"
 assert_eq "$(node -e 'const h=require(process.argv[1]).hooks||{}; process.stdout.write(String(!!h.Notification&&!!h.UserPromptSubmit))' "$SETTINGS_JSON")" "true" "settings define both attention hooks"

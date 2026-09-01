@@ -116,8 +116,12 @@ flowchart TD
 - **Grab the next task (blue):** while you have fewer than your work-in-progress
   limit of tickets in progress, it pulls your top to-do into progress so the
   deploy step picks it up next time. A ticket whose Linear "blocked by" relations
-  point at work with no merged PR is skipped, and one already in progress is moved
-  back to to-do. While the refine step is on, an unestimated ticket is left alone
+  point at work that has not landed yet is skipped, and one already in progress is
+  moved back to to-do. A blocker counts as landed once it reaches the merge state
+  (`MERGED_STATE_NAME`, defaults to `Merged`) or the review state, once it is
+  closed out in any Done/Canceled state, or once its own PR merges even if nobody
+  moved the ticket. Waiting for Done would be too late: that column means
+  released. While the refine step is on, an unestimated ticket is left alone
   as well: it is the refine step's to size first. A 0-point ticket is always
   skipped, estimated or not, because a zero marks a decomposed container whose
   subtickets carry the actual work. Before claiming, it also reads the picked ticket's description:
@@ -128,8 +132,9 @@ flowchart TD
   the comment stops it being re-added. Reference, related and follow-up mentions
   are ignored, and a prerequisite named without a ticket number is never linked.
   *(optional; settings: `AUTO_CLAIM`, `MAX_IN_PROGRESS`, defaults to 3, set to 1
-  for one at a time; `AUTO_DEPENDENCY_SCAN`, on by default; `AC_JUDGE_MODEL`,
-  blank uses the claude default)*
+  for one at a time; `MERGED_STATE_NAME`, defaults to `Merged`;
+  `AUTO_DEPENDENCY_SCAN`, on by default; `AC_JUDGE_MODEL`, blank uses the claude
+  default)*
 - **Handle review comments (amber):** every heartbeat, for each of your open PRs
   that has unresolved comments, it adds a fix window to that PR's ticket session
   (or opens a standalone session if the ticket session has ended) that addresses
@@ -230,9 +235,9 @@ error with your edit still pending. If that rollback restart also fails, the
 board's status line reads `daemon stopped` until a later save succeeds, even
 if you close and reopen the settings screen without saving in between.
 Settings the wizard never asks about (`BLOCKED_LABEL`, `IGNORE_CHECKS`,
-`READY_MERGE_LABEL`, the reap timeout and the `TUI_*` vars) stay hand-edited in
-`.env`: both `pnpm onboard` and the settings panel carry forward any plain
-`KEY=value` line (one line, no `export`, no spaces around the `=`) that the
+`READY_MERGE_LABEL`, `MERGED_STATE_NAME`, the reap timeout and the `TUI_*` vars)
+stay hand-edited in `.env`: both `pnpm onboard` and the settings panel carry
+forward any plain `KEY=value` line (one line, no `export`, no spaces around the `=`) that the
 generated sections above don't own, so a save doesn't drop it. That parser is
 deliberately narrow: a commented-out setting, a line with `export` or spaces
 around the `=`, or a multi-line quoted value is not preserved, so keep
@@ -340,8 +345,9 @@ Two machines can share one Linear account and one GitHub account as long as they
 work opposite slices of the board. `LABEL_FILTER` is the whole mechanism: it
 gates every step (claim, deploy, ready-to-test, the PR comment/CI/conflict/
 blocked fixers, advance and the ready label), with two deliberate exceptions.
-The blocked-by check reads merged PRs across the whole board on purpose, so a
-ticket isn't blocked forever behind the other instance's merged PR. Cleanup's
+The blocked-by check reads Linear state for every blocker and merged PRs across
+the whole board on purpose, so a ticket isn't blocked forever behind the other
+instance's work. Cleanup's
 merged/closed PR lists are likewise never gated, because cleanup only acts on
 worktrees that already exist on this machine.
 
@@ -387,6 +393,11 @@ preserving the feature, push). A PR fix is added as a window inside its branch's
 ticket session when that session is still alive, so a PR and its ticket share one
 session; if the ticket session has ended, it becomes a standalone `pr-<n>-fix` /
 `pr-<n>-ci` / `pr-<n>-conflict` session instead.
+
+Every daemon-spawned launch runs with `SESSION_DETACH=1`, so the new session is
+left in the background and your tmux client stays on whatever you were doing.
+Press Enter on its board row to go there. Run `~/new-session.sh <name>` yourself
+and it still switches (or attaches) as before.
 
 Teardown is the mirror: once a PR merges, the cleanup step shells out to
 `~/end-session.sh <branch>` (headless), which removes that branch's worktree and

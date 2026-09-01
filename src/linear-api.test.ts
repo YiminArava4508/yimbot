@@ -172,8 +172,14 @@ test("fetchCycleTodoIssues maps blockedBy from inverse blocks relations", async 
             labels: { nodes: [] },
             inverseRelations: {
               nodes: [
-                { type: "blocks", issue: { identifier: "ENG-4" } },
-                { type: "related", issue: { identifier: "ENG-9" } },
+                {
+                  type: "blocks",
+                  issue: { identifier: "ENG-4", state: { name: "In Review", type: "started" } },
+                },
+                {
+                  type: "related",
+                  issue: { identifier: "ENG-9", state: { name: "Todo", type: "unstarted" } },
+                },
               ],
             },
           },
@@ -186,7 +192,9 @@ test("fetchCycleTodoIssues maps blockedBy from inverse blocks relations", async 
     { viewerId: "u", teamId: "t", stateId: "s" },
     fetchImpl,
   );
-  assert.deepEqual(issues[0].blockedBy, ["ENG-4"]);
+  assert.deepEqual(issues[0].blockedBy, [
+    { identifier: "ENG-4", stateName: "In Review", stateType: "started" },
+  ]);
 });
 
 test("fetchInProgressIssuesWithBlockers returns issues with blockedBy", async () => {
@@ -199,7 +207,14 @@ test("fetchInProgressIssuesWithBlockers returns issues with blockedBy", async ()
             identifier: "ENG-5",
             title: "Wire it up",
             labels: { nodes: [] },
-            inverseRelations: { nodes: [{ type: "blocks", issue: { identifier: "ENG-4" } }] },
+            inverseRelations: {
+              nodes: [
+                {
+                  type: "blocks",
+                  issue: { identifier: "ENG-4", state: { name: "Merged", type: "started" } },
+                },
+              ],
+            },
           },
           {
             id: "i-3",
@@ -218,7 +233,13 @@ test("fetchInProgressIssuesWithBlockers returns issues with blockedBy", async ()
     fetchImpl,
   );
   assert.deepEqual(issues, [
-    { id: "i-2", identifier: "ENG-5", title: "Wire it up", labels: [], blockedBy: ["ENG-4"] },
+    {
+      id: "i-2",
+      identifier: "ENG-5",
+      title: "Wire it up",
+      labels: [],
+      blockedBy: [{ identifier: "ENG-4", stateName: "Merged", stateType: "started" }],
+    },
     { id: "i-3", identifier: "ENG-6", title: "Standalone", labels: [], blockedBy: [] },
   ]);
 });

@@ -1,3 +1,4 @@
+import type { Blocker } from "./blocked.ts";
 import { labelFilterAllows, type LabelFilter } from "./labels.ts";
 
 const API_URL = "https://api.linear.app/graphql";
@@ -24,17 +25,28 @@ export type CycleTodoIssue = LinearIssue & {
   labels: string[];
   // Raw Linear description, scanned at claim time for dependencies stated in prose.
   description: string;
-  // Identifiers of tickets this one is blocked by (from inverse "blocks" relations).
-  blockedBy: string[];
+  // Tickets this one is blocked by (from inverse "blocks" relations).
+  blockedBy: Blocker[];
   estimate: number | null;
 };
 
-type InverseRelationNodes = { nodes: { type: string; issue: { identifier: string } | null }[] };
+type RelatedIssueNode = { identifier: string; state: { name: string; type: string } };
+type InverseRelationNodes = { nodes: { type: string; issue: RelatedIssueNode | null }[] };
 
-// Blocker identifiers from an issue's inverse relations: the blockers are the
-// "blocks" relations where this issue is the target (relatedIssue).
-function blockersFrom(inverse: InverseRelationNodes): string[] {
-  return inverse.nodes.filter((r) => r.type === "blocks" && r.issue).map((r) => r.issue!.identifier);
+// The GraphQL selection every blocker read shares: the identifier plus the
+// workflow state that decides whether the blocker's work has landed.
+const BLOCKERS_SELECTION = "inverseRelations { nodes { type issue { identifier state { name type } } } }";
+
+// Blockers from an issue's inverse relations: the blockers are the "blocks"
+// relations where this issue is the target (relatedIssue).
+function blockersFrom(inverse: InverseRelationNodes): Blocker[] {
+  return inverse.nodes
+    .filter((r) => r.type === "blocks" && r.issue)
+    .map((r) => ({
+      identifier: r.issue!.identifier,
+      stateName: r.issue!.state.name,
+      stateType: r.issue!.state.type,
+    }));
 }
 
 async function gql<T>(
@@ -201,7 +213,7 @@ export async function fetchIssuesInState(
   }));
 }
 
-export type IssueWithBlockers = LinearIssue & { blockedBy: string[]; labels: string[] };
+export type IssueWithBlockers = LinearIssue & { blockedBy: Blocker[]; labels: string[] };
 
 // The viewer's assigned issues in one state of the watched team, each enriched
 // with the identifiers of the tickets it is blocked by. Used by the reconcile
@@ -235,7 +247,7 @@ export async function fetchInProgressIssuesWithBlockers(
           identifier
           title
           labels { nodes { name } }
-          inverseRelations { nodes { type issue { identifier } } }
+          ${BLOCKERS_SELECTION}
         }
       }
     }`,
@@ -383,7 +395,7 @@ export async function fetchCycleTodoIssues(
           sortOrder
           estimate
           labels { nodes { name } }
-          inverseRelations { nodes { type issue { identifier } } }
+          ${BLOCKERS_SELECTION}
         }
       }
     }`,

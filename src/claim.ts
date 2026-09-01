@@ -5,9 +5,11 @@ import type { CycleTodoIssue } from "./linear-api.ts";
 export type SelectOptions = {
   // Label names (any casing) that disqualify a ticket from being claimed.
   riskLabels: string[];
-  // Merged ticket identifiers. When non-null, todos blocked by an unmerged
-  // ticket are dropped; null skips the blocked filter (gh unavailable).
+  // Merged ticket identifiers. When non-null, todos with a blocker whose work
+  // has not landed are dropped; null skips the blocked filter (gh unavailable).
   merged: Set<string> | null;
+  // State names that count as a blocker's work having landed (clearedStateNames).
+  clearedStates: Set<string>;
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
   // Skip unestimated tickets (they are the refine step's to size first). Zero
@@ -44,7 +46,7 @@ export function selectNextClaim(
     (t) =>
       labelFilterAllows(opts.labelFilter, t.labels) &&
       !t.labels.some((label) => risky.has(label.toLowerCase())) &&
-      !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged)) &&
+      !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged, opts.clearedStates)) &&
       t.estimate !== 0 &&
       !(opts.requireEstimate && t.estimate === null) &&
       !(opts.maxEstimate !== null && t.estimate !== null && t.estimate > opts.maxEstimate),

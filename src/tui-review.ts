@@ -109,20 +109,35 @@ export function reviewHeader(pr: number, title: string, viewedCount: number, tot
   return `PR #${pr}  ${escapeTags(title)}  |  ${viewedCount}/${total} viewed`;
 }
 
+export type ReviewPane = "plan" | "diff" | "claude";
+
+export function nextReviewPane(cur: ReviewPane, hasClaude: boolean): ReviewPane {
+  if (cur === "plan") return "diff";
+  if (cur === "diff" && hasClaude) return "claude";
+  return "plan";
+}
+
+export function claudePaneLabel(selected: string | null, pinnedCount: number): string {
+  if (selected === null) return " claude ";
+  const pins = pinnedCount > 0 ? ` (+${pinnedCount} pinned)` : "";
+  return ` claude · ${selected}${pins} `;
+}
+
 export function reviewFooterHint(s: {
   total: number;
   loaded: boolean;
   allViewed: boolean;
   isDraft: boolean;
-  diffFocused: boolean;
+  focused: ReviewPane;
 }): string {
   if (!s.loaded) return "loading…   q back";
   if (s.total === 0) return "no changes in this PR   q back";
+  if (s.focused === "claude") return "typing goes to claude   C-\\ back";
   let done = "";
   if (s.allViewed && s.isDraft) done = "   {green-fg}y mark PR ready{/green-fg}";
   else if (s.allViewed) done = "   {green-fg}review complete{/green-fg}";
-  if (s.diffFocused) return `j/k scroll   space viewed   tab file list${done}   q back`;
-  return `j/k file   space viewed   g/G first/last   tab diff${done}   q back`;
+  if (s.focused === "diff") return `j/k scroll   space viewed   c pin   tab claude${done}   q back`;
+  return `j/k file   space viewed   c pin   g/G first/last   tab diff${done}   q back`;
 }
 
 // Same rule as the board's paneBorderColor: the focused pane turns white so
@@ -139,7 +154,7 @@ const paneStyle = () => ({ border: { fg: "grey" }, label: { fg: "grey" } });
 // so the layout test exercises these exact objects. keys+vi on the diff pane
 // gives blessed's own j/k scrolling when it is focused; the plan pane's keys
 // are handled by openReview so headers can be skipped during selection.
-export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "footer", Record<string, unknown>> {
+export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "claude" | "footer", Record<string, unknown>> {
   return {
     header: { top: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true },
     // guide.height and the panes' top are initial values; paint() re-fits
@@ -149,15 +164,19 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "f
       border: { type: "line" }, label: " guide ", style: paneStyle(),
     },
     plan: {
-      top: 6, left: 0, width: "30%", bottom: 1, tags: true,
+      top: 6, left: 0, width: "25%", bottom: 1, tags: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " review plan ", style: paneStyle(),
     },
     diff: {
-      top: 6, left: "30%", right: 0, bottom: 1, tags: true, keys: true, vi: true,
+      top: 6, left: "25%", width: "40%", bottom: 1, tags: true, keys: true, vi: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " diff ", style: paneStyle(),
       scrollbar: { ch: " ", style: { inverse: true } },
+    },
+    claude: {
+      top: 6, left: "65%", right: 0, bottom: 1, tags: true, wrap: false,
+      border: { type: "line" }, label: " claude ", style: paneStyle(),
     },
     footer: { bottom: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true, style: { fg: "white" } },
   };
@@ -197,7 +216,7 @@ export function openReview(
   // toggleViewed's advance). Once true, a fresh group load must not snap the
   // selection back to the new order's first file out from under them.
   let userSelected = false;
-  let diffFocused = false;
+  let focused: ReviewPane = "plan";
   let diffLoaded = false;
   let usedFallback = false;
   let readying = false;
@@ -240,8 +259,8 @@ export function openReview(
     plan.top = 1 + gh;
     diff.top = 1 + gh;
     diff.setContent(diffPaneLines(fd).join("\n"));
-    plan.style.border.fg = reviewPaneBorderColor(!diffFocused);
-    diff.style.border.fg = reviewPaneBorderColor(diffFocused);
+    plan.style.border.fg = reviewPaneBorderColor(focused === "plan");
+    diff.style.border.fg = reviewPaneBorderColor(focused === "diff");
     let hint = footerOverride;
     if (hint === undefined) {
       hint = reviewFooterHint({
@@ -249,7 +268,7 @@ export function openReview(
         loaded: diffLoaded,
         allViewed: allViewed(),
         isDraft: meta?.isDraft ?? false,
-        diffFocused,
+        focused,
       });
     }
     footer.setContent(hint);
@@ -313,7 +332,7 @@ export function openReview(
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
     else if (key.name === "tab") {
-      diffFocused = true;
+      focused = "diff";
       diff.focus();
       paint();
     } else if (key.name === "q" || key.name === "escape") close(null, false);
@@ -321,7 +340,7 @@ export function openReview(
 
   diff.on("keypress", (_ch: string, key: { name: string }) => {
     if (key.name === "tab") {
-      diffFocused = false;
+      focused = "plan";
       plan.focus();
       paint();
     } else if (key.name === "space") toggleViewed();

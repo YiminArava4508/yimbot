@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import blessed from "neo-blessed";
 import {
+  claudePaneLabel,
   diffPaneLines,
   flattenFiles,
   groupOf,
   guideHeight,
   guideLines,
+  nextReviewPane,
   nextUnviewed,
   openReview,
   placeholderGroups,
@@ -126,7 +128,7 @@ test("reviewHeader shows PR, title and progress", () => {
 });
 
 test("reviewFooterHint offers y only when all viewed and draft", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, diffFocused: false };
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "plan" as const };
   assert.ok(!reviewFooterHint(base).includes("y mark PR ready"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true, isDraft: false }).includes("review complete"));
@@ -134,25 +136,39 @@ test("reviewFooterHint offers y only when all viewed and draft", () => {
   assert.ok(reviewFooterHint({ ...base, total: 0 }).includes("no changes"));
 });
 
-test("reviewFooterHint describes scrolling and the file-list tab when the diff pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, diffFocused: true };
+test("reviewFooterHint describes scrolling and the claude tab when the diff pane is focused", () => {
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "diff" as const };
   const hint = reviewFooterHint(base);
   assert.ok(hint.includes("j/k scroll"));
   assert.ok(hint.includes("space viewed"));
-  assert.ok(hint.includes("tab file list"));
+  assert.ok(hint.includes("tab claude"));
   assert.ok(!hint.includes("g/G first/last"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
 });
 
-test("reviewLayout pins the panes: guide band on top, plan left 30%, diff filling the rest", () => {
+test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "claude" as const };
+  const hint = reviewFooterHint(base);
+  assert.ok(hint.includes("C-\\ back"));
+  assert.ok(!hint.includes("q back"));
+});
+
+test("reviewFooterHint offers c pin on the plan and diff panes", () => {
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "plan" as const };
+  assert.ok(reviewFooterHint(base).includes("c pin"));
+  assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("c pin"));
+});
+
+test("reviewLayout pins the panes: guide band on top, plan/diff/claude as thirds", () => {
   const l = reviewLayout();
   assert.equal(l.guide.top, 1);
   assert.equal(l.guide.height, 5);
   assert.equal(l.guide.width, "100%");
   assert.equal(l.plan.top, 6);
-  assert.equal(l.plan.width, "30%");
+  assert.equal(l.plan.width, "25%");
   assert.equal(l.diff.top, 6);
-  assert.equal(l.diff.left, "30%");
+  assert.equal(l.diff.left, "25%");
+  assert.equal(l.diff.width, "40%");
   assert.equal(l.header.height, 1);
   assert.equal(l.footer.bottom, 0);
 });
@@ -167,6 +183,29 @@ test("reviewLayout gives the panes resting grey borders and labels like the boar
 test("reviewPaneBorderColor turns the focused pane white and rests grey", () => {
   assert.equal(reviewPaneBorderColor(true), "white");
   assert.equal(reviewPaneBorderColor(false), "grey");
+});
+
+test("reviewLayout adds the claude pane as the right third", () => {
+  const l = reviewLayout();
+  assert.equal(l.plan.width, "25%");
+  assert.equal(l.diff.left, "25%");
+  assert.equal(l.diff.width, "40%");
+  assert.equal(l.claude.left, "65%");
+  assert.equal(l.claude.right, 0);
+  assert.equal(l.claude.label, " claude ");
+});
+
+test("nextReviewPane cycles plan, diff, claude and skips claude when absent", () => {
+  assert.equal(nextReviewPane("plan", true), "diff");
+  assert.equal(nextReviewPane("diff", true), "claude");
+  assert.equal(nextReviewPane("claude", true), "plan");
+  assert.equal(nextReviewPane("diff", false), "plan");
+});
+
+test("claudePaneLabel shows the current file and pin count", () => {
+  assert.equal(claudePaneLabel("src/foo.ts", 2), " claude · src/foo.ts (+2 pinned) ");
+  assert.equal(claudePaneLabel("src/foo.ts", 0), " claude · src/foo.ts ");
+  assert.equal(claudePaneLabel(null, 0), " claude ");
 });
 
 // A minimal EventEmitter standing in for a TTY stream, mirroring the harness in

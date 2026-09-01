@@ -39,9 +39,8 @@ export function screenTerm(term: string | undefined): string | undefined {
 // help, quit, and the contextual r/R where they act (r on review and merge,
 // R on review alone).
 export function footerHint(pane: Pane): string {
-  if (pane === "review") return "r ready   R review   ? help   q quit";
-  if (pane === "merge") return "r ready   ? help   q quit";
-  return "? help   q quit";
+  if (pane === "review" || pane === "merge") return "r ready   R review   ? help   q quit";
+  return "R review   ? help   q quit";
 }
 
 // The help overlay's body: every keybind, one per line, aligned.
@@ -52,7 +51,7 @@ export function helpLines(key: string): string[] {
     ["enter", "open the row's tmux session"],
     ["f", "flag/unflag the selected row"],
     ["r", "add the ready label (review/merge panes)"],
-    ["R", "review (review pane)"],
+    ["R", "review the selected row's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
     [`prefix+${key}`, "return here from a session"],
@@ -191,14 +190,6 @@ export function resolvePane(current: Pane, counts: PaneCounts): Pane {
   if (counts[current] > 0) return current;
   for (const p of ["tasks", "review", "merge"] as const) if (counts[p] > 0) return p;
   return "tasks";
-}
-
-// R (review) only makes sense on a PR that is waiting for review, so it acts
-// only while the review pane holds focus; elsewhere it returns the notice to
-// show instead.
-export function reviewOnlyGuard(pane: Pane): string | null {
-  if (pane === "review") return null;
-  return "{yellow-fg}R acts on the ready to review pane (^j/^k to move){/yellow-fg}";
 }
 
 // r (ready label) also covers the merge pane: a row latched at "ready to
@@ -713,11 +704,6 @@ export function runTui(opts: {
   });
 
   bindReviewKey(screen, isOverlayOpen, () => {
-    const blocked = reviewOnlyGuard(focusedPane);
-    if (blocked) {
-      setNotice(blocked, NOTICE_TTL_MS);
-      return;
-    }
     const r = selRow();
     if (!r) return;
     if (r.pr == null) {

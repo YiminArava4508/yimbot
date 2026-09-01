@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, readyKeyGuard, resolvePane, reviewOnlyGuard, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, readyKeyGuard, resolvePane, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -107,11 +107,11 @@ test("footerHint is a lean legend: help and quit everywhere, the rest lives unde
   }
 });
 
-test("footerHint shows r/R where they act: both on review, r alone on merge", () => {
+test("footerHint shows r/R where they act: R on every pane, r on review and merge", () => {
   assert.match(footerHint("review"), /r ready {3}R review/);
-  assert.doesNotMatch(footerHint("tasks"), /r ready|R review/);
-  assert.match(footerHint("merge"), /r ready/);
-  assert.doesNotMatch(footerHint("merge"), /R review/);
+  assert.match(footerHint("merge"), /r ready {3}R review/);
+  assert.match(footerHint("tasks"), /R review/);
+  assert.doesNotMatch(footerHint("tasks"), /r ready/);
 });
 
 test("helpLines carries every keybind the footer no longer shows", () => {
@@ -121,7 +121,7 @@ test("helpLines carries every keybind the footer no longer shows", () => {
   ]) {
     assert.ok(text.includes(needle), `help must mention ${needle}`);
   }
-  assert.match(text, /review pane/);
+  assert.doesNotMatch(text, /review pane/);
 });
 
 test("bindHelpKey opens only when no overlay is open", () => {
@@ -621,11 +621,7 @@ test("selectedBoardRow reads from the focused pane's own selection", () => {
   assert.equal(selectedBoardRow("tasks", { ...panes, tasks: { rows: [], selected: 1 } }), undefined);
 });
 
-test("reviewOnlyGuard blocks R outside the review pane with a notice", () => {
-  assert.equal(reviewOnlyGuard("review"), null);
-  assert.match(reviewOnlyGuard("tasks") ?? "", /ready to review pane/);
-  assert.match(reviewOnlyGuard("merge") ?? "", /ready to review pane/);
-});
+
 
 test("readyKeyGuard allows r on the review and merge panes, blocks it on tasks", () => {
   assert.equal(readyKeyGuard("review"), null);

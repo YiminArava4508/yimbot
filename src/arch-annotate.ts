@@ -4,16 +4,10 @@
 // input the grouping call gets, so both stay one small prompt each.
 import { extractJsonObject } from "./json-extract.ts";
 import type { ArchAnnotation, ArchMap } from "./arch-map.ts";
+import { fileLine } from "./review-groups.ts";
 import type { FileStat, PrMeta } from "./review-groups.ts";
 
 export type AnnotationRunner = (prompt: string) => Promise<string>;
-
-function fileLine(f: FileStat): string {
-  const stat = f.status === "modified" ? "" : `${f.status}, `;
-  const head = `- ${f.path} (${stat}+${f.additions}/-${f.deletions})`;
-  if (f.hunks.length === 0) return head;
-  return `${head}\n  in: ${f.hunks.join("; ")}`;
-}
 
 export function annotationPrompt(map: ArchMap, pr: PrMeta, files: FileStat[]): string {
   const nodes = map.nodes.map((n) => `- ${n.id}: ${n.label}${n.role ? ` (${n.role})` : ""}`).join("\n");

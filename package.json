@@ -6,6 +6,7 @@
     "start": "node --env-file-if-exists=.env --import tsx/esm index.ts",
     "onboard": "node --env-file-if-exists=.env --import tsx/esm scripts/onboard.ts",
     "check": "node --env-file=.env --import tsx/esm scripts/check.ts",
+    "arch-map": "node --env-file-if-exists=.env --import tsx/esm scripts/arch-map.ts",
     "test": "node --import tsx/esm --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

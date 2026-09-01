@@ -16,8 +16,9 @@ import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
-import { readGroups, readViewed, writeGroups, writeViewed } from "./src/review-state.ts";
+import { readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
+import { archMapPath } from "./src/arch-map.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
 import {
@@ -144,6 +145,26 @@ if (process.stdout.isTTY) {
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
       loadGroups: (headSha) => readGroups(pr, headSha),
       saveGroups: (headSha, groups) => writeGroups(pr, headSha, groups),
+      loadArchMap: () => {
+        try {
+          return readFileSync(archMapPath(currentCodebasePath()), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      runAnnotation: (prompt) =>
+        runHeadless(envOr("ARCH_ANNOTATE_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
+      loadFlow: (headSha) => readFlow(pr, headSha),
+      saveFlow: (headSha, flow) => writeFlow(pr, headSha, flow),
+      regenerateArchMap: () =>
+        new Promise<void>((resolve, reject) => {
+          execFile(
+            process.execPath,
+            ["--import", "tsx/esm", join(import.meta.dirname, "scripts/arch-map.ts")],
+            { env: { ...process.env, CODEBASE_PATH: currentCodebasePath() } },
+            (err) => (err ? reject(err) : resolve()),
+          );
+        }),
       claudeSession: () => {
         try {
           return claudeRegistry.getOrSpawn(pr, cwd);

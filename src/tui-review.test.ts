@@ -10,11 +10,15 @@ import {
   claudePaneLabel,
   diffPaneLines,
   flattenFiles,
+  flowFooterHint,
+  flowLayout,
   groupOf,
   guideHeight,
   guideLines,
   nextReviewPane,
   nextUnviewed,
+  nodeOrder,
+  noteBandLines,
   openReview,
   placeholderGroups,
   planLines,
@@ -25,6 +29,7 @@ import {
   type ReviewDeps,
 } from "./tui-review.ts";
 import type { FileDiff } from "./review-diff.ts";
+import type { ArchAnnotation, ArchNode } from "./arch-map.ts";
 
 const { Terminal } = xtermHeadless;
 
@@ -849,4 +854,66 @@ test("openReview subscribes the screen resize repaint on open and removes it on 
   press(screen, "q");
   assert.equal(screen.listeners("resize").length, before, "close must remove the resize listener");
   screen.destroy();
+});
+
+const NODE: ArchNode = { id: "gh", label: "gh", role: "talks to GitHub", files: ["src/gh.ts"] };
+const FLOW_ANN: ArchAnnotation = {
+  flow: "review pulls a diff from gh",
+  touched: [{ node: "gh", note: "the fetch signature moved" }],
+  atRisk: [{ node: "review", why: "calls prDiff", viaEdge: "review->gh" }],
+  added: [],
+};
+
+test("flowLayout puts the chart above a bordered note band", () => {
+  const l = flowLayout();
+  assert.equal(l.chart.scrollable, true);
+  assert.equal(l.chart.hidden, true);
+  assert.equal(l.note.height, 5);
+  assert.equal(l.note.bottom, 1);
+});
+
+test("nodeOrder walks boxes top to bottom then left to right", () => {
+  const boxes = [
+    { id: "b", row: 3, colStart: 10, colEnd: 14 },
+    { id: "c", row: 3, colStart: 0, colEnd: 4 },
+    { id: "a", row: 0, colStart: 5, colEnd: 9 },
+  ];
+  assert.deepEqual(nodeOrder(boxes), ["a", "c", "b"]);
+});
+
+test("noteBandLines shows the node role and its touched note", () => {
+  const out = noteBandLines({ node: NODE, state: "touched", ann: FLOW_ANN, stale: 0 }).join("\n");
+  assert.ok(out.includes("gh"));
+  assert.ok(out.includes("talks to GitHub"));
+  assert.ok(out.includes("the fetch signature moved"));
+});
+
+test("noteBandLines spells out why an at risk node is at risk", () => {
+  const review: ArchNode = { id: "review", label: "review", role: "the overlay", files: [] };
+  const out = noteBandLines({ node: review, state: "at-risk", ann: FLOW_ANN, stale: 0 }).join("\n");
+  assert.ok(out.includes("calls prDiff"));
+  assert.ok(out.includes("review->gh"));
+});
+
+test("noteBandLines falls back to the flow paragraph with nothing selected", () => {
+  const out = noteBandLines({ node: null, state: "idle", ann: FLOW_ANN, stale: 0 }).join("\n");
+  assert.ok(out.includes("review pulls a diff from gh"));
+});
+
+test("noteBandLines leads with the stale warning when files are unmapped", () => {
+  const out = noteBandLines({ node: null, state: "idle", ann: FLOW_ANN, stale: 3 });
+  assert.ok(out[0].includes("3"));
+  assert.ok(out[0].includes("stale"));
+});
+
+test("noteBandLines says so when there is no annotation at all", () => {
+  const out = noteBandLines({ node: null, state: "idle", ann: null, stale: 0 }).join("\n");
+  assert.ok(out.includes("touched nodes only"));
+});
+
+test("flowFooterHint offers regenerate only while the map is stale", () => {
+  assert.ok(!flowFooterHint({ stale: 0, selected: "gh" }).includes("G regenerate"));
+  assert.ok(flowFooterHint({ stale: 2, selected: "gh" }).includes("G regenerate"));
+  assert.ok(flowFooterHint({ stale: 0, selected: "gh" }).includes("enter files"));
+  assert.ok(!flowFooterHint({ stale: 0, selected: null }).includes("enter files"));
 });

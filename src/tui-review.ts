@@ -9,6 +9,8 @@ import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./r
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
+import type { NodeBox } from "./arch-layout.ts";
+import type { ArchAnnotation, ArchNode, NodeState } from "./arch-map.ts";
 
 export function flattenFiles(groups: ReviewGroup[]): string[] {
   return groups.flatMap((g) => g.files);
@@ -188,6 +190,61 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
     },
     footer: { bottom: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true, style: { fg: "white" } },
   };
+}
+
+// The flow overlay's two boxes: the chart takes the body, the note band pins
+// three content rows above the footer. Both mount hidden and are shown by the
+// f toggle, so the three columns keep their own scroll and selection.
+export function flowLayout(): Record<"chart" | "note", Record<string, unknown>> {
+  return {
+    chart: {
+      top: 1, left: 0, width: "100%", bottom: 6, tags: true, wrap: false, hidden: true,
+      scrollable: true, alwaysScroll: true,
+      border: { type: "line" }, label: " flow ", style: paneStyle(),
+      scrollbar: { ch: " ", style: { inverse: true } },
+    },
+    note: {
+      bottom: 1, left: 0, width: "100%", height: 5, tags: true, hidden: true,
+      border: { type: "line" }, label: " note ", style: paneStyle(),
+    },
+  };
+}
+
+export function nodeOrder(boxes: NodeBox[]): string[] {
+  return [...boxes].sort((a, b) => a.row - b.row || a.colStart - b.colStart).map((b) => b.id);
+}
+
+export function noteBandLines(s: {
+  node: ArchNode | null;
+  state: NodeState;
+  ann: ArchAnnotation | null;
+  stale: number;
+}): string[] {
+  const out: string[] = [];
+  if (s.stale > 0) {
+    out.push(`{yellow-fg}map stale: ${s.stale} file${s.stale === 1 ? "" : "s"} unmapped   G regenerate{/yellow-fg}`);
+  }
+  if (s.ann === null) {
+    out.push("{grey-fg}flow annotation unavailable, showing touched nodes only{/grey-fg}");
+  }
+  if (s.node === null) {
+    if (s.ann?.flow) out.push(escapeTags(s.ann.flow));
+    return out.length > 0 ? out : ["{grey-fg}j/k to pick a node{/grey-fg}"];
+  }
+  const head = `{bold}${escapeTags(s.node.label)}{/bold}`;
+  out.push(s.node.role ? `${head}: ${escapeTags(s.node.role)}` : head);
+  const note = s.ann?.touched.find((t) => t.node === s.node?.id)?.note;
+  if (note) out.push(escapeTags(note));
+  const risk = s.ann?.atRisk.find((r) => r.node === s.node?.id);
+  if (risk) out.push(`{red-fg}at risk via ${escapeTags(risk.viaEdge)}: ${escapeTags(risk.why)}{/red-fg}`);
+  if (s.state === "unmapped") out.push("{grey-fg}no node in the map claims these files{/grey-fg}");
+  return out;
+}
+
+export function flowFooterHint(s: { stale: number; selected: string | null }): string {
+  const regen = s.stale > 0 ? "   {yellow-fg}G regenerate{/yellow-fg}" : "";
+  const jump = s.selected ? "   enter files" : "";
+  return `j/k node${jump}${regen}   f diff   q back`;
 }
 
 export type ReviewDeps = {

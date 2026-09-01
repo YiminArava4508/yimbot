@@ -315,6 +315,11 @@ function testDeps(
     saveGroups: (sha, groups) => { savedGroups.push([sha, groups]); },
     claudeSession: () => null,
     writeContext: () => true,
+    loadArchMap: () => ARCH_JSON,
+    runAnnotation: async () => ANN_JSON,
+    loadFlow: () => null,
+    saveFlow: () => {},
+    regenerateArchMap: async () => {},
     saved,
     savedGroups,
     ...overrides,
@@ -916,4 +921,158 @@ test("flowFooterHint offers regenerate only while the map is stale", () => {
   assert.ok(flowFooterHint({ stale: 2, selected: "gh" }).includes("G regenerate"));
   assert.ok(flowFooterHint({ stale: 0, selected: "gh" }).includes("enter files"));
   assert.ok(!flowFooterHint({ stale: 0, selected: null }).includes("enter files"));
+});
+
+const ARCH_JSON = JSON.stringify({
+  generatedAt: "", commit: "",
+  nodes: [
+    { id: "a", label: "alpha", role: "first", files: ["src/a.ts"] },
+    { id: "b", label: "beta", role: "second", files: ["src/b.ts"] },
+    { id: "z", label: "zulu", role: "third", files: ["src/z.ts"] },
+  ],
+  edges: [{ from: "a", to: "b", carries: "calls" }, { from: "b", to: "z", carries: "writes" }],
+});
+
+const ANN_JSON = JSON.stringify({
+  flow: "alpha calls beta",
+  touched: [{ node: "a", note: "the entry point moved" }],
+  atRisk: [{ node: "z", why: "reads the moved shape", viaEdge: "b->z" }],
+  added: [],
+});
+
+const pressEnter = (screen: any) => screen.focused.emit("keypress", "", { name: "enter", full: "enter" });
+const settle = async () => { await flush(); await flush(); await flush(); };
+
+test("f opens the flow chart and f again restores the columns", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "f");
+  const chart = paneByLabel(screen, " flow ");
+  const plan = paneByLabel(screen, " review plan ");
+  assert.equal(chart.hidden, false);
+  assert.equal(plan.hidden, true);
+  assert.ok(chart.getContent().includes("alpha"));
+  press(screen, "f");
+  assert.equal(chart.hidden, true);
+  assert.equal(plan.hidden, false);
+  screen.destroy();
+});
+
+test("the chart marks the at risk node the annotation named", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "f");
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("zulu (!)"));
+  screen.destroy();
+});
+
+test("j and k walk nodes and the note band follows", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "f");
+  const note = paneByLabel(screen, " note ");
+  press(screen, "j");
+  assert.ok(note.getContent().includes("first"));
+  press(screen, "j");
+  assert.ok(note.getContent().includes("second"));
+  press(screen, "k");
+  assert.ok(note.getContent().includes("first"));
+  screen.destroy();
+});
+
+test("enter on a node closes the chart and selects that node's file", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "f");
+  press(screen, "j");
+  press(screen, "j");
+  pressEnter(screen);
+  assert.equal(paneByLabel(screen, " flow ").hidden, true);
+  // getContent() on a tags:true pane renders tags to ANSI (see the "keeps the
+  // operator's selection" test above), so the inverse highlight shows up as
+  // \x1b[7m rather than the literal {inverse} tag text.
+  const content = paneByLabel(screen, " review plan ").getContent();
+  assert.ok(/\x1b\[7m {3}\x1b\[[0-9;]*msrc\/b\.ts/.test(content));
+  screen.destroy();
+});
+
+test("a missing architecture map keeps f shut and says why", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps({ loadArchMap: () => null }), () => {});
+  await settle();
+  press(screen, "f");
+  const footer = screen.children.find((c: any) => c.options.height === 1 && c.options.bottom === 0);
+  assert.equal(paneByLabel(screen, " flow ").hidden, true);
+  assert.ok(footer.getContent().includes("no architecture map"));
+  screen.destroy();
+});
+
+test("unmapped changed files get their own node and the stale warning", async () => {
+  const map = JSON.stringify({
+    generatedAt: "", commit: "",
+    nodes: [{ id: "a", label: "alpha", role: "first", files: ["src/a.ts"] }],
+    edges: [],
+  });
+  const screen = makeScreen();
+  openReview(screen, testDeps({ loadArchMap: () => map }), () => {});
+  await settle();
+  press(screen, "f");
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("unmapped (1)"));
+  assert.ok(paneByLabel(screen, " note ").getContent().includes("stale"));
+  screen.destroy();
+});
+
+test("a failed annotation still draws the chart from the map", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps({ runAnnotation: async () => "not json" }), () => {});
+  await settle();
+  press(screen, "f");
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("alpha"));
+  assert.ok(paneByLabel(screen, " note ").getContent().includes("touched nodes only"));
+  screen.destroy();
+});
+
+test("a cached annotation skips the model", async () => {
+  let calls = 0;
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadFlow: () => JSON.parse(ANN_JSON),
+    runAnnotation: async () => { calls++; return ANN_JSON; },
+  }), () => {});
+  await settle();
+  assert.equal(calls, 0);
+  screen.destroy();
+});
+
+test("a fresh annotation is cached, a failed one is not", async () => {
+  const saved: unknown[] = [];
+  const screen = makeScreen();
+  openReview(screen, testDeps({ saveFlow: (_sha: string, f: unknown) => saved.push(f) }), () => {});
+  await settle();
+  assert.equal(saved.length, 1);
+  screen.destroy();
+
+  const notSaved: unknown[] = [];
+  const screen2 = makeScreen();
+  openReview(screen2, testDeps({
+    runAnnotation: async () => "junk",
+    saveFlow: (_sha: string, f: unknown) => notSaved.push(f),
+  }), () => {});
+  await settle();
+  assert.equal(notSaved.length, 0);
+  screen2.destroy();
+});
+
+test("q from the chart closes the whole overlay", async () => {
+  const screen = makeScreen();
+  let closed = false;
+  openReview(screen, testDeps(), () => { closed = true; });
+  await settle();
+  press(screen, "f");
+  press(screen, "q");
+  assert.equal(closed, true);
 });

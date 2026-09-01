@@ -7,7 +7,7 @@ import { attachClaudeOutput, claudeKeyAction } from "./claude-pane.ts";
 import type { ClaudeSession } from "./claude-sessions.ts";
 import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./review-diff.ts";
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
-import { fetchGroups, fileStats } from "./review-groups.ts";
+import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
 
 export function flattenFiles(groups: ReviewGroup[]): string[] {
@@ -198,6 +198,11 @@ export type ReviewDeps = {
   markReady: () => Promise<void>;
   loadViewed: (headSha: string) => Set<string>;
   saveViewed: (headSha: string, viewed: Set<string>) => void;
+  // The plan cached for this head SHA, still unvalidated (null when there is
+  // none). A hit skips the grouping model entirely, so reopening a review is
+  // instant and reads the same as when it was left.
+  loadGroups: (headSha: string) => unknown;
+  saveGroups: (headSha: string, groups: ReviewGroups) => void;
   claudeSession: () => ClaudeSession | null;
   // Returns false when the write failed so the overlay retries on the next
   // keystroke instead of marking the signature clean over a stale file.
@@ -511,17 +516,30 @@ export function openReview(
       paint();
       return;
     }
-    const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, fileStats(fileDiffs));
-    if (closed) return;
-    groups = res.groups;
-    usedFallback = res.usedFallback;
     // The placeholder shown while grouping was in flight may have already
     // auto-selected its first file; once the real order lands, re-pick the
     // first file under that order, but only if the operator has not already
     // navigated or toggled a file, or a live selection would get yanked out
     // from under them.
-    if (!userSelected) selectedPath = null;
-    paint();
+    const applyGroups = (g: ReviewGroups, fallback: boolean): void => {
+      groups = g;
+      usedFallback = fallback;
+      if (!userSelected) selectedPath = null;
+      paint();
+    };
+    // The cache is validated against the diff we just fetched, so a plan that
+    // no longer names a real file is discarded rather than shown.
+    const cached = normalizeGroups(deps.loadGroups(m.headSha), fileDiffs.map((f) => f.path));
+    if (cached) {
+      applyGroups(cached, false);
+      return;
+    }
+    const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, fileStats(fileDiffs));
+    if (closed) return;
+    // A fallback is what we show when the model was unreachable, never what we
+    // remember: caching it would freeze a transient failure in until the next push.
+    if (!res.usedFallback) deps.saveGroups(m.headSha, res.groups);
+    applyGroups(res.groups, res.usedFallback);
   }).catch(() => {
     // metaP rejection: already reported and closed by metaP.then's own
     // rejection handler above.

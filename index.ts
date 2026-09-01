@@ -16,7 +16,7 @@ import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
-import { readViewed, writeViewed } from "./src/review-state.ts";
+import { readGroups, readViewed, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
@@ -142,6 +142,8 @@ if (process.stdout.isTTY) {
       markReady: () => markPrReadyForReview(run, pr),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
+      loadGroups: (headSha) => readGroups(pr, headSha),
+      saveGroups: (headSha, groups) => writeGroups(pr, headSha, groups),
       claudeSession: () => {
         try {
           return claudeRegistry.getOrSpawn(pr, cwd);

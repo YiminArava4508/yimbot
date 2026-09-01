@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fallbackGroups, fetchGroups, fileStats, groupingPrompt, parseGroups } from "./review-groups.ts";
+import { fallbackGroups, fetchGroups, fileStats, groupingPrompt, normalizeGroups, parseGroups } from "./review-groups.ts";
 import type { FileDiff } from "./review-diff.ts";
 
 const PR = { number: 42, title: "add widget", body: "makes widgets" };
@@ -95,6 +95,20 @@ test("parseGroups returns null for junk, empty groups, and groups with no valid 
   assert.equal(parseGroups("no json here", PATHS), null);
   assert.equal(parseGroups('{"summary":"s","groups":[]}', PATHS), null);
   assert.equal(parseGroups('{"summary":"s","groups":[{"title":"t","context":"c","files":["nope.ts"]}]}', PATHS), null);
+});
+
+test("normalizeGroups validates an already-parsed plan against the current diff", () => {
+  const cached = { summary: "s", groups: [{ title: "core", context: "c", files: ["src/widget.ts", "gone.ts"] }] };
+  const g = normalizeGroups(cached, PATHS);
+  assert.ok(g);
+  assert.deepEqual(g.groups[0].files, ["src/widget.ts"]);
+  assert.equal(g.groups.at(-1)?.title, "Other changes");
+});
+
+test("normalizeGroups returns null for a missing or unusable plan", () => {
+  assert.equal(normalizeGroups(null, PATHS), null);
+  assert.equal(normalizeGroups("nope", PATHS), null);
+  assert.equal(normalizeGroups({ summary: "s", groups: [] }, PATHS), null);
 });
 
 test("fallbackGroups buckets by top-level directory, alphabetical", () => {

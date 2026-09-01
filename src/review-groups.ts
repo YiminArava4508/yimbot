@@ -77,8 +77,14 @@ export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
 // the caller can fall back. Unknown and duplicate paths are dropped; files
 // the model forgot land in a trailing "Other changes" group.
 export function parseGroups(stdout: string, diffPaths: string[]): ReviewGroups | null {
-  const obj = extractJsonObject(stdout);
-  if (obj === null) return null;
+  return normalizeGroups(extractJsonObject(stdout), diffPaths);
+}
+
+// The shape check on its own, for a plan that is already an object: the cached
+// plan read back from review-state gets the same treatment as fresh model
+// output, so a stale or hand-edited cache cannot put a phantom file on the board.
+export function normalizeGroups(obj: unknown, diffPaths: string[]): ReviewGroups | null {
+  if (obj === null || typeof obj !== "object") return null;
   const o = obj as { summary?: unknown; groups?: unknown };
   if (!Array.isArray(o.groups)) return null;
   const known = new Set(diffPaths);

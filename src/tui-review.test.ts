@@ -293,8 +293,11 @@ const GROUP_JSON = JSON.stringify({
   groups: [{ title: "core", context: "look here", files: ["src/b.ts", "src/a.ts"] }],
 });
 
-function testDeps(overrides: Partial<ReviewDeps> = {}): ReviewDeps & { saved: [string, Set<string>][] } {
+function testDeps(
+  overrides: Partial<ReviewDeps> = {},
+): ReviewDeps & { saved: [string, Set<string>][]; savedGroups: [string, unknown][] } {
   const saved: [string, Set<string>][] = [];
+  const savedGroups: [string, unknown][] = [];
   return {
     pr: 42,
     fetchDiff: async () => DIFF,
@@ -303,9 +306,12 @@ function testDeps(overrides: Partial<ReviewDeps> = {}): ReviewDeps & { saved: [s
     markReady: async () => {},
     loadViewed: () => new Set(),
     saveViewed: (sha, viewed) => { saved.push([sha, new Set(viewed)]); },
+    loadGroups: () => null,
+    saveGroups: (sha, groups) => { savedGroups.push([sha, groups]); },
     claudeSession: () => null,
     writeContext: () => true,
     saved,
+    savedGroups,
     ...overrides,
   };
 }
@@ -375,6 +381,63 @@ test("openReview renders the AI plan and space marks viewed, saves, and advances
   assert.equal(deps.saved.length, 1);
   assert.deepEqual(deps.saved[0], ["sha1", new Set(["src/b.ts"])]);
   assert.ok(!closed);
+  screen.destroy();
+});
+
+test("openReview reuses a cached plan and never calls the grouping model", async () => {
+  const screen = makeScreen();
+  let grouped = 0;
+  const deps = testDeps({
+    loadGroups: () => ({ summary: "cached summary", groups: [{ title: "cached group", context: "ctx", files: ["src/a.ts", "src/b.ts"] }] }),
+    runGrouping: async () => { grouped++; return GROUP_JSON; },
+  });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  assert.equal(grouped, 0, "a cached plan must not re-run the grouping model");
+  const guide = paneByLabel(screen, " guide ");
+  assert.ok(guide.getContent().includes("cached summary"));
+  assert.ok(paneByLabel(screen, " review plan ").getContent().includes("cached group"));
+  assert.deepEqual(deps.savedGroups, [], "a cache hit must not rewrite the cache");
+  screen.destroy();
+});
+
+test("openReview caches the plan it just generated, under the head SHA", async () => {
+  const screen = makeScreen();
+  const deps = testDeps();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  assert.equal(deps.savedGroups.length, 1);
+  const [sha, groups] = deps.savedGroups[0];
+  assert.equal(sha, "sha1");
+  assert.deepEqual(groups, JSON.parse(GROUP_JSON));
+  screen.destroy();
+});
+
+test("openReview never caches a fallback plan, so a failed grouping run retries", async () => {
+  const screen = makeScreen();
+  const deps = testDeps({ runGrouping: async () => { throw new Error("claude missing"); } });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  assert.deepEqual(deps.savedGroups, []);
+  assert.ok(paneByLabel(screen, " guide ").getContent().includes("grouped by directory"));
+  screen.destroy();
+});
+
+test("openReview falls back to the model when the cached plan is unusable", async () => {
+  const screen = makeScreen();
+  let grouped = 0;
+  const deps = testDeps({
+    loadGroups: () => ({ summary: "s", groups: [{ title: "stale", context: "", files: ["deleted.ts"] }] }),
+    runGrouping: async () => { grouped++; return GROUP_JSON; },
+  });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  assert.equal(grouped, 1, "a plan naming no current file must be discarded");
+  assert.ok(paneByLabel(screen, " review plan ").getContent().includes("core"));
   screen.destroy();
 });
 

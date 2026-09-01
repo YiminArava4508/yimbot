@@ -43,6 +43,12 @@ test("groupingPrompt asks for background context, not verification directives", 
   assert.ok(!p.includes("invariants"));
 });
 
+test("groupingPrompt keeps tests with the code they cover", () => {
+  const p = groupingPrompt(PR, FILES);
+  assert.ok(p.includes("same group as the code it covers"));
+  assert.ok(!p.includes("then tests"));
+});
+
 test("fileStats extracts capped, deduped hunk contexts and skips bare hunk headers", () => {
   const lines = (texts: string[]) => texts.map((text) => ({ kind: "hunk" as const, text }));
   const diffs: FileDiff[] = [
@@ -96,6 +102,24 @@ test("fallbackGroups buckets by top-level directory, alphabetical", () => {
   assert.equal(g.summary, "");
   assert.deepEqual(g.groups.map((x) => x.title), ["(root)", "docs", "src"]);
   assert.deepEqual(g.groups[2].files, ["src/a.ts", "src/b.ts"]);
+});
+
+test("fallbackGroups pulls a test file into the bucket of the code it covers", () => {
+  const g = fallbackGroups(["tests/widget_test.py", "src/widget.py", "src/other.py"]);
+  assert.deepEqual(g.groups.map((x) => x.title), ["src"]);
+  assert.deepEqual(g.groups[0].files, ["src/other.py", "src/widget.py", "tests/widget_test.py"]);
+});
+
+test("fallbackGroups pairs the python test_ prefix and a __tests__ sibling", () => {
+  const g = fallbackGroups(["test/test_widget.py", "src/widget.py", "src/__tests__/widget.tsx", "src/widget.tsx"]);
+  assert.deepEqual(g.groups.map((x) => x.title), ["src"]);
+  assert.deepEqual(g.groups[0].files, ["src/widget.py", "test/test_widget.py", "src/widget.tsx", "src/__tests__/widget.tsx"]);
+});
+
+test("fallbackGroups leaves an unpaired test file in its own directory bucket", () => {
+  const g = fallbackGroups(["tests/orphan.test.ts", "src/widget.ts"]);
+  assert.deepEqual(g.groups.map((x) => x.title), ["src", "tests"]);
+  assert.deepEqual(g.groups[1].files, ["tests/orphan.test.ts"]);
 });
 
 test("fetchGroups uses the parsed answer when valid", async () => {

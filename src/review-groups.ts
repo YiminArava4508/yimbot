@@ -52,8 +52,11 @@ export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
     "- Group by concern, not by directory or file type: a group is one reviewable idea",
     "  (a schema change plus its call sites, a bug fix plus the test that pins it).",
     "  The symbol hints above tell you which files touch the same code.",
+    "- A test file belongs in the same group as the code it covers, never in a group",
+    "  of its own: the tests are how that group's behavior is pinned, so the reviewer",
+    "  reads them beside it. Never make a tests-only group.",
     "- Order groups so understanding compounds: contracts, types, and schemas first,",
-    "  then core logic, then wiring and call sites, then tests, then the rest.",
+    "  then core logic, then wiring and call sites, then the rest.",
     "- Quarantine purely mechanical churn (lockfiles, generated code, snapshots,",
     "  renames, formatting-only edits) in a final group titled so the reviewer knows",
     "  to skim it.",
@@ -101,18 +104,67 @@ export function parseGroups(stdout: string, diffPaths: string[]): ReviewGroups |
   return { summary: typeof o.summary === "string" ? o.summary : "", groups };
 }
 
+const TEST_DIR = /(^|\/)(__tests__|tests?|specs?)\//;
+
+function baseName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+function stem(path: string): string {
+  const base = baseName(path);
+  const dot = base.lastIndexOf(".");
+  return dot === -1 ? base : base.slice(0, dot);
+}
+
+function extension(path: string): string {
+  const base = baseName(path);
+  const dot = base.lastIndexOf(".");
+  return dot === -1 ? "" : base.slice(dot);
+}
+
+// "src/widget.test.ts", "tests/widget_test.py" and "src/__tests__/widget.tsx" all
+// name the thing they cover; null means the path is not a test at all.
+function testStem(path: string): string | null {
+  const name = stem(path);
+  const stripped = name.replace(/[._-](test|spec)$/i, "").replace(/^(test|spec)[._-]/i, "");
+  if (stripped !== name) return stripped;
+  return TEST_DIR.test(path) ? name : null;
+}
+
+// The fallback fires when the grouping model is unavailable, so it still honors
+// the rule the prompt cares most about: a test rides along with the code it
+// covers, even when it lives under tests/. Everything else buckets by top-level
+// directory.
 export function fallbackGroups(diffPaths: string[]): ReviewGroups {
+  const sources = diffPaths.filter((p) => testStem(p) === null).sort();
+  const covers = (p: string): string => {
+    const st = testStem(p);
+    if (st === null) return p;
+    const matches = sources.filter((s) => stem(s) === st);
+    return matches.find((s) => extension(s) === extension(p)) ?? matches[0] ?? p;
+  };
+  const pair = new Map(diffPaths.map((p) => [p, covers(p)]));
+  const pairOf = (p: string): string => pair.get(p) ?? p;
+  const byPair = (a: string, b: string): number => {
+    const pa = pairOf(a);
+    const pb = pairOf(b);
+    if (pa !== pb) return pa.localeCompare(pb);
+    if (a === pa) return -1;
+    if (b === pb) return 1;
+    return a.localeCompare(b);
+  };
   const buckets = new Map<string, string[]>();
   for (const p of diffPaths) {
-    const slash = p.indexOf("/");
-    const dir = slash === -1 ? "(root)" : p.slice(0, slash);
+    const key = pairOf(p);
+    const slash = key.indexOf("/");
+    const dir = slash === -1 ? "(root)" : key.slice(0, slash);
     const list = buckets.get(dir) ?? [];
     list.push(p);
     buckets.set(dir, list);
   }
   const groups = [...buckets.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([title, files]) => ({ title, context: "", files: files.sort() }));
+    .map(([title, files]) => ({ title, context: "", files: files.sort(byPair) }));
   return { summary: "", groups };
 }
 

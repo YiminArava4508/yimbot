@@ -35,10 +35,12 @@ test("groupingPrompt codifies the review methodology", () => {
   assert.ok(p.includes("1-6 files"));
 });
 
-test("groupingPrompt asks for a reviewer-oriented summary and per-group verification hints", () => {
+test("groupingPrompt asks for background context, not verification directives", () => {
   const p = groupingPrompt(PR, FILES);
   assert.ok(p.includes("new to this codebase"));
-  assert.ok(p.includes("verify"));
+  assert.ok(p.includes("one sentence"));
+  assert.ok(!p.includes("verify"));
+  assert.ok(!p.includes("invariants"));
 });
 
 test("fileStats extracts capped, deduped hunk contexts and skips bare hunk headers", () => {

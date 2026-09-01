@@ -3,7 +3,10 @@
 // a diff pane, over the board the way the settings panel is. Everything that
 // can be pure is exported below and unit-tested; the blessed shell stays thin.
 import blessed from "neo-blessed";
+import { attachClaudeOutput, claudeKeyAction } from "./claude-pane.ts";
+import type { ClaudeSession } from "./claude-sessions.ts";
 import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./review-diff.ts";
+import { contextMarkdown, contextSignature, togglePin } from "./review-context.ts";
 import { fetchGroups, fileStats } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
 
@@ -190,6 +193,8 @@ export type ReviewDeps = {
   markReady: () => Promise<void>;
   loadViewed: (headSha: string) => Set<string>;
   saveViewed: (headSha: string, viewed: Set<string>) => void;
+  claudeSession: () => ClaudeSession | null;
+  writeContext: (content: string) => void;
 };
 
 export function openReview(
@@ -203,6 +208,7 @@ export function openReview(
   const guide: any = blessed.box({ parent: s, ...layout.guide });
   const plan: any = blessed.box({ parent: s, ...layout.plan });
   const diff: any = blessed.box({ parent: s, ...layout.diff });
+  const claude: any = blessed.box({ parent: s, ...layout.claude });
   const footer: any = blessed.text({ parent: s, ...layout.footer });
   plan.focus();
 
@@ -223,6 +229,17 @@ export function openReview(
   // Guards late async resolutions (grouping, markReady) after close, same as
   // the settings panel's `closed` flag.
   let closed = false;
+  let pinned = new Set<string>();
+  let lastCtxSig: string | null = null;
+  const session = deps.claudeSession();
+  let claudeOut: { repaint(): void; resize(c: number, r: number): void; dispose(): void } | null = null;
+  if (session) {
+    claudeOut = attachClaudeOutput(claude, session, () => focused === "claude", () => {
+      if (!closed) s.render();
+    });
+  } else {
+    claude.setContent("{grey-fg}claude unavailable{/grey-fg}");
+  }
 
   const currentGroups = (): ReviewGroups => {
     if (groups) return groups;
@@ -258,9 +275,16 @@ export function openReview(
     guide.height = gh;
     plan.top = 1 + gh;
     diff.top = 1 + gh;
+    claude.top = 1 + gh;
     diff.setContent(diffPaneLines(fd).join("\n"));
     plan.style.border.fg = reviewPaneBorderColor(focused === "plan");
     diff.style.border.fg = reviewPaneBorderColor(focused === "diff");
+    claude.style.border.fg = reviewPaneBorderColor(focused === "claude");
+    claude.setLabel(claudePaneLabel(selectedPath, pinned.size));
+    if (claudeOut) {
+      claudeOut.resize(Math.max(2, claude.width - 2), Math.max(2, claude.height - 2));
+      claudeOut.repaint();
+    }
     let hint = footerOverride;
     if (hint === undefined) {
       hint = reviewFooterHint({
@@ -279,10 +303,12 @@ export function openReview(
     if (closed) return;
     closed = true;
     if (meta) deps.saveViewed(meta.headSha, viewed);
+    claudeOut?.dispose();
     header.detach();
     guide.detach();
     plan.detach();
     diff.detach();
+    claude.detach();
     footer.detach();
     s.render();
     onClose(notice, isError);
@@ -324,6 +350,27 @@ export function openReview(
     );
   }
 
+  function maybeWriteContext(): void {
+    const sig = contextSignature(selectedPath, pinned);
+    if (sig === lastCtxSig) return;
+    lastCtxSig = sig;
+    deps.writeContext(contextMarkdown(deps.pr, selectedPath, pinned, fileDiffs));
+  }
+
+  function togglePinSelected(): void {
+    if (selectedPath === null) return;
+    pinned = togglePin(pinned, selectedPath);
+    paint();
+  }
+
+  const focusPane = (p: ReviewPane) => {
+    focused = p;
+    if (p === "plan") plan.focus();
+    else if (p === "diff") diff.focus();
+    else claude.focus();
+    paint();
+  };
+
   plan.on("keypress", (_ch: string, key: { name: string; full?: string; shift?: boolean }) => {
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
@@ -331,22 +378,34 @@ export function openReview(
     else if (key.name === "g") select(0);
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
-    else if (key.name === "tab") {
-      focused = "diff";
-      diff.focus();
-      paint();
-    } else if (key.name === "q" || key.name === "escape") close(null, false);
+    else if (key.name === "c") togglePinSelected();
+    else if (key.name === "tab") focusPane(nextReviewPane("plan", session !== null));
+    else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
   diff.on("keypress", (_ch: string, key: { name: string }) => {
-    if (key.name === "tab") {
+    if (key.name === "tab") focusPane(nextReviewPane("diff", session !== null));
+    else if (key.name === "space") toggleViewed();
+    else if (key.name === "y") markReady();
+    else if (key.name === "c") togglePinSelected();
+    else if (key.name === "q" || key.name === "escape") close(null, false);
+  });
+
+  claude.on("keypress", (ch: string, key: { sequence?: string }) => {
+    if (!session) return;
+    if (claudeKeyAction(key) === "unfocus") {
       focused = "plan";
       plan.focus();
       paint();
-    } else if (key.name === "space") toggleViewed();
-    else if (key.name === "y") markReady();
-    else if (key.name === "q" || key.name === "escape") close(null, false);
+      return;
+    }
+    maybeWriteContext();
+    session.pty.write(key.sequence ?? ch ?? "");
   });
+
+  plan.on("click", () => focusPane("plan"));
+  diff.on("click", () => focusPane("diff"));
+  claude.on("click", () => focusPane("claude"));
 
   paint();
 

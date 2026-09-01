@@ -1,7 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { breakCycles, dedupeEdges, orderRanks, rankNodes } from "./arch-layout.ts";
-import type { ArchEdge } from "./arch-map.ts";
+import {
+  breakCycles,
+  dedupeEdges,
+  displayLabel,
+  layoutGraph,
+  orderRanks,
+  placeNodes,
+  rankNodes,
+  renderGrid,
+  serializeGrid,
+} from "./arch-layout.ts";
+import type { ArchEdge, ArchMap, NodeState } from "./arch-map.ts";
 
 const e = (from: string, to: string): ArchEdge => ({ from, to, carries: "" });
 
@@ -66,4 +76,124 @@ test("orderRanks pulls a node next to its neighbour instead of leaving it crosse
   const rows = orderRanks(nodes, rank, edges);
   assert.deepEqual(rows[0], ["a", "b"]);
   assert.deepEqual(rows[1], ["y", "x"]);
+});
+
+test("displayLabel appends the marker its state earns", () => {
+  assert.equal(displayLabel("gh", "idle"), "gh");
+  assert.equal(displayLabel("gh", "touched"), "gh");
+  assert.equal(displayLabel("gh", "at-risk"), "gh (!)");
+  assert.equal(displayLabel("gh", "added"), "gh NEW");
+});
+
+test("placeNodes centers each rank and never overlaps two boxes", () => {
+  const labels = new Map([["a", "aa"], ["b", "bb"], ["c", "cc"]]);
+  const { boxes, height } = placeNodes([["a"], ["b", "c"]], labels, 40);
+  const a = boxes.find((x) => x.id === "a") as { row: number; colStart: number; colEnd: number };
+  assert.equal(a.row, 0);
+  assert.equal(a.colEnd - a.colStart + 1, 6);
+  const rank1 = boxes.filter((x) => x.row === 3).sort((x, y) => x.colStart - y.colStart);
+  assert.equal(rank1.length, 2);
+  assert.ok(rank1[0].colEnd < rank1[1].colStart);
+  assert.equal(height, 4);
+});
+
+test("placeNodes wraps a rank wider than the pane onto a second row", () => {
+  const ids = ["a", "b", "c", "d"];
+  const labels = new Map(ids.map((i) => [i, i.repeat(6)]));
+  const { boxes } = placeNodes([ids], labels, 30);
+  assert.ok(new Set(boxes.map((b) => b.row)).size > 1);
+  assert.ok(boxes.every((b) => b.colEnd < 30));
+});
+
+test("placeNodes truncates a label too wide for the pane", () => {
+  const { boxes } = placeNodes([["a"]], new Map([["a", "x".repeat(80)]]), 20);
+  assert.ok(boxes[0].colEnd < 20);
+});
+
+test("renderGrid draws a box as [ label ] on its own row", () => {
+  const labels = new Map([["a", "gh"]]);
+  const { boxes, height } = placeNodes([["a"]], labels, 20);
+  const grid = renderGrid(boxes, labels, [], 20, height);
+  assert.ok(grid[0].join("").includes("[ gh ]"));
+});
+
+test("renderGrid lands an arrow head directly above the target box", () => {
+  const labels = new Map([["a", "aa"], ["b", "bb"]]);
+  const { boxes, height } = placeNodes([["a"], ["b"]], labels, 30);
+  const grid = renderGrid(boxes, labels, [{ from: "a", to: "b", carries: "" }], 30, height);
+  const b = boxes.find((x) => x.id === "b") as { row: number; colStart: number; colEnd: number };
+  assert.equal(grid[b.row - 1][Math.floor((b.colStart + b.colEnd) / 2)], "v");
+});
+
+test("renderGrid routes an edge that skips a rank without erasing the box between", () => {
+  const labels = new Map([["a", "aa"], ["b", "bb"], ["c", "cc"]]);
+  const { boxes, height } = placeNodes([["a"], ["b"], ["c"]], labels, 40);
+  const grid = renderGrid(boxes, labels, [{ from: "a", to: "c", carries: "" }], 40, height);
+  const b = boxes.find((x) => x.id === "b") as { row: number };
+  assert.ok(grid[b.row].join("").includes("[ bb ]"));
+  const c = boxes.find((x) => x.id === "c") as { row: number; colStart: number; colEnd: number };
+  assert.equal(grid[c.row - 1][Math.floor((c.colStart + c.colEnd) / 2)], "v");
+});
+
+test("renderGrid points a back edge up into its target", () => {
+  const labels = new Map([["a", "aa"], ["b", "bb"]]);
+  const { boxes, height } = placeNodes([["a"], ["b"]], labels, 30);
+  const grid = renderGrid(boxes, labels, [{ from: "b", to: "a", carries: "" }], 30, height);
+  const a = boxes.find((x) => x.id === "a") as { row: number };
+  assert.ok(grid[a.row + 1].includes("^"));
+});
+
+test("renderGrid never writes outside the given width", () => {
+  const labels = new Map([["a", "aa"], ["b", "bb"]]);
+  const { boxes, height } = placeNodes([["a"], ["b"]], labels, 24);
+  const grid = renderGrid(boxes, labels, [{ from: "a", to: "b", carries: "" }], 24, height);
+  assert.ok(grid.every((row) => row.length === 24));
+});
+
+test("serializeGrid wraps each box in its state's color and leaves routing plain", () => {
+  const labels = new Map([["a", "gh"]]);
+  const states = new Map<string, NodeState>([["a", "touched"]]);
+  const { boxes, height } = placeNodes([["a"]], labels, 20);
+  const out = serializeGrid(renderGrid(boxes, labels, [], 20, height), boxes, states);
+  assert.ok(out[0].includes("{bold}{white-fg}[ gh ]{/white-fg}{/bold}"));
+});
+
+test("serializeGrid escapes braces in a label so tags cannot be forged", () => {
+  const labels = new Map([["a", "a{b}"]]);
+  const states = new Map<string, NodeState>([["a", "idle"]]);
+  const { boxes, height } = placeNodes([["a"]], labels, 20);
+  const out = serializeGrid(renderGrid(boxes, labels, [], 20, height), boxes, states);
+  assert.ok(out[0].includes("{open}"));
+  assert.ok(!out[0].includes("[ a{b} ]"));
+});
+
+const MAP2: ArchMap = {
+  generatedAt: "", commit: "",
+  nodes: [
+    { id: "board", label: "board", role: "", files: ["src/tui.ts"] },
+    { id: "review", label: "review", role: "", files: ["src/tui-review.ts"] },
+    { id: "gh", label: "gh", role: "", files: ["src/gh.ts"] },
+  ],
+  edges: [
+    { from: "board", to: "review", carries: "opens" },
+    { from: "review", to: "gh", carries: "diff" },
+    { from: "gh", to: "board", carries: "pr rows" },
+  ],
+};
+
+test("layoutGraph renders every node and returns boxes in reading order", () => {
+  const states = new Map<string, NodeState>([["board", "touched"], ["review", "idle"], ["gh", "at-risk"]]);
+  const { lines, boxes } = layoutGraph(MAP2, states, 60);
+  const text = lines.join("\n");
+  assert.ok(text.includes("board"));
+  assert.ok(text.includes("review"));
+  assert.ok(text.includes("gh (!)"));
+  const sorted = [...boxes].sort((a, b) => a.row - b.row || a.colStart - b.colStart);
+  assert.deepEqual(boxes.map((b) => b.id), sorted.map((b) => b.id));
+});
+
+test("layoutGraph survives a map with no edges at all", () => {
+  const map: ArchMap = { generatedAt: "", commit: "", nodes: MAP2.nodes, edges: [] };
+  const states = new Map<string, NodeState>(map.nodes.map((n) => [n.id, "idle" as NodeState]));
+  assert.ok(layoutGraph(map, states, 60).lines.join("\n").includes("board"));
 });

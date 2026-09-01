@@ -135,6 +135,14 @@ test("renderGrid routes an edge that skips a rank without erasing the box betwee
   assert.equal(grid[c.row - 1][Math.floor((c.colStart + c.colEnd) / 2)], "v");
 });
 
+test("renderGrid clips a routed run rather than overwrite a box that fills the channel", () => {
+  const labels = new Map([["a", "a"], ["b", "b".repeat(10)], ["c", "c"]]);
+  const { boxes, height } = placeNodes([["a"], ["b"], ["c"]], labels, 14);
+  const grid = renderGrid(boxes, labels, [{ from: "a", to: "c", carries: "" }], 14, height);
+  const b = boxes.find((x) => x.id === "b") as { row: number };
+  assert.equal(grid[b.row].join(""), `[ ${"b".repeat(10)} ]`);
+});
+
 test("renderGrid points a back edge up into its target", () => {
   const labels = new Map([["a", "aa"], ["b", "bb"]]);
   const { boxes, height } = placeNodes([["a"], ["b"]], labels, 30);

@@ -153,7 +153,12 @@ const center = (b: NodeBox): number => Math.floor((b.colStart + b.colEnd) / 2);
 // A run crossing a channel reads as +; a head glyph always wins over a mere
 // routing mark (a straight edge routes and terminates on the same cell when
 // its source and target share a column), but one head never bumps another.
-// Routing only ever touches gap rows, so a box cannot be clobbered either.
+// A plain routing mark (-, |, +) only ever lands on a space or another plain
+// mark; anything else is left alone and the run clips there instead of
+// corrupting it. This matters because a rank-skipping edge's vertical run can
+// legitimately cross an intermediate box's row in an unblocked column, and
+// channelCol's fallback column, used when every column is blocked, can land
+// inside a box outright.
 function put(grid: string[][], row: number, col: number, ch: string): void {
   if (row < 0 || row >= grid.length || col < 0 || col >= grid[row].length) return;
   const cur = grid[row][col];
@@ -163,11 +168,12 @@ function put(grid: string[][], row: number, col: number, ch: string): void {
     grid[row][col] = ch;
     return;
   }
+  if (cur !== " " && cur !== "-" && cur !== "|" && cur !== "+") return;
   if ((cur === "-" && ch === "|") || (cur === "|" && ch === "-")) {
     grid[row][col] = "+";
     return;
   }
-  if (cur === "v" || cur === "^" || cur === "+") return;
+  if (cur === "+") return;
   grid[row][col] = ch;
 }
 

@@ -1,17 +1,17 @@
 // src/review-state.ts
-// Per-review state that survives closing the TUI: viewed-file marks and the
-// AI review plan. Persisted next to the events log (the mode/refine file
-// pattern). Keyed by "<pr>:<headSha>": a new push changes the SHA, orphaning
-// the old entry, so a re-review of new code starts clean and regroups.
-// The groups payload is stored opaquely; the overlay validates it against the
-// diff it actually fetched.
+// Per-review state that survives closing the TUI: viewed-file marks, the AI
+// review plan, and the flow annotation. Persisted next to the events log (the
+// mode/refine file pattern). Keyed by "<pr>:<headSha>": a new push changes the
+// SHA, orphaning the old entry, so a re-review of new code starts clean and
+// regroups. The groups and flow payloads are stored opaquely; the overlay
+// validates them against the diff it actually fetched.
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { eventsLogPath } from "./events.ts";
 
 const MAX_ENTRIES = 50;
 
-export type ReviewEntry = { viewed: string[]; groups?: unknown };
+export type ReviewEntry = { viewed: string[]; groups?: unknown; flow?: unknown };
 
 export function reviewStateFilePath(): string {
   return join(dirname(eventsLogPath()), "review-state.json");
@@ -31,9 +31,10 @@ function stringList(v: unknown): string[] {
 function parseEntry(v: unknown): ReviewEntry | null {
   if (Array.isArray(v)) return { viewed: stringList(v) };
   if (v === null || typeof v !== "object") return null;
-  const o = v as { viewed?: unknown; groups?: unknown };
+  const o = v as { viewed?: unknown; groups?: unknown; flow?: unknown };
   const entry: ReviewEntry = { viewed: stringList(o.viewed) };
   if (o.groups !== undefined) entry.groups = o.groups;
+  if (o.flow !== undefined) entry.flow = o.flow;
   return entry;
 }
 
@@ -110,4 +111,14 @@ export function readGroups(pr: number, headSha: string): unknown | null {
 
 export function writeGroups(pr: number, headSha: string, groups: unknown): void {
   update(pr, headSha, { groups });
+}
+
+// The cached flow annotation, unvalidated the same way the plan is: the
+// overlay re-checks it against the architecture map it actually loaded.
+export function readFlow(pr: number, headSha: string): unknown | null {
+  return readState()[stateKey(pr, headSha)]?.flow ?? null;
+}
+
+export function writeFlow(pr: number, headSha: string, flow: unknown): void {
+  update(pr, headSha, { flow });
 }

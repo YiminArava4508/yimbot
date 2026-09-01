@@ -112,3 +112,26 @@ test("readViewed and readGroups survive a corrupt state file", () => {
     assert.equal(readGroups(7, "abc"), null);
   });
 });
+
+test("parseReviewState keeps a cached flow annotation beside the groups", () => {
+  const st = parseReviewState(JSON.stringify({
+    "7:abc": { viewed: ["a.ts"], groups: { summary: "s" }, flow: { flow: "f" } },
+  }));
+  assert.deepEqual(st["7:abc"].flow, { flow: "f" });
+  assert.deepEqual(st["7:abc"].viewed, ["a.ts"]);
+});
+
+test("withEntry patching flow leaves viewed and groups alone", () => {
+  const st = { "7:abc": { viewed: ["a.ts"], groups: { summary: "s" } } };
+  const next = withEntry(st, 7, "abc", { flow: { flow: "f" } });
+  assert.deepEqual(next["7:abc"].viewed, ["a.ts"]);
+  assert.deepEqual(next["7:abc"].groups, { summary: "s" });
+  assert.deepEqual(next["7:abc"].flow, { flow: "f" });
+});
+
+test("withEntry under a new head sha drops the old flow with the old entry", () => {
+  const st = { "7:abc": { viewed: [], flow: { flow: "old" } } };
+  const next = withEntry(st, 7, "def", { viewed: [] });
+  assert.equal(next["7:abc"], undefined);
+  assert.equal(next["7:def"].flow, undefined);
+});

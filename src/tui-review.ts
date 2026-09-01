@@ -194,14 +194,19 @@ export type ReviewDeps = {
   loadViewed: (headSha: string) => Set<string>;
   saveViewed: (headSha: string, viewed: Set<string>) => void;
   claudeSession: () => ClaudeSession | null;
-  writeContext: (content: string) => void;
+  // Returns false when the write failed so the overlay retries on the next
+  // keystroke instead of marking the signature clean over a stale file.
+  writeContext: (content: string) => boolean;
 };
 
+// The returned claudeFocused getter feeds tui.ts's C-c gate: while the claude
+// pane is focused the screen-level hard quit stands down so the interrupt
+// reaches the pane's keypress handler and forwards to the embedded claude.
 export function openReview(
   screen: unknown,
   deps: ReviewDeps,
   onClose: (notice: string | null, isError: boolean) => void,
-): void {
+): { claudeFocused: () => boolean } {
   const s: any = screen;
   const layout = reviewLayout();
   const header: any = blessed.text({ parent: s, ...layout.header, content: `PR #${deps.pr}  loading…` });
@@ -232,10 +237,28 @@ export function openReview(
   let pinned = new Set<string>();
   let lastCtxSig: string | null = null;
   const session = deps.claudeSession();
+  let claudeExited = false;
+  const hasClaude = () => session !== null && !claudeExited;
   let claudeOut: { repaint(): void; resize(c: number, r: number): void; dispose(): void } | null = null;
+  let exitSub: { dispose(): void } | null = null;
   if (session) {
     claudeOut = attachClaudeOutput(claude, session, () => focused === "claude", () => {
       if (!closed) s.render();
+    });
+    // A dead pty must not strand the pane: drop the output attachment (so a
+    // pending repaint cannot overwrite the notice), surface the exit, and hand
+    // focus back to plan. Reopening the overlay respawns via the registry.
+    exitSub = session.pty.onExit(() => {
+      if (closed) return;
+      claudeExited = true;
+      claudeOut?.dispose();
+      claudeOut = null;
+      claude.setContent("{red-fg}claude exited, close and reopen to restart{/red-fg}");
+      if (focused === "claude") {
+        focused = "plan";
+        plan.focus();
+      }
+      paint();
     });
   } else {
     claude.setContent("{grey-fg}claude unavailable{/grey-fg}");
@@ -303,6 +326,8 @@ export function openReview(
     if (closed) return;
     closed = true;
     if (meta) deps.saveViewed(meta.headSha, viewed);
+    s.removeListener("resize", onScreenResize);
+    exitSub?.dispose();
     claudeOut?.dispose();
     header.detach();
     guide.detach();
@@ -353,8 +378,8 @@ export function openReview(
   function maybeWriteContext(): void {
     const sig = contextSignature(selectedPath, pinned);
     if (sig === lastCtxSig) return;
-    lastCtxSig = sig;
-    deps.writeContext(contextMarkdown(deps.pr, selectedPath, pinned, fileDiffs));
+    const ok = deps.writeContext(contextMarkdown(deps.pr, selectedPath, pinned, fileDiffs));
+    if (ok) lastCtxSig = sig;
   }
 
   function togglePinSelected(): void {
@@ -379,12 +404,12 @@ export function openReview(
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
     else if (key.name === "c") togglePinSelected();
-    else if (key.name === "tab") focusPane(nextReviewPane("plan", session !== null));
+    else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
   diff.on("keypress", (_ch: string, key: { name: string }) => {
-    if (key.name === "tab") focusPane(nextReviewPane("diff", session !== null));
+    if (key.name === "tab") focusPane(nextReviewPane("diff", hasClaude()));
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
     else if (key.name === "c") togglePinSelected();
@@ -392,7 +417,7 @@ export function openReview(
   });
 
   claude.on("keypress", (ch: string, key: { sequence?: string }) => {
-    if (!session) {
+    if (!session || claudeExited) {
       focused = "plan";
       plan.focus();
       paint();
@@ -411,8 +436,14 @@ export function openReview(
   plan.on("click", () => focusPane("plan"));
   diff.on("click", () => focusPane("diff"));
   claude.on("click", () => {
-    if (session) focusPane("claude");
+    if (hasClaude()) focusPane("claude");
   });
+
+  // paint() is where the pty/term get re-fit to the pane, and its other
+  // callers only run on plan/diff activity; without this a terminal resize
+  // while the operator sits in the claude pane leaves stale dimensions.
+  const onScreenResize = () => paint();
+  s.on("resize", onScreenResize);
 
   paint();
 
@@ -468,4 +499,6 @@ export function openReview(
     // metaP rejection: already reported and closed by metaP.then's own
     // rejection handler above.
   });
+
+  return { claudeFocused: () => !closed && focused === "claude" };
 }

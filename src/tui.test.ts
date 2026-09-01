@@ -191,7 +191,7 @@ test("bindQuitKeys gates q and escape while settings is open, but C-c always fir
   };
   let settingsOpen = true;
   let quitCalls = 0;
-  bindQuitKeys(fakeScreen, () => settingsOpen, () => quitCalls++);
+  bindQuitKeys(fakeScreen, () => settingsOpen, () => false, () => quitCalls++);
 
   handlers["q"]();
   handlers["escape"]();
@@ -203,6 +203,25 @@ test("bindQuitKeys gates q and escape while settings is open, but C-c always fir
   settingsOpen = false;
   handlers["q"]();
   assert.equal(quitCalls, 2, "q quits again once the panel is closed");
+});
+
+test("bindQuitKeys stands down on C-c while the claude pane is focused so the pty gets it", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let claudeFocused = true;
+  let quitCalls = 0;
+  bindQuitKeys(fakeScreen, () => true, () => claudeFocused, () => quitCalls++);
+
+  handlers["C-c"]();
+  assert.equal(quitCalls, 0, "C-c must not quit while the claude pane is focused");
+
+  claudeFocused = false;
+  handlers["C-c"]();
+  assert.equal(quitCalls, 1, "C-c hard-quits again once claude is not focused");
 });
 
 test("bindSettingsKey does not reopen the panel on a second s while it is already open", () => {

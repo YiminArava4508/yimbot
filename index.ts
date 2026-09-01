@@ -154,8 +154,10 @@ if (process.stdout.isTTY) {
         try {
           ensureContextScaffold(cwd);
           writeFileSync(contextFilePath(cwd), content);
+          return true;
         } catch (err) {
           console.error(`[review] context write for #${pr} failed:`, err);
+          return false;
         }
       },
     };

@@ -388,16 +388,21 @@ export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[
 // overlay's own widgets own q/escape (e.g. list.js maps them to
 // cancelSelected, which drives the settings panel's unsaved-changes
 // double-escape prompt), so the board must not act on them here. C-c stays a
-// hard quit regardless.
+// hard quit except while the review overlay's claude pane is focused: there
+// it is claude's own interrupt, and because the screen handler fires first it
+// must stand down for the sequence to reach the pane's keypress forwarding.
 export function bindQuitKeys(
   screen: { key: (keys: string[], fn: () => void) => void },
   isOverlayOpen: () => boolean,
+  isClaudeFocused: () => boolean,
   quit: () => void,
 ): void {
   screen.key(["q", "escape"], () => {
     if (!isOverlayOpen()) quit();
   });
-  screen.key(["C-c"], quit);
+  screen.key(["C-c"], () => {
+    if (!isClaudeFocused()) quit();
+  });
 }
 
 // Gated the same way as bindQuitKeys: without this, a second s while any
@@ -617,7 +622,10 @@ export function runTui(opts: {
   let reviewOpen = false;
   let helpOpen = false;
   const isOverlayOpen = () => settingsOpen || reviewOpen || helpOpen;
-  bindQuitKeys(screen, isOverlayOpen, quit);
+  // Swapped in by bindReviewKey's open below; openReview's getter reports
+  // false once the overlay closes, so no reset is needed here.
+  let reviewClaudeFocused: () => boolean = () => false;
+  bindQuitKeys(screen, isOverlayOpen, () => reviewClaudeFocused(), quit);
 
   // The help box floats over the board (panes stay visible under it), owns
   // the keyboard while open, and closes on ?, q or escape.
@@ -718,12 +726,13 @@ export function runTui(opts: {
     }
     reviewOpen = true;
     hidePanes();
-    openReview(screen, opts.reviewDeps(r.pr, r.key), (noticeMsg, isError) => {
+    const overlay = openReview(screen, opts.reviewDeps(r.pr, r.key), (noticeMsg, isError) => {
       reviewOpen = false;
       showPanes();
       if (noticeMsg) setNotice(noticeMsg, isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);
       else render();
     });
+    reviewClaudeFocused = overlay.claudeFocused;
   });
 
   const openSelectedSession = (r: BoardRow | undefined) => {

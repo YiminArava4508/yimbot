@@ -2,6 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import blessed from "neo-blessed";
+// Node's ESM loader cannot statically detect named exports on this package's
+// bundled CJS output, so the value import goes through the default export.
+import xtermHeadless from "@xterm/headless";
+import type { ClaudeSession } from "./claude-sessions.ts";
 import {
   claudePaneLabel,
   diffPaneLines,
@@ -21,6 +25,8 @@ import {
   type ReviewDeps,
 } from "./tui-review.ts";
 import type { FileDiff } from "./review-diff.ts";
+
+const { Terminal } = xtermHeadless;
 
 const GROUPS = [
   { title: "core", context: "the change itself", files: ["src/a.ts", "src/b.ts"] },
@@ -277,10 +283,57 @@ function testDeps(overrides: Partial<ReviewDeps> = {}): ReviewDeps & { saved: [s
     loadViewed: () => new Set(),
     saveViewed: (sha, viewed) => { saved.push([sha, new Set(viewed)]); },
     claudeSession: () => null,
-    writeContext: () => {},
+    writeContext: () => true,
     saved,
     ...overrides,
   };
+}
+
+// A fake ClaudeSession: a real headless terminal (attachClaudeOutput renders
+// from it) over a pty stub that records writes, data subscriptions and exit
+// callbacks, mirroring claude-sessions.test.ts's fakePty.
+function fakeClaudeSession() {
+  const writes: string[] = [];
+  const dataSubs: { disposed: boolean }[] = [];
+  const exitCbs: (() => void)[] = [];
+  let killed = false;
+  const session: ClaudeSession = {
+    pr: 42,
+    cwd: "/tmp/x",
+    term: new Terminal({ cols: 20, rows: 5, allowProposedApi: true }),
+    exited: false,
+    pty: {
+      write: (d: string) => { writes.push(d); },
+      resize: () => {},
+      kill: () => { killed = true; },
+      onData: () => {
+        const sub = { disposed: false };
+        dataSubs.push(sub);
+        return { dispose: () => { sub.disposed = true; } };
+      },
+      onExit: (cb: () => void) => {
+        exitCbs.push(cb);
+        return { dispose: () => {} };
+      },
+    },
+  };
+  const emitExit = () => {
+    session.exited = true;
+    for (const cb of exitCbs) cb();
+  };
+  return { session, writes, dataSubs, wasKilled: () => killed, emitExit };
+}
+
+// The claude pane routes on key.sequence (claudeKeyAction), which press()
+// does not carry; this mirrors how the real program hands sequences over.
+function pressSeq(screen: any, ch: string, sequence: string, name = ch) {
+  screen.focused.emit("keypress", ch, { name, full: name, sequence });
+}
+
+const pressUnfocus = (screen: any) => pressSeq(screen, "", "\u001c", "C-\\");
+
+function paneByLabel(screen: any, label: string) {
+  return screen.children.find((c: any) => c.options.label === label);
 }
 
 test("openReview renders the AI plan and space marks viewed, saves, and advances", async () => {
@@ -525,5 +578,138 @@ test("openReview shows a no-changes footer and skips grouping for an empty diff"
   const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
   assert.ok(footer.getContent().includes("no changes in this PR"));
   assert.equal(grouped, 0);
+  screen.destroy();
+});
+
+test("openReview forwards keystrokes (C-c included) to the claude pty; the unfocus chord returns focus without writing", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  const deps = testDeps({ claudeSession: () => fake.session });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  press(screen, "tab");
+  press(screen, "tab");
+  const claude = paneByLabel(screen, " claude ");
+  const plan = paneByLabel(screen, " review plan ");
+  assert.equal(claude.style.border.fg, "white", "two tabs must land focus on the claude pane");
+  const INTR = String.fromCharCode(3);
+  pressSeq(screen, "x", "x");
+  pressSeq(screen, "", INTR, "C-c");
+  assert.deepEqual(fake.writes, ["x", INTR], "keys and the interrupt sequence must reach the pty");
+  pressUnfocus(screen);
+  assert.deepEqual(fake.writes, ["x", INTR], "the unfocus chord must not be forwarded");
+  assert.equal(plan.style.border.fg, "white");
+  assert.equal(claude.style.border.fg, "grey");
+  screen.destroy();
+});
+
+test("openReview writes context lazily: once per signature, again after a pin, retrying after a failed write", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  const written: string[] = [];
+  let writeOk = true;
+  const deps = testDeps({
+    claudeSession: () => fake.session,
+    writeContext: (content) => {
+      written.push(content);
+      return writeOk;
+    },
+  });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  press(screen, "tab");
+  press(screen, "tab");
+  pressSeq(screen, "x", "x");
+  pressSeq(screen, "y", "y");
+  assert.equal(written.length, 1, "an unchanged signature must write exactly once");
+  assert.ok(written[0].includes("src/b.ts"), "the context must cover the selected file");
+  pressUnfocus(screen);
+  press(screen, "c");
+  press(screen, "tab");
+  press(screen, "tab");
+  pressSeq(screen, "z", "z");
+  assert.equal(written.length, 2, "a pin toggle must dirty the signature");
+  writeOk = false;
+  pressUnfocus(screen);
+  press(screen, "j");
+  press(screen, "tab");
+  press(screen, "tab");
+  pressSeq(screen, "a", "a");
+  pressSeq(screen, "b", "b");
+  assert.equal(written.length, 4, "a failed write must not mark the signature clean; each keystroke retries");
+  screen.destroy();
+});
+
+test("openReview: c toggles the pin and the claude label shows the count", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  const claude = paneByLabel(screen, " claude ");
+  press(screen, "c");
+  assert.ok(claude._label.getContent().includes("(+1 pinned)"));
+  press(screen, "c");
+  assert.ok(!claude._label.getContent().includes("pinned"));
+  screen.destroy();
+});
+
+test("openReview close disposes the output attachment and exit hook without killing the session", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  press(screen, "q");
+  assert.equal(fake.dataSubs.length, 1, "attachClaudeOutput must subscribe to pty data exactly once");
+  assert.ok(fake.dataSubs.every((s) => s.disposed), "close must dispose the output attachment");
+  assert.equal(fake.wasKilled(), false, "the session must survive overlay close");
+  screen.destroy();
+});
+
+test("openReview: a dead claude pty shows a notice, hands focus to plan, and stops forwarding", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  press(screen, "tab");
+  press(screen, "tab");
+  const claude = paneByLabel(screen, " claude ");
+  const plan = paneByLabel(screen, " review plan ");
+  const diff = paneByLabel(screen, " diff ");
+  assert.equal(claude.style.border.fg, "white");
+  fake.emitExit();
+  await flush();
+  assert.ok(claude.getContent().includes("claude exited"), "the pane must show the exit notice");
+  assert.equal(plan.style.border.fg, "white", "focus must return to plan when claude dies focused");
+  claude.emit("keypress", "x", { name: "x", full: "x", sequence: "x" });
+  assert.deepEqual(fake.writes, [], "keys must not be forwarded to the dead pty");
+  press(screen, "tab");
+  press(screen, "tab");
+  assert.equal(plan.style.border.fg, "white", "tab must cycle plan-diff only once claude is dead");
+  assert.equal(diff.style.border.fg, "grey");
+  assert.equal(claude.style.border.fg, "grey");
+  screen.destroy();
+});
+
+test("openReview subscribes the screen resize repaint on open and removes it on close", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  const before = screen.listeners("resize").length;
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  assert.equal(screen.listeners("resize").length, before + 1, "open must add exactly one resize listener");
+  const claude = paneByLabel(screen, " claude ");
+  // Knock the terminal out of shape first so the re-fit is attributable to
+  // the resize event, not the paint that ran at open.
+  fake.session.term.resize(19, 4);
+  screen.emit("resize");
+  assert.equal(fake.session.term.cols, claude.width - 2, "the resize repaint must re-fit the terminal to the pane");
+  press(screen, "q");
+  assert.equal(screen.listeners("resize").length, before, "close must remove the resize listener");
   screen.destroy();
 });

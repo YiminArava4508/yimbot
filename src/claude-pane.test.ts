@@ -13,8 +13,13 @@ function write(term: TerminalInstance, data: string): Promise<void> {
   return new Promise((resolve) => term.write(data, resolve));
 }
 
-test("claudeKeyAction reserves only C-backslash, forwards everything else", () => {
+test("claudeKeyAction reserves C-backslash and C-q, forwards everything else", () => {
   assert.equal(claudeKeyAction({ sequence: "\u001c" }), "unfocus");
+  assert.equal(claudeKeyAction({ sequence: "\u0011" }), "unfocus");
+  // neo-blessed's keys.js emits 0x1c with no parsed key; program.js wraps it
+  // as { ch } with no sequence, so the guard must read ch too.
+  assert.equal(claudeKeyAction({ ch: "\u001c" }), "unfocus");
+  assert.equal(claudeKeyAction({ ch: "a" }), "forward");
   assert.equal(claudeKeyAction({ sequence: "a" }), "forward");
   assert.equal(claudeKeyAction({ sequence: "\r" }), "forward");
   assert.equal(claudeKeyAction({ sequence: "\t" }), "forward");

@@ -9,7 +9,6 @@
     "test": "node --import tsx/esm --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
-  "pnpm": { "onlyBuiltDependencies": ["node-pty"] },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@xterm/headless": "^6.0.0",

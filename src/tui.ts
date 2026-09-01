@@ -481,7 +481,7 @@ export function runTui(opts: {
   onToggleMode: () => Mode;
   refineEnabled: () => boolean;
   settings: SettingsDeps;
-  reviewDeps: (pr: number) => ReviewDeps;
+  reviewDeps: (pr: number, key: string) => ReviewDeps;
   // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
   // headless prompt runner (same claude -p shape as the review grouping).
   orderDeps: OrderSourceDeps;
@@ -718,7 +718,7 @@ export function runTui(opts: {
     }
     reviewOpen = true;
     hidePanes();
-    openReview(screen, opts.reviewDeps(r.pr), (noticeMsg, isError) => {
+    openReview(screen, opts.reviewDeps(r.pr, r.key), (noticeMsg, isError) => {
       reviewOpen = false;
       showPanes();
       if (noticeMsg) setNotice(noticeMsg, isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);

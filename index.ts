@@ -1,11 +1,11 @@
 // index.ts
-import { createWriteStream, existsSync, readFileSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { format, promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { envOr } from "./src/env.ts";
-import { emitEvent, emitStatus } from "./src/events.ts";
+import { deriveKey, emitEvent, emitStatus } from "./src/events.ts";
 import { applyReadyLabel, ghRunner, markPrReadyForReview, prDiff, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
@@ -18,6 +18,8 @@ import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
 import { readViewed, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
+import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
+import { contextFilePath } from "./src/review-context.ts";
 import {
   bindReturnKey,
   currentTmuxPane,
@@ -120,8 +122,18 @@ if (process.stdout.isTTY) {
     });
     return stdout;
   };
-  const reviewDeps = (pr: number): ReviewDeps => {
+  const claudeRegistry = makeSessionRegistry(spawnClaudePty);
+  // The claude session runs in the PR's worktree so it can read the actual
+  // branch; a PR-only row with no worktree falls back to the main checkout.
+  const worktreeForKey = (key: string): string => {
+    const wt = listGitWorktrees(currentCodebasePath()).find(
+      (w) => deriveKey({ branch: w.branch }).key === key,
+    );
+    return wt?.path ?? currentCodebasePath();
+  };
+  const reviewDeps = (pr: number, key: string): ReviewDeps => {
     const run = ghRunner(currentCodebasePath());
+    const cwd = worktreeForKey(key);
     return {
       pr,
       fetchDiff: () => prDiff(run, pr),
@@ -130,11 +142,28 @@ if (process.stdout.isTTY) {
       markReady: () => markPrReadyForReview(run, pr),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
+      claudeSession: () => {
+        try {
+          return claudeRegistry.getOrSpawn(pr, cwd);
+        } catch (err) {
+          console.error(`[review] claude session for #${pr} failed:`, err);
+          return null;
+        }
+      },
+      writeContext: (content) => {
+        try {
+          ensureContextScaffold(cwd);
+          writeFileSync(contextFilePath(cwd), content);
+        } catch (err) {
+          console.error(`[review] context write for #${pr} failed:`, err);
+        }
+      },
     };
   };
   runTui({
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
+      claudeRegistry.killAll();
       stop();
       process.exit(0);
     },

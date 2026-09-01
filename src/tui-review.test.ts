@@ -57,7 +57,7 @@ test("placeholderGroups puts every path under one organizing group", () => {
 });
 
 test("planLines colors group titles yellow, files cyan, and viewed files green", () => {
-  const { lines, selectedLine } = planLines(GROUPS, new Set(["src/b.ts"]), "src/a.ts");
+  const { lines, selectedLine } = planLines(GROUPS, new Set(["src/b.ts"]), new Set(), "src/a.ts");
   assert.equal(lines[0], "{yellow-fg}{bold}core{/bold}{/yellow-fg}");
   assert.equal(lines[1], "{inverse}   {cyan-fg}src/a.ts{/cyan-fg}{/inverse}");
   assert.equal(lines[2], " {green-fg}✓{/green-fg} {green-fg}src/b.ts{/green-fg}");
@@ -66,12 +66,19 @@ test("planLines colors group titles yellow, files cyan, and viewed files green",
 });
 
 test("planLines keeps a viewed selected file green under the inverse highlight", () => {
-  const { lines } = planLines(GROUPS, new Set(["src/a.ts"]), "src/a.ts");
+  const { lines } = planLines(GROUPS, new Set(["src/a.ts"]), new Set(), "src/a.ts");
   assert.equal(lines[1], "{inverse} {green-fg}✓{/green-fg} {green-fg}src/a.ts{/green-fg}{/inverse}");
 });
 
+test("planLines marks context files with a magenta +, combined with the viewed check", () => {
+  const context = new Set(["src/a.ts", "src/b.ts"]);
+  const { lines } = planLines(GROUPS, new Set(["src/b.ts"]), context, null);
+  assert.equal(lines[1], "  {magenta-fg}+{/magenta-fg}{cyan-fg}src/a.ts{/cyan-fg}");
+  assert.equal(lines[2], " {green-fg}✓{/green-fg}{magenta-fg}+{/magenta-fg}{green-fg}src/b.ts{/green-fg}");
+});
+
 test("planLines returns selectedLine -1 when nothing is selected", () => {
-  assert.equal(planLines(GROUPS, new Set(), null).selectedLine, -1);
+  assert.equal(planLines(GROUPS, new Set(), new Set(), null).selectedLine, -1);
 });
 
 test("diffPaneLines renders just the diff, guidance lives in the guide band", () => {
@@ -134,7 +141,7 @@ test("reviewHeader shows PR, title and progress", () => {
 });
 
 test("reviewFooterHint offers y only when all viewed and draft", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "plan" as const };
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "plan" as const, contextCount: 0 };
   assert.ok(!reviewFooterHint(base).includes("y mark PR ready"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true, isDraft: false }).includes("review complete"));
@@ -142,8 +149,15 @@ test("reviewFooterHint offers y only when all viewed and draft", () => {
   assert.ok(reviewFooterHint({ ...base, total: 0 }).includes("no changes"));
 });
 
+test("reviewFooterHint lists the 1/2/3 pane jumps on plan and diff", () => {
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "plan" as const, contextCount: 0 };
+  assert.ok(reviewFooterHint(base).includes("1/2/3 pane"));
+  assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("1/2/3 pane"));
+  assert.ok(!reviewFooterHint({ ...base, focused: "claude" }).includes("1/2/3 pane"));
+});
+
 test("reviewFooterHint describes scrolling and the claude tab when the diff pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "diff" as const };
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "diff" as const, contextCount: 0 };
   const hint = reviewFooterHint(base);
   assert.ok(hint.includes("j/k scroll"));
   assert.ok(hint.includes("space viewed"));
@@ -153,16 +167,23 @@ test("reviewFooterHint describes scrolling and the claude tab when the diff pane
 });
 
 test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "claude" as const };
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "claude" as const, contextCount: 0 };
   const hint = reviewFooterHint(base);
-  assert.ok(hint.includes("C-\\ back"));
+  assert.ok(hint.includes("C-q or C-\\ back"));
   assert.ok(!hint.includes("q back"));
 });
 
-test("reviewFooterHint offers c pin on the plan and diff panes", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "plan" as const };
-  assert.ok(reviewFooterHint(base).includes("c pin"));
-  assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("c pin"));
+test("reviewFooterHint offers c context on the plan and diff panes", () => {
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "plan" as const, contextCount: 0 };
+  assert.ok(reviewFooterHint(base).includes("c context"));
+  assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("c context"));
+});
+
+test("reviewFooterHint offers C clear context only when the context set is non-empty", () => {
+  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "plan" as const, contextCount: 0 };
+  assert.ok(!reviewFooterHint(base).includes("C clear context"));
+  assert.ok(reviewFooterHint({ ...base, contextCount: 2 }).includes("C clear context"));
+  assert.ok(reviewFooterHint({ ...base, focused: "diff", contextCount: 1 }).includes("C clear context"));
 });
 
 test("reviewLayout pins the panes: guide band on top, plan/diff/claude as thirds", () => {
@@ -174,7 +195,7 @@ test("reviewLayout pins the panes: guide band on top, plan/diff/claude as thirds
   assert.equal(l.plan.width, "25%");
   assert.equal(l.diff.top, 6);
   assert.equal(l.diff.left, "25%");
-  assert.equal(l.diff.width, "40%");
+  assert.equal(l.diff.width, "45%");
   assert.equal(l.header.height, 1);
   assert.equal(l.footer.bottom, 0);
 });
@@ -195,8 +216,8 @@ test("reviewLayout adds the claude pane as the right third", () => {
   const l = reviewLayout();
   assert.equal(l.plan.width, "25%");
   assert.equal(l.diff.left, "25%");
-  assert.equal(l.diff.width, "40%");
-  assert.equal(l.claude.left, "65%");
+  assert.equal(l.diff.width, "45%");
+  assert.equal(l.claude.left, "70%");
   assert.equal(l.claude.right, 0);
   assert.equal(l.claude.label, " claude ");
 });
@@ -208,8 +229,8 @@ test("nextReviewPane cycles plan, diff, claude and skips claude when absent", ()
   assert.equal(nextReviewPane("diff", false), "plan");
 });
 
-test("claudePaneLabel shows the current file and pin count", () => {
-  assert.equal(claudePaneLabel("src/foo.ts", 2), " claude · src/foo.ts (+2 pinned) ");
+test("claudePaneLabel shows the current file and context count", () => {
+  assert.equal(claudePaneLabel("src/foo.ts", 2), " claude · src/foo.ts (+2 in context) ");
   assert.equal(claudePaneLabel("src/foo.ts", 0), " claude · src/foo.ts ");
   assert.equal(claudePaneLabel(null, 0), " claude ");
 });
@@ -393,6 +414,37 @@ test("openReview highlights the focused pane's border, tab moves it", async () =
   await flush();
   assert.equal(plan.style.border.fg, "grey");
   assert.equal(diff.style.border.fg, "white");
+  screen.destroy();
+});
+
+test("openReview jumps focus with 1/2/3 from plan and diff; 3 needs a claude session", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  const plan = paneByLabel(screen, " review plan ");
+  const diff = paneByLabel(screen, " diff ");
+  const claude = paneByLabel(screen, " claude ");
+  press(screen, "2");
+  assert.equal(diff.style.border.fg, "white");
+  press(screen, "1");
+  assert.equal(plan.style.border.fg, "white");
+  press(screen, "3");
+  assert.equal(claude.style.border.fg, "white");
+  pressUnfocus(screen);
+  assert.deepEqual(fake.writes, [], "jump keys must not reach the pty");
+  screen.destroy();
+});
+
+test("openReview ignores 3 when no claude session exists", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await flush();
+  await flush();
+  const plan = paneByLabel(screen, " review plan ");
+  press(screen, "3");
+  assert.equal(plan.style.border.fg, "white");
   screen.destroy();
 });
 
@@ -601,10 +653,16 @@ test("openReview forwards keystrokes (C-c included) to the claude pty; the unfoc
   assert.deepEqual(fake.writes, ["x", INTR], "the unfocus chord must not be forwarded");
   assert.equal(plan.style.border.fg, "white");
   assert.equal(claude.style.border.fg, "grey");
+  press(screen, "tab");
+  press(screen, "tab");
+  pressSeq(screen, "", String.fromCharCode(17), "C-q");
+  assert.deepEqual(fake.writes, ["x", INTR], "C-q must unfocus without forwarding");
+  assert.equal(plan.style.border.fg, "white");
+  assert.equal(claude.style.border.fg, "grey");
   screen.destroy();
 });
 
-test("openReview writes context lazily: once per signature, again after a pin, retrying after a failed write", async () => {
+test("openReview writes context lazily: once per signature, again after a context toggle, retrying after a failed write", async () => {
   const screen = makeScreen();
   const fake = fakeClaudeSession();
   const written: string[] = [];
@@ -630,7 +688,7 @@ test("openReview writes context lazily: once per signature, again after a pin, r
   press(screen, "tab");
   press(screen, "tab");
   pressSeq(screen, "z", "z");
-  assert.equal(written.length, 2, "a pin toggle must dirty the signature");
+  assert.equal(written.length, 2, "a context toggle must dirty the signature");
   writeOk = false;
   pressUnfocus(screen);
   press(screen, "j");
@@ -642,7 +700,7 @@ test("openReview writes context lazily: once per signature, again after a pin, r
   screen.destroy();
 });
 
-test("openReview: c toggles the pin and the claude label shows the count", async () => {
+test("openReview: c toggles the context file and the claude label shows the count", async () => {
   const screen = makeScreen();
   const fake = fakeClaudeSession();
   openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
@@ -650,9 +708,25 @@ test("openReview: c toggles the pin and the claude label shows the count", async
   await flush();
   const claude = paneByLabel(screen, " claude ");
   press(screen, "c");
-  assert.ok(claude._label.getContent().includes("(+1 pinned)"));
+  assert.ok(claude._label.getContent().includes("(+1 in context)"));
   press(screen, "c");
-  assert.ok(!claude._label.getContent().includes("pinned"));
+  assert.ok(!claude._label.getContent().includes("in context"));
+  screen.destroy();
+});
+
+test("openReview: shift-C clears every context file at once", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  const claude = paneByLabel(screen, " claude ");
+  press(screen, "c");
+  press(screen, "j");
+  press(screen, "c");
+  assert.ok(claude._label.getContent().includes("(+2 in context)"));
+  screen.focused.emit("keypress", "C", { name: "c", full: "S-c", shift: true });
+  assert.ok(!claude._label.getContent().includes("in context"));
   screen.destroy();
 });
 

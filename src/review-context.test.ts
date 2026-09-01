@@ -8,7 +8,7 @@ import {
   contextMarkdown,
   contextSignature,
   patchText,
-  togglePin,
+  toggleContext,
 } from "./review-context.ts";
 
 const RAW = [
@@ -35,33 +35,33 @@ test("patchText keeps hunk headers and +/- prefixes, drops meta lines", () => {
   assert.equal(patchText(a), "@@ -1,2 +1,2 @@ function foo()\n-old line\n+new line\n ctx");
 });
 
-test("togglePin adds then removes without mutating the input set", () => {
+test("toggleContext adds then removes without mutating the input set", () => {
   const start = new Set<string>();
-  const pinned = togglePin(start, "src/b.ts");
-  assert.ok(pinned.has("src/b.ts"));
+  const context = toggleContext(start, "src/b.ts");
+  assert.ok(context.has("src/b.ts"));
   assert.equal(start.size, 0);
-  assert.ok(!togglePin(pinned, "src/b.ts").has("src/b.ts"));
+  assert.ok(!toggleContext(context, "src/b.ts").has("src/b.ts"));
 });
 
-test("contextSignature changes on selection or pin change, ignores pin order", () => {
+test("contextSignature changes on selection or context change, ignores set order", () => {
   const s1 = contextSignature("src/a.ts", new Set(["x", "y"]));
   assert.equal(s1, contextSignature("src/a.ts", new Set(["y", "x"])));
   assert.notEqual(s1, contextSignature("src/b.ts", new Set(["x", "y"])));
   assert.notEqual(s1, contextSignature("src/a.ts", new Set(["x"])));
 });
 
-test("contextMarkdown puts the selected file first and skips a pin equal to it", () => {
+test("contextMarkdown puts the selected file first and skips a context file equal to it", () => {
   const diffs = parseUnifiedDiff(RAW);
   const md = contextMarkdown(7, "src/a.ts", new Set(["src/a.ts", "src/b.ts"]), diffs);
   assert.ok(md.startsWith("# Review context: PR #7"));
   const cur = md.indexOf("## Current file: src/a.ts");
-  const pin = md.indexOf("## Pinned: src/b.ts");
-  assert.ok(cur >= 0 && pin > cur);
-  assert.equal(md.indexOf("## Pinned: src/a.ts"), -1);
+  const ctx = md.indexOf("## Context: src/b.ts");
+  assert.ok(cur >= 0 && ctx > cur);
+  assert.equal(md.indexOf("## Context: src/a.ts"), -1);
   assert.ok(md.includes("```diff\n@@ -5 +5 @@\n-x\n+y\n```"));
 });
 
-test("contextMarkdown notes when nothing is selected or pinned", () => {
+test("contextMarkdown notes when nothing is selected or in context", () => {
   const md = contextMarkdown(7, null, new Set(), parseUnifiedDiff(RAW));
   assert.ok(md.includes("(no file selected)"));
 });

@@ -6,7 +6,7 @@ import blessed from "neo-blessed";
 import { attachClaudeOutput, claudeKeyAction } from "./claude-pane.ts";
 import type { ClaudeSession } from "./claude-sessions.ts";
 import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./review-diff.ts";
-import { contextMarkdown, contextSignature, togglePin } from "./review-context.ts";
+import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
 
@@ -35,6 +35,7 @@ export function placeholderGroups(paths: string[]): ReviewGroups {
 export function planLines(
   groups: ReviewGroup[],
   viewed: Set<string>,
+  context: Set<string>,
   selectedPath: string | null,
 ): { lines: string[]; selectedLine: number } {
   const lines: string[] = [];
@@ -42,7 +43,9 @@ export function planLines(
   for (const g of groups) {
     lines.push(`{yellow-fg}{bold}${escapeTags(g.title)}{/bold}{/yellow-fg}`);
     for (const f of g.files) {
-      const mark = viewed.has(f) ? " {green-fg}✓{/green-fg} " : "   ";
+      const check = viewed.has(f) ? " {green-fg}✓{/green-fg}" : "  ";
+      const plus = context.has(f) ? "{magenta-fg}+{/magenta-fg}" : " ";
+      const mark = check + plus;
       const color = viewed.has(f) ? "green-fg" : "cyan-fg";
       const name = `{${color}}${escapeTags(f)}{/${color}}`;
       if (f === selectedPath) {
@@ -120,10 +123,10 @@ export function nextReviewPane(cur: ReviewPane, hasClaude: boolean): ReviewPane 
   return "plan";
 }
 
-export function claudePaneLabel(selected: string | null, pinnedCount: number): string {
+export function claudePaneLabel(selected: string | null, contextCount: number): string {
   if (selected === null) return " claude ";
-  const pins = pinnedCount > 0 ? ` (+${pinnedCount} pinned)` : "";
-  return ` claude · ${selected}${pins} `;
+  const ctx = contextCount > 0 ? ` (+${contextCount} in context)` : "";
+  return ` claude · ${selected}${ctx} `;
 }
 
 export function reviewFooterHint(s: {
@@ -132,15 +135,17 @@ export function reviewFooterHint(s: {
   allViewed: boolean;
   isDraft: boolean;
   focused: ReviewPane;
+  contextCount: number;
 }): string {
   if (!s.loaded) return "loading…   q back";
   if (s.total === 0) return "no changes in this PR   q back";
-  if (s.focused === "claude") return "typing goes to claude   C-\\ back";
+  if (s.focused === "claude") return "typing goes to claude   C-q or C-\\ back";
   let done = "";
   if (s.allViewed && s.isDraft) done = "   {green-fg}y mark PR ready{/green-fg}";
   else if (s.allViewed) done = "   {green-fg}review complete{/green-fg}";
-  if (s.focused === "diff") return `j/k scroll   space viewed   c pin   tab claude${done}   q back`;
-  return `j/k file   space viewed   c pin   g/G first/last   tab diff${done}   q back`;
+  const clear = s.contextCount > 0 ? "   C clear context" : "";
+  if (s.focused === "diff") return `j/k scroll   space viewed   c context${clear}   tab claude   1/2/3 pane${done}   q back`;
+  return `j/k file   space viewed   c context${clear}   g/G first/last   tab diff   1/2/3 pane${done}   q back`;
 }
 
 // Same rule as the board's paneBorderColor: the focused pane turns white so
@@ -172,13 +177,13 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
       border: { type: "line" }, label: " review plan ", style: paneStyle(),
     },
     diff: {
-      top: 6, left: "25%", width: "40%", bottom: 1, tags: true, keys: true, vi: true,
+      top: 6, left: "25%", width: "45%", bottom: 1, tags: true, keys: true, vi: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " diff ", style: paneStyle(),
       scrollbar: { ch: " ", style: { inverse: true } },
     },
     claude: {
-      top: 6, left: "65%", right: 0, bottom: 1, tags: true, wrap: false,
+      top: 6, left: "70%", right: 0, bottom: 1, tags: true, wrap: false,
       border: { type: "line" }, label: " claude ", style: paneStyle(),
     },
     footer: { bottom: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true, style: { fg: "white" } },
@@ -234,7 +239,7 @@ export function openReview(
   // Guards late async resolutions (grouping, markReady) after close, same as
   // the settings panel's `closed` flag.
   let closed = false;
-  let pinned = new Set<string>();
+  let contextFiles = new Set<string>();
   let lastCtxSig: string | null = null;
   const session = deps.claudeSession();
   let claudeExited = false;
@@ -281,7 +286,7 @@ export function openReview(
     if (selectedPath === null || !fs.includes(selectedPath)) selectedPath = fs[0] ?? null;
     const title = meta ? meta.title : "loading…";
     header.setContent(reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length));
-    const { lines, selectedLine } = planLines(g.groups, viewed, selectedPath);
+    const { lines, selectedLine } = planLines(g.groups, viewed, contextFiles, selectedPath);
     plan.setContent(lines.join("\n"));
     if (selectedLine >= 0) plan.scrollTo(selectedLine);
     const fd = fileDiffs.find((f) => f.path === selectedPath) ?? null;
@@ -303,7 +308,7 @@ export function openReview(
     plan.style.border.fg = reviewPaneBorderColor(focused === "plan");
     diff.style.border.fg = reviewPaneBorderColor(focused === "diff");
     claude.style.border.fg = reviewPaneBorderColor(focused === "claude");
-    claude.setLabel(claudePaneLabel(selectedPath, pinned.size));
+    claude.setLabel(claudePaneLabel(selectedPath, contextFiles.size));
     if (claudeOut) {
       claudeOut.resize(Math.max(2, claude.width - 2), Math.max(2, claude.height - 2));
       claudeOut.repaint();
@@ -316,6 +321,7 @@ export function openReview(
         allViewed: allViewed(),
         isDraft: meta?.isDraft ?? false,
         focused,
+        contextCount: contextFiles.size,
       });
     }
     footer.setContent(hint);
@@ -376,15 +382,21 @@ export function openReview(
   }
 
   function maybeWriteContext(): void {
-    const sig = contextSignature(selectedPath, pinned);
+    const sig = contextSignature(selectedPath, contextFiles);
     if (sig === lastCtxSig) return;
-    const ok = deps.writeContext(contextMarkdown(deps.pr, selectedPath, pinned, fileDiffs));
+    const ok = deps.writeContext(contextMarkdown(deps.pr, selectedPath, contextFiles, fileDiffs));
     if (ok) lastCtxSig = sig;
   }
 
-  function togglePinSelected(): void {
+  function toggleContextSelected(): void {
     if (selectedPath === null) return;
-    pinned = togglePin(pinned, selectedPath);
+    contextFiles = toggleContext(contextFiles, selectedPath);
+    paint();
+  }
+
+  function clearContext(): void {
+    if (contextFiles.size === 0) return;
+    contextFiles = new Set();
     paint();
   }
 
@@ -396,23 +408,38 @@ export function openReview(
     paint();
   };
 
-  plan.on("keypress", (_ch: string, key: { name: string; full?: string; shift?: boolean }) => {
+  // Direct pane jumps; matched on ch because blessed leaves key.name unset
+  // for digit keys. The claude pane never sees these: its keypress forwards
+  // everything to the pty.
+  const jumpPane = (ch: string): boolean => {
+    if (ch === "1") focusPane("plan");
+    else if (ch === "2") focusPane("diff");
+    else if (ch === "3" && hasClaude()) focusPane("claude");
+    else return false;
+    return true;
+  };
+
+  plan.on("keypress", (ch: string, key: { name: string; full?: string; shift?: boolean }) => {
+    if (jumpPane(ch)) return;
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
     else if (key.name === "g" && key.shift) select(files().length - 1);
     else if (key.name === "g") select(0);
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
-    else if (key.name === "c") togglePinSelected();
+    else if (key.name === "c" && key.shift) clearContext();
+    else if (key.name === "c") toggleContextSelected();
     else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
-  diff.on("keypress", (_ch: string, key: { name: string }) => {
+  diff.on("keypress", (ch: string, key: { name: string; shift?: boolean }) => {
+    if (jumpPane(ch)) return;
     if (key.name === "tab") focusPane(nextReviewPane("diff", hasClaude()));
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
-    else if (key.name === "c") togglePinSelected();
+    else if (key.name === "c" && key.shift) clearContext();
+    else if (key.name === "c") toggleContextSelected();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 

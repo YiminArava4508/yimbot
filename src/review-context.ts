@@ -17,8 +17,8 @@ export function patchText(fd: FileDiff): string {
     .join("\n");
 }
 
-export function togglePin(pinned: Set<string>, path: string): Set<string> {
-  const next = new Set(pinned);
+export function toggleContext(context: Set<string>, path: string): Set<string> {
+  const next = new Set(context);
   if (next.has(path)) next.delete(path);
   else next.add(path);
   return next;
@@ -27,8 +27,8 @@ export function togglePin(pinned: Set<string>, path: string): Set<string> {
 // Cheap change detector for lazy injection: the overlay rewrites the context
 // file only when this differs from the last written signature, so moving the
 // selection never touches disk until the operator actually types at claude.
-export function contextSignature(selected: string | null, pinned: Set<string>): string {
-  return JSON.stringify([selected, [...pinned].sort()]);
+export function contextSignature(selected: string | null, context: Set<string>): string {
+  return JSON.stringify([selected, [...context].sort()]);
 }
 
 function fileSection(heading: string, fd: FileDiff): string[] {
@@ -38,18 +38,18 @@ function fileSection(heading: string, fd: FileDiff): string[] {
 export function contextMarkdown(
   pr: number,
   selected: string | null,
-  pinned: Set<string>,
+  context: Set<string>,
   diffs: FileDiff[],
 ): string {
   const byPath = new Map(diffs.map((d) => [d.path, d]));
   const out = [`# Review context: PR #${pr}`, ""];
   const sel = selected === null ? undefined : byPath.get(selected);
   if (sel) out.push(...fileSection("Current file", sel));
-  for (const p of [...pinned].sort()) {
+  for (const p of [...context].sort()) {
     if (p === selected) continue;
     const fd = byPath.get(p);
-    if (fd) out.push(...fileSection("Pinned", fd));
+    if (fd) out.push(...fileSection("Context", fd));
   }
-  if (!sel && pinned.size === 0) out.push("(no file selected)");
+  if (!sel && context.size === 0) out.push("(no file selected)");
   return out.join("\n");
 }

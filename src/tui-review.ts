@@ -9,12 +9,12 @@ import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./r
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
-import { layoutGraph, type NodeBox } from "./arch-layout.ts";
+import { flowView } from "./arch-brief.ts";
 import { fetchAnnotation, normalizeAnnotation } from "./arch-annotate.ts";
 import { sourcePaths } from "./arch-generate.ts";
 import {
-  nodeFiles, nodeStates, parseArchMap, renderSet,
-  type ArchAnnotation, type ArchMap, type ArchNode, type NodeState,
+  nodeFiles, parseArchMap, renderSet,
+  type ArchAnnotation, type ArchMap,
 } from "./arch-map.ts";
 
 export function flattenFiles(groups: ReviewGroup[]): string[] {
@@ -195,65 +195,28 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
   };
 }
 
-// The flow overlay's two boxes: the chart takes the body, the note band pins
-// three content rows above the footer. Both mount hidden and are shown by the
-// f toggle, so the three columns keep their own scroll and selection.
-export function flowLayout(): Record<"chart" | "note", Record<string, unknown>> {
+// The flow overlay is a single scrolling pane: arch-brief renders the scoped
+// graph and the written brief into one row list, and the brief already carries
+// the role, the edge's carries and the at-risk reason a separate note band
+// used to hold, so a band under it would only repeat itself.
+export function flowLayout(): Record<"chart", Record<string, unknown>> {
   return {
     chart: {
-      top: 1, left: 0, width: "100%", bottom: 6, tags: true, wrap: false, hidden: true,
+      top: 1, left: 0, width: "100%", bottom: 1, tags: true, wrap: false, hidden: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " flow ", style: paneStyle(),
       scrollbar: { ch: " ", style: { inverse: true } },
     },
-    note: {
-      bottom: 1, left: 0, width: "100%", height: 5, tags: true, wrap: false, hidden: true,
-      border: { type: "line" }, label: " note ", style: paneStyle(),
-    },
   };
-}
-
-export function nodeOrder(boxes: NodeBox[]): string[] {
-  return [...boxes].sort((a, b) => a.row - b.row || a.colStart - b.colStart).map((b) => b.id);
-}
-
-export function noteBandLines(s: {
-  node: ArchNode | null;
-  state: NodeState;
-  ann: ArchAnnotation | null;
-  stale: number;
-}): string[] {
-  const out: string[] = [];
-  if (s.stale > 0) {
-    out.push(`{yellow-fg}map stale: ${s.stale} file${s.stale === 1 ? "" : "s"} unmapped   G regenerate{/yellow-fg}`);
-  }
-  if (s.ann === null) {
-    out.push("{grey-fg}flow annotation unavailable, showing touched nodes only{/grey-fg}");
-  }
-  if (s.node === null) {
-    if (s.ann?.flow) out.push(escapeTags(s.ann.flow));
-    return out.length > 0 ? out : ["{grey-fg}j/k to pick a node{/grey-fg}"];
-  }
-  const head = `{bold}${escapeTags(s.node.label)}{/bold}`;
-  out.push(s.node.role ? `${head}: ${escapeTags(s.node.role)}` : head);
-  // The band is three content rows and does not scroll, so the at-risk reason
-  // goes above the touched note: it is the line the feature exists for, and
-  // last place is the first thing the box clips.
-  const risk = s.ann?.atRisk.find((r) => r.node === s.node?.id);
-  if (risk) out.push(`{red-fg}at risk via ${escapeTags(risk.viaEdge)}: ${escapeTags(risk.why)}{/red-fg}`);
-  const note = s.ann?.touched.find((t) => t.node === s.node?.id)?.note;
-  if (note) out.push(escapeTags(note));
-  if (s.state === "unmapped") out.push("{grey-fg}no node in the map claims these files{/grey-fg}");
-  return out;
 }
 
 export function flowFooterHint(s: { stale: number; selected: string | null; hasMap: boolean }): string {
   // Nothing to move between or jump into until a map exists, so the empty
   // overlay offers the one key that gets it there.
-  if (!s.hasMap) return "{yellow-fg}G build map{/yellow-fg}   f diff   q back";
+  if (!s.hasMap) return "{yellow-fg}G build map{/yellow-fg}   q/f diff";
   const regen = s.stale > 0 ? "   {yellow-fg}G regenerate{/yellow-fg}" : "";
   const jump = s.selected ? "   enter files" : "";
-  return `j/k node${jump}${regen}   f diff   q back`;
+  return `j/k node${jump}${regen}   q/f diff`;
 }
 
 const NO_ARCH_MAP = "{red-fg}no architecture map in this repo, press G to build one{/red-fg}";
@@ -307,9 +270,7 @@ export function openReview(
   const diff: any = blessed.box({ parent: s, ...layout.diff });
   const claude: any = blessed.box({ parent: s, ...layout.claude });
   const footer: any = blessed.text({ parent: s, ...layout.footer });
-  const flow = flowLayout();
-  const chart: any = blessed.box({ parent: s, ...flow.chart });
-  const note: any = blessed.box({ parent: s, ...flow.note });
+  const chart: any = blessed.box({ parent: s, ...flowLayout().chart });
   plan.focus();
 
   let meta: { title: string; body: string; headSha: string } | null = null;
@@ -335,7 +296,9 @@ export function openReview(
   let archMap: ArchMap | null = null;
   let annotation: ArchAnnotation | null = null;
   let selectedNode: string | null = null;
-  let chartBoxes: NodeBox[] = [];
+  // The flow pane's selectable node ids, in render order; refreshed by paint so
+  // moveNode walks exactly what the brief put on screen.
+  let flowNodes: string[] = [];
   let regenerating = false;
   const session = deps.claudeSession();
   let claudeExited = false;
@@ -436,27 +399,24 @@ export function openReview(
     if (flowOpen) {
       const { map: m, unmapped } = renderState();
       if (m) {
-        const states = nodeStates(m, annotation, chartPaths());
-        const drawn = layoutGraph(m, states, Math.max(12, chart.width - 2), selectedNode);
-        chartBoxes = drawn.boxes;
-        chart.setContent(drawn.lines.join("\n"));
-        // The chart is taller than the pane on any real map, and its own keys
-        // are spent on node movement, so the selection is what scrolls it.
-        const box = drawn.boxes.find((b) => b.id === selectedNode);
-        if (box) chart.scrollTo(box.row);
-        const node = m.nodes.find((n) => n.id === selectedNode) ?? null;
-        note.setContent(noteBandLines({
-          node,
-          state: node ? states.get(node.id) ?? "idle" : "idle",
+        const view = flowView({
+          map: m,
           ann: annotation,
+          changed: chartPaths(),
           stale: unmapped.length,
-        }).join("\n"));
+          width: Math.max(12, chart.width - 2),
+          selected: selectedNode,
+        });
+        flowNodes = view.nodes;
+        chart.setContent(view.rows.map((r) => r.text).join("\n"));
+        // The brief runs past the pane on a wide-reaching PR, and the pane's own
+        // keys are spent on node movement, so the selection is what scrolls it.
+        if (view.selectedRow >= 0) chart.scrollTo(view.selectedRow);
       } else {
         // A regenerate that wrote a file we cannot parse drops the map; without
         // this the chart would keep showing the one it replaced.
-        chartBoxes = [];
+        flowNodes = [];
         chart.setContent(NO_ARCH_MAP);
-        note.setContent(NO_ARCH_MAP);
       }
       chart.style.border.fg = reviewPaneBorderColor(true);
     }
@@ -495,7 +455,6 @@ export function openReview(
     claude.detach();
     footer.detach();
     chart.detach();
-    note.detach();
     s.render();
     onClose(notice, isError);
   }
@@ -567,7 +526,6 @@ export function openReview(
     flowOpen = open;
     for (const w of [guide, plan, diff, claude]) w.hidden = open;
     chart.hidden = !open;
-    note.hidden = !open;
     if (open) chart.focus();
     else focusPane(focused);
     paint();
@@ -581,10 +539,9 @@ export function openReview(
   };
 
   const moveNode = (delta: number): void => {
-    const order = nodeOrder(chartBoxes);
-    if (order.length === 0) return;
-    const cur = selectedNode === null ? -1 : order.indexOf(selectedNode);
-    selectedNode = order[Math.max(0, Math.min(order.length - 1, cur + delta))];
+    if (flowNodes.length === 0) return;
+    const cur = selectedNode === null ? -1 : flowNodes.indexOf(selectedNode);
+    selectedNode = flowNodes[Math.max(0, Math.min(flowNodes.length - 1, cur + delta))];
     paint();
   };
 
@@ -675,8 +632,7 @@ export function openReview(
     else if (key.name === "k" || key.name === "up") moveNode(-1);
     else if (key.name === "enter" || key.name === "return") jumpToNode();
     else if (key.name === "g" && key.shift) regenerate();
-    else if ((key.name === "f" && !key.ctrl) || key.name === "escape") setFlow(false);
-    else if (key.name === "q") close(null, false);
+    else if ((key.name === "f" && !key.ctrl) || key.name === "escape" || key.name === "q") setFlow(false);
   });
 
   chart.on("click", () => {

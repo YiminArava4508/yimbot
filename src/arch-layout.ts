@@ -278,7 +278,7 @@ export function renderGrid(
   return grid;
 }
 
-const STATE_TAGS: Record<NodeState, [string, string]> = {
+export const STATE_TAGS: Record<NodeState, [string, string]> = {
   touched: ["{bold}{white-fg}", "{/white-fg}{/bold}"],
   "at-risk": ["{red-fg}", "{/red-fg}"],
   added: ["{green-fg}", "{/green-fg}"],

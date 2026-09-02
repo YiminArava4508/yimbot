@@ -17,8 +17,6 @@ import {
   guideLines,
   nextReviewPane,
   nextUnviewed,
-  nodeOrder,
-  noteBandLines,
   openReview,
   placeholderGroups,
   planLines,
@@ -29,7 +27,6 @@ import {
   type ReviewDeps,
 } from "./tui-review.ts";
 import type { FileDiff } from "./review-diff.ts";
-import type { ArchAnnotation, ArchNode } from "./arch-map.ts";
 
 const { Terminal } = xtermHeadless;
 
@@ -865,80 +862,11 @@ test("openReview subscribes the screen resize repaint on open and removes it on 
   screen.destroy();
 });
 
-const NODE: ArchNode = { id: "gh", label: "gh", role: "talks to GitHub", files: ["src/gh.ts"] };
-const FLOW_ANN: ArchAnnotation = {
-  flow: "review pulls a diff from gh",
-  touched: [{ node: "gh", note: "the fetch signature moved" }],
-  atRisk: [{ node: "review", why: "calls prDiff", viaEdge: "review->gh" }],
-  added: [],
-};
-
-test("flowLayout puts the chart above a bordered note band", () => {
+test("flowLayout is one scrolling pane down to the footer", () => {
   const l = flowLayout();
   assert.equal(l.chart.scrollable, true);
   assert.equal(l.chart.hidden, true);
-  assert.equal(l.note.height, 5);
-  assert.equal(l.note.bottom, 1);
-});
-
-test("nodeOrder walks boxes top to bottom then left to right", () => {
-  const boxes = [
-    { id: "b", row: 3, colStart: 10, colEnd: 14 },
-    { id: "c", row: 3, colStart: 0, colEnd: 4 },
-    { id: "a", row: 0, colStart: 5, colEnd: 9 },
-  ];
-  assert.deepEqual(nodeOrder(boxes), ["a", "c", "b"]);
-});
-
-test("noteBandLines shows the node role and its touched note", () => {
-  const out = noteBandLines({ node: NODE, state: "touched", ann: FLOW_ANN, stale: 0 }).join("\n");
-  assert.ok(out.includes("gh"));
-  assert.ok(out.includes("talks to GitHub"));
-  assert.ok(out.includes("the fetch signature moved"));
-});
-
-test("noteBandLines spells out why an at risk node is at risk", () => {
-  const review: ArchNode = { id: "review", label: "review", role: "the overlay", files: [] };
-  const out = noteBandLines({ node: review, state: "at-risk", ann: FLOW_ANN, stale: 0 }).join("\n");
-  assert.ok(out.includes("calls prDiff"));
-  assert.ok(out.includes("review->gh"));
-});
-
-test("noteBandLines falls back to the flow paragraph with nothing selected", () => {
-  const out = noteBandLines({ node: null, state: "idle", ann: FLOW_ANN, stale: 0 }).join("\n");
-  assert.ok(out.includes("review pulls a diff from gh"));
-});
-
-test("noteBandLines leads with the stale warning when files are unmapped", () => {
-  const out = noteBandLines({ node: null, state: "idle", ann: FLOW_ANN, stale: 3 });
-  assert.ok(out[0].includes("3"));
-  assert.ok(out[0].includes("stale"));
-});
-
-test("noteBandLines puts the at risk reason above the touched note", () => {
-  const both: ArchAnnotation = {
-    flow: "",
-    touched: [{ node: "gh", note: "the fetch signature moved" }],
-    atRisk: [{ node: "gh", why: "reads the shape that moved", viaEdge: "gh->review" }],
-    added: [],
-  };
-  const out = noteBandLines({ node: NODE, state: "at-risk", ann: both, stale: 2 });
-  assert.ok(out[0].includes("stale"));
-  assert.ok(out[1].includes("talks to GitHub"));
-  assert.ok(out[2].includes("reads the shape that moved"));
-  assert.ok(out[3].includes("the fetch signature moved"));
-});
-
-test("noteBandLines explains the unmapped bucket while still naming the node", () => {
-  const bucket: ArchNode = { id: "unmapped", label: "unmapped (2)", role: "", files: [] };
-  const out = noteBandLines({ node: bucket, state: "unmapped", ann: FLOW_ANN, stale: 2 }).join("\n");
-  assert.ok(out.includes("unmapped (2)"));
-  assert.ok(out.includes("no node in the map claims these files"));
-});
-
-test("noteBandLines says so when there is no annotation at all", () => {
-  const out = noteBandLines({ node: null, state: "idle", ann: null, stale: 0 }).join("\n");
-  assert.ok(out.includes("touched nodes only"));
+  assert.equal(l.chart.bottom, 1, "the brief carries what the note band used to, so it gets the whole body");
 });
 
 test("flowFooterHint offers regenerate only while the map is stale", () => {
@@ -1000,18 +928,33 @@ test("the chart marks the at risk node the annotation named", async () => {
   screen.destroy();
 });
 
-test("j and k walk nodes and the note band follows", async () => {
+test("the brief carries each touched node's role and note without a selection", async () => {
   const screen = makeScreen();
   openReview(screen, testDeps(), () => {});
   await settle();
   press(screen, "f");
-  const note = paneByLabel(screen, " note ");
+  const content = paneByLabel(screen, " flow ").getContent();
+  assert.ok(content.includes("first"), "alpha's role");
+  assert.ok(content.includes("second"), "beta's role");
+  assert.ok(content.includes("the entry point moved"), "alpha's touched note");
+  assert.ok(content.includes("reads the moved shape"), "zulu's at risk reason");
+  assert.ok(content.includes("writes"), "the carries label on the edge that puts zulu at risk");
+  screen.destroy();
+});
+
+test("j and k walk the brief's nodes in render order", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "f");
+  const chart = paneByLabel(screen, " flow ");
   press(screen, "j");
-  assert.ok(note.getContent().includes("first"));
+  assert.ok(selected(chart, "alpha"));
   press(screen, "j");
-  assert.ok(note.getContent().includes("second"));
+  assert.ok(selected(chart, "beta"));
+  assert.ok(!selected(chart, "alpha"), "only one node is selected at a time");
   press(screen, "k");
-  assert.ok(note.getContent().includes("first"));
+  assert.ok(selected(chart, "alpha"));
   screen.destroy();
 });
 
@@ -1053,8 +996,9 @@ test("unmapped changed files get their own node and the stale warning", async ()
   openReview(screen, testDeps({ loadArchMap: () => map }), () => {});
   await settle();
   press(screen, "f");
-  assert.ok(paneByLabel(screen, " flow ").getContent().includes("unmapped (1)"));
-  assert.ok(paneByLabel(screen, " note ").getContent().includes("stale"));
+  const content = paneByLabel(screen, " flow ").getContent();
+  assert.ok(content.includes("unmapped (1)"));
+  assert.ok(content.includes("stale"));
   screen.destroy();
 });
 
@@ -1095,7 +1039,7 @@ test("a PR of only a test file and package.json leaves the map unstale", async (
   await settle();
   press(screen, "f");
   assert.ok(!paneByLabel(screen, " flow ").getContent().includes("unmapped"));
-  assert.ok(!paneByLabel(screen, " note ").getContent().includes("stale"));
+  assert.ok(!paneByLabel(screen, " flow ").getContent().includes("stale"));
   assert.ok(!footerOf(screen).getContent().includes("G regenerate"));
   screen.destroy();
 });
@@ -1186,7 +1130,6 @@ test("a regenerate that writes an unparseable map replaces the chart with the re
   pressShiftG(screen);
   await settle();
   assert.ok(paneByLabel(screen, " flow ").getContent().includes("no architecture map"));
-  assert.ok(paneByLabel(screen, " note ").getContent().includes("no architecture map"));
   screen.destroy();
 });
 
@@ -1209,8 +1152,9 @@ test("a failed annotation still draws the chart from the map", async () => {
   openReview(screen, testDeps({ runAnnotation: async () => "not json" }), () => {});
   await settle();
   press(screen, "f");
-  assert.ok(paneByLabel(screen, " flow ").getContent().includes("alpha"));
-  assert.ok(paneByLabel(screen, " note ").getContent().includes("touched nodes only"));
+  const content = paneByLabel(screen, " flow ").getContent();
+  assert.ok(content.includes("alpha"));
+  assert.ok(content.includes("touched nodes only"));
   screen.destroy();
 });
 
@@ -1245,12 +1189,16 @@ test("a fresh annotation is cached, a failed one is not", async () => {
   screen2.destroy();
 });
 
-test("q from the chart closes the whole overlay", async () => {
+test("q from the flow backs out to the diff, and a second q leaves the review", async () => {
   const screen = makeScreen();
   let closed = false;
   openReview(screen, testDeps(), () => { closed = true; });
   await settle();
   press(screen, "f");
+  press(screen, "q");
+  assert.equal(paneByLabel(screen, " flow ").hidden, true, "q backs out one level, it does not close the review");
+  assert.equal(paneByLabel(screen, " review plan ").hidden, false);
+  assert.equal(closed, false);
   press(screen, "q");
   assert.equal(closed, true);
 });
@@ -1296,6 +1244,9 @@ test("walking to a node below the fold scrolls the chart to it", async () => {
 const inverted = (chart: any, label: string): boolean =>
   new RegExp(`\\{inverse\\}[^\\[]*\\[ ${label} \\]`).test(chart.content);
 
+const selected = (chart: any, label: string): boolean =>
+  new RegExp(`\\{inverse\\}(?:\\{[^{}]*\\})*${label}`).test(chart.content);
+
 test("the chart marks the selected node so j and k show on the chart itself", async () => {
   const screen = makeScreen();
   openReview(screen, testDeps(), () => {});
@@ -1330,8 +1281,8 @@ test("a regenerate drops the annotation cached under this head sha", async () =>
   screen.destroy();
 });
 
-test("the note band never wraps, so the at risk line survives the stale banner", () => {
-  assert.equal(flowLayout().note.wrap, false);
+test("the flow pane never wraps, so a brief row cannot split under the selection", () => {
+  assert.equal(flowLayout().chart.wrap, false);
 });
 
 test("an annotation in flight when the map is regenerated is dropped", async () => {
@@ -1355,7 +1306,7 @@ test("an annotation in flight when the map is regenerated is dropped", async () 
   (release as unknown as (v: string) => void)(ANN_JSON);
   await settle();
   assert.ok(!saved.some((f) => f !== null), "a result built against the replaced map must not be kept");
-  assert.ok(!paneByLabel(screen, " note ").getContent().includes("alpha calls beta"));
+  assert.ok(!paneByLabel(screen, " flow ").getContent().includes("alpha calls beta"));
   screen.destroy();
 });
 

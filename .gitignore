@@ -5,6 +5,7 @@ daemon.log
 daemon.log.bak.*
 events.jsonl
 review-state.json
+architecture-map-*.json
 docs/superpowers/
 mode
 refine

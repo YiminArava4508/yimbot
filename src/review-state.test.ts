@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
+  archMapPath,
   parseReviewState,
   readGroups,
   readViewed,
@@ -134,4 +135,30 @@ test("withEntry under a new head sha drops the old flow with the old entry", () 
   const next = withEntry(st, 7, "def", { viewed: [] });
   assert.equal(next["7:abc"], undefined);
   assert.equal(next["7:def"].flow, undefined);
+});
+
+test("archMapPath keeps the map in yimbot's state dir, never in the reviewed repo", () => {
+  inTempStateDir(() => {
+    const p = archMapPath("/home/u/Work/gemini");
+    assert.equal(dirname(p), dirname(reviewStateFilePath()));
+    assert.ok(!p.startsWith("/home/u/Work/gemini"), "a map inside the repo could be committed by accident");
+  });
+});
+
+test("archMapPath gives each codebase its own map", () => {
+  inTempStateDir(() => {
+    assert.notEqual(archMapPath("/home/u/Work/gemini"), archMapPath("/home/u/Work/other"));
+  });
+});
+
+test("archMapPath is stable for the same codebase", () => {
+  inTempStateDir(() => {
+    assert.equal(archMapPath("/home/u/Work/gemini"), archMapPath("/home/u/Work/gemini"));
+  });
+});
+
+test("archMapPath separates codebases whose paths slug the same", () => {
+  inTempStateDir(() => {
+    assert.notEqual(archMapPath("/a/b/gemini"), archMapPath("/a-b/gemini"));
+  });
 });

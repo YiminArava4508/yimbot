@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  archMapPath,
   globToRegExp,
   mergedMap,
   nodeFiles,
@@ -28,10 +27,6 @@ const MAP: ArchMap = {
     { from: "review", to: "gh", carries: "diff fetch" },
   ],
 };
-
-test("archMapPath hangs the map off the codebase root", () => {
-  assert.equal(archMapPath("/home/u/Work/gemini"), "/home/u/Work/gemini/docs/architecture-map.json");
-});
 
 test("globToRegExp keeps * inside one path segment and lets ** cross them", () => {
   assert.ok(globToRegExp("src/*.ts").test("src/gh.ts"));

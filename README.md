@@ -259,6 +259,20 @@ step's in-memory continuation counters, so an already-merged PR can drive one
 more judged round and `MAX_CONTINUATIONS` counts from zero again. This is true
 of any restart, including quitting the board.
 
+The status line stays quiet while the outside services answer. When one stops
+answering, a red `⚠ github`, `⚠ linear` or `⚠ claude` appears at its left.
+Nothing is polled behind it: every gh, Linear and claude call the daemon already
+makes reports its own outcome. Only a failure that never got an answer counts, so
+a 404, a GraphQL error and a non-zero claude exit all leave the service marked
+reachable, and a failure whose wording we do not recognize leaves the last state
+standing rather than guessing. The one exception is a call killed at our own
+deadline: the claude CLI retries a transport failure internally instead of
+exiting, so an Anthropic outage reaches us only as that timeout, and a single TCP
+connect to the host settles whether it was the network or just a slow prompt. A
+warning clears on that service's next successful call, and expires on its own
+after `REACH_TTL_MS` (15 minutes by default) so a one-off failure on a
+rarely-called service does not sit there.
+
 While the board runs it binds `prefix + Y` on the tmux
 server, so `prefix + Y` from any session (a ticket session yimbot opened or one
 of your own) switches back to the board. The binding targets the board's pane,

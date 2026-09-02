@@ -1,8 +1,8 @@
 // src/arch-map.ts
-// The architecture map's data model: a committed skeleton of the reviewed
-// codebase (nodes with file globs, edges with what they carry), the per-PR
-// annotation laid over it, and the derived per-node state the chart renders.
-import { join } from "node:path";
+// The architecture map's data model: a skeleton of the reviewed codebase
+// (nodes with file globs, edges with what they carry), the per-PR annotation
+// laid over it, and the derived per-node state the chart renders. Where the
+// map file itself lives is review-state.ts's business, not this module's.
 
 export type ArchNode = { id: string; label: string; role: string; files: string[] };
 export type ArchEdge = { from: string; to: string; carries: string };
@@ -18,10 +18,6 @@ export type ArchAnnotation = {
 export type NodeState = "added" | "touched" | "at-risk" | "unmapped" | "idle";
 
 export const UNMAPPED_ID = "unmapped";
-
-export function archMapPath(codebase: string): string {
-  return join(codebase, "docs", "architecture-map.json");
-}
 
 // nodeForPath runs every glob against every changed path on every paint, so the
 // compiled form is kept rather than rebuilt tens of thousands of times.
@@ -111,7 +107,7 @@ export function nodeFiles(map: ArchMap, id: string, changed: string[]): string[]
   return changed.filter((p) => nodeForPath(map, p)?.id === id);
 }
 
-// The render set: the committed skeleton, plus whatever this PR introduces,
+// The render set: the generated skeleton, plus whatever this PR introduces,
 // plus a bucket so an unmapped file is never invisible on the chart.
 export function mergedMap(map: ArchMap, ann: ArchAnnotation | null, unmapped: string[]): ArchMap {
   if ((ann === null || ann.added.length === 0) && unmapped.length === 0) return map;

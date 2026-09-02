@@ -38,6 +38,7 @@ import {
 } from "./linear-api.ts";
 import { readMode } from "./mode.ts";
 import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
+import { observeReach } from "./reach.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
@@ -238,14 +239,18 @@ export async function startDaemon(): Promise<() => void> {
   }
   const judgeModel = envOr("AC_JUDGE_MODEL", "");
   const execFileAsync = promisify(execFile);
+  // The second claude path (runHeadless is the other), wrapped the same way so
+  // the board's reachability warning sees every call the daemon makes.
   const judgeRun: JudgeRunner = async (prompt) => {
     const args = ["-p", prompt];
     if (judgeModel) args.push("--model", judgeModel);
-    const { stdout } = await execFileAsync("claude", args, {
-      cwd: codebasePath,
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 120_000,
-    });
+    const { stdout } = await observeReach("claude", () =>
+      execFileAsync("claude", args, {
+        cwd: codebasePath,
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 120_000,
+      }),
+    );
     return stdout;
   };
   // On unless explicitly disabled, matching AUTO_READY_LABEL. Reuses judgeRun,

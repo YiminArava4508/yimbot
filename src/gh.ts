@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { observeReach } from "./reach.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,7 +14,13 @@ export type GhRunner = (args: string[]) => Promise<string>;
 
 export function ghRunner(cwd: string): GhRunner {
   return async (args) => {
-    const { stdout } = await execFileAsync("gh", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+    // Wrapped so the board can warn when GitHub stops answering. gh folds its
+    // stderr into the rejection, so a transport failure ("no route to host",
+    // "could not resolve host") is visible there; a 404 or a rejected flag is
+    // not a reachability problem.
+    const { stdout } = await observeReach("github", () =>
+      execFileAsync("gh", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }),
+    );
     return stdout;
   };
 }

@@ -247,13 +247,16 @@ export function noteBandLines(s: {
   return out;
 }
 
-export function flowFooterHint(s: { stale: number; selected: string | null }): string {
+export function flowFooterHint(s: { stale: number; selected: string | null; hasMap: boolean }): string {
+  // Nothing to move between or jump into until a map exists, so the empty
+  // overlay offers the one key that gets it there.
+  if (!s.hasMap) return "{yellow-fg}G build map{/yellow-fg}   f diff   q back";
   const regen = s.stale > 0 ? "   {yellow-fg}G regenerate{/yellow-fg}" : "";
   const jump = s.selected ? "   enter files" : "";
   return `j/k node${jump}${regen}   f diff   q back`;
 }
 
-const NO_ARCH_MAP = "{red-fg}no architecture map in this repo, run pnpm arch-map{/red-fg}";
+const NO_ARCH_MAP = "{red-fg}no architecture map in this repo, press G to build one{/red-fg}";
 
 export type ReviewDeps = {
   pr: number;
@@ -459,7 +462,11 @@ export function openReview(
     }
     let hint = footerOverride;
     if (hint === undefined && flowOpen) {
-      hint = flowFooterHint({ stale: renderState().unmapped.length, selected: selectedNode });
+      hint = flowFooterHint({
+        stale: renderState().unmapped.length,
+        selected: selectedNode,
+        hasMap: archMap !== null,
+      });
     }
     if (hint === undefined) {
       hint = reviewFooterHint({
@@ -566,12 +573,10 @@ export function openReview(
     paint();
   };
 
+  // Opens even with no map: the empty chart says so and G builds one, which
+  // beats sending the operator out to a shell for the first map.
   const openFlow = (): void => {
     if (archMap === null) archMap = loadMap();
-    if (archMap === null) {
-      paint(NO_ARCH_MAP);
-      return;
-    }
     setFlow(true);
   };
 
@@ -636,9 +641,13 @@ export function openReview(
   }
 
   const regenerate = (): void => {
-    if (regenerating || renderState().unmapped.length === 0) return;
+    if (regenerating) return;
+    // With a map in hand the key only earns its cost when something is
+    // unmapped; with no map at all every press is the first build.
+    const first = archMap === null;
+    if (!first && renderState().unmapped.length === 0) return;
     regenerating = true;
-    paint("regenerating the architecture map…");
+    paint(`${first ? "building" : "regenerating"} the architecture map…`);
     void (async () => {
       try {
         await deps.regenerateArchMap();

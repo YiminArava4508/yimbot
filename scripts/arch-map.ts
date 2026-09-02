@@ -1,11 +1,12 @@
 // scripts/arch-map.ts
 // Regenerates the reviewed codebase's architecture map. One headless call,
-// spawned as its own process by the overlay's G key or run by hand.
+// spawned as its own process by the overlay's G key or run by hand. The map is
+// written into yimbot's own state dir, never into the repo being reviewed.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { archMapPath } from "../src/arch-map.ts";
+import { archMapPath } from "../src/review-state.ts";
 import { mapPrompt, parseGeneratedMap, sourcePaths } from "../src/arch-generate.ts";
 import { envOr } from "../src/env.ts";
 import { runHeadless } from "../src/headless.ts";
@@ -29,8 +30,9 @@ if (!map) {
   process.exit(1);
 }
 const dest = archMapPath(codebase);
-// A reviewed repo need not already have a docs/ directory, and the ENOENT would
-// surface through execFile as a raw error in the overlay's footer.
+// The state dir exists once the TUI has written anything, but a first build on
+// a fresh checkout can beat it there, and the ENOENT would surface through
+// execFile as a raw error in the overlay's footer.
 mkdirSync(dirname(dest), { recursive: true });
 writeFileSync(dest, JSON.stringify(map, null, 2) + "\n");
 console.log(`[arch-map] wrote ${map.nodes.length} nodes and ${map.edges.length} edges to ${dest}`);

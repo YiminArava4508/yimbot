@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, returnKey, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -181,13 +181,13 @@ test("footerHint no longer advertises a refine key (refine lives in settings)", 
 });
 
 test("statusContent shows a red refine-off chip while refine is off", () => {
-  const off = statusContent("supervised", false, 2, null, 0);
+  const off = statusContent("supervised", false, 2, null, 0, []);
   assert.match(off, /REFINE OFF/);
   assert.match(off, /red-bg/);
 });
 
 test("statusContent shows a green refine-on chip while refine is on", () => {
-  const on = statusContent("supervised", true, 2, null, 0);
+  const on = statusContent("supervised", true, 2, null, 0, []);
   assert.match(on, /REFINE ON/);
   assert.match(on, /green-bg.*REFINE ON/);
 });
@@ -303,10 +303,10 @@ test("bindFlagKey gates f while settings is open", () => {
 
 test("statusContent shows an unexpired notice and drops it after its ttl", () => {
   const notice = { text: "adding ready label to #481…", until: 10_000 };
-  assert.match(statusContent("supervised", true, 2, notice, 9_999), /adding ready label to #481/);
-  assert.match(statusContent("supervised", true, 2, notice, 9_999), /2 active/);
-  assert.doesNotMatch(statusContent("supervised", true, 2, notice, 10_000), /adding ready label/);
-  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0), /adding ready label/);
+  assert.match(statusContent("supervised", true, 2, notice, 9_999, []), /adding ready label to #481/);
+  assert.match(statusContent("supervised", true, 2, notice, 9_999, []), /2 active/);
+  assert.doesNotMatch(statusContent("supervised", true, 2, notice, 10_000, []), /adding ready label/);
+  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0, []), /adding ready label/);
 });
 
 test("handleReadyPress reports the same outcome the review overlay does", async () => {
@@ -434,7 +434,7 @@ function renderHeaderLines(columns: number, rows: number): string[] {
   blessed.text({
     parent: screen,
     ...statusLayout(),
-    content: statusContent("supervised", true, 3, null, Date.now()),
+    content: statusContent("supervised", true, 3, null, Date.now(), []),
   });
   screen.render();
   const lines = screen.lines.map((line: [number, string][]) =>
@@ -778,4 +778,27 @@ test("alignTables keeps wide-character titles on the shared grid", () => {
   ]);
   const titleIdx = BOARD_HEADER.indexOf("TITLE");
   assert.equal(cellWidth(a[1][titleIdx]), cellWidth(b[1][titleIdx]));
+});
+
+test("reachWarnings is empty while everything answers", () => {
+  assert.equal(reachWarnings([]), "");
+});
+
+test("reachWarnings names each failing service in red", () => {
+  assert.equal(reachWarnings(["github"]), "{red-fg}⚠ github{/red-fg} ");
+  assert.equal(
+    reachWarnings(["github", "linear"]),
+    "{red-fg}⚠ github{/red-fg} {red-fg}⚠ linear{/red-fg} ",
+  );
+});
+
+test("statusContent leads with the reach warnings, ahead of the chips", () => {
+  const bar = statusContent("supervised", true, 2, null, 0, ["github"]);
+  assert.ok(bar.startsWith("{red-fg}⚠ github{/red-fg}"));
+  assert.ok(bar.indexOf("github") < bar.indexOf("REFINE"));
+  assert.match(bar, /2 active/);
+});
+
+test("statusContent says nothing about reachability while every service answers", () => {
+  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0, []), /⚠/);
 });

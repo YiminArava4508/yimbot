@@ -942,10 +942,17 @@ test("noteBandLines says so when there is no annotation at all", () => {
 });
 
 test("flowFooterHint offers regenerate only while the map is stale", () => {
-  assert.ok(!flowFooterHint({ stale: 0, selected: "gh" }).includes("G regenerate"));
-  assert.ok(flowFooterHint({ stale: 2, selected: "gh" }).includes("G regenerate"));
-  assert.ok(flowFooterHint({ stale: 0, selected: "gh" }).includes("enter files"));
-  assert.ok(!flowFooterHint({ stale: 0, selected: null }).includes("enter files"));
+  assert.ok(!flowFooterHint({ stale: 0, selected: "gh", hasMap: true }).includes("G regenerate"));
+  assert.ok(flowFooterHint({ stale: 2, selected: "gh", hasMap: true }).includes("G regenerate"));
+  assert.ok(flowFooterHint({ stale: 0, selected: "gh", hasMap: true }).includes("enter files"));
+  assert.ok(!flowFooterHint({ stale: 0, selected: null, hasMap: true }).includes("enter files"));
+});
+
+test("flowFooterHint offers the first build when the repo has no map", () => {
+  const hint = flowFooterHint({ stale: 0, selected: null, hasMap: false });
+  assert.ok(hint.includes("G build map"));
+  assert.ok(!hint.includes("j/k node"), "there are no nodes to move between yet");
+  assert.ok(!hint.includes("G regenerate"));
 });
 
 const ARCH_JSON = JSON.stringify({
@@ -1025,14 +1032,14 @@ test("enter on a node closes the chart and selects that node's file", async () =
   screen.destroy();
 });
 
-test("a missing architecture map keeps f shut and says why", async () => {
+test("f on a repo with no map opens the flow and offers to build one", async () => {
   const screen = makeScreen();
   openReview(screen, testDeps({ loadArchMap: () => null }), () => {});
   await settle();
   press(screen, "f");
-  const footer = screen.children.find((c: any) => c.options.height === 1 && c.options.bottom === 0);
-  assert.equal(paneByLabel(screen, " flow ").hidden, true);
-  assert.ok(footer.getContent().includes("no architecture map"));
+  assert.equal(paneByLabel(screen, " flow ").hidden, false);
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no architecture map"));
+  assert.ok(footerOf(screen).getContent().includes("G build map"));
   screen.destroy();
 });
 
@@ -1128,6 +1135,26 @@ test("G reloads the map and refetches the annotation against the new topology", 
   assert.ok(chart.getContent().includes("bravo"));
   assert.ok(!chart.getContent().includes("unmapped"));
   assert.equal(annCalls, 1, "the new map gets its own annotation, never the one cached for the old");
+  screen.destroy();
+});
+
+test("G builds the first map inline when the repo has none", async () => {
+  let raw: string | null = null;
+  let annCalls = 0;
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadArchMap: () => raw,
+    runAnnotation: async () => { annCalls++; return ANN_JSON; },
+    regenerateArchMap: async () => { raw = REGENERATED_MAP; },
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  const chart = paneByLabel(screen, " flow ");
+  assert.ok(chart.getContent().includes("no architecture map"));
+  pressShiftG(screen);
+  await settle();
+  assert.ok(chart.getContent().includes("bravo"), "the built map draws without reopening the overlay");
+  assert.equal(annCalls, 1, "the fresh map gets an annotation");
   screen.destroy();
 });
 
@@ -1338,7 +1365,8 @@ test("f finds a map written after the overlay opened", async () => {
   openReview(screen, testDeps({ loadArchMap: () => raw, runAnnotation: async () => "junk" }), () => {});
   await settle();
   press(screen, "f");
-  assert.equal(paneByLabel(screen, " flow ").hidden, true);
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no architecture map"));
+  press(screen, "f");
   raw = ARCH_JSON;
   press(screen, "f");
   await settle();

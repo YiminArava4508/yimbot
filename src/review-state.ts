@@ -5,8 +5,9 @@
 // SHA, orphaning the old entry, so a re-review of new code starts clean and
 // regroups. The groups and flow payloads are stored opaquely; the overlay
 // validates them against the diff it actually fetched.
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { eventsLogPath } from "./events.ts";
 
 const MAX_ENTRIES = 50;
@@ -15,6 +16,18 @@ export type ReviewEntry = { viewed: string[]; groups?: unknown; flow?: unknown }
 
 export function reviewStateFilePath(): string {
   return join(dirname(eventsLogPath()), "review-state.json");
+}
+
+// The architecture map lives here rather than in the reviewed repo: it is
+// generated, per-machine, and a file under the repo's own docs/ shows up as
+// untracked noise that a `git add -A` would sweep into someone's commit.
+// The readable slug is for whoever goes looking in the state dir; the hash is
+// what actually keys it, so two repos whose paths slug alike stay separate.
+export function archMapPath(codebase: string): string {
+  const abs = resolve(codebase);
+  const slug = abs.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(-60);
+  const hash = createHash("sha256").update(abs).digest("hex").slice(0, 8);
+  return join(dirname(eventsLogPath()), `architecture-map-${slug}-${hash}.json`);
 }
 
 export function stateKey(pr: number, headSha: string): string {

@@ -3,6 +3,7 @@
 // generator both make. Each caller picks its own model env chain; only the
 // spawn shape lives here, so the two cannot drift apart.
 import { spawn } from "node:child_process";
+import { observeReach } from "./reach.ts";
 
 const TIMEOUT_MS = 120_000;
 
@@ -11,7 +12,7 @@ export function runHeadless(
   cwd: string,
   timeoutMs: number = TIMEOUT_MS,
 ): (prompt: string) => Promise<string> {
-  return (prompt: string) =>
+  const run = (prompt: string) =>
     new Promise<string>((resolve, reject) => {
       const args = ["-p"];
       if (model) args.push("--model", model);
@@ -41,4 +42,8 @@ export function runHeadless(
       child.stdin.on("error", () => {});
       child.stdin.end(prompt);
     });
+  // Wrapped so the board can warn when the Anthropic API stops answering. A
+  // non-zero exit or the deadline above is not a reachability problem: only a
+  // transport failure in claude's own output counts (see isNetworkError).
+  return (prompt: string) => observeReach("claude", () => run(prompt));
 }

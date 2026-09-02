@@ -4,6 +4,7 @@ import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
 import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 import type { Mode } from "./mode.ts";
+import { unreachable, type Service } from "./reach.ts";
 import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
@@ -277,11 +278,25 @@ export type Notice = { text: string; until: number };
 export const NOTICE_TTL_MS = 5_000;
 export const NOTICE_ERROR_TTL_MS = 15_000;
 
-export function statusContent(mode: Mode, refineOn: boolean, active: number, notice: Notice | null, now: number): string {
+// The only thing the board says about the outside services: a red name per
+// service that is currently failing, nothing at all while they all answer.
+// Absence is the healthy state, so a quiet status bar means a quiet network.
+export function reachWarnings(down: Service[]): string {
+  return down.map((s) => `{red-fg}⚠ ${s}{/red-fg} `).join("");
+}
+
+export function statusContent(
+  mode: Mode,
+  refineOn: boolean,
+  active: number,
+  notice: Notice | null,
+  now: number,
+  down: Service[],
+): string {
   const refineChip = refineOn
     ? "{black-fg}{green-bg} REFINE ON {/green-bg}{/black-fg} "
     : "{black-fg}{red-bg} REFINE OFF {/red-bg}{/black-fg} ";
-  const base = `${refineChip}${modeContent(mode)} live | ${active} active`;
+  const base = `${reachWarnings(down)}${refineChip}${modeContent(mode)} live | ${active} active`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -577,7 +592,9 @@ export function runTui(opts: {
     footer.setContent(footerHint(focusedPane));
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
-      daemonStopped ? "daemon stopped" : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now()),
+      daemonStopped
+        ? "daemon stopped"
+        : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now(), unreachable()),
     );
     screen.render();
   };

@@ -28,8 +28,8 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { branchesFullyMerged, deriveKey, emitEvent, emitFlagged, emitStatus, foldAttention, readEvents, reduceRows, titleFromBranch } from "./events.ts";
-import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
+import { branchesFullyMerged, deriveKey, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, readEvents, reduceRows, sectionKind, titleFromBranch } from "./events.ts";
+import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import {
@@ -592,7 +592,7 @@ export type WatcherConfig = {
     unresolvedInfo: (n: number) => Promise<UnresolvedInfo>;
     mergeableInfo: (n: number) => Promise<MergeableInfo>;
     checksInfo: (n: number) => Promise<ChecksInfo>;
-    prLabels: (n: number) => Promise<string[]>;
+    prState: (n: number) => Promise<PrState>;
     addLabel: (n: number, label: string) => Promise<void>;
     label: string;
     blockedLabel: string;
@@ -1300,6 +1300,10 @@ export function startWatcher(config: WatcherConfig): () => void {
   // other step instead of by PR number, letting them unify with the ticket's
   // row. Cleared each tick so closed/merged PRs do not accumulate forever.
   const prBranchByNumber = new Map<number, string>();
+  const keyForPr = (n: number) => {
+    const branch = prBranchByNumber.get(n);
+    return branch ? deriveKey({ branch }) : deriveKey({ pr: n });
+  };
   const readyDeps: PrReadyDeps | null = config.ready && {
     ...config.ready,
     listOpenPRs: async () => {
@@ -1316,9 +1320,15 @@ export function startWatcher(config: WatcherConfig): () => void {
     // ready for review.
     onVerdict: (n: number, verdict, hasLabel, isDraft) => {
       if (!boardReadyToMerge(verdict, hasLabel)) return;
-      const branch = prBranchByNumber.get(n);
-      const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
+      const k = keyForPr(n);
       emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n });
+    },
+    // Where the row sits, reported separately from its status so a queued PR
+    // stays in the merge pane while its status walks through a CI fix or a
+    // review round. Deduped by emitSection, so this is a no-op most heartbeats.
+    onSection: (n: number, section) => {
+      const k = keyForPr(n);
+      emitSection({ kind: sectionKind(section), key: k.key, label: k.label, pr: n });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,

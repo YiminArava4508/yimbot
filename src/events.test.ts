@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, deriveKey, titleFromBranch, statusFor, bus, emitEvent, emitFlagged, emitStatus, foldAttention, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { branchesFullyMerged, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -466,6 +466,7 @@ test("filterToLiveWorktrees: non-terminal row kept only when its key is live", (
     label: "ENG-1",
     status: "working",
     terminal: false,
+    section: "tasks",
     ts: 0,
     startTs: 0,
     flagged: false,
@@ -483,6 +484,7 @@ test("filterToLiveWorktrees: terminal row kept even with no live worktree", () =
     label: "ENG-9",
     status: "merged",
     terminal: true,
+    section: "merge",
     ts: 0,
     startTs: 0,
     flagged: false,
@@ -733,4 +735,261 @@ test("statusFor maps the two hand-back kinds", () => {
 test("refine event kinds map to board statuses", () => {
   assert.deepEqual(statusFor("refine_started"), { status: "refining", terminal: false });
   assert.deepEqual(statusFor("refined"), { status: "refined", terminal: true });
+});
+
+test("sectionFor maps only the section kinds", () => {
+  assert.equal(sectionFor("section_tasks"), "tasks");
+  assert.equal(sectionFor("section_review"), "review");
+  assert.equal(sectionFor("section_merge"), "merge");
+  assert.equal(sectionFor("ready_to_merge"), undefined);
+  assert.equal(sectionFor("totally_unknown"), undefined);
+});
+
+test("sectionKind is sectionFor's inverse", () => {
+  assert.equal(sectionKind("tasks"), "section_tasks");
+  assert.equal(sectionKind("review"), "section_review");
+  assert.equal(sectionKind("merge"), "section_merge");
+});
+
+test("a section event carries no status, so it never becomes a row on its own", () => {
+  assert.equal(statusFor("section_merge"), undefined);
+  const ev: YimbotEvent = { ts: 1, kind: "section_merge", key: "ENG-9", label: "ENG-9" };
+  assert.deepEqual(reduceRows([ev], 1000), []);
+});
+
+test("foldSections takes the newest section event per key", () => {
+  const ev = (kind: YimbotEvent["kind"], key: string, ts: number): YimbotEvent => ({ ts, kind, key, label: key });
+  const folded = foldSections([
+    ev("section_merge", "ENG-1", 1),
+    ev("section_review", "ENG-2", 2),
+    ev("section_tasks", "ENG-1", 3),
+    ev("task_started", "ENG-1", 4),
+  ]);
+  assert.equal(folded.get("ENG-1"), "tasks");
+  assert.equal(folded.get("ENG-2"), "review");
+  assert.equal(folded.get("ENG-3"), undefined);
+});
+
+test("reduceRows defaults a row with no section event to tasks", () => {
+  const rows = reduceRows([{ ts: 1, kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" }], 1000);
+  assert.equal(rows[0].section, "tasks");
+});
+
+test("reduceRows keeps the folded section while the status moves on", () => {
+  // The whole point: a labeled PR whose CI breaks stays in the merge section
+  // and only its STATUS changes.
+  const rows = reduceRows(
+    [
+      { ts: 1, kind: "section_merge", key: "ENG-1", label: "ENG-1" },
+      { ts: 2, kind: "ready_to_merge", key: "ENG-1", label: "ENG-1" },
+      { ts: 3, kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+  );
+  assert.equal(rows[0].section, "merge");
+  assert.equal(rows[0].status, "fixing CI");
+});
+
+test("reduceRows moves a row out of merge when the section event says so", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1, kind: "section_merge", key: "ENG-1", label: "ENG-1" },
+      { ts: 2, kind: "ready_to_merge", key: "ENG-1", label: "ENG-1" },
+      { ts: 3, kind: "section_tasks", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+  );
+  assert.equal(rows[0].section, "tasks");
+  assert.equal(rows[0].status, "ready to merge");
+});
+
+test("reduceRows forces a merged row into the merge section", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1, kind: "section_tasks", key: "ENG-1", label: "ENG-1" },
+      { ts: 2, kind: "merged", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+  );
+  assert.equal(rows[0].section, "merge");
+});
+
+test("reduceRows leaves a manual-live merged row in its folded section", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1, kind: "section_tasks", key: "ENG-1", label: "ENG-1" },
+      { ts: 2, kind: "merged", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+    { manualLiveKeys: new Set(["ENG-1"]) },
+  );
+  assert.equal(rows[0].section, "tasks");
+  assert.equal(rows[0].status, "working (manual)");
+});
+
+test("a section event does not disturb the row's ts or duration", () => {
+  const rows = reduceRows(
+    [
+      { ts: 100, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 900, kind: "section_merge", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+  );
+  assert.equal(rows[0].ts, 100);
+  assert.equal(rows[0].startTs, 100);
+});
+
+test("emitSection appends the first section for a key", () => {
+  withTmpLog((path) => {
+    emitSection({ kind: "section_merge", key: "ENG-9", label: "ENG-9" });
+    assert.deepEqual(readEvents(path).map((e) => e.kind), ["section_merge"]);
+  });
+});
+
+test("emitSection skips a section that has not changed", () => {
+  withTmpLog((path) => {
+    emitSection({ kind: "section_merge", key: "ENG-9", label: "ENG-9" });
+    emitSection({ kind: "section_merge", key: "ENG-9", label: "ENG-9" });
+    assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitSection appends when the section changes, ignoring interleaved statuses", () => {
+  withTmpLog((path) => {
+    emitSection({ kind: "section_merge", key: "ENG-9", label: "ENG-9" });
+    emitStatus({ kind: "ci_fix_started", key: "ENG-9", label: "ENG-9" });
+    emitSection({ kind: "section_merge", key: "ENG-9", label: "ENG-9" });
+    emitSection({ kind: "section_tasks", key: "ENG-9", label: "ENG-9" });
+    assert.deepEqual(readEvents(path).map((e) => e.kind), ["section_merge", "ci_fix_started", "section_tasks"]);
+  });
+});
+
+test("emitSection tracks each key independently", () => {
+  withTmpLog((path) => {
+    emitSection({ kind: "section_merge", key: "A", label: "A" });
+    emitSection({ kind: "section_merge", key: "B", label: "B" });
+    assert.equal(readEvents(path).length, 2);
+  });
+});
+
+test("emitStatus dedupes past a trailing section event", () => {
+  // emitStatus used to read the key's newest event of ANY kind, so a section
+  // (or flag) event landing after the status defeated the dedupe and the same
+  // status re-appended every heartbeat.
+  withTmpLog((path) => {
+    emitStatus({ kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" });
+    emitSection({ kind: "section_merge", key: "ENG-1", label: "ENG-1" });
+    emitStatus({ kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" });
+    assert.deepEqual(readEvents(path).map((e) => e.kind), ["ci_fix_started", "section_merge"]);
+  });
+});
+
+test("emitStatus dedupes past a trailing flag event", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" });
+    emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "stuck" });
+    emitStatus({ kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" });
+    assert.deepEqual(readEvents(path).map((e) => e.kind), ["ci_fix_started", "flagged"]);
+  });
+});
+
+test("reduceRows leaves a refined row in the tasks section", () => {
+  // `refined` is terminal too, but a refined ticket has no PR and never entered
+  // the queue: only a merge belongs in the merge pane.
+  const rows = reduceRows(
+    [
+      { ts: 1, kind: "refine_started", key: "ENG-1", label: "ENG-1" },
+      { ts: 2, kind: "refined", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+  );
+  assert.equal(rows[0].status, "refined");
+  assert.equal(rows[0].section, "tasks");
+});
+
+test("emitEvent preserves a key's newest section event past the line cap", () => {
+  // A queued PR's section event is older than its status lines, so the cap
+  // trims it first; without preserving it the row drops into the tasks pane
+  // until the next heartbeat re-reports it.
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitSection({ kind: "section_merge", key: "ENG-1", label: "ENG-1" });
+      for (let i = 0; i < 5; i++) emitEvent({ kind: "task_started", key: `OTHER-${i}`, label: `OTHER-${i}` });
+      const kinds = readEvents(path).map((e) => e.kind);
+      assert.equal(kinds[0], "section_merge");
+      assert.equal(foldSections(readEvents(path)).get("ENG-1"), "merge");
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("emitEvent keeps only the newest section per key past the cap", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "2";
+    try {
+      emitSection({ kind: "section_merge", key: "ENG-1", label: "ENG-1" });
+      emitSection({ kind: "section_tasks", key: "ENG-1", label: "ENG-1" });
+      for (let i = 0; i < 4; i++) emitEvent({ kind: "task_started", key: `OTHER-${i}`, label: `OTHER-${i}` });
+      assert.deepEqual(
+        readEvents(path).filter((e) => e.key === "ENG-1").map((e) => e.kind),
+        ["section_tasks"],
+      );
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("emitEvent does not re-preserve a section the kept window still holds", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitSection({ kind: "section_merge", key: "ENG-1", label: "ENG-1" });
+      emitEvent({ kind: "task_started", key: "A", label: "A" });
+      emitSection({ kind: "section_tasks", key: "ENG-1", label: "ENG-1" });
+      emitEvent({ kind: "task_started", key: "B", label: "B" });
+      assert.deepEqual(
+        readEvents(path).filter((e) => e.key === "ENG-1").map((e) => e.kind),
+        ["section_tasks"],
+      );
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("emitQueuedToMerge records both the status and the move to the merge pane", () => {
+  withTmpLog((path) => {
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    const rows = readEvents(path);
+    assert.deepEqual(rows.map((e) => e.kind), ["ready_to_merge", "section_merge"]);
+    assert.deepEqual(rows.map((e) => e.pr), [12, 12]);
+  });
+});
+
+test("emitQueuedToMerge moves the row immediately, without waiting for a heartbeat", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "draft_pr", key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    const [row] = reduceRows(readEvents(path), Date.now());
+    assert.equal(row.section, "merge");
+    assert.equal(row.status, "ready to merge");
+  });
+});
+
+test("emitQueuedToMerge is idempotent, so a repeat keypress logs nothing", () => {
+  withTmpLog((path) => {
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    assert.equal(readEvents(path).length, 2);
+  });
 });

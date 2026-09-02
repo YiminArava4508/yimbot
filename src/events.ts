@@ -20,7 +20,10 @@ export type EventKind =
   | "needs_decision"
   | "review_findings"
   | "refine_started"
-  | "refined";
+  | "refined"
+  | "section_tasks"
+  | "section_review"
+  | "section_merge";
 
 export type YimbotEvent = {
   ts: number;
@@ -76,9 +79,9 @@ export function titleFromBranch(branch: string): string {
     .trim();
 }
 
-// flagged/unflagged/needs_input/input_received have no entry: they are
-// attention-timeline signals folded separately in reduceRows, not a status.
-// statusFor returns undefined for them.
+// flagged/unflagged/needs_input/input_received and the section_* kinds have no
+// entry: they are attention-timeline and board-placement signals folded
+// separately in reduceRows, not a status. statusFor returns undefined for them.
 const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> = {
   task_started: { status: "working", terminal: false },
   review_started: { status: "addressing review", terminal: false },
@@ -101,6 +104,30 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
 export function statusFor(kind: string): { status: string; terminal: boolean } | undefined {
   return STATUS[kind as EventKind];
 }
+
+// Which pane a row sits in. Reported by the daemon from live GitHub truth (the
+// ready label and the draft flag) rather than derived from status, so a queued
+// PR stays put while its status walks through a CI fix, a conflict fix or a
+// review round. Only the label coming off moves it.
+export type Section = "tasks" | "review" | "merge";
+
+const SECTION: Partial<Record<EventKind, Section>> = {
+  section_tasks: "tasks",
+  section_review: "review",
+  section_merge: "merge",
+};
+
+// Tolerant of unknown kinds for the same reason statusFor is: the log outlives
+// the build that wrote it.
+export function sectionFor(kind: string): Section | undefined {
+  return SECTION[kind as EventKind];
+}
+
+export function sectionKind(section: Section): EventKind {
+  return `section_${section}` as EventKind;
+}
+
+const MERGED_STATUS = STATUS.merged!.status;
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(0);
@@ -131,29 +158,41 @@ function parseLine(line: string): YimbotEvent | null {
   }
 }
 
-function isClear(e: YimbotEvent): boolean {
-  return e.kind === "unflagged" || e.kind === "input_received";
+// The standing state a key carries outside its status, of which there are two
+// kinds. A "clear" (unflag, input received) is what keeps an already
+// acknowledged raise signal down, via emitFlagged's signalTs check, so losing
+// it would re-flag a signal a human dismissed. A "section" is the row's pane;
+// section events only fire on a change, so a long-lived queued PR's is older
+// than its status lines and would be trimmed first, dropping the row into the
+// tasks pane until the next heartbeat re-reported it. Returns null for
+// everything else.
+function standingKind(e: YimbotEvent): string | null {
+  if (e.kind === "unflagged" || e.kind === "input_received") return "clear";
+  return sectionFor(e.kind) !== undefined ? "section" : null;
 }
 
-// A key's acknowledgment must survive the line cap: its newest clear event is
-// what keeps an already-acknowledged raise signal down (emitFlagged's signalTs
-// check), so trimming it away would re-flag a signal a human dismissed. Keep
-// the newest dropped clear per key unless the kept window holds a newer one —
-// at most one extra line per key rides above the cap.
-function preservedClears(dropped: string[], kept: string[]): string[] {
+// Keep the newest dropped event of each standing kind per key, unless the kept
+// window already holds a newer one. At most two extra lines per key ride above
+// the cap.
+function preservedStanding(dropped: string[], kept: string[]): string[] {
   const newest = new Map<string, YimbotEvent>();
+  const idOf = (e: YimbotEvent, kind: string) => `${e.key}\u0000${kind}`;
   for (const line of dropped) {
     const e = parseLine(line);
-    if (!e || !isClear(e)) continue;
-    const cur = newest.get(e.key);
-    if (!cur || e.ts >= cur.ts) newest.set(e.key, e);
+    if (e === null) continue;
+    const kind = standingKind(e);
+    if (kind === null) continue;
+    const cur = newest.get(idOf(e, kind));
+    if (!cur || e.ts >= cur.ts) newest.set(idOf(e, kind), e);
   }
   if (newest.size === 0) return [];
   for (const line of kept) {
     const e = parseLine(line);
-    if (!e || !isClear(e)) continue;
-    const cur = newest.get(e.key);
-    if (cur && e.ts >= cur.ts) newest.delete(e.key);
+    if (e === null) continue;
+    const kind = standingKind(e);
+    if (kind === null) continue;
+    const cur = newest.get(idOf(e, kind));
+    if (cur && e.ts >= cur.ts) newest.delete(idOf(e, kind));
   }
   return [...newest.values()].sort((a, b) => a.ts - b.ts).map((e) => JSON.stringify(e));
 }
@@ -167,7 +206,7 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
     const cap = maxLines();
     if (lines.length > cap) {
       const kept = lines.slice(-cap);
-      writeFileSync(path, [...preservedClears(lines.slice(0, -cap), kept), ...kept].join("\n") + "\n");
+      writeFileSync(path, [...preservedStanding(lines.slice(0, -cap), kept), ...kept].join("\n") + "\n");
     }
   } catch {
     // Best-effort telemetry: never crash the daemon on a log IO failure.
@@ -185,10 +224,38 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
 // (a PR gone green, a merged worktree) without bloating the log or the board, so
 // a row transitions off a stale action status even when no write drove it.
 export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
-  let lastKind: EventKind | undefined;
-  for (const e of readEvents()) if (e.key === ev.key) lastKind = e.kind;
-  const lastStatus = lastKind !== undefined ? statusFor(lastKind)?.status : undefined;
+  // Only status-bearing kinds count: a flag or section event landing after the
+  // status must not read back as "no status", which would defeat the dedupe and
+  // re-append the same status every heartbeat.
+  let lastStatus: string | undefined;
+  for (const e of readEvents()) {
+    if (e.key !== ev.key) continue;
+    const mapped = statusFor(e.kind);
+    if (mapped) lastStatus = mapped.status;
+  }
   if (lastStatus !== undefined && lastStatus === statusFor(ev.kind)?.status) return;
+  emitEvent(ev);
+}
+
+// A PR the operator queued by hand: the board's r, or y at the end of a review
+// pass. Recording the section alongside the status moves the row now instead of
+// leaving it where it was until the next heartbeat re-reports it.
+export function emitQueuedToMerge(ev: { key: string; label: string; pr: number }): void {
+  emitStatus({ kind: "ready_to_merge", ...ev });
+  emitSection({ kind: sectionKind("merge"), ...ev });
+}
+
+// The section counterpart of emitStatus: append only when the key's section
+// actually changes. The daemon reports every open PR's section each heartbeat,
+// so without this the log would fill with restatements.
+export function emitSection(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
+  let last: Section | undefined;
+  for (const e of readEvents()) {
+    if (e.key !== ev.key) continue;
+    const mapped = sectionFor(e.kind);
+    if (mapped) last = mapped;
+  }
+  if (last !== undefined && last === sectionFor(ev.kind)) return;
   emitEvent(ev);
 }
 
@@ -224,6 +291,19 @@ export function foldAttention(events: YimbotEvent[]): Map<string, Attention> {
     }
   }
   return att;
+}
+
+// Fold each key's placement timeline into its current section: last section
+// event wins. A key the daemon has never reported on (a task row with no PR,
+// or a log written before section events existed) is absent, and reduceRows
+// defaults it to the tasks pane.
+export function foldSections(events: YimbotEvent[]): Map<string, Section> {
+  const sections = new Map<string, Section>();
+  for (const e of events) {
+    const mapped = sectionFor(e.kind);
+    if (mapped) sections.set(e.key, mapped);
+  }
+  return sections;
 }
 
 // Raise the attention flag for a key, deduped per (key, reason) against the
@@ -265,6 +345,8 @@ export type BoardRow = {
   pr?: number;
   status: string;
   terminal: boolean;
+  // The pane this row belongs in, independent of status. See Section above.
+  section: Section;
   ts: number;
   startTs: number;
   flagged: boolean;
@@ -307,11 +389,22 @@ export function reduceRows(
       pr: e.pr ?? prev?.pr,
       status: mapped.status,
       terminal: mapped.terminal,
+      section: "tasks",
       ts: e.ts,
       startTs,
       flagged: false,
       flagReasons: [],
     });
+  }
+
+  // A merged row has no live PR left to report a section, so it keeps whatever
+  // it last had; the merge pane is where merged rows have always shown, so
+  // force it there rather than dropping it into tasks. Keyed on the merged
+  // status rather than on `terminal`, because `refined` is terminal too and a
+  // refined ticket has no PR and never entered the queue.
+  const sections = foldSections(events);
+  for (const row of byKey.values()) {
+    row.section = row.status === MERGED_STATUS ? "merge" : (sections.get(row.key) ?? "tasks");
   }
 
   const attention = foldAttention(events);
@@ -325,7 +418,11 @@ export function reduceRows(
   // instead of "merged"/aging it out. `manualLiveKeys` carries those keys.
   const manualLive = opts.manualLiveKeys ?? new Set<string>();
   let rows = [...byKey.values()]
-    .map((r) => (r.terminal && manualLive.has(r.key) ? { ...r, status: "working (manual)", terminal: false } : r))
+    .map((r) =>
+      r.terminal && manualLive.has(r.key)
+        ? { ...r, status: "working (manual)", terminal: false, section: sections.get(r.key) ?? "tasks" }
+        : r,
+    )
     .filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
   rows.sort((a, b) => b.ts - a.ts);
 

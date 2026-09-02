@@ -2,7 +2,7 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
-import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, statusFor, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 import type { Mode } from "./mode.ts";
 import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
@@ -36,11 +36,11 @@ export function screenTerm(term: string | undefined): string | undefined {
 }
 
 // A lean legend: the full keybind list lives under ?, the footer only names
-// help, quit, and the contextual r/R where they act (r on review and merge,
-// R on review alone).
-export function footerHint(pane: Pane): string {
-  if (pane === "review" || pane === "merge") return "r ready   R review   ? help   q quit";
-  return "R review   ? help   q quit";
+// help, quit, and r/R. Both act on any pane -- placement is label-driven now,
+// so the row that most needs r (green, unlabeled, therefore in tasks) is
+// exactly the one a pane-gated r could not reach.
+export function footerHint(_pane: Pane): string {
+  return "r ready   R review   ? help   q quit";
 }
 
 // The help overlay's body: every keybind, one per line, aligned.
@@ -50,7 +50,7 @@ export function helpLines(key: string): string[] {
     ["^j/^k", "switch pane (tab cycles)"],
     ["enter", "open the row's tmux session"],
     ["f", "flag/unflag the selected row"],
-    ["r", "add the ready label (review/merge panes)"],
+    ["r", "queue the selected row's PR to merge (also inside R)"],
     ["R", "review the selected row's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
@@ -74,24 +74,18 @@ export function bindHelpKey(
   });
 }
 
-// A draft_pr event is a supervised draft whose ready verdict held (threads
-// resolved, mergeable, CI green): waiting on a human review, so its status is
-// the review pane's membership test. ready_to_merge feeds the merge pane the
-// same way. Both derived from the STATUS map rather than repeating the display
-// strings here.
-const REVIEW_STATUS = statusFor("draft_pr")?.status ?? "draft pr";
-const MERGE_STATUSES = new Set([
-  statusFor("ready_to_merge")?.status ?? "ready to merge",
-  statusFor("merged")?.status ?? "merged",
-]);
-
+// Placement reads the row's section, never its status. The daemon reports the
+// section each heartbeat from the facts that actually decide it (the ready
+// label, the draft flag), so a queued PR stays in the merge pane while its
+// status walks through a CI fix, a conflict fix or a review round -- the status
+// column is where that shows. A row only moves when the label does.
 export function partitionRows(rows: BoardRow[]): { review: BoardRow[]; merge: BoardRow[]; tasks: BoardRow[] } {
   const review: BoardRow[] = [];
   const merge: BoardRow[] = [];
   const tasks: BoardRow[] = [];
   for (const r of rows) {
-    if (r.status === REVIEW_STATUS) review.push(r);
-    else if (MERGE_STATUSES.has(r.status)) merge.push(r);
+    if (r.section === "review") review.push(r);
+    else if (r.section === "merge") merge.push(r);
     else tasks.push(r);
   }
   return { review, merge, tasks };
@@ -115,41 +109,6 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
   }
   ordered.sort((a, b) => rank.get(a.row.pr!)! - rank.get(b.row.pr!)!);
   return [...ordered, ...unranked];
-}
-
-// WAIT is time since the row's last event (when it went ready for review), the
-// natural review-priority signal; FLAG/REASON mirror the main board so a draft
-// whose session raised a flag stays visible while it sits here.
-export function reviewTable(entries: ReviewEntry[], now: number = Date.now()): string[][] {
-  const header = ["#", "PR", "TICKET", "TITLE", "WAIT", "FLAG", "REASON", "WHY"];
-  const body = entries.map((e, i) => [
-    String(i + 1),
-    e.row.pr != null ? `#${e.row.pr}` : "",
-    e.row.label,
-    e.row.title ?? "",
-    fmtDuration(now - e.row.ts),
-    isFlagged(e.row) ? "{red-fg}⚑{/red-fg}" : "",
-    e.row.flagReasons.length > 0 ? `{red-fg}${e.row.flagReasons.join(",")}{/red-fg}` : "",
-    e.reason,
-  ]);
-  return [header, ...body];
-}
-
-// WAIT mirrors the review pane: time since the row's last event (went ready
-// to merge, or merged). STATUS tells the two apart, merged dimmed the same
-// way the tasks pane dims terminal rows.
-export function mergeTable(rows: BoardRow[], now: number = Date.now()): string[][] {
-  const header = ["PR", "TICKET", "TITLE", "STATUS", "WAIT", "FLAG", "REASON"];
-  const body = rows.map((r) => [
-    r.pr != null ? `#${r.pr}` : "",
-    r.label,
-    r.title ?? "",
-    r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
-    fmtDuration(now - r.ts),
-    isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
-    r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
-  ]);
-  return [header, ...body];
 }
 
 // The board's geometry: three full-width bordered panes stacked top to
@@ -190,14 +149,6 @@ export function resolvePane(current: Pane, counts: PaneCounts): Pane {
   if (counts[current] > 0) return current;
   for (const p of ["tasks", "review", "merge"] as const) if (counts[p] > 0) return p;
   return "tasks";
-}
-
-// r (ready label) also covers the merge pane: a row latched at "ready to
-// merge" whose label was removed on GitHub sits there, and r is the escape
-// hatch that re-adds it.
-export function readyKeyGuard(pane: Pane): string | null {
-  if (pane === "review" || pane === "merge") return null;
-  return "{yellow-fg}r acts on the ready to review or ready to merge panes (^j/^k to move){/yellow-fg}";
 }
 
 // Directional focus down and up the stacked panes, skipping empty ones (an
@@ -341,16 +292,16 @@ export async function handleReadyPress(
 ): Promise<void> {
   if (!row) return;
   if (row.pr == null) {
-    setNotice("{red-fg}selected row has no PR to mark ready{/red-fg}", NOTICE_ERROR_TTL_MS);
+    setNotice("{red-fg}selected row has no PR to queue{/red-fg}", NOTICE_ERROR_TTL_MS);
     return;
   }
-  setNotice(`adding ready label to #${row.pr}…`, NOTICE_TTL_MS);
+  setNotice(`queueing #${row.pr} to merge…`, NOTICE_TTL_MS);
   try {
     await addReady(row.pr, row.key, row.label);
-    setNotice(`{green-fg}#${row.pr} marked ready{/green-fg}`, NOTICE_TTL_MS);
+    setNotice(`{green-fg}#${row.pr} ready to merge{/green-fg}`, NOTICE_TTL_MS);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    setNotice(`{red-fg}ready label on #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
+    setNotice(`{red-fg}queueing #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
   }
 }
 
@@ -370,9 +321,15 @@ export function fmtDuration(ms: number): string {
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
 }
 
-export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[][] {
-  const header = ["TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON"];
-  const body = rows.map((r) => {
+// One header for all three panes, in one order, so a row reads the same
+// wherever it sits. WHY only ever fills in the review pane (the AI ordering's
+// rationale); it stays blank in the other two rather than shifting the grid.
+export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON", "WHY"];
+
+export type BoardEntry = { row: BoardRow; why?: string };
+
+export function boardTable(entries: BoardEntry[], now: number = Date.now()): string[][] {
+  const body = entries.map(({ row: r, why }) => {
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
     return [
       fmtTime(r.ts),
@@ -383,9 +340,38 @@ export function rowsToTable(rows: BoardRow[], now: number = Date.now()): string[
       r.title ?? "",
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
       r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
+      why ?? "",
     ];
   });
-  return [header, ...body];
+  return [BOARD_HEADER, ...body];
+}
+
+// A cell's on-screen width, measured through blessed's own helpers rather than
+// reimplemented: Element.strWidth strips tags and then, under fullUnicode,
+// counts display columns (a CJK title is two per character, a combining mark
+// zero). Padding by String.length instead would size a non-ASCII title wrong
+// and knock that pane's columns off the shared grid.
+export function cellWidth(cell: string): number {
+  return blessed.unicode.strWidth(blessed.helpers.stripTags(cell));
+}
+
+// blessed sizes each table's columns from that table's own rows, so three panes
+// sharing a header still land on three different grids. Pad every cell out to
+// the widest cell in its column across ALL the tables and each pane computes the
+// same maxes, which is what puts the columns on the same offsets. An empty pane
+// still has its header row, so it lines up too.
+export function alignTables(tables: string[][][]): string[][][] {
+  const widths: number[] = [];
+  for (const table of tables) {
+    for (const row of table) {
+      row.forEach((cell, i) => {
+        widths[i] = Math.max(widths[i] ?? 0, cellWidth(cell));
+      });
+    }
+  }
+  return tables.map((table) =>
+    table.map((row) => row.map((cell, i) => cell + " ".repeat((widths[i] ?? 0) - cellWidth(cell)))),
+  );
 }
 
 // screen.key's handler runs before the focused widget's own keypress handling
@@ -492,7 +478,7 @@ export function runTui(opts: {
   onToggleMode: () => Mode;
   refineEnabled: () => boolean;
   settings: SettingsDeps;
-  reviewDeps: (pr: number, key: string) => ReviewDeps;
+  reviewDeps: (pr: number, key: string, label: string) => ReviewDeps;
   // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
   // headless prompt runner (same claude -p shape as the review grouping).
   orderDeps: OrderSourceDeps;
@@ -558,17 +544,22 @@ export function runTui(opts: {
     currentMerge = merge;
     const now = Date.now();
     const layout = boardLayout(Number(screen.rows) || 24);
+    const [tasksData, reviewData, mergeData] = alignTables([
+      boardTable(tasks.map((row) => ({ row })), now),
+      boardTable(currentReview.map((e) => ({ row: e.row, why: e.reason })), now),
+      boardTable(merge.map((row) => ({ row })), now),
+    ]);
     tasksPane.bottom = layout.tasks.bottom;
     tasksPane.setLabel(` tasks (${tasks.length}) `);
-    tasksPane.setData(rowsToTable(tasks, now));
+    tasksPane.setData(tasksData);
     reviewPane.height = layout.review.height;
     reviewPane.bottom = layout.review.bottom;
     reviewPane.setLabel(` ready to review (${currentReview.length}) `);
-    reviewPane.setData(reviewTable(currentReview, now));
+    reviewPane.setData(reviewData);
     mergePane.height = layout.merge.height;
     mergePane.bottom = layout.merge.bottom;
     mergePane.setLabel(` ready to merge (${merge.length}) `);
-    mergePane.setData(mergeTable(merge, now));
+    mergePane.setData(mergeData);
     // While an overlay is open every pane stays hidden (the overlay owns
     // the screen); the close callback re-renders, which shows them again.
     if (!isOverlayOpen()) {
@@ -695,11 +686,6 @@ export function runTui(opts: {
   });
 
   bindReadyKey(screen, isOverlayOpen, () => {
-    const blocked = readyKeyGuard(focusedPane);
-    if (blocked) {
-      setNotice(blocked, NOTICE_TTL_MS);
-      return;
-    }
     void handleReadyPress(selRow(), opts.onAddReadyLabel, setNotice);
   });
 
@@ -727,7 +713,7 @@ export function runTui(opts: {
     }
     reviewOpen = true;
     hidePanes();
-    const overlay = openReview(screen, opts.reviewDeps(r.pr, r.key), (noticeMsg, isError) => {
+    const overlay = openReview(screen, opts.reviewDeps(r.pr, r.key, r.label), (noticeMsg, isError) => {
       reviewOpen = false;
       showPanes();
       if (noticeMsg) setNotice(noticeMsg, isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);

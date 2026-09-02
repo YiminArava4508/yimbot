@@ -145,47 +145,51 @@ test("reviewHeader shows PR, title and progress", () => {
   assert.equal(reviewHeader(42, "add widget", 3, 9), "PR #42  add widget  |  3/9 viewed");
 });
 
-test("reviewFooterHint offers y only when all viewed and draft", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "plan" as const, contextCount: 0 };
-  assert.ok(!reviewFooterHint(base).includes("y mark PR ready"));
-  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
-  assert.ok(reviewFooterHint({ ...base, allViewed: true, isDraft: false }).includes("review complete"));
+test("reviewFooterHint offers the queue key once every file is viewed", () => {
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
+  assert.ok(!reviewFooterHint(base).includes("r ready to merge"));
+  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("r ready to merge"));
   assert.ok(reviewFooterHint({ ...base, loaded: false }).includes("loading"));
   assert.ok(reviewFooterHint({ ...base, total: 0 }).includes("no changes"));
 });
 
+test("reviewFooterHint uses the same key the board does, not a second one to learn", () => {
+  const base = { total: 3, loaded: true, allViewed: true, focused: "plan" as const, contextCount: 0 };
+  assert.doesNotMatch(reviewFooterHint(base), /(^|\s)y\s/);
+});
+
 test("reviewFooterHint lists the 1/2/3 pane jumps on plan and diff", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
   assert.ok(reviewFooterHint(base).includes("1/2/3 pane"));
   assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("1/2/3 pane"));
   assert.ok(!reviewFooterHint({ ...base, focused: "claude" }).includes("1/2/3 pane"));
 });
 
 test("reviewFooterHint describes scrolling and the claude tab when the diff pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "diff" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "diff" as const, contextCount: 0 };
   const hint = reviewFooterHint(base);
   assert.ok(hint.includes("j/k scroll"));
   assert.ok(hint.includes("space viewed"));
   assert.ok(hint.includes("tab claude"));
   assert.ok(!hint.includes("g/G first/last"));
-  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
+  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("r ready to merge"));
 });
 
 test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "claude" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "claude" as const, contextCount: 0 };
   const hint = reviewFooterHint(base);
   assert.ok(hint.includes("C-q or C-\\ back"));
   assert.ok(!hint.includes("q back"));
 });
 
 test("reviewFooterHint offers c context on the plan and diff panes", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
   assert.ok(reviewFooterHint(base).includes("c context"));
   assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("c context"));
 });
 
 test("reviewFooterHint offers C clear context only when the context set is non-empty", () => {
-  const base = { total: 3, loaded: true, allViewed: false, isDraft: false, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
   assert.ok(!reviewFooterHint(base).includes("C clear context"));
   assert.ok(reviewFooterHint({ ...base, contextCount: 2 }).includes("C clear context"));
   assert.ok(reviewFooterHint({ ...base, focused: "diff", contextCount: 1 }).includes("C clear context"));
@@ -306,9 +310,9 @@ function testDeps(
   return {
     pr: 42,
     fetchDiff: async () => DIFF,
-    fetchMeta: async () => ({ title: "t", body: "b", isDraft: true, headSha: "sha1" }),
+    fetchMeta: async () => ({ title: "t", body: "b", headSha: "sha1" }),
     runGrouping: async () => GROUP_JSON,
-    markReady: async () => {},
+    queueToMerge: async () => {},
     loadViewed: () => new Set(),
     saveViewed: (sha, viewed) => { saved.push([sha, new Set(viewed)]); },
     loadGroups: () => null,
@@ -521,21 +525,21 @@ test("openReview ignores 3 when no claude session exists", async () => {
   screen.destroy();
 });
 
-test("openReview y marks ready only when all files are viewed and closes with a notice", async () => {
+test("openReview r queues the PR only when all files are viewed, and closes with a notice", async () => {
   const screen = makeScreen();
   let readied = 0;
-  const deps = testDeps({ markReady: async () => { readied++; } });
+  const deps = testDeps({ queueToMerge: async () => { readied++; } });
   const closes: [string | null, boolean][] = [];
   openReview(screen, deps, (notice, isError) => closes.push([notice, isError]));
   await flush();
   await flush();
-  press(screen, "y");
+  press(screen, "r");
   await flush();
   assert.equal(readied, 0);
   press(screen, "space");
   press(screen, "space");
   await flush();
-  press(screen, "y");
+  press(screen, "r");
   await flush();
   await flush();
   assert.equal(readied, 1);
@@ -642,10 +646,10 @@ test("openReview: space in the diff pane marks the file viewed and saves", async
   screen.destroy();
 });
 
-test("openReview: y in the diff pane marks ready once all files are viewed", async () => {
+test("openReview: r in the diff pane queues the PR once all files are viewed", async () => {
   const screen = makeScreen();
   let readied = 0;
-  const deps = testDeps({ markReady: async () => { readied++; } });
+  const deps = testDeps({ queueToMerge: async () => { readied++; } });
   const closes: [string | null, boolean][] = [];
   openReview(screen, deps, (notice, isError) => closes.push([notice, isError]));
   await flush();
@@ -654,7 +658,7 @@ test("openReview: y in the diff pane marks ready once all files are viewed", asy
   press(screen, "space");
   press(screen, "space");
   await flush();
-  press(screen, "y");
+  press(screen, "r");
   await flush();
   await flush();
   assert.equal(readied, 1);
@@ -664,7 +668,7 @@ test("openReview: y in the diff pane marks ready once all files are viewed", asy
 
 test("openReview keeps a mark toggled before meta arrives and persists it once meta lands", async () => {
   const screen = makeScreen();
-  let resolveMeta: (v: { title: string; body: string; isDraft: boolean; headSha: string }) => void = () => {};
+  let resolveMeta: (v: { title: string; body: string; headSha: string }) => void = () => {};
   const deps = testDeps({
     fetchMeta: () => new Promise((resolve) => { resolveMeta = resolve; }),
   });
@@ -676,7 +680,7 @@ test("openReview keeps a mark toggled before meta arrives and persists it once m
   press(screen, "space");
   await flush();
   assert.equal(deps.saved.length, 0);
-  resolveMeta({ title: "t", body: "b", isDraft: true, headSha: "sha1" });
+  resolveMeta({ title: "t", body: "b", headSha: "sha1" });
   await flush();
   await flush();
   const plan = screen.children.find((c: any) => c.options.label === " review plan ");
@@ -1368,3 +1372,4 @@ test("a regenerate that drops the selected node clears the selection", async () 
   assert.ok(!footerOf(screen).getContent().includes("enter files"));
   screen.destroy();
 });
+

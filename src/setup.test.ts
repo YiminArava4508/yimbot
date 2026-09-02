@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { tempDir } from "./test-temp.ts";
 import {
   commandExists,
   configReferencesFeatureStatus,
@@ -70,17 +71,17 @@ test("expandTilde expands a leading ~ only", () => {
 test("isGitRepo is true for a real repo, false otherwise", () => {
   // The yimbot repo root is a git repo (tests run with cwd = project root).
   assert.equal(isGitRepo(process.cwd()), true);
-  const notARepo = mkdtempSync(join(tmpdir(), "yimbot-nogit-"));
+  const notARepo = tempDir("yimbot-nogit-");
   assert.equal(isGitRepo(notARepo), false);
   assert.equal(isGitRepo(join(notARepo, "does-not-exist")), false);
   // A freshly-init'd repo reads as a repo.
-  const repo = mkdtempSync(join(tmpdir(), "yimbot-git-"));
+  const repo = tempDir("yimbot-git-");
   execFileSync("git", ["-C", repo, "init", "-q"], { stdio: "ignore" });
   assert.equal(isGitRepo(repo), true);
 });
 
 test("linkState detects our symlink vs other vs missing", () => {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-link-"));
+  const dir = tempDir("yimbot-link-");
   const source = join(dir, "source.sh");
   writeFileSync(source, "#!/bin/bash\n");
   assert.equal(linkState(source, join(dir, "missing")), "missing");
@@ -96,7 +97,7 @@ test("linkState detects our symlink vs other vs missing", () => {
 });
 
 test("ensureHostLinks creates a missing link when the source exists", () => {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-"));
+  const dir = tempDir("yimbot-ensure-");
   const source = join(dir, "skill");
   mkdirSync(source);
   const target = join(dir, "home", ".claude", "skills", "skill");
@@ -107,7 +108,7 @@ test("ensureHostLinks creates a missing link when the source exists", () => {
 });
 
 test("ensureHostLinks skips a link that is already ours", () => {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-ours-"));
+  const dir = tempDir("yimbot-ensure-ours-");
   const source = join(dir, "skill");
   mkdirSync(source);
   const target = join(dir, "ours");
@@ -117,7 +118,7 @@ test("ensureHostLinks skips a link that is already ours", () => {
 });
 
 test("ensureHostLinks leaves a non-yimbot target untouched and warns", () => {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-other-"));
+  const dir = tempDir("yimbot-ensure-other-");
   const source = join(dir, "skill");
   mkdirSync(source);
   const target = join(dir, "other");
@@ -128,7 +129,7 @@ test("ensureHostLinks leaves a non-yimbot target untouched and warns", () => {
 });
 
 test("ensureHostLinks reports a missing source and creates nothing", () => {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-ensure-nosrc-"));
+  const dir = tempDir("yimbot-ensure-nosrc-");
   const source = join(dir, "absent");
   const target = join(dir, "home", "skills", "absent");
   const results = ensureHostLinks([{ source, target, label: "absent" }]);

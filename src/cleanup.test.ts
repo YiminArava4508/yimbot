@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tempDir } from "./test-temp.ts";
 import {
   buildSplitGroups,
   type CleanupDeps,
@@ -1227,30 +1227,18 @@ test("cleanupOnce does not gate a merged integration branch whose upstream is go
 });
 
 test("readParentSession returns null when marker file is missing", () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "yimbot-wt-"));
-  try {
-    assert.equal(readParentSession(tempDir), null);
-  } finally {
-    rmSync(tempDir, { recursive: true });
-  }
+  const dir = tempDir("yimbot-wt-");
+  assert.equal(readParentSession(dir), null);
 });
 
 test("readParentSession returns trimmed session name when marker is present", () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "yimbot-wt-"));
-  try {
-    writeFileSync(join(tempDir, ".yimbot-parent-session"), "eng-1\n");
-    assert.equal(readParentSession(tempDir), "eng-1");
-  } finally {
-    rmSync(tempDir, { recursive: true });
-  }
+  const dir = tempDir("yimbot-wt-");
+  writeFileSync(join(dir, ".yimbot-parent-session"), "eng-1\n");
+  assert.equal(readParentSession(dir), "eng-1");
 });
 
 test("readParentSession returns null when marker file is empty", () => {
-  const tempDir = mkdtempSync(join(tmpdir(), "yimbot-wt-"));
-  try {
-    writeFileSync(join(tempDir, ".yimbot-parent-session"), "");
-    assert.equal(readParentSession(tempDir), null);
-  } finally {
-    rmSync(tempDir, { recursive: true });
-  }
+  const dir = tempDir("yimbot-wt-");
+  writeFileSync(join(dir, ".yimbot-parent-session"), "");
+  assert.equal(readParentSession(dir), null);
 });

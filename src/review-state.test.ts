@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tempDir } from "./test-temp.ts";
 import {
   archMapPath,
   parseReviewState,
@@ -61,7 +61,7 @@ test("withEntry caps the file at 50 entries, dropping the oldest", () => {
 function inTempStateDir(fn: () => void): void {
   const prevEnv = process.env.EVENTS_LOG;
   try {
-    const dir = mkdtempSync(join(tmpdir(), "yimbot-review-"));
+    const dir = tempDir("yimbot-review-");
     process.env.EVENTS_LOG = join(dir, "events.jsonl");
     fn();
   } finally {

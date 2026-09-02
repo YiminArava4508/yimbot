@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./test-temp.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { filterByLabel, parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
@@ -419,7 +419,7 @@ function gitIn(cwd: string, args: string[]): void {
 // A real temp repo pair: a bare "origin" and a clone with one pushed commit on
 // main. Returns the clone path; callers mutate it per case.
 function tempClone(): string {
-  const root = mkdtempSync(join(tmpdir(), "yimbot-push-test-"));
+  const root = tempDir("yimbot-push-test-");
   const bare = join(root, "origin.git");
   const clone = join(root, "clone");
   gitIn(root, ["init", "--bare", "-b", "main", bare]);

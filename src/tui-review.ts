@@ -142,6 +142,7 @@ export function reviewFooterHint(s: {
   allViewed: boolean;
   focused: ReviewPane;
   contextCount: number;
+  hasSession: boolean;
 }): string {
   if (!s.loaded) return "loading…   q back";
   if (s.total === 0) return "no changes in this PR   q back";
@@ -149,8 +150,9 @@ export function reviewFooterHint(s: {
   let done = "";
   if (s.allViewed) done = "   {green-fg}r ready to merge{/green-fg}";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
-  if (s.focused === "diff") return `j/k scroll   space viewed   c context${clear}   tab claude   1/2/3 pane${done}   q back`;
-  return `j/k file   space viewed   c context${clear}   g/G first/last   tab diff   1/2/3 pane${done}   q back`;
+  const sess = s.hasSession ? "   o session" : "";
+  if (s.focused === "diff") return `j/k scroll   space viewed   c context${clear}   tab claude   1/2/3 pane${done}${sess}   q back`;
+  return `j/k file   space viewed   c context${clear}   g/G first/last   tab diff   1/2/3 pane${done}${sess}   q back`;
 }
 
 // Same rule as the board's paneBorderColor: the focused pane turns white so
@@ -252,6 +254,13 @@ export type ReviewDeps = {
   // annotation described, and leaving it would resurface on the next open.
   saveFlow: (headSha: string, flow: ArchAnnotation | null) => void;
   regenerateArchMap: () => Promise<void>;
+  // The tmux session running this ticket's own claude, or null when the row has
+  // no worktree session. Called on open and on every o press, never from
+  // paint(): it shells out to tmux, and paint() runs on every keystroke.
+  sessionName: () => string | null;
+  // False when the switch did not happen — outside tmux, or the session died
+  // between the resolve and the switch — so o can say so instead of no-oping.
+  openSession: (session: string) => boolean;
 };
 
 // The returned claudeFocused getter feeds tui.ts's C-c gate: while the claude
@@ -300,6 +309,9 @@ export function openReview(
   // moveNode walks exactly what the brief put on screen.
   let flowNodes: string[] = [];
   let regenerating = false;
+  // Refreshed on every o press, so a session that starts or dies mid-review
+  // is picked up rather than stranding the key until the overlay is reopened.
+  let ticketSession = deps.sessionName();
   const session = deps.claudeSession();
   let claudeExited = false;
   const hasClaude = () => session !== null && !claudeExited;
@@ -435,6 +447,7 @@ export function openReview(
         allViewed: allViewed(),
         focused,
         contextCount: contextFiles.size,
+        hasSession: ticketSession !== null,
       });
     }
     footer.setContent(hint);
@@ -479,6 +492,22 @@ export function openReview(
     else viewed.add(selectedPath);
     if (meta) deps.saveViewed(meta.headSha, viewed);
     select(nextUnviewed(files(), viewed, selectedIndex()));
+  }
+
+  // Hand the terminal to the ticket's own claude. The overlay stays open in the
+  // board's pane, so the prefix+return key tmux already binds to that pane
+  // comes back to exactly this screen.
+  function openTicketSession(): void {
+    ticketSession = deps.sessionName();
+    if (ticketSession === null) {
+      paint(`{grey-fg}no session for #${deps.pr} to jump to{/grey-fg}`);
+      return;
+    }
+    if (!deps.openSession(ticketSession)) {
+      paint(`{red-fg}could not switch to ${escapeTags(ticketSession)}{/red-fg}`);
+      return;
+    }
+    paint();
   }
 
   function queueToMerge(): void {
@@ -663,6 +692,7 @@ export function openReview(
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
     else if (key.name === "f" && !key.ctrl) openFlow();
+    else if (key.name === "o" && !key.shift) openTicketSession();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
@@ -674,6 +704,7 @@ export function openReview(
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "f" && !key.ctrl) openFlow();
+    else if (key.name === "o" && !key.shift) openTicketSession();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 

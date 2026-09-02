@@ -172,6 +172,9 @@ if (process.stdout.isTTY) {
           return null;
         }
       },
+      sessionName: () =>
+        resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
+      openSession: (session) => switchToSession(session),
       writeContext: (content) => {
         try {
           ensureContextScaffold(cwd);

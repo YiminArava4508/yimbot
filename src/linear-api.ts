@@ -1,5 +1,6 @@
 import type { Blocker } from "./blocked.ts";
 import { labelFilterAllows, type LabelFilter } from "./labels.ts";
+import { observeReach } from "./reach.ts";
 
 const API_URL = "https://api.linear.app/graphql";
 
@@ -55,18 +56,30 @@ async function gql<T>(
   variables: Record<string, unknown>,
   fetchImpl: typeof fetch,
 ): Promise<T> {
-  const res = await fetchImpl(API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: apiKey,
+  // Wrapped so the board can warn when Linear stops answering. The body read is
+  // inside the wrapper too: a connection dropped after the headers fails there,
+  // not on the fetch, and would otherwise be invisible. A GraphQL error or a
+  // non-2xx below is not a reachability problem, since we got a reply.
+  type Payload = { data?: T; errors?: { message: string }[] };
+  const reply = await observeReach<{ ok: true; payload: Payload } | { ok: false; status: number; body: string }>(
+    "linear",
+    async () => {
+      const res = await fetchImpl(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: apiKey,
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+      if (!res.ok) return { ok: false, status: res.status, body: await res.text() };
+      return { ok: true, payload: (await res.json()) as Payload };
     },
-    body: JSON.stringify({ query, variables }),
-  });
-  if (!res.ok) {
-    throw new Error(`Linear API ${res.status}: ${await res.text()}`);
+  );
+  if (!reply.ok) {
+    throw new Error(`Linear API ${reply.status}: ${reply.body}`);
   }
-  const payload = (await res.json()) as { data?: T; errors?: { message: string }[] };
+  const payload = reply.payload;
   if (payload.errors?.length) {
     throw new Error(`Linear GraphQL: ${payload.errors.map((e) => e.message).join("; ")}`);
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { resetReach, unreachable } from "./reach.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
@@ -16,6 +17,7 @@ import {
   fetchIssueByIdentifier,
   fetchIssueStateType,
   fetchTeamLabels,
+  fetchViewer,
   isMissingEntityError,
   moveIssueToState,
   resolveContext,
@@ -657,4 +659,26 @@ test("fetchCycleTodoIssues carries the estimate through", async () => {
   };
   const issues = await fetchCycleTodoIssues("k", { viewerId: "u", teamId: "t", stateId: "s" }, fakeFetch({ data: { issues: { nodes: [node] } } }));
   assert.equal(issues[0].estimate, 2);
+});
+
+test("a Linear transport failure marks linear unreachable", async () => {
+  resetReach();
+  const dead = (async () => {
+    const err = new TypeError("fetch failed");
+    (err as { cause?: unknown }).cause = { code: "ENOTFOUND" };
+    throw err;
+  }) as unknown as typeof fetch;
+  await assert.rejects(fetchViewer("key", dead));
+  assert.deepEqual(unreachable(), ["linear"]);
+});
+
+test("a Linear error response leaves linear reachable, since it answered", async () => {
+  resetReach();
+  const refusing = (async () =>
+    new Response(JSON.stringify({ errors: [{ message: "Entity not found" }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as unknown as typeof fetch;
+  await assert.rejects(fetchViewer("key", refusing));
+  assert.deepEqual(unreachable(), []);
 });

@@ -209,7 +209,7 @@ export function flowLayout(): Record<"chart" | "note", Record<string, unknown>> 
       scrollbar: { ch: " ", style: { inverse: true } },
     },
     note: {
-      bottom: 1, left: 0, width: "100%", height: 5, tags: true, hidden: true,
+      bottom: 1, left: 0, width: "100%", height: 5, tags: true, wrap: false, hidden: true,
       border: { type: "line" }, label: " note ", style: paneStyle(),
     },
   };
@@ -280,7 +280,9 @@ export type ReviewDeps = {
   loadArchMap: () => string | null;
   runAnnotation: (prompt: string) => Promise<string>;
   loadFlow: (headSha: string) => unknown;
-  saveFlow: (headSha: string, flow: ArchAnnotation) => void;
+  // Null clears the entry: a regenerate replaces the topology the cached
+  // annotation described, and leaving it would resurface on the next open.
+  saveFlow: (headSha: string, flow: ArchAnnotation | null) => void;
   regenerateArchMap: () => Promise<void>;
 };
 
@@ -430,9 +432,13 @@ export function openReview(
       const { map: m, unmapped } = renderState();
       if (m) {
         const states = nodeStates(m, annotation, chartPaths());
-        const drawn = layoutGraph(m, states, Math.max(12, chart.width - 2));
+        const drawn = layoutGraph(m, states, Math.max(12, chart.width - 2), selectedNode);
         chartBoxes = drawn.boxes;
         chart.setContent(drawn.lines.join("\n"));
+        // The chart is taller than the pane on any real map, and its own keys
+        // are spent on node movement, so the selection is what scrolls it.
+        const box = drawn.boxes.find((b) => b.id === selectedNode);
+        if (box) chart.scrollTo(box.row);
         const node = m.nodes.find((n) => n.id === selectedNode) ?? null;
         note.setContent(noteBandLines({
           node,
@@ -560,6 +566,7 @@ export function openReview(
   };
 
   const openFlow = (): void => {
+    if (archMap === null) archMap = loadMap();
     if (archMap === null) {
       paint(NO_ARCH_MAP);
       return;
@@ -615,6 +622,9 @@ export function openReview(
       fileStats(fileDiffs),
     );
     if (closed) return;
+    // A regenerate can land while this call is out; its result describes a
+    // topology that no longer exists, and saving it would undo the clear.
+    if (archMap !== map) return;
     // A null is a transient model failure, never something to remember:
     // caching it would freeze the fallback in until the next push.
     if (fresh) {
@@ -637,6 +647,8 @@ export function openReview(
         // and the copy cached under this SHA with it, so both are dropped and
         // the fetch runs past the cache instead of reading its own stale write.
         annotation = null;
+        if (meta) deps.saveFlow(meta.headSha, null);
+        selectedNode = null;
         paint();
         await loadAnnotation(false);
       } catch (err: unknown) {
@@ -648,12 +660,12 @@ export function openReview(
     })();
   };
 
-  chart.on("keypress", (ch: string, key: { name: string; shift?: boolean }) => {
+  chart.on("keypress", (ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
     if (key.name === "j" || key.name === "down") moveNode(1);
     else if (key.name === "k" || key.name === "up") moveNode(-1);
     else if (key.name === "enter" || key.name === "return") jumpToNode();
     else if (key.name === "g" && key.shift) regenerate();
-    else if (key.name === "f" || key.name === "escape") setFlow(false);
+    else if ((key.name === "f" && !key.ctrl) || key.name === "escape") setFlow(false);
     else if (key.name === "q") close(null, false);
   });
 
@@ -673,7 +685,7 @@ export function openReview(
     return true;
   };
 
-  plan.on("keypress", (ch: string, key: { name: string; full?: string; shift?: boolean }) => {
+  plan.on("keypress", (ch: string, key: { name: string; full?: string; shift?: boolean; ctrl?: boolean }) => {
     if (jumpPane(ch)) return;
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
@@ -684,18 +696,18 @@ export function openReview(
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
-    else if (key.name === "f") openFlow();
+    else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
-  diff.on("keypress", (ch: string, key: { name: string; shift?: boolean }) => {
+  diff.on("keypress", (ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
     if (jumpPane(ch)) return;
     if (key.name === "tab") focusPane(nextReviewPane("diff", hasClaude()));
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
-    else if (key.name === "f") openFlow();
+    else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 

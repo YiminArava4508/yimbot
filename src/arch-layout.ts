@@ -292,6 +292,7 @@ export function serializeGrid(
   grid: string[][],
   boxes: NodeBox[],
   states: Map<string, NodeState>,
+  selected: string | null = null,
 ): string[] {
   const byRow = new Map<number, NodeBox[]>();
   for (const b of boxes) byRow.set(b.row, [...(byRow.get(b.row) ?? []), b]);
@@ -303,7 +304,10 @@ export function serializeGrid(
     for (const b of here) {
       out += escapeTags(cells.slice(col, b.colStart).join(""));
       const [open, close] = STATE_TAGS[states.get(b.id) ?? "idle"];
-      out += open + escapeTags(cells.slice(b.colStart, b.colEnd + 1).join("")) + close;
+      const mark = b.id === selected;
+      out += (mark ? "{inverse}" : "") + open;
+      out += escapeTags(cells.slice(b.colStart, b.colEnd + 1).join(""));
+      out += close + (mark ? "{/inverse}" : "");
       col = b.colEnd + 1;
     }
     return out + escapeTags(cells.slice(col).join("").replace(/\s+$/, ""));
@@ -314,6 +318,7 @@ export function layoutGraph(
   map: ArchMap,
   states: Map<string, NodeState>,
   width: number,
+  selected: string | null = null,
 ): { lines: string[]; boxes: NodeBox[] } {
   const w = Math.max(12, width);
   const ids = map.nodes.map((n) => n.id);
@@ -327,5 +332,5 @@ export function layoutGraph(
   const { boxes, height } = placeNodes(rows, labels, w);
   const grid = renderGrid(boxes, labels, edges, w, height);
   const ordered = [...boxes].sort((a, b) => a.row - b.row || a.colStart - b.colStart);
-  return { lines: serializeGrid(grid, boxes, states), boxes: ordered };
+  return { lines: serializeGrid(grid, boxes, states, selected), boxes: ordered };
 }

@@ -1223,3 +1223,148 @@ test("q from the chart closes the whole overlay", async () => {
   press(screen, "q");
   assert.equal(closed, true);
 });
+
+const pressCtrl = (screen: any, name: string) =>
+  screen.focused.emit("keypress", "", { name, full: `C-${name}`, ctrl: true });
+
+test("ctrl-f pages the diff instead of swapping in the chart", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "2");
+  pressCtrl(screen, "f");
+  assert.equal(paneByLabel(screen, " flow ").hidden, true);
+  screen.destroy();
+});
+
+// A chain long enough that its bottom ranks fall past the chart's inner height
+// on the 120x40 test screen.
+const TALL_MAP = JSON.stringify({
+  generatedAt: "", commit: "",
+  nodes: Array.from({ length: 12 }, (_, i) => ({
+    id: `n${i}`, label: `node${i}`, role: `role ${i}`,
+    files: [i === 0 ? "src/a.ts" : i === 1 ? "src/b.ts" : `src/n${i}.ts`],
+  })),
+  edges: Array.from({ length: 11 }, (_, i) => ({ from: `n${i}`, to: `n${i + 1}`, carries: "calls" })),
+});
+
+test("walking to a node below the fold scrolls the chart to it", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps({ loadArchMap: () => TALL_MAP, runAnnotation: async () => "junk" }), () => {});
+  await settle();
+  press(screen, "f");
+  const chart = paneByLabel(screen, " flow ");
+  assert.equal(chart.getScroll(), 0);
+  for (let i = 0; i < 12; i++) press(screen, "j");
+  assert.ok(chart.getScroll() > 0, "the last node is drawn past the pane and never scrolled into view");
+  screen.destroy();
+});
+
+// getContent() hands back the tag-stripped text; the highlight only shows in
+// the content the box was handed.
+const inverted = (chart: any, label: string): boolean =>
+  new RegExp(`\\{inverse\\}[^\\[]*\\[ ${label} \\]`).test(chart.content);
+
+test("the chart marks the selected node so j and k show on the chart itself", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "f");
+  const chart = paneByLabel(screen, " flow ");
+  assert.ok(!chart.content.includes("{inverse}"), "nothing is selected yet");
+  press(screen, "j");
+  assert.ok(inverted(chart, "alpha"));
+  press(screen, "j");
+  assert.ok(inverted(chart, "beta"));
+  assert.ok(!inverted(chart, "alpha"), "only one node is selected at a time");
+  screen.destroy();
+});
+
+test("a regenerate drops the annotation cached under this head sha", async () => {
+  let raw = STALE_MAP;
+  const saved: unknown[] = [];
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadArchMap: () => raw,
+    loadFlow: () => JSON.parse(ANN_JSON),
+    runAnnotation: async () => "junk",
+    saveFlow: (_sha: string, f: unknown) => saved.push(f),
+    regenerateArchMap: async () => { raw = REGENERATED_MAP; },
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  pressShiftG(screen);
+  await settle();
+  assert.deepEqual(saved, [null], "the refetch failed, so the stale cache has to be gone already");
+  screen.destroy();
+});
+
+test("the note band never wraps, so the at risk line survives the stale banner", () => {
+  assert.equal(flowLayout().note.wrap, false);
+});
+
+test("an annotation in flight when the map is regenerated is dropped", async () => {
+  let raw = STALE_MAP;
+  let release: ((v: string) => void) | null = null;
+  const saved: unknown[] = [];
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadArchMap: () => raw,
+    runAnnotation: async () => {
+      if (release) return "junk";
+      return await new Promise<string>((r) => { release = r; });
+    },
+    saveFlow: (_sha: string, f: unknown) => saved.push(f),
+    regenerateArchMap: async () => { raw = REGENERATED_MAP; },
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  pressShiftG(screen);
+  await settle();
+  (release as unknown as (v: string) => void)(ANN_JSON);
+  await settle();
+  assert.ok(!saved.some((f) => f !== null), "a result built against the replaced map must not be kept");
+  assert.ok(!paneByLabel(screen, " note ").getContent().includes("alpha calls beta"));
+  screen.destroy();
+});
+
+test("f finds a map written after the overlay opened", async () => {
+  let raw: string | null = null;
+  const screen = makeScreen();
+  openReview(screen, testDeps({ loadArchMap: () => raw, runAnnotation: async () => "junk" }), () => {});
+  await settle();
+  press(screen, "f");
+  assert.equal(paneByLabel(screen, " flow ").hidden, true);
+  raw = ARCH_JSON;
+  press(screen, "f");
+  await settle();
+  assert.equal(paneByLabel(screen, " flow ").hidden, false);
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("alpha"));
+  screen.destroy();
+});
+
+test("a regenerate that drops the selected node clears the selection", async () => {
+  let raw = JSON.stringify({
+    generatedAt: "", commit: "",
+    nodes: [
+      { id: "a", label: "alpha", role: "first", files: ["src/a.ts"] },
+      { id: "gone", label: "gone", role: "third", files: ["src/gone.ts"] },
+    ],
+    edges: [],
+  });
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadArchMap: () => raw,
+    runAnnotation: async () => "junk",
+    regenerateArchMap: async () => { raw = REGENERATED_MAP; },
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  press(screen, "j");
+  press(screen, "j");
+  assert.ok(footerOf(screen).getContent().includes("enter files"));
+  pressShiftG(screen);
+  await settle();
+  assert.ok(!footerOf(screen).getContent().includes("enter files"));
+  screen.destroy();
+});

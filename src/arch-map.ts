@@ -65,12 +65,16 @@ function str(v: unknown): string {
 }
 
 export function parseArchMap(raw: string): ArchMap | null {
-  let obj: unknown;
   try {
-    obj = JSON.parse(raw);
+    return archMapFrom(JSON.parse(raw));
   } catch {
     return null;
   }
+}
+
+// The shape check on its own, for the generator: it reads the map out of model
+// stdout through extractJsonObject rather than from a file of plain JSON.
+export function archMapFrom(obj: unknown): ArchMap | null {
   if (obj === null || typeof obj !== "object") return null;
   const o = obj as { generatedAt?: unknown; commit?: unknown; nodes?: unknown; edges?: unknown };
   if (!Array.isArray(o.nodes)) return null;

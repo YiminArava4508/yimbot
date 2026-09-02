@@ -2,7 +2,8 @@
 // The map generator's pure half: which paths are worth showing the model, the
 // prompt that asks for the map, and the parse that stamps it with the commit
 // it describes.
-import { parseArchMap, type ArchMap } from "./arch-map.ts";
+import { archMapFrom, type ArchMap } from "./arch-map.ts";
+import { extractJsonObject } from "./json-extract.ts";
 
 const SKIP_DIR = /(^|\/)(node_modules|dist|build|coverage)\//;
 const SKIP_FILE = /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$/;
@@ -32,10 +33,7 @@ export function mapPrompt(paths: string[]): string {
 }
 
 export function parseGeneratedMap(stdout: string, commit: string): ArchMap | null {
-  const start = stdout.indexOf("{");
-  const end = stdout.lastIndexOf("}");
-  if (start === -1 || end <= start) return null;
-  const map = parseArchMap(stdout.slice(start, end + 1));
+  const map = archMapFrom(extractJsonObject(stdout));
   if (!map) return null;
   return { ...map, generatedAt: new Date().toISOString(), commit };
 }

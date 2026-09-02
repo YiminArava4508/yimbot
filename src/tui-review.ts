@@ -9,6 +9,13 @@ import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./r
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
+import { layoutGraph, type NodeBox } from "./arch-layout.ts";
+import { fetchAnnotation, normalizeAnnotation } from "./arch-annotate.ts";
+import { sourcePaths } from "./arch-generate.ts";
+import {
+  nodeFiles, nodeStates, parseArchMap, renderSet,
+  type ArchAnnotation, type ArchMap, type ArchNode, type NodeState,
+} from "./arch-map.ts";
 
 export function flattenFiles(groups: ReviewGroup[]): string[] {
   return groups.flatMap((g) => g.files);
@@ -190,6 +197,66 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
   };
 }
 
+// The flow overlay's two boxes: the chart takes the body, the note band pins
+// three content rows above the footer. Both mount hidden and are shown by the
+// f toggle, so the three columns keep their own scroll and selection.
+export function flowLayout(): Record<"chart" | "note", Record<string, unknown>> {
+  return {
+    chart: {
+      top: 1, left: 0, width: "100%", bottom: 6, tags: true, wrap: false, hidden: true,
+      scrollable: true, alwaysScroll: true,
+      border: { type: "line" }, label: " flow ", style: paneStyle(),
+      scrollbar: { ch: " ", style: { inverse: true } },
+    },
+    note: {
+      bottom: 1, left: 0, width: "100%", height: 5, tags: true, wrap: false, hidden: true,
+      border: { type: "line" }, label: " note ", style: paneStyle(),
+    },
+  };
+}
+
+export function nodeOrder(boxes: NodeBox[]): string[] {
+  return [...boxes].sort((a, b) => a.row - b.row || a.colStart - b.colStart).map((b) => b.id);
+}
+
+export function noteBandLines(s: {
+  node: ArchNode | null;
+  state: NodeState;
+  ann: ArchAnnotation | null;
+  stale: number;
+}): string[] {
+  const out: string[] = [];
+  if (s.stale > 0) {
+    out.push(`{yellow-fg}map stale: ${s.stale} file${s.stale === 1 ? "" : "s"} unmapped   G regenerate{/yellow-fg}`);
+  }
+  if (s.ann === null) {
+    out.push("{grey-fg}flow annotation unavailable, showing touched nodes only{/grey-fg}");
+  }
+  if (s.node === null) {
+    if (s.ann?.flow) out.push(escapeTags(s.ann.flow));
+    return out.length > 0 ? out : ["{grey-fg}j/k to pick a node{/grey-fg}"];
+  }
+  const head = `{bold}${escapeTags(s.node.label)}{/bold}`;
+  out.push(s.node.role ? `${head}: ${escapeTags(s.node.role)}` : head);
+  // The band is three content rows and does not scroll, so the at-risk reason
+  // goes above the touched note: it is the line the feature exists for, and
+  // last place is the first thing the box clips.
+  const risk = s.ann?.atRisk.find((r) => r.node === s.node?.id);
+  if (risk) out.push(`{red-fg}at risk via ${escapeTags(risk.viaEdge)}: ${escapeTags(risk.why)}{/red-fg}`);
+  const note = s.ann?.touched.find((t) => t.node === s.node?.id)?.note;
+  if (note) out.push(escapeTags(note));
+  if (s.state === "unmapped") out.push("{grey-fg}no node in the map claims these files{/grey-fg}");
+  return out;
+}
+
+export function flowFooterHint(s: { stale: number; selected: string | null }): string {
+  const regen = s.stale > 0 ? "   {yellow-fg}G regenerate{/yellow-fg}" : "";
+  const jump = s.selected ? "   enter files" : "";
+  return `j/k node${jump}${regen}   f diff   q back`;
+}
+
+const NO_ARCH_MAP = "{red-fg}no architecture map in this repo, run pnpm arch-map{/red-fg}";
+
 export type ReviewDeps = {
   pr: number;
   fetchDiff: () => Promise<string>;
@@ -207,6 +274,16 @@ export type ReviewDeps = {
   // Returns false when the write failed so the overlay retries on the next
   // keystroke instead of marking the signature clean over a stale file.
   writeContext: (content: string) => boolean;
+  // The architecture map's raw contents from the reviewed repo, or null when
+  // the repo has none. Read through a function so a regenerate lands without
+  // reopening the overlay.
+  loadArchMap: () => string | null;
+  runAnnotation: (prompt: string) => Promise<string>;
+  loadFlow: (headSha: string) => unknown;
+  // Null clears the entry: a regenerate replaces the topology the cached
+  // annotation described, and leaving it would resurface on the next open.
+  saveFlow: (headSha: string, flow: ArchAnnotation | null) => void;
+  regenerateArchMap: () => Promise<void>;
 };
 
 // The returned claudeFocused getter feeds tui.ts's C-c gate: while the claude
@@ -225,6 +302,9 @@ export function openReview(
   const diff: any = blessed.box({ parent: s, ...layout.diff });
   const claude: any = blessed.box({ parent: s, ...layout.claude });
   const footer: any = blessed.text({ parent: s, ...layout.footer });
+  const flow = flowLayout();
+  const chart: any = blessed.box({ parent: s, ...flow.chart });
+  const note: any = blessed.box({ parent: s, ...flow.note });
   plan.focus();
 
   let meta: { title: string; body: string; isDraft: boolean; headSha: string } | null = null;
@@ -246,6 +326,12 @@ export function openReview(
   let closed = false;
   let contextFiles = new Set<string>();
   let lastCtxSig: string | null = null;
+  let flowOpen = false;
+  let archMap: ArchMap | null = null;
+  let annotation: ArchAnnotation | null = null;
+  let selectedNode: string | null = null;
+  let chartBoxes: NodeBox[] = [];
+  let regenerating = false;
   const session = deps.claudeSession();
   let claudeExited = false;
   const hasClaude = () => session !== null && !claudeExited;
@@ -274,6 +360,12 @@ export function openReview(
     claude.setContent("{grey-fg}claude unavailable{/grey-fg}");
   }
 
+  const loadMap = (): ArchMap | null => {
+    const raw = deps.loadArchMap();
+    return raw === null ? null : parseArchMap(raw);
+  };
+  archMap = loadMap();
+
   const currentGroups = (): ReviewGroups => {
     if (groups) return groups;
     return placeholderGroups(fileDiffs.map((f) => f.path));
@@ -283,9 +375,24 @@ export function openReview(
     const fs = files();
     return fs.length > 0 && fs.every((f) => viewed.has(f));
   };
+  // The chart's file universe, narrowed by the same predicate the generator
+  // feeds its prompt: a node can only ever claim a source file, so counting a
+  // test or a lockfile as unmapped would nag on every review with a regenerate
+  // that provably cannot help. The plan, diff, viewed marks and files() all
+  // still cover the whole diff.
+  const chartPaths = () => sourcePaths(fileDiffs.map((f) => f.path));
+  // One glob sweep per paint rather than one per reader.
+  let rendered: { map: ArchMap | null; unmapped: string[] } | null = null;
+  const renderState = (): { map: ArchMap | null; unmapped: string[] } => {
+    if (rendered === null) {
+      rendered = archMap ? renderSet(archMap, annotation, chartPaths()) : { map: null, unmapped: [] };
+    }
+    return rendered;
+  };
 
   function paint(footerOverride?: string): void {
     if (closed) return;
+    rendered = null;
     const g = currentGroups();
     const fs = files();
     if (selectedPath === null || !fs.includes(selectedPath)) selectedPath = fs[0] ?? null;
@@ -314,11 +421,44 @@ export function openReview(
     diff.style.border.fg = reviewPaneBorderColor(focused === "diff");
     claude.style.border.fg = reviewPaneBorderColor(focused === "claude");
     claude.setLabel(claudePaneLabel(selectedPath, contextFiles.size));
-    if (claudeOut) {
+    // While the flow chart covers the columns the claude box sits hidden with
+    // whatever stale dimensions it last had; re-fitting the pty to them would
+    // resize it against a box nobody sees.
+    if (claudeOut && !flowOpen) {
       claudeOut.resize(Math.max(2, claude.width - 2), Math.max(2, claude.height - 2));
       claudeOut.repaint();
     }
+    if (flowOpen) {
+      const { map: m, unmapped } = renderState();
+      if (m) {
+        const states = nodeStates(m, annotation, chartPaths());
+        const drawn = layoutGraph(m, states, Math.max(12, chart.width - 2), selectedNode);
+        chartBoxes = drawn.boxes;
+        chart.setContent(drawn.lines.join("\n"));
+        // The chart is taller than the pane on any real map, and its own keys
+        // are spent on node movement, so the selection is what scrolls it.
+        const box = drawn.boxes.find((b) => b.id === selectedNode);
+        if (box) chart.scrollTo(box.row);
+        const node = m.nodes.find((n) => n.id === selectedNode) ?? null;
+        note.setContent(noteBandLines({
+          node,
+          state: node ? states.get(node.id) ?? "idle" : "idle",
+          ann: annotation,
+          stale: unmapped.length,
+        }).join("\n"));
+      } else {
+        // A regenerate that wrote a file we cannot parse drops the map; without
+        // this the chart would keep showing the one it replaced.
+        chartBoxes = [];
+        chart.setContent(NO_ARCH_MAP);
+        note.setContent(NO_ARCH_MAP);
+      }
+      chart.style.border.fg = reviewPaneBorderColor(true);
+    }
     let hint = footerOverride;
+    if (hint === undefined && flowOpen) {
+      hint = flowFooterHint({ stale: renderState().unmapped.length, selected: selectedNode });
+    }
     if (hint === undefined) {
       hint = reviewFooterHint({
         total: fs.length,
@@ -346,6 +486,8 @@ export function openReview(
     diff.detach();
     claude.detach();
     footer.detach();
+    chart.detach();
+    note.detach();
     s.render();
     onClose(notice, isError);
   }
@@ -413,6 +555,125 @@ export function openReview(
     paint();
   };
 
+  const setFlow = (open: boolean): void => {
+    flowOpen = open;
+    for (const w of [guide, plan, diff, claude]) w.hidden = open;
+    chart.hidden = !open;
+    note.hidden = !open;
+    if (open) chart.focus();
+    else focusPane(focused);
+    paint();
+  };
+
+  const openFlow = (): void => {
+    if (archMap === null) archMap = loadMap();
+    if (archMap === null) {
+      paint(NO_ARCH_MAP);
+      return;
+    }
+    setFlow(true);
+  };
+
+  const moveNode = (delta: number): void => {
+    const order = nodeOrder(chartBoxes);
+    if (order.length === 0) return;
+    const cur = selectedNode === null ? -1 : order.indexOf(selectedNode);
+    selectedNode = order[Math.max(0, Math.min(order.length - 1, cur + delta))];
+    paint();
+  };
+
+  // The chart's payoff: pick the hop, land in its diff. A node whose files are
+  // all viewed goes to its first file rather than nowhere.
+  const jumpToNode = (): void => {
+    const m = renderState().map;
+    if (!m || selectedNode === null) return;
+    const owned = nodeFiles(m, selectedNode, files());
+    // A node can own nothing in this diff: its globs claim files the PR never
+    // touched, or only the ones the chart's source filter drops. Say so rather
+    // than swallow the keystroke.
+    if (owned.length === 0) {
+      paint(`{grey-fg}${escapeTags(selectedNode)} owns no file in this PR{/grey-fg}`);
+      return;
+    }
+    const target = owned.find((f) => !viewed.has(f)) ?? owned[0];
+    setFlow(false);
+    select(files().indexOf(target));
+  };
+
+  // The one path to the flow annotation, for the initial load and for the
+  // refetch a regenerate forces. useCache is off in the second case: the copy
+  // saved under this head SHA describes the topology that was just replaced.
+  async function loadAnnotation(useCache: boolean): Promise<void> {
+    const m = meta;
+    const map = archMap;
+    if (map === null || m === null) return;
+    if (useCache) {
+      const cached = normalizeAnnotation(deps.loadFlow(m.headSha), map);
+      if (cached) {
+        annotation = cached;
+        paint();
+        return;
+      }
+    }
+    const fresh = await fetchAnnotation(
+      deps.runAnnotation,
+      map,
+      { number: deps.pr, title: m.title, body: m.body },
+      fileStats(fileDiffs),
+    );
+    if (closed) return;
+    // A regenerate can land while this call is out; its result describes a
+    // topology that no longer exists, and saving it would undo the clear.
+    if (archMap !== map) return;
+    // A null is a transient model failure, never something to remember:
+    // caching it would freeze the fallback in until the next push.
+    if (fresh) {
+      annotation = fresh;
+      deps.saveFlow(m.headSha, fresh);
+    }
+    paint();
+  }
+
+  const regenerate = (): void => {
+    if (regenerating || renderState().unmapped.length === 0) return;
+    regenerating = true;
+    paint("regenerating the architecture map…");
+    void (async () => {
+      try {
+        await deps.regenerateArchMap();
+        if (closed) return;
+        archMap = loadMap();
+        // The annotation was built against the topology that just went away,
+        // and the copy cached under this SHA with it, so both are dropped and
+        // the fetch runs past the cache instead of reading its own stale write.
+        annotation = null;
+        if (meta) deps.saveFlow(meta.headSha, null);
+        selectedNode = null;
+        paint();
+        await loadAnnotation(false);
+      } catch (err: unknown) {
+        if (closed) return;
+        paint(`{red-fg}map regenerate failed: ${err instanceof Error ? err.message : String(err)}{/red-fg}`);
+      } finally {
+        regenerating = false;
+      }
+    })();
+  };
+
+  chart.on("keypress", (ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
+    if (key.name === "j" || key.name === "down") moveNode(1);
+    else if (key.name === "k" || key.name === "up") moveNode(-1);
+    else if (key.name === "enter" || key.name === "return") jumpToNode();
+    else if (key.name === "g" && key.shift) regenerate();
+    else if ((key.name === "f" && !key.ctrl) || key.name === "escape") setFlow(false);
+    else if (key.name === "q") close(null, false);
+  });
+
+  chart.on("click", () => {
+    if (!flowOpen) return;
+    chart.focus();
+  });
+
   // Direct pane jumps; matched on ch because blessed leaves key.name unset
   // for digit keys. The claude pane never sees these: its keypress forwards
   // everything to the pty.
@@ -424,7 +685,7 @@ export function openReview(
     return true;
   };
 
-  plan.on("keypress", (ch: string, key: { name: string; full?: string; shift?: boolean }) => {
+  plan.on("keypress", (ch: string, key: { name: string; full?: string; shift?: boolean; ctrl?: boolean }) => {
     if (jumpPane(ch)) return;
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
@@ -435,16 +696,18 @@ export function openReview(
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
+    else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
-  diff.on("keypress", (ch: string, key: { name: string; shift?: boolean }) => {
+  diff.on("keypress", (ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
     if (jumpPane(ch)) return;
     if (key.name === "tab") focusPane(nextReviewPane("diff", hasClaude()));
     else if (key.name === "space") toggleViewed();
     else if (key.name === "y") markReady();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
+    else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
@@ -532,14 +795,15 @@ export function openReview(
     const cached = normalizeGroups(deps.loadGroups(m.headSha), fileDiffs.map((f) => f.path));
     if (cached) {
       applyGroups(cached, false);
-      return;
+    } else {
+      const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, fileStats(fileDiffs));
+      if (closed) return;
+      // A fallback is what we show when the model was unreachable, never what we
+      // remember: caching it would freeze a transient failure in until the next push.
+      if (!res.usedFallback) deps.saveGroups(m.headSha, res.groups);
+      applyGroups(res.groups, res.usedFallback);
     }
-    const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, fileStats(fileDiffs));
-    if (closed) return;
-    // A fallback is what we show when the model was unreachable, never what we
-    // remember: caching it would freeze a transient failure in until the next push.
-    if (!res.usedFallback) deps.saveGroups(m.headSha, res.groups);
-    applyGroups(res.groups, res.usedFallback);
+    await loadAnnotation(true);
   }).catch(() => {
     // metaP rejection: already reported and closed by metaP.then's own
     // rejection handler above.

@@ -2,7 +2,7 @@
 import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { format, promisify } from "node:util";
+import { format } from "node:util";
 import { execFile } from "node:child_process";
 import { envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitStatus } from "./src/events.ts";
@@ -16,8 +16,10 @@ import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
-import { readGroups, readViewed, writeGroups, writeViewed } from "./src/review-state.ts";
+import { readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
+import { archMapPath } from "./src/arch-map.ts";
+import { runHeadless } from "./src/headless.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
 import {
@@ -109,19 +111,9 @@ if (process.stdout.isTTY) {
       return result;
     },
   };
-  const execFileAsync = promisify(execFile);
   // Same headless claude -p shape as the daemon's judgeRun; the given model env
   // overrides, falling back to the judge's model knob.
-  const runHeadless = (model: string) => async (prompt: string) => {
-    const args = ["-p", prompt];
-    if (model) args.push("--model", model);
-    const { stdout } = await execFileAsync("claude", args, {
-      cwd: currentCodebasePath(),
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 120_000,
-    });
-    return stdout;
-  };
+  const headless = (model: string) => runHeadless(model, currentCodebasePath());
   const claudeRegistry = makeSessionRegistry(spawnClaudePty);
   // The claude session runs in the PR's worktree so it can read the actual
   // branch; a PR-only row with no worktree falls back to the main checkout.
@@ -138,12 +130,32 @@ if (process.stdout.isTTY) {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
-      runGrouping: (prompt) => runHeadless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
+      runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
       markReady: () => markPrReadyForReview(run, pr),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
       loadGroups: (headSha) => readGroups(pr, headSha),
       saveGroups: (headSha, groups) => writeGroups(pr, headSha, groups),
+      loadArchMap: () => {
+        try {
+          return readFileSync(archMapPath(currentCodebasePath()), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      runAnnotation: (prompt) =>
+        headless(envOr("ARCH_ANNOTATE_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
+      loadFlow: (headSha) => readFlow(pr, headSha),
+      saveFlow: (headSha, flow) => writeFlow(pr, headSha, flow),
+      regenerateArchMap: () =>
+        new Promise<void>((resolve, reject) => {
+          execFile(
+            process.execPath,
+            ["--import", "tsx/esm", join(import.meta.dirname, "scripts/arch-map.ts")],
+            { env: { ...process.env, CODEBASE_PATH: currentCodebasePath() } },
+            (err) => (err ? reject(err) : resolve()),
+          );
+        }),
       claudeSession: () => {
         try {
           return claudeRegistry.getOrSpawn(pr, cwd);
@@ -200,7 +212,7 @@ if (process.stdout.isTTY) {
     orderDeps: {
       fetchMeta: (pr) => prReviewMeta(ghRunner(currentCodebasePath()), pr),
       run: (prompt) =>
-        runHeadless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
+        headless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
     },
   });
 } else {

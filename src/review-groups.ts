@@ -29,7 +29,7 @@ export function fileStats(diffs: FileDiff[]): FileStat[] {
   });
 }
 
-function fileLine(f: FileStat): string {
+export function fileLine(f: FileStat): string {
   const stat = f.status === "modified" ? "" : `${f.status}, `;
   const head = `- ${f.path} (${stat}+${f.additions}/-${f.deletions})`;
   if (f.hunks.length === 0) return head;

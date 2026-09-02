@@ -241,3 +241,13 @@ test("layoutGraph survives a map with no edges at all", () => {
   const states = new Map<string, NodeState>(map.nodes.map((n) => [n.id, "idle" as NodeState]));
   assert.ok(layoutGraph(map, states, 60).lines.join("\n").includes("board"));
 });
+
+test("renderGrid gives two overlapping channels a column each", () => {
+  const labels = new Map([["a", "aa"], ["b", "b".repeat(20)], ["c", "c".repeat(20)], ["d", "dd"]]);
+  const { boxes, height } = placeNodes([["a"], ["b"], ["c"], ["d"]], labels, 30);
+  const edges = [{ from: "d", to: "a", carries: "" }, { from: "c", to: "b", carries: "" }];
+  const grid = renderGrid(boxes, labels, edges, 30, height);
+  const channels = new Set<number>();
+  for (const row of grid) row.forEach((ch, col) => ch === "|" && channels.add(col));
+  assert.equal(channels.size, 2);
+});

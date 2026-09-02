@@ -190,16 +190,32 @@ function vRun(grid: string[][], col: number, from: number, to: number): void {
   for (let r = lo; r <= hi; r++) put(grid, r, col, "|");
 }
 
-// A column with no box in the rows the channel passes through. Scans outward
-// from `near` so a channel stays close to its edge; when nothing is free it
-// falls back to `near`, where put() marks the crossings.
-function channelCol(boxes: NodeBox[], fromRow: number, toRow: number, near: number, width: number): number {
+// The rows each column already carries a channel for, so two edges running
+// through the same band never merge into one unreadable line.
+type Channels = Map<number, [number, number][]>;
+
+// A column with no box and no earlier channel in the rows this one passes
+// through. Scans outward from `near` so a channel stays close to its edge, and
+// claims what it picks; when nothing is free it falls back to `near`, where
+// put() marks the crossings.
+function channelCol(
+  boxes: NodeBox[],
+  taken: Channels,
+  fromRow: number,
+  toRow: number,
+  near: number,
+  width: number,
+): number {
   const [lo, hi] = fromRow <= toRow ? [fromRow, toRow] : [toRow, fromRow];
   const blocked = (col: number): boolean =>
-    boxes.some((b) => b.row >= lo && b.row <= hi && col >= b.colStart - 1 && col <= b.colEnd + 1);
+    boxes.some((b) => b.row >= lo && b.row <= hi && col >= b.colStart - 1 && col <= b.colEnd + 1) ||
+    (taken.get(col) ?? []).some(([a, b]) => a <= hi && lo <= b);
   for (let d = 0; d < width; d++) {
     for (const col of [near + d, near - d]) {
-      if (col >= 0 && col < width && !blocked(col)) return col;
+      if (col >= 0 && col < width && !blocked(col)) {
+        taken.set(col, [...(taken.get(col) ?? []), [lo, hi]]);
+        return col;
+      }
     }
   }
   return Math.max(0, Math.min(width - 1, near));
@@ -214,6 +230,7 @@ export function renderGrid(
 ): string[][] {
   const grid: string[][] = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
   const byId = new Map(boxes.map((b) => [b.id, b]));
+  const taken: Channels = new Map();
   for (const b of boxes) {
     const text = `[ ${(labels.get(b.id) ?? b.id).slice(0, Math.max(1, width - 4))} ]`;
     for (let i = 0; i < text.length && b.colStart + i < width; i++) grid[b.row][b.colStart + i] = text[i];
@@ -233,7 +250,7 @@ export function renderGrid(
         hRun(grid, exit, cf, ct);
         put(grid, exit, cf, cf === ct ? "|" : "+");
       } else {
-        const ch = channelCol(boxes, exit, entry, cf, width);
+        const ch = channelCol(boxes, taken, exit, entry, cf, width);
         hRun(grid, exit, cf, ch);
         vRun(grid, ch, exit, entry);
         hRun(grid, entry, ch, ct);
@@ -245,7 +262,14 @@ export function renderGrid(
     // back in from underneath the target.
     const exit = from.row + 1;
     const entry = to.row + 1;
-    const ch = channelCol(boxes, Math.min(exit, entry), Math.max(exit, entry), Math.max(cf, ct) + 3, width);
+    const ch = channelCol(
+      boxes,
+      taken,
+      Math.min(exit, entry),
+      Math.max(exit, entry),
+      Math.max(cf, ct) + 3,
+      width,
+    );
     hRun(grid, exit, cf, ch);
     vRun(grid, ch, exit, entry);
     hRun(grid, entry, ch, ct);

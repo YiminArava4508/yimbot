@@ -1,5 +1,5 @@
 import type { Section } from "./events.ts";
-import type { ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { ChecksInfo, MergeableInfo, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import type { Mode } from "./mode.ts";
 
 export type PrReadyDeps = {
@@ -11,8 +11,11 @@ export type PrReadyDeps = {
   mergeableInfo: (prNumber: number) => Promise<MergeableInfo>;
   // CI summary for a PR: rollup state + head SHA.
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
-  // The label names currently on a PR.
-  prLabels: (prNumber: number) => Promise<string[]>;
+  // A PR's labels and draft flag, read together and live. Both have to be
+  // fresh: listOpenPRs is a snapshot taken at tick start, and an operator
+  // queueing a PR mid-tick promotes it out of draft and labels it, which the
+  // snapshot's isDraft would then contradict for a whole heartbeat.
+  prState: (prNumber: number) => Promise<PrState>;
   // Add the ready label to a PR. The ready step never removes the label: once
   // on (by the bot or a human), only a human or the merge queue takes it off.
   addLabel: (prNumber: number, label: string) => Promise<void>;
@@ -158,18 +161,18 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     // else: a PR whose readiness reads fail still has to be placed. Reading them
     // for every PR (holds included) also lets the board reconcile a queued PR off
     // a stale fix status. Still a read; nothing here writes.
-    let labels: string[];
+    let live: PrState;
     try {
-      labels = await deps.prLabels(pr.number);
+      live = await deps.prState(pr.number);
     } catch (err) {
       deps.log(`label read failed for PR #${pr.number}: ${err}`);
       continue;
     }
-    const hasLabel = labels.includes(deps.label);
-    const isBlocked = labels.includes(deps.blockedLabel);
+    const hasLabel = live.labels.includes(deps.label);
+    const isBlocked = live.labels.includes(deps.blockedLabel);
     if (hasLabel) state.latched.add(pr.number); // latch in every mode, blocked PRs included
     if (hasLabel || isBlocked) queueOccupied = true; // queued now, or blocked and due a re-queue
-    deps.onSection?.(pr.number, boardSection(pr.isDraft, hasLabel));
+    deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel));
 
     let verdict: ReadyVerdict;
     try {
@@ -187,11 +190,11 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
       state.readySince.delete(pr.number);
     }
     if (isBlocked) continue; // blocked-fix flow owns this PR's labels
-    deps.onVerdict?.(pr.number, verdict, hasLabel, pr.isDraft);
+    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft);
     if (deps.mode() === "supervised") continue; // the label is a human's to manage
     // A draft is a human's to promote: never add the label (which queues it to
     // merge). A stale label on a draft is likewise left for a human to clear.
-    if (pr.isDraft) continue;
+    if (live.isDraft) continue;
     if (verdict !== "ready" || state.latched.has(pr.number)) continue;
     const soaked = deps.now() - (state.readySince.get(pr.number) ?? deps.now()) >= deps.soakMs;
     if (soaked) candidates.push(pr.number);

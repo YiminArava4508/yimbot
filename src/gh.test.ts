@@ -23,6 +23,8 @@ import {
   prDiff,
   prIsDraft,
   prLabels,
+  parsePrState,
+  prState,
   parsePrReviewMeta,
   prReviewMeta,
   removeLabel,
@@ -570,4 +572,18 @@ test("prReviewMeta views the PR once with every field the review and order flows
   const meta = await prReviewMeta(run, 7);
   assert.deepEqual(meta, { title: "t", body: "b", isDraft: false, headSha: "abc", additions: 1, deletions: 2 });
   assert.deepEqual(calls, [["pr", "view", "7", "--json", "title,body,isDraft,headRefOid,additions,deletions"]]);
+});
+
+test("parsePrState reads the labels and the draft flag from one view", () => {
+  assert.deepEqual(
+    parsePrState(JSON.stringify({ labels: [{ name: "ready-to-merge" }], isDraft: true })),
+    { labels: ["ready-to-merge"], isDraft: true },
+  );
+  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false });
+});
+
+test("prState asks for both fields in a single call", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify({ labels: [], isDraft: false })]);
+  await prState(run, 4706);
+  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels,isDraft"]);
 });

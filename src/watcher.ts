@@ -29,7 +29,7 @@ import {
   type Worktree,
 } from "./cleanup.ts";
 import { branchesFullyMerged, deriveKey, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, readEvents, reduceRows, sectionKind, titleFromBranch } from "./events.ts";
-import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import {
@@ -592,7 +592,7 @@ export type WatcherConfig = {
     unresolvedInfo: (n: number) => Promise<UnresolvedInfo>;
     mergeableInfo: (n: number) => Promise<MergeableInfo>;
     checksInfo: (n: number) => Promise<ChecksInfo>;
-    prLabels: (n: number) => Promise<string[]>;
+    prState: (n: number) => Promise<PrState>;
     addLabel: (n: number, label: string) => Promise<void>;
     label: string;
     blockedLabel: string;

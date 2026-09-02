@@ -309,7 +309,7 @@ test("statusContent shows an unexpired notice and drops it after its ttl", () =>
   assert.doesNotMatch(statusContent("supervised", true, 2, null, 0), /adding ready label/);
 });
 
-test("handleReadyPress shows a pending notice, then success once the label lands", async () => {
+test("handleReadyPress reports the same outcome the review overlay does", async () => {
   const notices: string[] = [];
   await handleReadyPress(
     row({ pr: 481 }),
@@ -318,7 +318,7 @@ test("handleReadyPress shows a pending notice, then success once the label lands
   );
   assert.equal(notices.length, 2);
   assert.match(notices[0], /#481/);
-  assert.match(notices[1], /#481 marked ready/);
+  assert.match(notices[1], /#481 ready to merge/);
 });
 
 test("handleReadyPress surfaces the failure instead of losing it to console", async () => {

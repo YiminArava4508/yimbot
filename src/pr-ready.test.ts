@@ -30,7 +30,7 @@ type Harness = {
 
 // A fully-faked readyOnce environment. Defaults describe a single ready PR
 // (#4706, no unresolved threads, mergeable, passing CI) in autonomous mode;
-// `currentLabels` is what prLabels reports, and each override swaps in one
+// `currentLabels` is what prState reports, and each override swaps in one
 // not-ready signal. The removeLabel spy is an extra property beyond PrReadyDeps
 // (hence the cast): readyOnce must never call one even if it is supplied.
 function harness(overrides: Partial<PrReadyDeps> = {}, currentLabels: string[] = []): Harness {
@@ -52,9 +52,13 @@ function harness(overrides: Partial<PrReadyDeps> = {}, currentLabels: string[] =
       calls.checks++;
       return ci("passing");
     },
-    prLabels: async () => {
+    // Mirrors the real read: labels and the draft flag come back together, the
+    // draft flag matching whatever the PR list says unless a test overrides it
+    // to make the two disagree.
+    prState: async (n: number) => {
       calls.labels++;
-      return currentLabels;
+      const listed = await (overrides.listOpenPRs ?? (async () => [pr(4706)]))();
+      return { labels: currentLabels, isDraft: listed.find((p) => p.number === n)?.isDraft ?? false };
     },
     addLabel: async (n: number, label: string) => void added.push({ n, label }),
     removeLabel: async (n: number, label: string) => void removed.push({ n, label }),
@@ -336,7 +340,7 @@ test("readyOnce does not report a verdict for a blocked PR", async () => {
 // merge queue is final, not fought every heartbeat.
 test("readyOnce does not re-add the label after adding it once and seeing it removed", async () => {
   let labels: string[] = [];
-  const h = harness({ prLabels: async () => labels }, []);
+  const h = harness({ prState: async () => ({ labels, isDraft: false }) }, []);
   await readyOnce(h.state, h.deps);
   assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
   labels = []; // label removed externally; PR still classifies as ready
@@ -347,7 +351,7 @@ test("readyOnce does not re-add the label after adding it once and seeing it rem
 
 test("readyOnce does not add the label to a PR that once carried it, even if the bot never added it", async () => {
   let labels = [LABEL]; // human-applied
-  const h = harness({ prLabels: async () => labels }, []);
+  const h = harness({ prState: async () => ({ labels, isDraft: false }) }, []);
   await readyOnce(h.state, h.deps);
   assert.equal(h.added.length, 0);
   labels = []; // human took it back off
@@ -358,7 +362,7 @@ test("readyOnce does not add the label to a PR that once carried it, even if the
 test("readyOnce observed in supervised mode still latches, so switching to autonomous does not re-add", async () => {
   let mode: "supervised" | "autonomous" = "supervised";
   let labels = [LABEL];
-  const h = harness({ mode: () => mode, prLabels: async () => labels }, []);
+  const h = harness({ mode: () => mode, prState: async () => ({ labels, isDraft: false }) }, []);
   await readyOnce(h.state, h.deps);
   mode = "autonomous";
   labels = []; // removed while supervised
@@ -393,7 +397,7 @@ test("readyOnce latches per PR: one latched PR does not block labeling another",
   const h = harness(
     {
       listOpenPRs: async () => [pr(1), pr(2)],
-      prLabels: async (n) => labelsByPr.get(n) ?? [],
+      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
     },
     [],
   );
@@ -452,7 +456,7 @@ test("readyOnce adds nothing while another open PR carries the ready label", asy
   const h = harness(
     {
       listOpenPRs: async () => [pr(1), pr(2)],
-      prLabels: async (n) => labelsByPr.get(n) ?? [],
+      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
     },
     [],
   );
@@ -460,7 +464,7 @@ test("readyOnce adds nothing while another open PR carries the ready label", asy
   assert.equal(h.added.length, 0);
   labelsByPr.delete(2);
   const merged = harness(
-    { listOpenPRs: async () => [pr(1)], prLabels: async (n) => labelsByPr.get(n) ?? [] },
+    { listOpenPRs: async () => [pr(1)], prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }) },
     [],
   );
   merged.state = h.state;
@@ -476,7 +480,7 @@ test("readyOnce adds nothing while another open PR is blocked", async () => {
   const h = harness(
     {
       listOpenPRs: async () => [pr(1), pr(2)],
-      prLabels: async (n) => labelsByPr.get(n) ?? [],
+      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
     },
     [],
   );
@@ -492,7 +496,7 @@ test("readyOnce labels at most one PR per tick, then waits for it to leave the q
   const h = harness(
     {
       listOpenPRs: async () => [pr(1), pr(2)],
-      prLabels: async (n) => labelsByPr.get(n) ?? [],
+      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
       addLabel: async (n, label) => {
         h.added.push({ n, label });
         labelsByPr.set(n, [label]);
@@ -508,7 +512,7 @@ test("readyOnce labels at most one PR per tick, then waits for it to leave the q
   const next = harness(
     {
       listOpenPRs: async () => [pr(2)],
-      prLabels: async (n) => labelsByPr.get(n) ?? [],
+      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
     },
     [],
   );
@@ -597,11 +601,47 @@ test("readyOnce reports a section for a PR whose readiness read failed", async (
 test("readyOnce reports no section for a PR whose label read failed", async () => {
   const seen: { n: number; section: string }[] = [];
   const h = harness({
-    prLabels: async () => {
+    prState: async () => {
       throw new Error("boom");
     },
     onSection: (n, s) => void seen.push({ n, section: s }),
   });
   await readyOnce(h.state, h.deps);
   assert.deepEqual(seen, []);
+});
+
+test("readyOnce places a PR by its live draft state, not the list snapshot's", async () => {
+  // The snapshot is taken at tick start; an operator pressing r or y mid-tick
+  // promotes and labels the PR. Reading the draft flag alongside the labels
+  // keeps the same tick from bouncing the row back to the review pane.
+  const seen: { n: number; section: string }[] = [];
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(4706, { isDraft: true })],
+      prState: async () => ({ labels: [LABEL], isDraft: false }),
+      onSection: (n, s) => void seen.push({ n, section: s }),
+    },
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [{ n: 4706, section: "merge" }]);
+});
+
+test("readyOnce reports the live draft state via onVerdict too", async () => {
+  const seen: boolean[] = [];
+  const h = harness({
+    listOpenPRs: async () => [pr(4706, { isDraft: true })],
+    prState: async () => ({ labels: [], isDraft: false }),
+    onVerdict: (_n, _v, _hasLabel, isDraft) => void seen.push(isDraft),
+  });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [false]);
+});
+
+test("readyOnce does not label a PR the live read still shows as a draft", async () => {
+  const h = harness({
+    listOpenPRs: async () => [pr(4706, { isDraft: false })],
+    prState: async () => ({ labels: [], isDraft: true }),
+  });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, []);
 });

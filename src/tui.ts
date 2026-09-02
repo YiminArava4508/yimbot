@@ -292,16 +292,16 @@ export async function handleReadyPress(
 ): Promise<void> {
   if (!row) return;
   if (row.pr == null) {
-    setNotice("{red-fg}selected row has no PR to mark ready{/red-fg}", NOTICE_ERROR_TTL_MS);
+    setNotice("{red-fg}selected row has no PR to queue{/red-fg}", NOTICE_ERROR_TTL_MS);
     return;
   }
-  setNotice(`adding ready label to #${row.pr}…`, NOTICE_TTL_MS);
+  setNotice(`queueing #${row.pr} to merge…`, NOTICE_TTL_MS);
   try {
     await addReady(row.pr, row.key, row.label);
-    setNotice(`{green-fg}#${row.pr} marked ready{/green-fg}`, NOTICE_TTL_MS);
+    setNotice(`{green-fg}#${row.pr} ready to merge{/green-fg}`, NOTICE_TTL_MS);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    setNotice(`{red-fg}ready label on #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
+    setNotice(`{red-fg}queueing #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
   }
 }
 

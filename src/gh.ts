@@ -305,6 +305,19 @@ export async function prLabels(run: GhRunner, prNumber: number): Promise<string[
   return parseLabels(await run(["pr", "view", String(prNumber), "--json", "labels"]));
 }
 
+export type PrState = { labels: string[]; isDraft: boolean };
+
+// Labels and the draft flag together, from one `gh pr view`. The ready step
+// needs both live: the open-PR listing it walks is a snapshot taken at tick
+// start, and an operator queueing a PR mid-tick promotes it out of draft.
+export function parsePrState(json: string): PrState {
+  return { labels: parseLabels(json), isDraft: parseIsDraft(json) };
+}
+
+export async function prState(run: GhRunner, prNumber: number): Promise<PrState> {
+  return parsePrState(await run(["pr", "view", String(prNumber), "--json", "labels,isDraft"]));
+}
+
 // Add / remove a single label on a PR. The gh stdout is discarded; a non-zero
 // exit rejects (e.g. --add-label with a label that doesn't exist in the repo),
 // which the caller catches and logs.

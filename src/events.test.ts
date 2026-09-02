@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { branchesFullyMerged, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tempDir } from "./test-temp.ts";
 
 test("deriveKey: identifier wins and is uppercased", () => {
   assert.deepEqual(deriveKey({ identifier: "eng-42" }), { key: "ENG-42", label: "ENG-42" });
@@ -89,7 +90,7 @@ test("reduceRows skips a retired-kind event instead of crashing on it", () => {
 });
 
 function withTmpLog(fn: (path: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-events-"));
+  const dir = tempDir("yimbot-events-");
   const path = join(dir, "events.jsonl");
   const prev = process.env.EVENTS_LOG;
   process.env.EVENTS_LOG = path;
@@ -98,7 +99,6 @@ function withTmpLog(fn: (path: string) => void): void {
   } finally {
     if (prev === undefined) delete process.env.EVENTS_LOG;
     else process.env.EVENTS_LOG = prev;
-    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -659,7 +659,7 @@ test("reduceRows clears every reason on input_received or unflag", () => {
 });
 
 test("pinEventsLog sets an absolute EVENTS_LOG in the environment", () => {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-pin-"));
+  const dir = tempDir("yimbot-pin-");
   const prev = process.env.EVENTS_LOG;
   try {
     process.env.EVENTS_LOG = join(dir, "events.jsonl");
@@ -669,7 +669,6 @@ test("pinEventsLog sets an absolute EVENTS_LOG in the environment", () => {
   } finally {
     if (prev === undefined) delete process.env.EVENTS_LOG;
     else process.env.EVENTS_LOG = prev;
-    rmSync(dir, { recursive: true, force: true });
   }
 });
 

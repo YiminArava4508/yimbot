@@ -1,9 +1,9 @@
 // src/claude-sessions.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./test-temp.ts";
 import { CONTEXT_RELPATH } from "./review-context.ts";
 import {
   claudeArgs,
@@ -53,7 +53,7 @@ test("claudeArgs runs permission-mode auto with the seed as the trailing arg", (
 });
 
 test("ensureContextScaffold creates a self-ignoring .yimbot dir", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "yimbot-ctx-"));
+  const cwd = tempDir("yimbot-ctx-");
   ensureContextScaffold(cwd);
   assert.equal(readFileSync(join(cwd, ".yimbot/.gitignore"), "utf8"), "*\n");
   ensureContextScaffold(cwd);

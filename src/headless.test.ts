@@ -1,15 +1,15 @@
 // src/headless.test.ts
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./test-temp.ts";
 import { runHeadless } from "./headless.ts";
 
 // A stand-in `claude` on PATH, so a test can see which channel the prompt
 // arrived on and what argv it was called with.
 function onPath(body: string): void {
-  const dir = mkdtempSync(join(tmpdir(), "headless-"));
+  const dir = tempDir("headless-");
   const bin = join(dir, "claude");
   writeFileSync(bin, `#!/bin/sh\n${body}\n`);
   chmodSync(bin, 0o755);

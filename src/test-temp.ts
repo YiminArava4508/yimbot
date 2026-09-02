@@ -10,25 +10,34 @@ import { join } from "node:path";
 const created: string[] = [];
 let hooked = false;
 
+// Best effort: a dir a child still holds open, or one under an unwritable
+// parent, throws here. Letting that escape an "exit" listener would fail a
+// suite that already passed.
 function removeAll(): void {
   while (created.length > 0) {
-    rmSync(created.pop()!, { recursive: true, force: true });
+    try {
+      rmSync(created.pop()!, { recursive: true, force: true });
+    } catch {
+      // Leave it for the next sweep.
+    }
   }
 }
 
 // "exit" also runs after an uncaught throw, which is the case that leaks. A
-// signal skips "exit" entirely, so it gets its own handler that drops itself
-// before re-raising, letting the default action kill us for real.
+// signal skips "exit" entirely, so it gets its own handler that drops only
+// itself before re-raising: with no listener left the default action kills us,
+// and any handler another module registered still gets its turn.
 function hook(): void {
   if (hooked) return;
   hooked = true;
   process.on("exit", removeAll);
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
-    process.on(sig, () => {
+    const onSignal = (): void => {
       removeAll();
-      process.removeAllListeners(sig);
+      process.off(sig, onSignal);
       process.kill(process.pid, sig);
-    });
+    };
+    process.on(sig, onSignal);
   }
 }
 

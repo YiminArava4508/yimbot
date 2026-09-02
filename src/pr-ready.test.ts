@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
-import { boardReadyToMerge, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
+import { boardReadyToMerge, boardSection, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 
 const LABEL = "ready-to-merge";
 
@@ -222,7 +222,7 @@ test("readyOnce skips a PR whose readiness read errors, leaving the label untouc
   await readyOnce(h.state, h.deps); // must not throw
   assert.equal(h.added.length, 0);
   assert.equal(h.removed.length, 0);
-  assert.equal(h.calls.labels, 0);
+  assert.equal(h.calls.labels, 1); // labels are read first, for the board's section
 });
 
 test("readyOnce logs an addLabel failure and continues to the next PR", async () => {
@@ -524,4 +524,84 @@ test("boardReadyToMerge: ready always, hold only when already labeled, never reg
   assert.equal(boardReadyToMerge("hold", false), false); // genuinely pending, not yet ready
   assert.equal(boardReadyToMerge("regressed", true), false);
   assert.equal(boardReadyToMerge("regressed", false), false);
+});
+
+test("boardSection: a draft always belongs to the review pane, label or not", () => {
+  assert.equal(boardSection(true, false), "review");
+  assert.equal(boardSection(true, true), "review");
+});
+
+test("boardSection: a labeled non-draft belongs to the merge pane", () => {
+  assert.equal(boardSection(false, true), "merge");
+});
+
+test("boardSection: everything else belongs to the tasks pane", () => {
+  assert.equal(boardSection(false, false), "tasks");
+});
+
+test("readyOnce reports each open PR's section", async () => {
+  const seen: { n: number; section: string }[] = [];
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(1), pr(2, { isDraft: true })],
+      onSection: (n, section) => void seen.push({ n, section }),
+    },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [
+    { n: 1, section: "merge" },
+    { n: 2, section: "review" },
+  ]);
+});
+
+test("readyOnce reports a section for a blocked PR even though it reports no verdict", async () => {
+  // Aviator swaps ready-to-merge for blocked, so a blocked PR has genuinely
+  // left the merge queue and the board must say so. Its labels stay the
+  // blocked-fix flow's to write.
+  const seen: { n: number; section: string }[] = [];
+  const verdicts: string[] = [];
+  const h = harness(
+    { onSection: (n, section) => void seen.push({ n, section }), onVerdict: (_n, v) => void verdicts.push(v) },
+    ["blocked"],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [{ n: 4706, section: "tasks" }]);
+  assert.deepEqual(verdicts, []);
+});
+
+test("readyOnce reports a section in supervised mode too", async () => {
+  const seen: { n: number; section: string }[] = [];
+  const h = harness({ mode: () => "supervised", onSection: (n, s) => void seen.push({ n, section: s }) }, [LABEL]);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [{ n: 4706, section: "merge" }]);
+});
+
+test("readyOnce reports a section for a PR whose readiness read failed", async () => {
+  // The section comes from labels and the draft flag, neither of which the
+  // classify reads touch, so a flaky CI read must not strand a row.
+  const seen: { n: number; section: string }[] = [];
+  const h = harness(
+    {
+      checksInfo: async () => {
+        throw new Error("boom");
+      },
+      onSection: (n, s) => void seen.push({ n, section: s }),
+    },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [{ n: 4706, section: "merge" }]);
+});
+
+test("readyOnce reports no section for a PR whose label read failed", async () => {
+  const seen: { n: number; section: string }[] = [];
+  const h = harness({
+    prLabels: async () => {
+      throw new Error("boom");
+    },
+    onSection: (n, s) => void seen.push({ n, section: s }),
+  });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, []);
 });

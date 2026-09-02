@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, mergeTable, modeContent, movePane, nextPane, paneBorderColor, partitionRows, readyKeyGuard, resolvePane, returnKey, reviewTable, rowsToTable, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, returnKey, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -10,6 +10,7 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
   label: "ENG-1",
   status: "working",
   terminal: false,
+  section: "tasks",
   ts: 0,
   startTs: 0,
   flagged: false,
@@ -17,54 +18,64 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
   ...over,
 });
 
-test("rowsToTable header has DUR at index 1 and REASON last", () => {
-  assert.deepEqual(rowsToTable([])[0], [
-    "TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON",
+test("every pane shares one header, in one order", () => {
+  assert.deepEqual(BOARD_HEADER, [
+    "TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON", "WHY",
   ]);
+  assert.deepEqual(boardTable([])[0], BOARD_HEADER);
 });
 
-test("rowsToTable renders #N in the PR column and the title", () => {
-  const [, body] = rowsToTable([row({ pr: 481, title: "add column" })], 0);
+test("boardTable renders #N in the PR column and the title", () => {
+  const [, body] = boardTable([{ row: row({ pr: 481, title: "add column" }) }], 0);
   assert.equal(body[4], "#481");
   assert.equal(body[5], "add column");
 });
 
-test("rowsToTable leaves the PR cell blank when pr is absent", () => {
-  const [, body] = rowsToTable([row({})], 0);
+test("boardTable leaves the PR cell blank when pr is absent", () => {
+  const [, body] = boardTable([{ row: row({}) }], 0);
   assert.equal(body[4], "");
 });
 
-test("rowsToTable DUR uses now - startTs for an active row", () => {
-  const [, body] = rowsToTable([row({ startTs: 0, ts: 0 })], 65_000);
+test("boardTable DUR uses now - startTs for an active row", () => {
+  const [, body] = boardTable([{ row: row({ startTs: 0, ts: 0 }) }], 65_000);
   assert.equal(body[1], "1m");
 });
 
-test("rowsToTable DUR is frozen at ts - startTs for a terminal row", () => {
-  const [, body] = rowsToTable(
-    [row({ terminal: true, startTs: 0, ts: 60_000 })],
-    999_999,
-  );
+test("boardTable DUR is frozen at ts - startTs for a terminal row", () => {
+  const [, body] = boardTable([{ row: row({ terminal: true, startTs: 0, ts: 60_000 }) }], 999_999);
   assert.equal(body[1], "1m");
 });
 
-test("rowsToTable marks a flagged row and leaves others blank", () => {
-  const [, flagged] = rowsToTable([row({ flagged: true, flagReasons: ["manual"] })], 0);
+test("boardTable marks a flagged row and leaves others blank", () => {
+  const [, flagged] = boardTable([{ row: row({ flagged: true, flagReasons: ["manual"] }) }], 0);
   assert.equal(flagged[6], "{red-fg}⚑{/red-fg}");
-  const [, plain] = rowsToTable([row({})], 0);
+  const [, plain] = boardTable([{ row: row({}) }], 0);
   assert.equal(plain[6], "");
 });
 
-test("rowsToTable joins the flag reasons in the REASON cell", () => {
-  const [, body] = rowsToTable(
-    [row({ flagged: true, flagReasons: ["input", "changes-requested"] })],
+test("boardTable joins the flag reasons in the REASON cell", () => {
+  const [, body] = boardTable(
+    [{ row: row({ flagged: true, flagReasons: ["input", "changes-requested"] }) }],
     0,
   );
   assert.equal(body[7], "{red-fg}input,changes-requested{/red-fg}");
 });
 
-test("rowsToTable leaves the REASON cell blank when unflagged", () => {
-  const [, body] = rowsToTable([row({})], 0);
+test("boardTable leaves the REASON cell blank when unflagged", () => {
+  const [, body] = boardTable([{ row: row({}) }], 0);
   assert.equal(body[7], "");
+});
+
+test("boardTable dims a terminal row's status", () => {
+  const [, body] = boardTable([{ row: row({ status: "merged", terminal: true }) }], 0);
+  assert.equal(body[2], "{grey-fg}merged{/grey-fg}");
+});
+
+test("boardTable puts the review pane's ordering rationale in WHY, blank elsewhere", () => {
+  const [, why] = boardTable([{ row: row({ pr: 11 }), why: "base of the stack" }], 0);
+  assert.equal(why[8], "base of the stack");
+  const [, plain] = boardTable([{ row: row({}) }], 0);
+  assert.equal(plain[8], "");
 });
 
 test("fmtDuration formats seconds, minutes, and hours", () => {
@@ -107,11 +118,10 @@ test("footerHint is a lean legend: help and quit everywhere, the rest lives unde
   }
 });
 
-test("footerHint shows r/R where they act: R on every pane, r on review and merge", () => {
+test("footerHint shows r/R on every pane: r reaches an unlabeled row wherever it sits", () => {
   assert.match(footerHint("review"), /r ready {3}R review/);
   assert.match(footerHint("merge"), /r ready {3}R review/);
-  assert.match(footerHint("tasks"), /R review/);
-  assert.doesNotMatch(footerHint("tasks"), /r ready/);
+  assert.match(footerHint("tasks"), /r ready {3}R review/);
 });
 
 test("helpLines carries every keybind the footer no longer shows", () => {
@@ -494,32 +504,25 @@ test("bindReviewKey opens only when no overlay is open", () => {
   assert.equal(opened, 1);
 });
 
-test("partitionRows splits draft-pr, ready-to-merge and merged rows from the tasks, preserving order", () => {
-  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
-  const b = row({ key: "ENG-2", status: "working" });
-  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
-  const d = row({ key: "ENG-4", status: "ready to merge", pr: 13 });
-  const e = row({ key: "ENG-5", status: "merged", pr: 14, terminal: true });
+test("partitionRows splits on the row's section, preserving order", () => {
+  const a = row({ key: "ENG-1", section: "review", pr: 11 });
+  const b = row({ key: "ENG-2", section: "tasks" });
+  const c = row({ key: "ENG-3", section: "review", pr: 12 });
+  const d = row({ key: "ENG-4", section: "merge", pr: 13 });
+  const e = row({ key: "ENG-5", section: "merge", pr: 14, terminal: true });
   const { review, merge, tasks } = partitionRows([a, b, c, d, e]);
   assert.deepEqual(review.map((r) => r.key), ["ENG-1", "ENG-3"]);
   assert.deepEqual(merge.map((r) => r.key), ["ENG-4", "ENG-5"]);
   assert.deepEqual(tasks.map((r) => r.key), ["ENG-2"]);
 });
 
-test("mergeTable renders PR, ticket, title, status, wait time and flag columns", () => {
-  const a = row({
-    key: "ENG-4", label: "ENG-4", status: "ready to merge", pr: 13, title: "bump deps", ts: 60_000,
-    flagged: true, flagReasons: ["ci"],
-  });
-  const t = mergeTable([a], 120_000);
-  assert.deepEqual(t[0], ["PR", "TICKET", "TITLE", "STATUS", "WAIT", "FLAG", "REASON"]);
-  assert.deepEqual(t[1], ["#13", "ENG-4", "bump deps", "ready to merge", "1m", "{red-fg}⚑{/red-fg}", "{red-fg}ci{/red-fg}"]);
-});
-
-test("mergeTable dims a merged row's status like the tasks pane does", () => {
-  const a = row({ key: "ENG-5", label: "ENG-5", status: "merged", pr: 14, terminal: true });
-  const [, body] = mergeTable([a], 0);
-  assert.equal(body[3], "{grey-fg}merged{/grey-fg}");
+test("partitionRows ignores status: a queued PR being fixed stays in the merge pane", () => {
+  const a = row({ key: "ENG-1", section: "merge", status: "fixing CI", pr: 13 });
+  const b = row({ key: "ENG-2", section: "review", status: "addressing review", pr: 14 });
+  const { review, merge, tasks } = partitionRows([a, b]);
+  assert.deepEqual(merge.map((r) => r.key), ["ENG-1"]);
+  assert.deepEqual(review.map((r) => r.key), ["ENG-2"]);
+  assert.deepEqual(tasks, []);
 });
 
 test("applyOrder sorts rows by the order entries and carries their reasons", () => {
@@ -552,23 +555,6 @@ test("applyOrder keeps a row without a PR at the end rather than dropping it", (
   const weird = row({ key: "ENG-9", status: "draft pr", pr: undefined });
   const out = applyOrder([a, weird], [{ pr: 11, reason: "r" }]);
   assert.deepEqual(out.map((e) => e.row.key), ["ENG-1", "ENG-9"]);
-});
-
-test("reviewTable numbers entries from 1 and renders PR, ticket, title, wait time and reason", () => {
-  const a = row({ key: "ENG-1", label: "ENG-1", status: "draft pr", pr: 11, title: "client", ts: 60_000 });
-  const t = reviewTable([{ row: a, reason: "base of the stack" }], 120_000);
-  assert.deepEqual(t[0], ["#", "PR", "TICKET", "TITLE", "WAIT", "FLAG", "REASON", "WHY"]);
-  assert.deepEqual(t[1], ["1", "#11", "ENG-1", "client", "1m", "", "", "base of the stack"]);
-});
-
-test("reviewTable keeps the flag marker and reasons visible for flagged drafts", () => {
-  const a = row({
-    key: "ENG-1", label: "ENG-1", status: "draft pr", pr: 11,
-    flagged: true, flagReasons: ["input"],
-  });
-  const [, body] = reviewTable([{ row: a, reason: "r" }], 0);
-  assert.equal(body[5], "{red-fg}⚑{/red-fg}");
-  assert.equal(body[6], "{red-fg}input{/red-fg}");
 });
 
 test("boardLayout reserves an equal third of the body for every pane", () => {
@@ -674,12 +660,6 @@ test("selectedBoardRow reads from the focused pane's own selection", () => {
 
 
 
-test("readyKeyGuard allows r on the review and merge panes, blocks it on tasks", () => {
-  assert.equal(readyKeyGuard("review"), null);
-  assert.equal(readyKeyGuard("merge"), null);
-  assert.match(readyKeyGuard("tasks") ?? "", /review or ready to merge/);
-});
-
 test("resolvePane forces a pane with rows when the current one is empty", () => {
   assert.equal(resolvePane("tasks", { tasks: 0, review: 2, merge: 0 }), "review");
   assert.equal(resolvePane("review", { tasks: 3, review: 0, merge: 0 }), "tasks");
@@ -714,4 +694,88 @@ test("screenTerm borrows xterm-256color only for 256-color multiplexer terms", (
   assert.equal(screenTerm("xterm-256color"), undefined);
   assert.equal(screenTerm("alacritty"), undefined);
   assert.equal(screenTerm(undefined), undefined);
+});
+
+test("cellWidth measures visible width, ignoring blessed tags", () => {
+  assert.equal(cellWidth("merged"), 6);
+  assert.equal(cellWidth("{grey-fg}merged{/grey-fg}"), 6);
+  assert.equal(cellWidth("{red-fg}⚑{/red-fg}"), 1);
+});
+
+test("alignTables pads every cell to the widest in its column across all tables", () => {
+  const [a, b] = alignTables([
+    [["TIME", "STATUS"], ["09:14", "working"]],
+    [["TIME", "STATUS"], ["10:02", "ready to merge"]],
+  ]);
+  assert.deepEqual(a, [["TIME ", "STATUS        "], ["09:14", "working       "]]);
+  assert.deepEqual(b, [["TIME ", "STATUS        "], ["10:02", "ready to merge"]]);
+});
+
+test("alignTables pads by visible width so tagged cells line up with plain ones", () => {
+  const [a] = alignTables([[["{grey-fg}merged{/grey-fg}"], ["ready to merge"]]]);
+  assert.equal(cellWidth(a[0][0]), 14);
+  assert.equal(cellWidth(a[1][0]), 14);
+});
+
+test("alignTables gives an empty pane the same widths as a busy one", () => {
+  // A pane with no rows still renders its header, and that header has to sit on
+  // the same grid as the panes that do have rows.
+  const [empty, busy] = alignTables([
+    [BOARD_HEADER],
+    boardTable([{ row: row({ status: "resolving conflict", title: "a long branch title" }) }], 0),
+  ]);
+  assert.deepEqual(empty[0].map(cellWidth), busy[0].map(cellWidth));
+});
+
+// The alignment claim, checked against blessed itself rather than against the
+// padded strings: render three panes carrying very different content and assert
+// every column starts at the same screen offset in all three.
+test("the three panes render their columns on identical offsets", () => {
+  const { input, output } = fakeTty(200, 30);
+  const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true, fullUnicode: true });
+  const make = (top: number) =>
+    blessed.listtable({
+      parent: screen, top, left: 0, right: 0, height: 6,
+      tags: true, align: "left", keys: true, vi: true, mouse: true,
+      border: { type: "line" }, noCellBorders: true,
+      style: { header: { bold: true }, cell: { selected: { inverse: true } } },
+    });
+  const panes = [make(0), make(6), make(12)];
+  const data = alignTables([
+    boardTable([{ row: row({ label: "ENG-1", status: "resolving conflict", title: "a much longer branch title" }) }], 0),
+    boardTable([{ row: row({ label: "SC-22", pr: 4712, status: "draft pr" }), why: "base of the stack" }], 0),
+    boardTable([], 0),
+  ]);
+  panes.forEach((p, i) => p.setData(data[i]));
+  screen.render();
+  const lines: string[] = screen.lines.map((line: [number, string][]) => line.map((c) => c[1]).join(""));
+  // Header row of each pane: one row below its border.
+  const headers = [lines[1], lines[7], lines[13]];
+  const offsets = headers.map((h) => BOARD_HEADER.map((col) => h.indexOf(col)));
+  assert.ok(offsets[0].every((o) => o > 0), `header not rendered: ${headers[0]}`);
+  assert.deepEqual(offsets[1], offsets[0]);
+  assert.deepEqual(offsets[2], offsets[0]);
+  screen.destroy();
+});
+
+test("cellWidth measures display width the way blessed does", () => {
+  // The screen runs fullUnicode, so blessed sizes columns by display width:
+  // a CJK title is two columns per character and a combining mark is zero.
+  assert.equal(cellWidth("需要审核"), 8);
+  assert.equal(cellWidth("café"), 4);
+});
+
+test("cellWidth strips the same tags blessed does", () => {
+  assert.equal(cellWidth("{red-fg}⚑{/red-fg}"), 1);
+  // Not a blessed tag: braces around arbitrary text are literal content.
+  assert.equal(cellWidth("{a b}"), 5);
+});
+
+test("alignTables keeps wide-character titles on the shared grid", () => {
+  const [a, b] = alignTables([
+    boardTable([{ row: row({ title: "需要审核" }) }], 0),
+    boardTable([{ row: row({ title: "ok" }) }], 0),
+  ]);
+  const titleIdx = BOARD_HEADER.indexOf("TITLE");
+  assert.equal(cellWidth(a[1][titleIdx]), cellWidth(b[1][titleIdx]));
 });

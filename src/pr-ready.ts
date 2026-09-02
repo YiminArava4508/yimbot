@@ -1,3 +1,4 @@
+import type { Section } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
 import type { Mode } from "./mode.ts";
 
@@ -40,6 +41,12 @@ export type PrReadyDeps = {
   // the board can say "draft pr" instead of "ready to merge" while a supervised
   // draft waits for a human to mark it ready for review.
   onVerdict?: (prNumber: number, verdict: ReadyVerdict, hasLabel: boolean, isDraft: boolean) => void;
+  // Report which board pane a PR belongs in, for every open PR including the
+  // blocked ones onVerdict skips: reporting a section is a read, and a blocked
+  // PR has lost the ready label, so the board must move it out of the merge
+  // pane. Derived from labels and the draft flag alone, so it still fires when
+  // the readiness reads fail.
+  onSection?: (prNumber: number, section: Section) => void;
   log: (msg: string) => void;
 };
 
@@ -78,6 +85,16 @@ export function freshReadyState(): ReadyState {
 // last fix status that touched the row.
 export function boardReadyToMerge(verdict: ReadyVerdict, hasLabel: boolean): boolean {
   return verdict === "ready" || (verdict === "hold" && hasLabel);
+}
+
+// Which pane a PR's row belongs in. Deliberately not derived from the verdict:
+// placement has to be sticky so a queued PR stays in the merge pane while its
+// status walks through a CI fix or a review round, and the ready label is the
+// only fact that says "queued". A draft outranks the label because a draft
+// cannot merge whatever its labels say.
+export function boardSection(isDraft: boolean, hasLabel: boolean): Section {
+  if (isDraft) return "review";
+  return hasLabel ? "merge" : "tasks";
 }
 
 // Reads short-circuit in cheap-first order (an unresolved thread returns before
@@ -137,17 +154,10 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
   let queueOccupied = false;
   const candidates: number[] = [];
   for (const pr of prs) {
-    let verdict: ReadyVerdict;
-    try {
-      verdict = await classify(pr.number, deps);
-    } catch (err) {
-      deps.log(`readiness check failed for PR #${pr.number}: ${err}`);
-      continue;
-    }
-
-    // Read labels for every verdict (holds included) so the board can reconcile a
-    // queued PR off a stale fix status. The label read is the only added cost of a
-    // hold; it still writes nothing.
+    // Labels come first because the board's section depends on them and nothing
+    // else: a PR whose readiness reads fail still has to be placed. Reading them
+    // for every PR (holds included) also lets the board reconcile a queued PR off
+    // a stale fix status. Still a read; nothing here writes.
     let labels: string[];
     try {
       labels = await deps.prLabels(pr.number);
@@ -159,6 +169,16 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     const isBlocked = labels.includes(deps.blockedLabel);
     if (hasLabel) state.latched.add(pr.number); // latch in every mode, blocked PRs included
     if (hasLabel || isBlocked) queueOccupied = true; // queued now, or blocked and due a re-queue
+    deps.onSection?.(pr.number, boardSection(pr.isDraft, hasLabel));
+
+    let verdict: ReadyVerdict;
+    try {
+      verdict = await classify(pr.number, deps);
+    } catch (err) {
+      deps.log(`readiness check failed for PR #${pr.number}: ${err}`);
+      continue;
+    }
+
     // The soak clock runs in every mode (so a long-ready PR labels promptly after
     // a switch to autonomous) and resets whenever readiness lapses.
     if (verdict === "ready") {

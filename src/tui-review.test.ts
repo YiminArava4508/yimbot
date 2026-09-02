@@ -333,7 +333,7 @@ function testDeps(
     saveFlow: () => {},
     regenerateArchMap: async () => {},
     sessionName: () => null,
-    openSession: () => {},
+    openSession: () => true,
     saved,
     savedGroups,
     ...overrides,
@@ -1369,7 +1369,7 @@ test("a regenerate that drops the selected node clears the selection", async () 
 test("o hands the terminal to the ticket's session and leaves the overlay open", async () => {
   const screen = makeScreen();
   const opened: string[] = [];
-  const deps = testDeps({ sessionName: () => "sc-1234-thing", openSession: (s) => { opened.push(s); } });
+  const deps = testDeps({ sessionName: () => "sc-1234-thing", openSession: (s) => { opened.push(s); return true; } });
   let closed = false;
   openReview(screen, deps, () => { closed = true; });
   await flush();
@@ -1383,16 +1383,71 @@ test("o hands the terminal to the ticket's session and leaves the overlay open",
   screen.destroy();
 });
 
-test("o does nothing and goes unadvertised when the row has no session", async () => {
+test("o goes unadvertised and switches nothing when the row has no session", async () => {
   const screen = makeScreen();
   const opened: string[] = [];
-  const deps = testDeps({ sessionName: () => null, openSession: (s) => { opened.push(s); } });
+  const deps = testDeps({ sessionName: () => null, openSession: (s) => { opened.push(s); return true; } });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  assert.ok(!footerOf(screen).getContent().includes("o session"));
+  press(screen, "o");
+  assert.deepEqual(opened, []);
+  screen.destroy();
+});
+
+test("o says so when the session it was offering has gone away", async () => {
+  const screen = makeScreen();
+  const opened: string[] = [];
+  let name: string | null = "sc-1234-thing";
+  const deps = testDeps({ sessionName: () => name, openSession: (s) => { opened.push(s); return true; } });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  assert.ok(footerOf(screen).getContent().includes("o session"));
+  name = null;
+  press(screen, "o");
+  assert.deepEqual(opened, []);
+  assert.ok(footerOf(screen).getContent().includes("no session"));
+  press(screen, "j");
+  assert.ok(!footerOf(screen).getContent().includes("o session"), "the hint must drop with the session");
+  screen.destroy();
+});
+
+test("o picks up a session that started after the overlay opened", async () => {
+  const screen = makeScreen();
+  const opened: string[] = [];
+  let name: string | null = null;
+  const deps = testDeps({ sessionName: () => name, openSession: (s) => { opened.push(s); return true; } });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  name = "sc-9-late";
+  press(screen, "o");
+  assert.deepEqual(opened, ["sc-9-late"]);
+  assert.ok(footerOf(screen).getContent().includes("o session"));
+  screen.destroy();
+});
+
+test("o reports a switch tmux refused instead of looking like it worked", async () => {
+  const screen = makeScreen();
+  const deps = testDeps({ sessionName: () => "sc-1234-thing", openSession: () => false });
   openReview(screen, deps, () => {});
   await flush();
   await flush();
   press(screen, "o");
+  assert.ok(footerOf(screen).getContent().includes("could not switch"));
+  screen.destroy();
+});
+
+test("shift+O is not the session jump", async () => {
+  const screen = makeScreen();
+  const opened: string[] = [];
+  const deps = testDeps({ sessionName: () => "sc-1234-thing", openSession: (s) => { opened.push(s); return true; } });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  screen.focused.emit("keypress", "O", { name: "o", full: "S-o", shift: true });
   assert.deepEqual(opened, []);
-  const footer = screen.children.find((c: any) => c.getContent().includes("q back"));
-  assert.ok(!footer.getContent().includes("o session"));
   screen.destroy();
 });

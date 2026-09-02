@@ -145,10 +145,10 @@ test("reviewHeader shows PR, title and progress", () => {
   assert.equal(reviewHeader(42, "add widget", 3, 9), "PR #42  add widget  |  3/9 viewed");
 });
 
-test("reviewFooterHint offers y only when all viewed and draft", () => {
+test("reviewFooterHint offers the queue key only when all viewed and draft", () => {
   const base = { total: 3, loaded: true, allViewed: false, isDraft: true, focused: "plan" as const, contextCount: 0 };
-  assert.ok(!reviewFooterHint(base).includes("y mark PR ready"));
-  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
+  assert.ok(!reviewFooterHint(base).includes("y ready to merge"));
+  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y ready to merge"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true, isDraft: false }).includes("review complete"));
   assert.ok(reviewFooterHint({ ...base, loaded: false }).includes("loading"));
   assert.ok(reviewFooterHint({ ...base, total: 0 }).includes("no changes"));
@@ -168,7 +168,7 @@ test("reviewFooterHint describes scrolling and the claude tab when the diff pane
   assert.ok(hint.includes("space viewed"));
   assert.ok(hint.includes("tab claude"));
   assert.ok(!hint.includes("g/G first/last"));
-  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y mark PR ready"));
+  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("y ready to merge"));
 });
 
 test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {

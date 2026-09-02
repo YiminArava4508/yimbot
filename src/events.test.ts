@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { branchesFullyMerged, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -963,5 +963,33 @@ test("emitEvent does not re-preserve a section the kept window still holds", () 
       if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
       else process.env.EVENTS_LOG_MAX_LINES = prev;
     }
+  });
+});
+
+test("emitQueuedToMerge records both the status and the move to the merge pane", () => {
+  withTmpLog((path) => {
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    const rows = readEvents(path);
+    assert.deepEqual(rows.map((e) => e.kind), ["ready_to_merge", "section_merge"]);
+    assert.deepEqual(rows.map((e) => e.pr), [12, 12]);
+  });
+});
+
+test("emitQueuedToMerge moves the row immediately, without waiting for a heartbeat", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "draft_pr", key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    const [row] = reduceRows(readEvents(path), Date.now());
+    assert.equal(row.section, "merge");
+    assert.equal(row.status, "ready to merge");
+  });
+});
+
+test("emitQueuedToMerge is idempotent, so a repeat keypress logs nothing", () => {
+  withTmpLog((path) => {
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
+    assert.equal(readEvents(path).length, 2);
   });
 });

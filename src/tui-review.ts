@@ -148,7 +148,7 @@ export function reviewFooterHint(s: {
   if (s.total === 0) return "no changes in this PR   q back";
   if (s.focused === "claude") return "typing goes to claude   C-q or C-\\ back";
   let done = "";
-  if (s.allViewed && s.isDraft) done = "   {green-fg}y mark PR ready{/green-fg}";
+  if (s.allViewed && s.isDraft) done = "   {green-fg}y ready to merge{/green-fg}";
   else if (s.allViewed) done = "   {green-fg}review complete{/green-fg}";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   if (s.focused === "diff") return `j/k scroll   space viewed   c context${clear}   tab claude   1/2/3 pane${done}   q back`;
@@ -262,6 +262,9 @@ export type ReviewDeps = {
   fetchDiff: () => Promise<string>;
   fetchMeta: () => Promise<{ title: string; body: string; isDraft: boolean; headSha: string }>;
   runGrouping: (prompt: string) => Promise<string>;
+  // Sign off on the review: promote the draft and put the ready label on it, so
+  // the PR lands in the board's ready-to-merge pane. Only offered on a draft
+  // whose every file has been viewed.
   markReady: () => Promise<void>;
   loadViewed: (headSha: string) => Set<string>;
   saveViewed: (headSha: string, viewed: Set<string>) => void;
@@ -517,13 +520,13 @@ export function openReview(
   function markReady(): void {
     if (readying || !allViewed() || !meta?.isDraft) return;
     readying = true;
-    paint(`marking #${deps.pr} ready…`);
+    paint(`queueing #${deps.pr} to merge…`);
     deps.markReady().then(
-      () => close(`{green-fg}#${deps.pr} marked ready{/green-fg}`, false),
+      () => close(`{green-fg}#${deps.pr} ready to merge{/green-fg}`, false),
       (err: unknown) => {
         readying = false;
         const msg = err instanceof Error ? err.message : String(err);
-        paint(`{red-fg}mark ready failed: ${msg}{/red-fg}`);
+        paint(`{red-fg}queueing #${deps.pr} failed: ${msg}{/red-fg}`);
       },
     );
   }

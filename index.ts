@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { format } from "node:util";
 import { execFile } from "node:child_process";
 import { envOr } from "./src/env.ts";
-import { deriveKey, emitEvent, emitStatus } from "./src/events.ts";
-import { applyReadyLabel, ghRunner, markPrReadyForReview, prDiff, prReviewMeta } from "./src/gh.ts";
+import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
+import { applyReadyLabel, ghRunner, prDiff, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
@@ -123,7 +123,16 @@ if (process.stdout.isTTY) {
     );
     return wt?.path ?? currentCodebasePath();
   };
-  const reviewDeps = (pr: number, key: string): ReviewDeps => {
+  // Queue a PR the operator signed off on by hand: promote it if it is still a
+  // draft, label it, then move its row now rather than leaving it where it was
+  // until the next heartbeat re-reports the section. Shared by the board's r
+  // and the review overlay's y.
+  const queueToMerge = async (pr: number, key: string, label: string): Promise<void> => {
+    const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
+    await applyReadyLabel(ghRunner(currentCodebasePath()), pr, readyLabel);
+    emitQueuedToMerge({ key, label, pr });
+  };
+  const reviewDeps = (pr: number, key: string, label: string): ReviewDeps => {
     const run = ghRunner(currentCodebasePath());
     const cwd = worktreeForKey(key);
     return {
@@ -131,7 +140,7 @@ if (process.stdout.isTTY) {
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
       runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
-      markReady: () => markPrReadyForReview(run, pr),
+      markReady: () => queueToMerge(pr, key, label),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
       loadGroups: (headSha) => readGroups(pr, headSha),
@@ -195,11 +204,7 @@ if (process.stdout.isTTY) {
           ? { kind: "unflagged", key, label }
           : { kind: "flagged", key, label, reason: "manual" },
       ),
-    onAddReadyLabel: async (pr, key, label) => {
-      const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
-      await applyReadyLabel(ghRunner(currentCodebasePath()), pr, readyLabel);
-      emitStatus({ kind: "ready_to_merge", key, label, pr });
-    },
+    onAddReadyLabel: queueToMerge,
     onOpenSession: (key) => {
       const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);

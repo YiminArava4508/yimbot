@@ -237,6 +237,14 @@ export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void 
   emitEvent(ev);
 }
 
+// A PR the operator queued by hand: the board's r, or y at the end of a review
+// pass. Recording the section alongside the status moves the row now instead of
+// leaving it where it was until the next heartbeat re-reports it.
+export function emitQueuedToMerge(ev: { key: string; label: string; pr: number }): void {
+  emitStatus({ kind: "ready_to_merge", ...ev });
+  emitSection({ kind: sectionKind("merge"), ...ev });
+}
+
 // The section counterpart of emitStatus: append only when the key's section
 // actually changes. The daemon reports every open PR's section each heartbeat,
 // so without this the log would fill with restatements.

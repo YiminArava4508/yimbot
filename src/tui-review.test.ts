@@ -143,7 +143,7 @@ test("reviewHeader shows PR, title and progress", () => {
 });
 
 test("reviewFooterHint offers the queue key once every file is viewed", () => {
-  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0, hasSession: false };
   assert.ok(!reviewFooterHint(base).includes("r ready to merge"));
   assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("r ready to merge"));
   assert.ok(reviewFooterHint({ ...base, loaded: false }).includes("loading"));
@@ -151,19 +151,19 @@ test("reviewFooterHint offers the queue key once every file is viewed", () => {
 });
 
 test("reviewFooterHint uses the same key the board does, not a second one to learn", () => {
-  const base = { total: 3, loaded: true, allViewed: true, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: true, focused: "plan" as const, contextCount: 0, hasSession: false };
   assert.doesNotMatch(reviewFooterHint(base), /(^|\s)y\s/);
 });
 
 test("reviewFooterHint lists the 1/2/3 pane jumps on plan and diff", () => {
-  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0, hasSession: false };
   assert.ok(reviewFooterHint(base).includes("1/2/3 pane"));
   assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("1/2/3 pane"));
   assert.ok(!reviewFooterHint({ ...base, focused: "claude" }).includes("1/2/3 pane"));
 });
 
 test("reviewFooterHint describes scrolling and the claude tab when the diff pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, focused: "diff" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "diff" as const, contextCount: 0, hasSession: false };
   const hint = reviewFooterHint(base);
   assert.ok(hint.includes("j/k scroll"));
   assert.ok(hint.includes("space viewed"));
@@ -173,23 +173,34 @@ test("reviewFooterHint describes scrolling and the claude tab when the diff pane
 });
 
 test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, focused: "claude" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "claude" as const, contextCount: 0, hasSession: false };
   const hint = reviewFooterHint(base);
   assert.ok(hint.includes("C-q or C-\\ back"));
   assert.ok(!hint.includes("q back"));
 });
 
 test("reviewFooterHint offers c context on the plan and diff panes", () => {
-  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0, hasSession: false };
   assert.ok(reviewFooterHint(base).includes("c context"));
   assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("c context"));
 });
 
 test("reviewFooterHint offers C clear context only when the context set is non-empty", () => {
-  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0 };
+  const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0, hasSession: false };
   assert.ok(!reviewFooterHint(base).includes("C clear context"));
   assert.ok(reviewFooterHint({ ...base, contextCount: 2 }).includes("C clear context"));
   assert.ok(reviewFooterHint({ ...base, focused: "diff", contextCount: 1 }).includes("C clear context"));
+});
+
+test("reviewFooterHint offers the session jump only when the row has a tmux session", () => {
+  const base = {
+    total: 3, loaded: true, allViewed: false, focused: "plan" as const,
+    contextCount: 0, hasSession: false,
+  };
+  assert.ok(!reviewFooterHint(base).includes("o session"));
+  assert.ok(reviewFooterHint({ ...base, hasSession: true }).includes("o session"));
+  assert.ok(reviewFooterHint({ ...base, focused: "diff", hasSession: true }).includes("o session"));
+  assert.ok(!reviewFooterHint({ ...base, focused: "claude", hasSession: true }).includes("o session"));
 });
 
 test("reviewLayout pins the panes: guide band on top, plan/diff/claude as thirds", () => {
@@ -321,6 +332,8 @@ function testDeps(
     loadFlow: () => null,
     saveFlow: () => {},
     regenerateArchMap: async () => {},
+    sessionName: () => null,
+    openSession: () => {},
     saved,
     savedGroups,
     ...overrides,
@@ -1352,3 +1365,34 @@ test("a regenerate that drops the selected node clears the selection", async () 
   screen.destroy();
 });
 
+
+test("o hands the terminal to the ticket's session and leaves the overlay open", async () => {
+  const screen = makeScreen();
+  const opened: string[] = [];
+  const deps = testDeps({ sessionName: () => "sc-1234-thing", openSession: (s) => { opened.push(s); } });
+  let closed = false;
+  openReview(screen, deps, () => { closed = true; });
+  await flush();
+  await flush();
+  press(screen, "o");
+  assert.deepEqual(opened, ["sc-1234-thing"]);
+  assert.ok(!closed, "the overlay must survive the jump so the return key lands back on it");
+  press(screen, "tab");
+  press(screen, "o");
+  assert.deepEqual(opened, ["sc-1234-thing", "sc-1234-thing"], "the diff pane offers the same jump");
+  screen.destroy();
+});
+
+test("o does nothing and goes unadvertised when the row has no session", async () => {
+  const screen = makeScreen();
+  const opened: string[] = [];
+  const deps = testDeps({ sessionName: () => null, openSession: (s) => { opened.push(s); } });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  press(screen, "o");
+  assert.deepEqual(opened, []);
+  const footer = screen.children.find((c: any) => c.getContent().includes("q back"));
+  assert.ok(!footer.getContent().includes("o session"));
+  screen.destroy();
+});

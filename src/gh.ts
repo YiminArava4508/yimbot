@@ -387,7 +387,6 @@ export async function prDiff(run: GhRunner, prNumber: number): Promise<string> {
 export type PrReviewMeta = {
   title: string;
   body: string;
-  isDraft: boolean;
   headSha: string;
   additions: number;
   deletions: number;
@@ -400,7 +399,6 @@ export function parsePrReviewMeta(json: string): PrReviewMeta {
   const d = JSON.parse(json) as {
     title: string;
     body?: string;
-    isDraft: boolean;
     headRefOid: string;
     additions: number;
     deletions: number;
@@ -408,7 +406,6 @@ export function parsePrReviewMeta(json: string): PrReviewMeta {
   return {
     title: d.title,
     body: d.body ?? "",
-    isDraft: d.isDraft,
     headSha: d.headRefOid,
     additions: d.additions,
     deletions: d.deletions,
@@ -416,10 +413,10 @@ export function parsePrReviewMeta(json: string): PrReviewMeta {
 }
 
 // One pr view for everything the review overlay and the review-order prompt
-// need: title/body feed the grouping and ordering prompts, isDraft gates the
-// ready action, headSha keys viewed marks, the diffstat feeds the ordering.
+// need: title/body feed the grouping and ordering prompts, headSha keys viewed
+// marks, the diffstat feeds the ordering.
 export async function prReviewMeta(run: GhRunner, prNumber: number): Promise<PrReviewMeta> {
   return parsePrReviewMeta(
-    await run(["pr", "view", String(prNumber), "--json", "title,body,isDraft,headRefOid,additions,deletions"]),
+    await run(["pr", "view", String(prNumber), "--json", "title,body,headRefOid,additions,deletions"]),
   );
 }

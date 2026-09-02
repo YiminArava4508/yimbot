@@ -140,7 +140,7 @@ if (process.stdout.isTTY) {
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
       runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
-      markReady: () => queueToMerge(pr, key, label),
+      queueToMerge: () => queueToMerge(pr, key, label),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
       loadGroups: (headSha) => readGroups(pr, headSha),

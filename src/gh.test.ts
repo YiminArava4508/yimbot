@@ -549,11 +549,11 @@ test("prDiff passes the PR number to gh pr diff and returns raw stdout", async (
   assert.deepEqual(calls, [["pr", "diff", "42"]]);
 });
 
-test("parsePrReviewMeta maps title, body, isDraft, headRefOid and diffstat", () => {
+test("parsePrReviewMeta maps title, body, headRefOid and diffstat", () => {
   const meta = parsePrReviewMeta(
     JSON.stringify({ title: "t", body: "b", isDraft: true, headRefOid: "abc", additions: 10, deletions: 3 }),
   );
-  assert.deepEqual(meta, { title: "t", body: "b", isDraft: true, headSha: "abc", additions: 10, deletions: 3 });
+  assert.deepEqual(meta, { title: "t", body: "b", headSha: "abc", additions: 10, deletions: 3 });
 });
 
 test("parsePrReviewMeta defaults a missing body to empty", () => {
@@ -570,8 +570,8 @@ test("prReviewMeta views the PR once with every field the review and order flows
     return JSON.stringify({ title: "t", body: "b", isDraft: false, headRefOid: "abc", additions: 1, deletions: 2 });
   };
   const meta = await prReviewMeta(run, 7);
-  assert.deepEqual(meta, { title: "t", body: "b", isDraft: false, headSha: "abc", additions: 1, deletions: 2 });
-  assert.deepEqual(calls, [["pr", "view", "7", "--json", "title,body,isDraft,headRefOid,additions,deletions"]]);
+  assert.deepEqual(meta, { title: "t", body: "b", headSha: "abc", additions: 1, deletions: 2 });
+  assert.deepEqual(calls, [["pr", "view", "7", "--json", "title,body,headRefOid,additions,deletions"]]);
 });
 
 test("parsePrState reads the labels and the draft flag from one view", () => {

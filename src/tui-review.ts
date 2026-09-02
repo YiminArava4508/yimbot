@@ -140,7 +140,6 @@ export function reviewFooterHint(s: {
   total: number;
   loaded: boolean;
   allViewed: boolean;
-  isDraft: boolean;
   focused: ReviewPane;
   contextCount: number;
 }): string {
@@ -148,8 +147,7 @@ export function reviewFooterHint(s: {
   if (s.total === 0) return "no changes in this PR   q back";
   if (s.focused === "claude") return "typing goes to claude   C-q or C-\\ back";
   let done = "";
-  if (s.allViewed && s.isDraft) done = "   {green-fg}y ready to merge{/green-fg}";
-  else if (s.allViewed) done = "   {green-fg}review complete{/green-fg}";
+  if (s.allViewed) done = "   {green-fg}r ready to merge{/green-fg}";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   if (s.focused === "diff") return `j/k scroll   space viewed   c context${clear}   tab claude   1/2/3 pane${done}   q back`;
   return `j/k file   space viewed   c context${clear}   g/G first/last   tab diff   1/2/3 pane${done}   q back`;
@@ -260,12 +258,13 @@ const NO_ARCH_MAP = "{red-fg}no architecture map in this repo, run pnpm arch-map
 export type ReviewDeps = {
   pr: number;
   fetchDiff: () => Promise<string>;
-  fetchMeta: () => Promise<{ title: string; body: string; isDraft: boolean; headSha: string }>;
+  fetchMeta: () => Promise<{ title: string; body: string; headSha: string }>;
   runGrouping: (prompt: string) => Promise<string>;
-  // Sign off on the review: promote the draft and put the ready label on it, so
-  // the PR lands in the board's ready-to-merge pane. Only offered on a draft
-  // whose every file has been viewed.
-  markReady: () => Promise<void>;
+  // Sign off on the review: promote the PR if it is still a draft, put the ready
+  // label on it, and land it in the board's ready-to-merge pane. Bound to r, the
+  // same key that does the same thing on the board; offered once every file in
+  // the review has been viewed.
+  queueToMerge: () => Promise<void>;
   loadViewed: (headSha: string) => Set<string>;
   saveViewed: (headSha: string, viewed: Set<string>) => void;
   // The plan cached for this head SHA, still unvalidated (null when there is
@@ -310,7 +309,7 @@ export function openReview(
   const note: any = blessed.box({ parent: s, ...flow.note });
   plan.focus();
 
-  let meta: { title: string; body: string; isDraft: boolean; headSha: string } | null = null;
+  let meta: { title: string; body: string; headSha: string } | null = null;
   let fileDiffs: FileDiff[] = [];
   let groups: ReviewGroups | null = null;
   let viewed = new Set<string>();
@@ -467,7 +466,6 @@ export function openReview(
         total: fs.length,
         loaded: diffLoaded,
         allViewed: allViewed(),
-        isDraft: meta?.isDraft ?? false,
         focused,
         contextCount: contextFiles.size,
       });
@@ -517,11 +515,11 @@ export function openReview(
     select(nextUnviewed(files(), viewed, selectedIndex()));
   }
 
-  function markReady(): void {
-    if (readying || !allViewed() || !meta?.isDraft) return;
+  function queueToMerge(): void {
+    if (readying || !allViewed()) return;
     readying = true;
     paint(`queueing #${deps.pr} to merge…`);
-    deps.markReady().then(
+    deps.queueToMerge().then(
       () => close(`{green-fg}#${deps.pr} ready to merge{/green-fg}`, false),
       (err: unknown) => {
         readying = false;
@@ -695,7 +693,7 @@ export function openReview(
     else if (key.name === "g" && key.shift) select(files().length - 1);
     else if (key.name === "g") select(0);
     else if (key.name === "space") toggleViewed();
-    else if (key.name === "y") markReady();
+    else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
@@ -707,7 +705,7 @@ export function openReview(
     if (jumpPane(ch)) return;
     if (key.name === "tab") focusPane(nextReviewPane("diff", hasClaude()));
     else if (key.name === "space") toggleViewed();
-    else if (key.name === "y") markReady();
+    else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "f" && !key.ctrl) openFlow();

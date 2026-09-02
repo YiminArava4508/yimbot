@@ -50,7 +50,7 @@ export function helpLines(key: string): string[] {
     ["^j/^k", "switch pane (tab cycles)"],
     ["enter", "open the row's tmux session"],
     ["f", "flag/unflag the selected row"],
-    ["r", "add the ready label to the selected row's PR"],
+    ["r", "queue the selected row's PR to merge (also inside R)"],
     ["R", "review the selected row's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],

@@ -145,7 +145,10 @@ export function placeNodes(
       row += 1 + GAP;
     }
   }
-  return { boxes, height: Math.max(1, row - GAP) };
+  // One row past the last box row: a back edge leaving the bottom rank exits at
+  // from.row + 1, and with no row there its horizontal stub is dropped and the
+  // channel appears to start from nothing.
+  return { boxes, height: Math.max(1, row - GAP + 1) };
 }
 
 const center = (b: NodeBox): number => Math.floor((b.colStart + b.colEnd) / 2);

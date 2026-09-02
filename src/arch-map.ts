@@ -23,9 +23,15 @@ export function archMapPath(codebase: string): string {
   return join(codebase, "docs", "architecture-map.json");
 }
 
+// nodeForPath runs every glob against every changed path on every paint, so the
+// compiled form is kept rather than rebuilt tens of thousands of times.
+const globCache = new Map<string, RegExp>();
+
 // Two placeholders only: * inside a segment, ** across them. A scanner rather
 // than chained replaces so no sentinel can collide with the glob's own text.
 export function globToRegExp(glob: string): RegExp {
+  const hit = globCache.get(glob);
+  if (hit) return hit;
   let body = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
@@ -45,7 +51,9 @@ export function globToRegExp(glob: string): RegExp {
     }
     body += /[.+^${}()|[\]\\?]/.test(c) ? `\\${c}` : c;
   }
-  return new RegExp(`^${body}$`);
+  const re = new RegExp(`^${body}$`);
+  globCache.set(glob, re);
+  return re;
 }
 
 function stringList(v: unknown): string[] {
@@ -119,6 +127,22 @@ export function mergedMap(map: ArchMap, ann: ArchAnnotation | null, unmapped: st
     nodes.push({ id: UNMAPPED_ID, label: `unmapped (${unmapped.length})`, role: "", files: unmapped });
   }
   return { ...map, nodes, edges };
+}
+
+// The whole render set in one pass, and the only way the overlay should build
+// it. Ordering is the point: what the PR adds claims its files first, so the
+// bucket sweeps what is genuinely left over rather than double-counting a file
+// an added node already owns. The returned unmapped list is exactly what the
+// bucket node holds, so a stale count taken from it can never disagree with the
+// label on the chart.
+export function renderSet(
+  map: ArchMap,
+  ann: ArchAnnotation | null,
+  changed: string[],
+): { map: ArchMap; unmapped: string[] } {
+  const withAdded = mergedMap(map, ann, []);
+  const unmapped = unmappedPaths(withAdded, changed);
+  return { map: mergedMap(withAdded, null, unmapped), unmapped };
 }
 
 export function nodeStates(

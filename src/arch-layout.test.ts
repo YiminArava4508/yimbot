@@ -10,6 +10,7 @@ import {
   rankNodes,
   renderGrid,
   serializeGrid,
+  type NodeBox,
 } from "./arch-layout.ts";
 import type { ArchEdge, ArchMap, NodeState } from "./arch-map.ts";
 
@@ -94,7 +95,13 @@ test("placeNodes centers each rank and never overlaps two boxes", () => {
   const rank1 = boxes.filter((x) => x.row === 3).sort((x, y) => x.colStart - y.colStart);
   assert.equal(rank1.length, 2);
   assert.ok(rank1[0].colEnd < rank1[1].colStart);
-  assert.equal(height, 4);
+  assert.equal(height, 5);
+});
+
+test("placeNodes leaves a gap row under the bottom rank for an exit stub", () => {
+  const { boxes, height } = placeNodes([["a"], ["b"]], new Map([["a", "aa"], ["b", "bb"]]), 30);
+  const last = Math.max(...boxes.map((b) => b.row));
+  assert.ok(height > last + 1, "the row below the last box row must exist");
 });
 
 test("placeNodes wraps a rank wider than the pane onto a second row", () => {
@@ -198,6 +205,35 @@ test("layoutGraph renders every node and returns boxes in reading order", () => 
   assert.ok(text.includes("gh (!)"));
   const sorted = [...boxes].sort((a, b) => a.row - b.row || a.colStart - b.colStart);
   assert.deepEqual(boxes.map((b) => b.id), sorted.map((b) => b.id));
+});
+
+// layoutGraph's passes down to the char grid, which layoutGraph itself does not
+// hand back; the endpoint check below needs the raw cells.
+function gridFor(map: ArchMap, width: number): { grid: string[][]; boxes: NodeBox[] } {
+  const ids = map.nodes.map((n) => n.id);
+  const labels = new Map(map.nodes.map((n) => [n.id, n.label]));
+  const edges = dedupeEdges(map.edges).filter((x) => x.from !== x.to);
+  const { acyclic } = breakCycles(ids, edges);
+  const rows = orderRanks(ids, rankNodes(ids, acyclic), acyclic);
+  const { boxes, height } = placeNodes(rows, labels, width);
+  return { grid: renderGrid(boxes, labels, edges, width, height), boxes };
+}
+
+test("every edge terminates on both endpoint boxes, back edges included", () => {
+  const { grid, boxes } = gridFor(MAP2, 60);
+  const byId = new Map(boxes.map((b) => [b.id, b]));
+  for (const edge of MAP2.edges) {
+    const from = byId.get(edge.from) as NodeBox;
+    const to = byId.get(edge.to) as NodeBox;
+    const name = `${edge.from}->${edge.to}`;
+    const cf = Math.floor((from.colStart + from.colEnd) / 2);
+    const ct = Math.floor((to.colStart + to.colEnd) / 2);
+    const stub = grid[from.row + 1]?.[cf];
+    assert.ok(stub !== undefined && stub !== " ", `${name} leaves no stub under ${edge.from}`);
+    const forward = to.row > from.row;
+    const head = grid[forward ? to.row - 1 : to.row + 1]?.[ct];
+    assert.equal(head, forward ? "v" : "^", `${name} lands no head on ${edge.to}`);
+  }
 });
 
 test("layoutGraph survives a map with no edges at all", () => {

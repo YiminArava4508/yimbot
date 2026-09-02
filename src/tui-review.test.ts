@@ -911,6 +911,27 @@ test("noteBandLines leads with the stale warning when files are unmapped", () =>
   assert.ok(out[0].includes("stale"));
 });
 
+test("noteBandLines puts the at risk reason above the touched note", () => {
+  const both: ArchAnnotation = {
+    flow: "",
+    touched: [{ node: "gh", note: "the fetch signature moved" }],
+    atRisk: [{ node: "gh", why: "reads the shape that moved", viaEdge: "gh->review" }],
+    added: [],
+  };
+  const out = noteBandLines({ node: NODE, state: "at-risk", ann: both, stale: 2 });
+  assert.ok(out[0].includes("stale"));
+  assert.ok(out[1].includes("talks to GitHub"));
+  assert.ok(out[2].includes("reads the shape that moved"));
+  assert.ok(out[3].includes("the fetch signature moved"));
+});
+
+test("noteBandLines explains the unmapped bucket while still naming the node", () => {
+  const bucket: ArchNode = { id: "unmapped", label: "unmapped (2)", role: "", files: [] };
+  const out = noteBandLines({ node: bucket, state: "unmapped", ann: FLOW_ANN, stale: 2 }).join("\n");
+  assert.ok(out.includes("unmapped (2)"));
+  assert.ok(out.includes("no node in the map claims these files"));
+});
+
 test("noteBandLines says so when there is no annotation at all", () => {
   const out = noteBandLines({ node: null, state: "idle", ann: null, stale: 0 }).join("\n");
   assert.ok(out.includes("touched nodes only"));
@@ -1023,6 +1044,132 @@ test("unmapped changed files get their own node and the stale warning", async ()
   press(screen, "f");
   assert.ok(paneByLabel(screen, " flow ").getContent().includes("unmapped (1)"));
   assert.ok(paneByLabel(screen, " note ").getContent().includes("stale"));
+  screen.destroy();
+});
+
+const footerOf = (screen: any) =>
+  screen.children.find((c: any) => c.options.height === 1 && c.options.bottom === 0);
+const pressShiftG = (screen: any) => screen.focused.emit("keypress", "G", { name: "g", shift: true });
+
+// Only the map's own file universe counts as unmapped: the generator strips
+// tests and non-source files before it ever asks for a node, so counting them
+// would nag on every review with a regenerate that cannot help.
+const NON_SOURCE_DIFF = [
+  "diff --git a/src/a.test.ts b/src/a.test.ts",
+  "index 1..2 100644",
+  "--- a/src/a.test.ts",
+  "+++ b/src/a.test.ts",
+  "@@ -1,1 +1,1 @@",
+  "-old",
+  "+new",
+  "diff --git a/package.json b/package.json",
+  "index 1..2 100644",
+  "--- a/package.json",
+  "+++ b/package.json",
+  "@@ -1,1 +1,1 @@",
+  "-x",
+  "+y",
+  "",
+].join("\n");
+
+test("a PR of only a test file and package.json leaves the map unstale", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    fetchDiff: async () => NON_SOURCE_DIFF,
+    runGrouping: async () => JSON.stringify({
+      summary: "s",
+      groups: [{ title: "core", context: "", files: ["src/a.test.ts", "package.json"] }],
+    }),
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  assert.ok(!paneByLabel(screen, " flow ").getContent().includes("unmapped"));
+  assert.ok(!paneByLabel(screen, " note ").getContent().includes("stale"));
+  assert.ok(!footerOf(screen).getContent().includes("G regenerate"));
+  screen.destroy();
+});
+
+const STALE_MAP = JSON.stringify({
+  generatedAt: "", commit: "",
+  nodes: [{ id: "a", label: "alpha", role: "first", files: ["src/a.ts"] }],
+  edges: [],
+});
+
+const REGENERATED_MAP = JSON.stringify({
+  generatedAt: "", commit: "",
+  nodes: [
+    { id: "a", label: "alpha", role: "first", files: ["src/a.ts"] },
+    { id: "b", label: "bravo", role: "second", files: ["src/b.ts"] },
+  ],
+  edges: [{ from: "a", to: "b", carries: "calls" }],
+});
+
+test("G reloads the map and refetches the annotation against the new topology", async () => {
+  let raw = STALE_MAP;
+  let annCalls = 0;
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadArchMap: () => raw,
+    loadFlow: () => JSON.parse(ANN_JSON),
+    runAnnotation: async () => { annCalls++; return ANN_JSON; },
+    regenerateArchMap: async () => { raw = REGENERATED_MAP; },
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  const chart = paneByLabel(screen, " flow ");
+  assert.ok(chart.getContent().includes("unmapped (1)"));
+  assert.equal(annCalls, 0, "the cached annotation covers the first paint");
+  pressShiftG(screen);
+  await settle();
+  assert.ok(chart.getContent().includes("bravo"));
+  assert.ok(!chart.getContent().includes("unmapped"));
+  assert.equal(annCalls, 1, "the new map gets its own annotation, never the one cached for the old");
+  screen.destroy();
+});
+
+test("a failed regenerate reports it and keeps the chart it had", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadArchMap: () => STALE_MAP,
+    regenerateArchMap: async () => { throw new Error("claude missing"); },
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  pressShiftG(screen);
+  await settle();
+  assert.ok(footerOf(screen).getContent().includes("map regenerate failed"));
+  assert.ok(footerOf(screen).getContent().includes("claude missing"));
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("alpha"));
+  screen.destroy();
+});
+
+test("a regenerate that writes an unparseable map replaces the chart with the reason", async () => {
+  let raw = STALE_MAP;
+  const screen = makeScreen();
+  openReview(screen, testDeps({
+    loadArchMap: () => raw,
+    regenerateArchMap: async () => { raw = "not json"; },
+  }), () => {});
+  await settle();
+  press(screen, "f");
+  pressShiftG(screen);
+  await settle();
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no architecture map"));
+  assert.ok(paneByLabel(screen, " note ").getContent().includes("no architecture map"));
+  screen.destroy();
+});
+
+test("enter on a node that owns no file in this PR says so and stays put", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "f");
+  press(screen, "j");
+  press(screen, "j");
+  press(screen, "j");
+  pressEnter(screen);
+  assert.equal(paneByLabel(screen, " flow ").hidden, false);
+  assert.ok(footerOf(screen).getContent().includes("owns no file in this PR"));
   screen.destroy();
 });
 

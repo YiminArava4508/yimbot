@@ -8,7 +8,9 @@ import {
   nodeForPath,
   nodeStates,
   parseArchMap,
+  renderSet,
   unmappedPaths,
+  UNMAPPED_ID,
   type ArchAnnotation,
   type ArchMap,
 } from "./arch-map.ts";
@@ -93,6 +95,27 @@ test("mergedMap appends annotation nodes, their edges, and an unmapped bucket", 
 
 test("mergedMap with no annotation and no unmapped paths is the map itself", () => {
   assert.deepEqual(mergedMap(MAP, null, []), MAP);
+});
+
+test("renderSet lets an added node claim its files before the bucket sweeps", () => {
+  const { map, unmapped } = renderSet(MAP, ANN, ["src/arch-layout.ts", "scripts/onboard.ts"]);
+  assert.deepEqual(unmapped, ["scripts/onboard.ts"]);
+  assert.ok(!unmapped.includes("src/arch-layout.ts"));
+  assert.equal(nodeForPath(map, "src/arch-layout.ts")?.id, "arch");
+});
+
+test("renderSet's bucket label matches the files nodeFiles can reach for it", () => {
+  const changed = ["src/gh.ts", "scripts/onboard.ts", "README.md"];
+  const { map, unmapped } = renderSet(MAP, ANN, changed);
+  const bucket = map.nodes.find((n) => n.id === UNMAPPED_ID);
+  assert.equal(bucket?.label, `unmapped (${unmapped.length})`);
+  assert.deepEqual(nodeFiles(map, UNMAPPED_ID, changed), unmapped);
+});
+
+test("renderSet with nothing unmapped grows no bucket", () => {
+  const { map, unmapped } = renderSet(MAP, null, ["src/gh.ts"]);
+  assert.deepEqual(unmapped, []);
+  assert.ok(!map.nodes.some((n) => n.id === UNMAPPED_ID));
 });
 
 test("nodeStates ranks added over touched over at risk", () => {

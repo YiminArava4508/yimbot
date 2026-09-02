@@ -11,8 +11,9 @@ import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
 import { layoutGraph, type NodeBox } from "./arch-layout.ts";
 import { fetchAnnotation, normalizeAnnotation } from "./arch-annotate.ts";
+import { sourcePaths } from "./arch-generate.ts";
 import {
-  mergedMap, nodeFiles, nodeStates, parseArchMap, unmappedPaths,
+  nodeFiles, nodeStates, parseArchMap, renderSet,
   type ArchAnnotation, type ArchMap, type ArchNode, type NodeState,
 } from "./arch-map.ts";
 
@@ -237,10 +238,13 @@ export function noteBandLines(s: {
   }
   const head = `{bold}${escapeTags(s.node.label)}{/bold}`;
   out.push(s.node.role ? `${head}: ${escapeTags(s.node.role)}` : head);
-  const note = s.ann?.touched.find((t) => t.node === s.node?.id)?.note;
-  if (note) out.push(escapeTags(note));
+  // The band is three content rows and does not scroll, so the at-risk reason
+  // goes above the touched note: it is the line the feature exists for, and
+  // last place is the first thing the box clips.
   const risk = s.ann?.atRisk.find((r) => r.node === s.node?.id);
   if (risk) out.push(`{red-fg}at risk via ${escapeTags(risk.viaEdge)}: ${escapeTags(risk.why)}{/red-fg}`);
+  const note = s.ann?.touched.find((t) => t.node === s.node?.id)?.note;
+  if (note) out.push(escapeTags(note));
   if (s.state === "unmapped") out.push("{grey-fg}no node in the map claims these files{/grey-fg}");
   return out;
 }
@@ -250,6 +254,8 @@ export function flowFooterHint(s: { stale: number; selected: string | null }): s
   const jump = s.selected ? "   enter files" : "";
   return `j/k node${jump}${regen}   f diff   q back`;
 }
+
+const NO_ARCH_MAP = "{red-fg}no architecture map in this repo, run pnpm arch-map{/red-fg}";
 
 export type ReviewDeps = {
   pr: number;
@@ -367,13 +373,24 @@ export function openReview(
     const fs = files();
     return fs.length > 0 && fs.every((f) => viewed.has(f));
   };
-  const changedPaths = () => fileDiffs.map((f) => f.path);
-  const renderMap = (): ArchMap | null =>
-    archMap ? mergedMap(archMap, annotation, unmappedPaths(archMap, changedPaths())) : null;
-  const staleCount = () => (archMap ? unmappedPaths(archMap, changedPaths()).length : 0);
+  // The chart's file universe, narrowed by the same predicate the generator
+  // feeds its prompt: a node can only ever claim a source file, so counting a
+  // test or a lockfile as unmapped would nag on every review with a regenerate
+  // that provably cannot help. The plan, diff, viewed marks and files() all
+  // still cover the whole diff.
+  const chartPaths = () => sourcePaths(fileDiffs.map((f) => f.path));
+  // One glob sweep per paint rather than one per reader.
+  let rendered: { map: ArchMap | null; unmapped: string[] } | null = null;
+  const renderState = (): { map: ArchMap | null; unmapped: string[] } => {
+    if (rendered === null) {
+      rendered = archMap ? renderSet(archMap, annotation, chartPaths()) : { map: null, unmapped: [] };
+    }
+    return rendered;
+  };
 
   function paint(footerOverride?: string): void {
     if (closed) return;
+    rendered = null;
     const g = currentGroups();
     const fs = files();
     if (selectedPath === null || !fs.includes(selectedPath)) selectedPath = fs[0] ?? null;
@@ -410,9 +427,9 @@ export function openReview(
       claudeOut.repaint();
     }
     if (flowOpen) {
-      const m = renderMap();
+      const { map: m, unmapped } = renderState();
       if (m) {
-        const states = nodeStates(m, annotation, changedPaths());
+        const states = nodeStates(m, annotation, chartPaths());
         const drawn = layoutGraph(m, states, Math.max(12, chart.width - 2));
         chartBoxes = drawn.boxes;
         chart.setContent(drawn.lines.join("\n"));
@@ -421,13 +438,21 @@ export function openReview(
           node,
           state: node ? states.get(node.id) ?? "idle" : "idle",
           ann: annotation,
-          stale: staleCount(),
+          stale: unmapped.length,
         }).join("\n"));
+      } else {
+        // A regenerate that wrote a file we cannot parse drops the map; without
+        // this the chart would keep showing the one it replaced.
+        chartBoxes = [];
+        chart.setContent(NO_ARCH_MAP);
+        note.setContent(NO_ARCH_MAP);
       }
       chart.style.border.fg = reviewPaneBorderColor(true);
     }
     let hint = footerOverride;
-    if (hint === undefined && flowOpen) hint = flowFooterHint({ stale: staleCount(), selected: selectedNode });
+    if (hint === undefined && flowOpen) {
+      hint = flowFooterHint({ stale: renderState().unmapped.length, selected: selectedNode });
+    }
     if (hint === undefined) {
       hint = reviewFooterHint({
         total: fs.length,
@@ -536,7 +561,7 @@ export function openReview(
 
   const openFlow = (): void => {
     if (archMap === null) {
-      paint("{red-fg}no architecture map in this repo, run pnpm arch-map{/red-fg}");
+      paint(NO_ARCH_MAP);
       return;
     }
     setFlow(true);
@@ -553,32 +578,74 @@ export function openReview(
   // The chart's payoff: pick the hop, land in its diff. A node whose files are
   // all viewed goes to its first file rather than nowhere.
   const jumpToNode = (): void => {
-    const m = renderMap();
+    const m = renderState().map;
     if (!m || selectedNode === null) return;
     const owned = nodeFiles(m, selectedNode, files());
-    if (owned.length === 0) return;
+    // A node can own nothing in this diff: its globs claim files the PR never
+    // touched, or only the ones the chart's source filter drops. Say so rather
+    // than swallow the keystroke.
+    if (owned.length === 0) {
+      paint(`{grey-fg}${escapeTags(selectedNode)} owns no file in this PR{/grey-fg}`);
+      return;
+    }
     const target = owned.find((f) => !viewed.has(f)) ?? owned[0];
     setFlow(false);
     select(files().indexOf(target));
   };
 
+  // The one path to the flow annotation, for the initial load and for the
+  // refetch a regenerate forces. useCache is off in the second case: the copy
+  // saved under this head SHA describes the topology that was just replaced.
+  async function loadAnnotation(useCache: boolean): Promise<void> {
+    const m = meta;
+    const map = archMap;
+    if (map === null || m === null) return;
+    if (useCache) {
+      const cached = normalizeAnnotation(deps.loadFlow(m.headSha), map);
+      if (cached) {
+        annotation = cached;
+        paint();
+        return;
+      }
+    }
+    const fresh = await fetchAnnotation(
+      deps.runAnnotation,
+      map,
+      { number: deps.pr, title: m.title, body: m.body },
+      fileStats(fileDiffs),
+    );
+    if (closed) return;
+    // A null is a transient model failure, never something to remember:
+    // caching it would freeze the fallback in until the next push.
+    if (fresh) {
+      annotation = fresh;
+      deps.saveFlow(m.headSha, fresh);
+    }
+    paint();
+  }
+
   const regenerate = (): void => {
-    if (regenerating || staleCount() === 0) return;
+    if (regenerating || renderState().unmapped.length === 0) return;
     regenerating = true;
     paint("regenerating the architecture map…");
-    deps.regenerateArchMap().then(
-      () => {
-        regenerating = false;
+    void (async () => {
+      try {
+        await deps.regenerateArchMap();
         if (closed) return;
         archMap = loadMap();
+        // The annotation was built against the topology that just went away,
+        // and the copy cached under this SHA with it, so both are dropped and
+        // the fetch runs past the cache instead of reading its own stale write.
+        annotation = null;
         paint();
-      },
-      (err: unknown) => {
-        regenerating = false;
+        await loadAnnotation(false);
+      } catch (err: unknown) {
         if (closed) return;
         paint(`{red-fg}map regenerate failed: ${err instanceof Error ? err.message : String(err)}{/red-fg}`);
-      },
-    );
+      } finally {
+        regenerating = false;
+      }
+    })();
   };
 
   chart.on("keypress", (ch: string, key: { name: string; shift?: boolean }) => {
@@ -724,27 +791,7 @@ export function openReview(
       if (!res.usedFallback) deps.saveGroups(m.headSha, res.groups);
       applyGroups(res.groups, res.usedFallback);
     }
-    if (archMap) {
-      const cachedAnn = normalizeAnnotation(deps.loadFlow(m.headSha), archMap);
-      if (cachedAnn) {
-        annotation = cachedAnn;
-      } else {
-        const fresh = await fetchAnnotation(
-          deps.runAnnotation,
-          archMap,
-          { number: deps.pr, title: m.title, body: m.body },
-          fileStats(fileDiffs),
-        );
-        if (closed) return;
-        // A null is a transient model failure, never something to remember:
-        // caching it would freeze the fallback in until the next push.
-        if (fresh) {
-          annotation = fresh;
-          deps.saveFlow(m.headSha, fresh);
-        }
-      }
-      paint();
-    }
+    await loadAnnotation(true);
   }).catch(() => {
     // metaP rejection: already reported and closed by metaP.then's own
     // rejection handler above.

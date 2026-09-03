@@ -461,11 +461,24 @@ export function reduceRows(
   return rows;
 }
 
-// Keep only rows the live worktrees back: a non-terminal row survives iff a
-// worktree exists for its key, so a session/worktree reaped before merge stops
-// showing as active. Terminal (merged) rows are kept regardless — their worktree
-// is already gone by design, and reduceRows still ages them out past the linger
-// window. `liveKeys` is the set of deriveKey() keys of the codebase's worktrees.
-export function filterToLiveWorktrees(rows: BoardRow[], liveKeys: Set<string>): BoardRow[] {
-  return rows.filter((r) => r.terminal || liveKeys.has(r.key));
+// Keep only rows something still backs: a non-terminal row survives iff a
+// worktree exists for its key OR its PR is still open, so a session/worktree
+// reaped before merge stops showing as active while genuinely live work does
+// not vanish. The open-PR half matters because a worktree is a local
+// convenience, not the work: a split slice the split flow never ran
+// split-pr.sh for, or a session reaped early, leaves an open PR with nothing on
+// this machine, and the operator still has to be able to review and queue it.
+//
+// Terminal (merged) rows are kept regardless: their worktree is already gone by
+// design, and reduceRows still ages them out past the linger window.
+//
+// `liveKeys` is the deriveKey() keys of the codebase's worktrees; `openPrKeys`
+// is the same for the instance's open PRs. An empty openPrKeys (review step off,
+// or no successful gh list yet) leaves the worktree rule as the only one.
+export function filterToLiveRows(
+  rows: BoardRow[],
+  liveKeys: Set<string>,
+  openPrKeys: Set<string> = new Set(),
+): BoardRow[] {
+  return rows.filter((r) => r.terminal || liveKeys.has(r.key) || openPrKeys.has(r.key));
 }

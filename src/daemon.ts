@@ -8,7 +8,7 @@ import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
-import { pinEventsLog } from "./events.ts";
+import { deriveKey, pinEventsLog } from "./events.ts";
 import { envCsvSet, envOr } from "./env.ts";
 import {
   addLabel,
@@ -37,6 +37,7 @@ import {
   upsertMarkedComment,
 } from "./linear-api.ts";
 import { readMode } from "./mode.ts";
+import { setOpenPrKeys } from "./open-prs.ts";
 import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
 import { observeReach } from "./reach.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
@@ -195,7 +196,14 @@ export async function startDaemon(): Promise<() => void> {
     const slug = await repoSlug(gh);
     const viewer = await viewerLogin(gh);
     prReview = {
-      listOpenPRs: async () => prLabelFilter(await listMyOpenPRs(gh)),
+      listOpenPRs: async () => {
+        const prs = await prLabelFilter(await listMyOpenPRs(gh));
+        // Only on success: a gh failure throws above and leaves the previous
+        // set cached, so the board does not blank its worktree-less rows for a
+        // heartbeat over one bad list.
+        setOpenPrKeys(new Set(prs.map((pr) => deriveKey({ branch: pr.headRefName, pr: pr.number }).key)));
+        return prs;
+      },
       unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer, trustedReviewers),
       mergeableInfo: (n) => mergeableInfo(gh, n),
       checksInfo: (n) => checksInfo(gh, n, ignoreChecks),

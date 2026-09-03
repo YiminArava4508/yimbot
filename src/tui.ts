@@ -2,7 +2,7 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
 import { envOr } from "./env.ts";
-import { bus, filterToLiveWorktrees, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveRows, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
@@ -483,6 +483,9 @@ export function bindReviewKey(
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
+  // Keys of the instance's open PRs: a PR-backed row stays on the board while
+  // its PR is open even with no worktree behind it. See filterToLiveRows.
+  openPrKeys: () => Set<string>;
   // Keys of worktrees whose tmux session is still live: their merged rows
   // render as "working (manual)" instead of aging off the board.
   manualLiveKeys: () => Set<string>;
@@ -548,9 +551,10 @@ export function runTui(opts: {
     merge: currentMerge.length,
   });
   const render = () => {
-    currentRows = filterToLiveWorktrees(
+    currentRows = filterToLiveRows(
       reduceRows(readEvents(), Date.now(), { manualLiveKeys: opts.manualLiveKeys() }),
       opts.liveKeys(),
+      opts.openPrKeys(),
     );
     const { review, merge, tasks } = partitionRows(currentRows);
     orderFetcher.ensure(review.map((r) => r.pr).filter((n): n is number => n != null));

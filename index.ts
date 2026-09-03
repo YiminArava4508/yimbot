@@ -8,6 +8,7 @@ import { envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
 import { applyReadyLabel, ghRunner, prDiff, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
+import { openPrKeys } from "./src/open-prs.ts";
 import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
@@ -199,6 +200,7 @@ if (process.stdout.isTTY) {
       for (const k of liveRefineKeys(listTmuxSessions())) keys.add(k);
       return keys;
     },
+    openPrKeys,
     manualLiveKeys: () => manuallyLiveKeys(listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
     onToggleFlag: (key, label, flagged) =>
       emitEvent(

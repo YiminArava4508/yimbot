@@ -210,7 +210,8 @@ export function groupReady(
 // lines per heartbeat, trimming every other row out of the capped log.
 //
 // A parent with no integration worktree is skipped: its key has no live
-// worktree, so filterToLiveWorktrees drops the row and the event is dead weight.
+// worktree, and the integration branch gets no PR of its own, so neither half
+// of filterToLiveRows keeps the row and the event is dead weight.
 export function splitParentRows(
   groups: SplitGroup[],
   openBranches: Set<string>,

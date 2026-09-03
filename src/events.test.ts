@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { branchesFullyMerged, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -474,25 +474,45 @@ test("reduceRows: maxRows drops oldest terminal first", () => {
   assert.deepEqual(rows.map((r) => r.key).sort(), ["NEW", "OLD-WORK"]);
 });
 
-test("filterToLiveWorktrees: non-terminal row kept only when its key is live", () => {
-  const row = (over: Partial<BoardRow>): BoardRow => ({
-    key: "ENG-1",
-    label: "ENG-1",
-    status: "working",
-    terminal: false,
-    section: "tasks",
-    ts: 0,
-    startTs: 0,
-    flagged: false,
-    flagReasons: [],
-    ...over,
-  });
-  const rows = [row({ key: "ENG-1" }), row({ key: "ENG-2" })];
-  const kept = filterToLiveWorktrees(rows, new Set(["ENG-1"]));
+const liveRow = (over: Partial<BoardRow>): BoardRow => ({
+  key: "ENG-1",
+  label: "ENG-1",
+  status: "working",
+  terminal: false,
+  section: "tasks",
+  ts: 0,
+  startTs: 0,
+  flagged: false,
+  flagReasons: [],
+  ...over,
+});
+
+test("filterToLiveRows: non-terminal row kept only when its key is live", () => {
+  const rows = [liveRow({ key: "ENG-1" }), liveRow({ key: "ENG-2" })];
+  const kept = filterToLiveRows(rows, new Set(["ENG-1"]));
   assert.deepEqual(kept.map((r) => r.key), ["ENG-1"]);
 });
 
-test("filterToLiveWorktrees: terminal row kept even with no live worktree", () => {
+test("filterToLiveRows: worktree-less row kept when its PR is still open", () => {
+  const rows = [
+    liveRow({ key: "ENG-2099", pr: 5828, section: "review", status: "draft pr" }),
+    liveRow({ key: "ENG-7", section: "tasks" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(), new Set(["ENG-2099"]));
+  assert.deepEqual(
+    kept.map((r) => r.key),
+    ["ENG-2099"],
+    "an open PR is live work even with no worktree; a row in neither set is not",
+  );
+});
+
+test("filterToLiveRows: an empty open-PR cache leaves the worktree rule alone", () => {
+  const rows = [liveRow({ key: "ENG-1" }), liveRow({ key: "ENG-2", pr: 42 })];
+  const kept = filterToLiveRows(rows, new Set(["ENG-1"]), new Set());
+  assert.deepEqual(kept.map((r) => r.key), ["ENG-1"]);
+});
+
+test("filterToLiveRows: terminal row kept even with no live worktree", () => {
   const merged: BoardRow = {
     key: "ENG-9",
     label: "ENG-9",
@@ -504,7 +524,7 @@ test("filterToLiveWorktrees: terminal row kept even with no live worktree", () =
     flagged: false,
     flagReasons: [],
   };
-  assert.deepEqual(filterToLiveWorktrees([merged], new Set()), [merged]);
+  assert.deepEqual(filterToLiveRows([merged], new Set()), [merged]);
 });
 
 test("reduceRows: maxRows of 0 returns empty and does not hang", () => {

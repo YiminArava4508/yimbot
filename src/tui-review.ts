@@ -10,6 +10,7 @@ import { contextMarkdown, contextSignature, toggleContext } from "./review-conte
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
 import { flowView } from "./arch-brief.ts";
+import { DIM_TAG } from "./arch-layout.ts";
 import { fetchAnnotation, normalizeAnnotation } from "./arch-annotate.ts";
 import { sourcePaths } from "./arch-generate.ts";
 import {
@@ -36,7 +37,7 @@ export function nextUnviewed(files: string[], viewed: Set<string>, from: number)
 }
 
 export function placeholderGroups(paths: string[]): ReviewGroups {
-  return { summary: "", groups: [{ title: "organizing review…", context: "", files: paths }] };
+  return { summary: "", groups: [{ title: "organizing review…", context: "", files: paths }], notes: {} };
 }
 
 export function planLines(
@@ -68,26 +69,30 @@ export function planLines(
 
 export function diffPaneLines(fd: FileDiff | null): string[] {
   if (fd) return renderFileDiff(fd);
-  return ["{grey-fg}loading diff…{/grey-fg}"];
+  return [`{${DIM_TAG}}loading diff…{/${DIM_TAG}}`];
 }
 
-// The guide band's content: the selected file's group context, then the AI's
-// PR summary. paint() sizes the band to this content via guideHeight, so
-// nothing gets clipped up to the cap.
+// The guide band's content: the selected file's group context, then what that
+// file itself does. The note wins over the PR summary because the band is two
+// lines tall and the reviewer is looking at one file: a PR-wide sentence
+// repeated on every file is the line they stop reading. The summary stays as the
+// fallback so the band still orients on open, before any file is picked.
 export function guideLines(s: {
   summary: string;
+  note: string | null;
   group: ReviewGroup | null;
   loaded: boolean;
   usedFallback: boolean;
 }): string[] {
-  if (!s.loaded) return ["{grey-fg}organizing review…{/grey-fg}"];
+  if (!s.loaded) return [`{${DIM_TAG}}organizing review…{/${DIM_TAG}}`];
   if (s.usedFallback) return ["{red-fg}AI grouping failed, grouped by directory{/red-fg}"];
   const out: string[] = [];
   if (s.group) {
     const title = `{bold}${escapeTags(s.group.title)}{/bold}`;
     out.push(s.group.context ? `${title}: ${escapeTags(s.group.context)}` : title);
   }
-  if (s.summary) out.push(`{grey-fg}${escapeTags(s.summary)}{/grey-fg}`);
+  const dim = s.note || s.summary;
+  if (dim) out.push(`{${DIM_TAG}}${escapeTags(dim)}{/${DIM_TAG}}`);
   return out;
 }
 
@@ -216,12 +221,12 @@ export function flowFooterHint(s: { stale: number; selected: string | null; hasM
   // Nothing to move between or jump into until a map exists, so the empty
   // overlay offers the one key that gets it there.
   if (!s.hasMap) return "{yellow-fg}G build map{/yellow-fg}   q/f diff";
-  const regen = s.stale > 0 ? "   {yellow-fg}G regenerate{/yellow-fg}" : "";
+  const regen = s.stale > 0 ? "   {yellow-fg}G regen{/yellow-fg}" : "";
   const jump = s.selected ? "   enter files" : "";
   return `j/k node${jump}${regen}   q/f diff`;
 }
 
-const NO_ARCH_MAP = "{red-fg}no architecture map in this repo, press G to build one{/red-fg}";
+const NO_ARCH_MAP = "{red-fg}no map in this repo   G build{/red-fg}";
 
 export type ReviewDeps = {
   pr: number;
@@ -337,7 +342,7 @@ export function openReview(
       paint();
     });
   } else {
-    claude.setContent("{grey-fg}claude unavailable{/grey-fg}");
+    claude.setContent(`{${DIM_TAG}}claude unavailable{/${DIM_TAG}}`);
   }
 
   const loadMap = (): ArchMap | null => {
@@ -384,6 +389,7 @@ export function openReview(
     const fd = fileDiffs.find((f) => f.path === selectedPath) ?? null;
     const gl = guideLines({
       summary: g.summary,
+      note: selectedPath ? (g.notes[selectedPath] ?? null) : null,
       group: selectedPath ? groupOf(g.groups, selectedPath) : null,
       loaded: groups !== null,
       usedFallback,
@@ -500,7 +506,7 @@ export function openReview(
   function openTicketSession(): void {
     ticketSession = deps.sessionName();
     if (ticketSession === null) {
-      paint(`{grey-fg}no session for #${deps.pr} to jump to{/grey-fg}`);
+      paint(`{${DIM_TAG}}no session for #${deps.pr} to jump to{/${DIM_TAG}}`);
       return;
     }
     if (!deps.openSession(ticketSession)) {
@@ -584,7 +590,7 @@ export function openReview(
     // touched, or only the ones the chart's source filter drops. Say so rather
     // than swallow the keystroke.
     if (owned.length === 0) {
-      paint(`{grey-fg}${escapeTags(selectedNode)} owns no file in this PR{/grey-fg}`);
+      paint(`{${DIM_TAG}}${escapeTags(selectedNode)} owns no file in this PR{/${DIM_TAG}}`);
       return;
     }
     const target = owned.find((f) => !viewed.has(f)) ?? owned[0];
@@ -772,7 +778,7 @@ export function openReview(
   Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
     if (closed || rawDiff === null) return;
     if (fileDiffs.length === 0) {
-      groups = { summary: "", groups: [] };
+      groups = { summary: "", groups: [], notes: {} };
       paint();
       return;
     }

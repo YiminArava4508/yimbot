@@ -6,6 +6,7 @@ import blessed from "neo-blessed";
 // bundled CJS output, so the value import goes through the default export.
 import xtermHeadless from "@xterm/headless";
 import type { ClaudeSession } from "./claude-sessions.ts";
+import { DIM_TAG } from "./arch-layout.ts";
 import {
   claudePaneLabel,
   diffPaneLines,
@@ -96,32 +97,56 @@ test("diffPaneLines shows a loading stub without a diff", () => {
 });
 
 test("guideLines shows organizing while groups are in flight", () => {
-  const out = guideLines({ summary: "", group: null, loaded: false, usedFallback: false });
+  const out = guideLines({ summary: "", note: null, group: null, loaded: false, usedFallback: false });
   assert.equal(out.length, 1);
   assert.ok(out[0].includes("organizing review"));
 });
 
 test("guideLines shows the fallback warning when AI grouping failed", () => {
-  const out = guideLines({ summary: "", group: GROUPS[1], loaded: true, usedFallback: true });
+  const out = guideLines({ summary: "", note: null, group: GROUPS[1], loaded: true, usedFallback: true });
   assert.equal(out[0], "{red-fg}AI grouping failed, grouped by directory{/red-fg}");
 });
 
 test("guideLines renders the selected group's guidance first, then the summary dim", () => {
-  const out = guideLines({ summary: "adds a widget", group: GROUPS[0], loaded: true, usedFallback: false });
+  const out = guideLines({ summary: "adds a widget", note: null, group: GROUPS[0], loaded: true, usedFallback: false });
   assert.equal(out[0], "{bold}core{/bold}: the change itself");
-  assert.equal(out[1], "{grey-fg}adds a widget{/grey-fg}");
+  assert.equal(out[1], `{${DIM_TAG}}adds a widget{/${DIM_TAG}}`);
+});
+
+test("guideLines shows the file's note instead of the PR summary when it has one", () => {
+  const out = guideLines({
+    summary: "adds a widget",
+    note: "builds the widget and validates its props",
+    group: GROUPS[0],
+    loaded: true,
+    usedFallback: false,
+  });
+  assert.equal(out[0], "{bold}core{/bold}: the change itself");
+  assert.equal(out[1], `{${DIM_TAG}}builds the widget and validates its props{/${DIM_TAG}}`);
+  assert.equal(out.length, 2, "the note replaces the summary rather than stacking on it");
+});
+
+test("guideLines escapes tags in a model-written note", () => {
+  const out = guideLines({
+    summary: "",
+    note: "reads {config} then dispatches",
+    group: null,
+    loaded: true,
+    usedFallback: false,
+  });
+  assert.equal(out[0], `{${DIM_TAG}}reads {open}config{close} then dispatches{/${DIM_TAG}}`);
 });
 
 test("guideLines skips empty summary and empty context", () => {
   assert.deepEqual(
-    guideLines({ summary: "", group: GROUPS[0], loaded: true, usedFallback: false }),
+    guideLines({ summary: "", note: null, group: GROUPS[0], loaded: true, usedFallback: false }),
     ["{bold}core{/bold}: the change itself"],
   );
   assert.deepEqual(
-    guideLines({ summary: "s", group: GROUPS[1], loaded: true, usedFallback: false }),
-    ["{bold}tests{/bold}", "{grey-fg}s{/grey-fg}"],
+    guideLines({ summary: "s", note: null, group: GROUPS[1], loaded: true, usedFallback: false }),
+    ["{bold}tests{/bold}", `{${DIM_TAG}}s{/${DIM_TAG}}`],
   );
-  assert.deepEqual(guideLines({ summary: "", group: null, loaded: true, usedFallback: false }), []);
+  assert.deepEqual(guideLines({ summary: "", note: null, group: null, loaded: true, usedFallback: false }), []);
 });
 
 test("guideHeight fits the wrapped content between a floor of 3 and the cap", () => {
@@ -308,6 +333,7 @@ const DIFF = [
 const GROUP_JSON = JSON.stringify({
   summary: "s",
   groups: [{ title: "core", context: "look here", files: ["src/b.ts", "src/a.ts"] }],
+  notes: { "src/a.ts": "parses the a records", "src/b.ts": "wires b into the router" },
 });
 
 function testDeps(
@@ -436,6 +462,17 @@ test("openReview caches the plan it just generated, under the head SHA", async (
   const [sha, groups] = deps.savedGroups[0];
   assert.equal(sha, "sha1");
   assert.deepEqual(groups, JSON.parse(GROUP_JSON));
+  screen.destroy();
+});
+
+test("openReview's guide band shows the selected file's note once the plan lands", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await flush();
+  await flush();
+  const band = paneByLabel(screen, " guide ").getContent();
+  assert.ok(band.includes("wires b into the router"), "src/b.ts is selected first, so its note shows");
+  assert.ok(!band.includes("parses the a records"), "only the selected file's note is in the band");
   screen.destroy();
 });
 
@@ -883,8 +920,8 @@ test("flowLayout is one scrolling pane down to the footer", () => {
 });
 
 test("flowFooterHint offers regenerate only while the map is stale", () => {
-  assert.ok(!flowFooterHint({ stale: 0, selected: "gh", hasMap: true }).includes("G regenerate"));
-  assert.ok(flowFooterHint({ stale: 2, selected: "gh", hasMap: true }).includes("G regenerate"));
+  assert.ok(!flowFooterHint({ stale: 0, selected: "gh", hasMap: true }).includes("G regen"));
+  assert.ok(flowFooterHint({ stale: 2, selected: "gh", hasMap: true }).includes("G regen"));
   assert.ok(flowFooterHint({ stale: 0, selected: "gh", hasMap: true }).includes("enter files"));
   assert.ok(!flowFooterHint({ stale: 0, selected: null, hasMap: true }).includes("enter files"));
 });
@@ -893,7 +930,7 @@ test("flowFooterHint offers the first build when the repo has no map", () => {
   const hint = flowFooterHint({ stale: 0, selected: null, hasMap: false });
   assert.ok(hint.includes("G build map"));
   assert.ok(!hint.includes("j/k node"), "there are no nodes to move between yet");
-  assert.ok(!hint.includes("G regenerate"));
+  assert.ok(!hint.includes("G regen"));
 });
 
 const ARCH_JSON = JSON.stringify({
@@ -994,7 +1031,7 @@ test("f on a repo with no map opens the flow and offers to build one", async () 
   await settle();
   press(screen, "f");
   assert.equal(paneByLabel(screen, " flow ").hidden, false);
-  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no architecture map"));
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no map in this repo"));
   assert.ok(footerOf(screen).getContent().includes("G build map"));
   screen.destroy();
 });
@@ -1053,7 +1090,7 @@ test("a PR of only a test file and package.json leaves the map unstale", async (
   press(screen, "f");
   assert.ok(!paneByLabel(screen, " flow ").getContent().includes("unmapped"));
   assert.ok(!paneByLabel(screen, " flow ").getContent().includes("stale"));
-  assert.ok(!footerOf(screen).getContent().includes("G regenerate"));
+  assert.ok(!footerOf(screen).getContent().includes("G regen"));
   screen.destroy();
 });
 
@@ -1107,7 +1144,7 @@ test("G builds the first map inline when the repo has none", async () => {
   await settle();
   press(screen, "f");
   const chart = paneByLabel(screen, " flow ");
-  assert.ok(chart.getContent().includes("no architecture map"));
+  assert.ok(chart.getContent().includes("no map in this repo"));
   pressShiftG(screen);
   await settle();
   assert.ok(chart.getContent().includes("bravo"), "the built map draws without reopening the overlay");
@@ -1142,7 +1179,7 @@ test("a regenerate that writes an unparseable map replaces the chart with the re
   press(screen, "f");
   pressShiftG(screen);
   await settle();
-  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no architecture map"));
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no map in this repo"));
   screen.destroy();
 });
 
@@ -1329,7 +1366,7 @@ test("f finds a map written after the overlay opened", async () => {
   openReview(screen, testDeps({ loadArchMap: () => raw, runAnnotation: async () => "junk" }), () => {});
   await settle();
   press(screen, "f");
-  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no architecture map"));
+  assert.ok(paneByLabel(screen, " flow ").getContent().includes("no map in this repo"));
   press(screen, "f");
   raw = ARCH_JSON;
   press(screen, "f");

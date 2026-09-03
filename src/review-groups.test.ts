@@ -91,6 +91,51 @@ test("parseGroups drops unknown paths and duplicates, appends missing files as O
   assert.deepEqual(last?.files, ["src/widget.test.ts", "docs/widget.md"]);
 });
 
+test("parseGroups reads the per-file notes the guide band shows", () => {
+  const raw = JSON.stringify({
+    summary: "s",
+    notes: { "src/widget.ts": "builds the widget and validates its props" },
+    groups: [{ title: "core", context: "c", files: PATHS }],
+  });
+  const g = parseGroups(raw, PATHS);
+  assert.ok(g);
+  assert.equal(g.notes["src/widget.ts"], "builds the widget and validates its props");
+});
+
+test("parseGroups drops notes for paths outside the diff and non-string values", () => {
+  const raw = JSON.stringify({
+    summary: "s",
+    notes: { "src/widget.ts": "real", "made/up.ts": "phantom", "docs/widget.md": 7 },
+    groups: [{ title: "core", context: "c", files: PATHS }],
+  });
+  const g = parseGroups(raw, PATHS);
+  assert.ok(g);
+  assert.deepEqual(Object.keys(g.notes), ["src/widget.ts"]);
+});
+
+test("parseGroups defaults notes to empty when the model omits or mangles the key", () => {
+  const without = parseGroups(JSON.stringify({
+    summary: "s",
+    groups: [{ title: "core", context: "c", files: PATHS }],
+  }), PATHS);
+  assert.deepEqual(without?.notes, {});
+  const mangled = parseGroups(JSON.stringify({
+    summary: "s",
+    notes: "not an object",
+    groups: [{ title: "core", context: "c", files: PATHS }],
+  }), PATHS);
+  assert.deepEqual(mangled?.notes, {});
+});
+
+test("groupingPrompt asks for a short note per file", () => {
+  const p = groupingPrompt(PR, FILES);
+  assert.ok(p.includes('"notes"'), "the response shape names the notes map");
+});
+
+test("fallbackGroups carries an empty notes map", () => {
+  assert.deepEqual(fallbackGroups(PATHS).notes, {});
+});
+
 test("parseGroups returns null for junk, empty groups, and groups with no valid files", () => {
   assert.equal(parseGroups("no json here", PATHS), null);
   assert.equal(parseGroups('{"summary":"s","groups":[]}', PATHS), null);

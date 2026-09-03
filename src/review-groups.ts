@@ -6,7 +6,10 @@ import type { FileDiff } from "./review-diff.ts";
 import { extractJsonObject } from "./json-extract.ts";
 
 export type ReviewGroup = { title: string; context: string; files: string[] };
-export type ReviewGroups = { summary: string; groups: ReviewGroup[] };
+// `notes` is what the guide band reads: path to one short phrase on what that
+// file's functions do. Keyed flat rather than per group because the lookup is by
+// the selected path, and a file the model skipped simply has no entry.
+export type ReviewGroups = { summary: string; groups: ReviewGroup[]; notes: Record<string, string> };
 export type GroupingRunner = (prompt: string) => Promise<string>;
 export type PrMeta = { number: number; title: string; body: string };
 export type FileStat = Pick<FileDiff, "path" | "additions" | "deletions" | "status"> & { hunks: string[] };
@@ -62,13 +65,19 @@ export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
     "  to skim it.",
     "- Keep each group reviewable: prefer 1-6 files, splitting a bigger concern into",
     "  narrower ones.",
-    "For each group write one sentence of context: what this part of the change does",
-    "and how it fits into the PR. Give the reviewer the lay of the land; do not tell",
-    "them what to check, point at specifics, or restate the file list.",
+    "Then write the reading notes, and keep every one of them short. The band that",
+    "shows them is two lines tall, so a long note is a note the reviewer never sees.",
+    "- group context: one short clause on what this part of the change does. Lay of",
+    "  the land only; never tell them what to check or restate the file list.",
+    "- note, one per file: what that file's functions do, in a clause of at most 12",
+    "  words. Say what the code is for, not that it changed: \"signs render tokens",
+    "  and scopes the S3 upload\", not \"updates the token signer\". The symbol hints",
+    "  above name the functions; describe those.",
     "Reply with ONLY a JSON object, no prose:",
-    '{"summary": "<1-2 sentences for a reviewer new to this codebase: what the PR does and how the pieces fit together>",',
-    ' "groups": [{"title": "<short label>", "context": "<one-sentence background>", "files": ["<path>", ...]}, ...]}',
-    "Every file must appear in exactly one group. Use only the paths listed above.",
+    '{"summary": "<one sentence: what the PR does, for a reviewer new to this codebase>",',
+    ' "groups": [{"title": "<short label>", "context": "<one short clause>", "files": ["<path>", ...]}, ...],',
+    ' "notes": {"<path>": "<at most 12 words on what this file\'s functions do>", ...}}',
+    "Every file must appear in exactly one group, and get one note. Use only the paths listed above.",
   ].join("\n");
 }
 
@@ -85,7 +94,7 @@ export function parseGroups(stdout: string, diffPaths: string[]): ReviewGroups |
 // output, so a stale or hand-edited cache cannot put a phantom file on the board.
 export function normalizeGroups(obj: unknown, diffPaths: string[]): ReviewGroups | null {
   if (obj === null || typeof obj !== "object") return null;
-  const o = obj as { summary?: unknown; groups?: unknown };
+  const o = obj as { summary?: unknown; groups?: unknown; notes?: unknown };
   if (!Array.isArray(o.groups)) return null;
   const known = new Set(diffPaths);
   const seen = new Set<string>();
@@ -107,7 +116,13 @@ export function normalizeGroups(obj: unknown, diffPaths: string[]): ReviewGroups
   if (groups.length === 0) return null;
   const missing = diffPaths.filter((p) => !seen.has(p));
   if (missing.length > 0) groups.push({ title: "Other changes", context: "", files: missing });
-  return { summary: typeof o.summary === "string" ? o.summary : "", groups };
+  const notes: Record<string, string> = {};
+  if (o.notes !== null && typeof o.notes === "object" && !Array.isArray(o.notes)) {
+    for (const [path, note] of Object.entries(o.notes as Record<string, unknown>)) {
+      if (known.has(path) && typeof note === "string" && note !== "") notes[path] = note;
+    }
+  }
+  return { summary: typeof o.summary === "string" ? o.summary : "", groups, notes };
 }
 
 const TEST_DIR = /(^|\/)(__tests__|tests?|specs?)\//;
@@ -171,7 +186,7 @@ export function fallbackGroups(diffPaths: string[]): ReviewGroups {
   const groups = [...buckets.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([title, files]) => ({ title, context: "", files: files.sort(byPair) }));
-  return { summary: "", groups };
+  return { summary: "", groups, notes: {} };
 }
 
 export async function fetchGroups(

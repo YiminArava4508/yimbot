@@ -209,6 +209,43 @@ cmd_post() {
   return 0
 }
 
+# since is written as a bare JSON number, so ticket_field's quoted-string
+# regex cannot read it back.
+ticket_num_field() {
+  local line
+  line=$(cat "$1" 2>/dev/null) || return 1
+  [[ $line =~ \"$2\":([0-9]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# The head ticket is the holder regardless of its recorded state: a ticket that
+# reached the head is either running or about to be, and reporting it as waiting
+# would show an empty slot that is not actually free.
+cmd_status() {
+  local t first=1 running=null entries=() json
+  ticket_reap
+  for t in $(printf '%s\n' "$(queue_dir)"/*.json 2>/dev/null | sort); do
+    [ -e "$t" ] || continue
+    json=$(printf '{"key":"%s","cmd":"%s","since":%s}' \
+      "$(ticket_field "$t" key)" "$(ticket_field "$t" cmd)" "$(ticket_num_field "$t" since)")
+    if [ "$first" = 1 ]; then
+      running=$json
+      first=0
+      continue
+    fi
+    entries+=("$json")
+  done
+  local waiting
+  waiting=$(IFS=,; printf '[%s]' "${entries[*]:-}")
+  if [ "${1:-}" = "--json" ]; then
+    printf '{"running":%s,"waiting":%s}\n' "$running" "$waiting"
+    return 0
+  fi
+  # An idle queue has nothing to feed jq: return here rather than leaning on
+  # jq to tolerate the stray blank line an empty entries array would add.
+  [ "$running" = null ] && [ ${#entries[@]} -eq 0 ] && return 0
+  printf '%s\n' "$running" "${entries[@]}" | jq -r 'select(. != null) | "\(.key)\t\(.cmd)"'
+}
+
 # Source-guard: sourcing loads the helpers, executing dispatches a subcommand.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   heavy_conf_load
@@ -216,6 +253,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     pre) cmd_pre ;;
     post) cmd_post ;;
     hold) shift; cmd_hold "${1:-}"; exit $? ;;
+    status) shift; cmd_status "${1:-}" ;;
     *) echo "usage: heavy-queue.sh {pre|post|hold <cmd>|status [--json]}" >&2; exit 2 ;;
   esac
   exit 0

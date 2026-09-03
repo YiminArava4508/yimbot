@@ -203,4 +203,20 @@ assert_eq "$(printf '%s' "$PRE_HOOK" | grep -c 'heavy-queue.sh" pre')" "1" "PreT
 assert_ok test "$(printf '%s' "$PRE_HOOK" | cut -d'|' -f3)" -gt "$HEAVY_WAIT_TIMEOUT"
 assert_eq "$(node -e 'process.stdout.write(require(process.argv[1]).hooks.PostToolUse[0].hooks[0].command)' "$SETTINGS_JSON" | grep -c 'heavy-queue.sh" post')" "1" "PostToolUse runs the post subcommand"
 
+# --- status ---
+assert_defined cmd_status
+rm -f "$(queue_dir)"/*.json
+assert_eq "$(cmd_status --json | jq -c '.')" '{"running":null,"waiting":[]}' "an empty queue reports nothing running"
+assert_eq "$(cmd_status)" "" "an idle queue prints nothing on the human table"
+assert_eq "$(cmd_status >/dev/null 2>&1; echo $?)" "0" "an idle queue exits cleanly on the human table"
+
+R=$(ticket_path); ticket_write "$R" "ENG-1" "task generate" running
+sleep 0.01
+W=$(ticket_path); ticket_write "$W" "ENG-2" "pnpm build" waiting
+assert_eq "$(cmd_status --json | jq -r '.running.key')" "ENG-1" "the head ticket is reported as running"
+assert_eq "$(cmd_status --json | jq -r '.waiting[0].key')" "ENG-2" "the rest are reported as waiting"
+assert_eq "$(cmd_status --json | jq -r '.waiting | length')" "1" "only the non-head tickets wait"
+assert_eq "$(cmd_status | grep -c 'ENG-1')" "1" "the human table names the holder"
+rm -f "$(queue_dir)"/*.json
+
 if [ "$fail" -eq 0 ]; then echo "PASS: heavy-queue.sh tests"; else exit 1; fi

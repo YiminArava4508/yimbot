@@ -200,10 +200,44 @@ export async function pollOnce(state: WatchState, deps: WatcherDeps): Promise<vo
 // Not a startup baseline: unlike the review-icon poll, the deploy step must be
 // restart-safe (see deployOnce), so it reconciles against live sessions instead
 // of assuming everything present at startup is handled.
-export type DeployState = { launched: Set<string> };
+export type DeployState = {
+  launched: Set<string>;
+  // Failed launches per issue, so the retry below is bounded. See releaseLaunch.
+  attempts: Map<string, number>;
+};
 
 export function freshDeployState(): DeployState {
-  return { launched: new Set() };
+  return { launched: new Set(), attempts: new Map() };
+}
+
+// How many times a launch may fail before the deploy step stops retrying it.
+export const MAX_LAUNCH_ATTEMPTS = 3;
+
+// Un-latch an issue whose new-session.sh exited non-zero, so the next heartbeat
+// retries it. deployOnce latches on spawn rather than on exit (the script runs
+// for minutes; awaiting it would stall the heartbeat), which without this leaves
+// a ticket whose script died latched for the whole process lifetime -- exactly
+// how ENG-2099 ended up with an open PR and no worktree.
+//
+// Bounded, because the two failure shapes differ. Died AFTER creating the
+// worktree: the next tick's findExistingSession adopts it and no retry happens
+// anyway. Died BEFORE: the cause is usually persistent (a missing seed skill, a
+// git worktree add that cannot work), and an unbounded retry would relaunch
+// every heartbeat forever. So give up at the cap, once, loudly.
+export function releaseLaunch(
+  state: DeployState,
+  issueId: string,
+  identifier: string,
+  log: (msg: string) => void,
+): void {
+  const attempts = (state.attempts.get(issueId) ?? 0) + 1;
+  if (attempts > MAX_LAUNCH_ATTEMPTS) return; // already given up; stay quiet
+  state.attempts.set(issueId, attempts);
+  if (attempts >= MAX_LAUNCH_ATTEMPTS) {
+    log(`giving up on ${identifier} after ${attempts} failed launches; create its worktree by hand`);
+    return;
+  }
+  state.launched.delete(issueId);
 }
 
 export type DeployDeps = {
@@ -623,24 +657,56 @@ export function detachedSessionEnv(
   return { ...base, ...extra, SESSION_DETACH: "1" };
 }
 
-export function launchSession(name: string): Promise<void> {
+// How much of a failed new-session.sh's output to keep. The `die` line and the
+// git/tmux error under it are at the end, so a tail is what matters; bounded so
+// a chatty setup hook cannot pin megabytes per launch.
+export const LAUNCH_LOG_TAIL = 4000;
+
+// The last `limit` chars of a growing stream. Keeps the tail and drops the head,
+// because that is the end a script failure is written at.
+export function tailBuffer(limit: number): { push: (chunk: string) => void; text: () => string } {
+  let buf = "";
+  return {
+    push: (chunk) => {
+      buf = (buf + chunk).slice(-limit);
+    },
+    text: () => buf,
+  };
+}
+
+export function launchSession(name: string, onFail?: (code: number | null) => void): Promise<void> {
+  // Piped rather than ignored: a non-zero exit used to report only its code, so
+  // why the script died (a missing seed skill, a git worktree add that failed)
+  // was unrecoverable from daemon.log. Both streams feed one tail because the
+  // script interleaves its own log lines with git's and tmux's.
   const proc = spawn("bash", [sessionScriptPath, name], {
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
     env: detachedSessionEnv(process.env),
   });
   proc.unref();
+  const tail = tailBuffer(LAUNCH_LOG_TAIL);
+  for (const stream of [proc.stdout, proc.stderr]) {
+    stream?.setEncoding("utf8");
+    stream?.on("data", (chunk: string) => tail.push(chunk));
+    stream?.on("error", () => {}); // a torn pipe must not raise on the daemon
+  }
   // spawn() reports failures like ENOENT asynchronously via 'error'; wait for
   // the 'spawn' event so callers can treat a failed launch as an error and retry.
   const result = new Promise<void>((resolve, reject) => {
     proc.once("spawn", () => resolve());
     proc.once("error", (err) => reject(err));
   });
-  // Diagnostic only: the session script runs detached, so a non-zero exit
-  // (e.g. tmux/worktree setup failing inside the script) would otherwise be
-  // invisible — this does not affect the seen/retry semantics above.
+  // The script runs detached, so its exit lands long after the promise above
+  // resolved: `onFail` is how the deploy step's latch learns the launch it
+  // already counted as started did not finish. See releaseLaunch.
   proc.once("exit", (code) => {
-    if (code !== 0) console.error(`[watcher] new-session.sh for '${name}' exited ${code}`);
+    if (code === 0) return;
+    const out = tail.text().trimEnd();
+    console.error(
+      `[watcher] new-session.sh for '${name}' exited ${code}` + (out ? `\n${out}` : " (no output)"),
+    );
+    onFail?.(code);
   });
   return result;
 }
@@ -1127,10 +1193,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.progressContext)),
     listSessions: listTmuxSessions,
     listWorktrees: listWorktreeDirs,
-    launch: (name) => {
+    launch: (name, issue) => {
       const { key, label } = deriveKey({ branch: name });
       emitEvent({ kind: "task_started", key, label, title: titleFromBranch(name) });
-      return launchSession(name);
+      return launchSession(name, () => releaseLaunch(deployState, issue.id, issue.identifier, log));
     },
     log,
   };

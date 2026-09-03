@@ -17,6 +17,9 @@ import {
   type DependencyScanDeps,
   type DeployDeps,
   deployOnce,
+  MAX_LAUNCH_ATTEMPTS,
+  releaseLaunch,
+  tailBuffer,
   detectNewIssues,
   findExistingSession,
   freshClaimState,
@@ -271,6 +274,78 @@ test("deployOnce retries an issue whose launch failed (not latched on failure)",
   await deployOnce(state, deps);
   assert.deepEqual(launched, ["eng-1-fix-bug"]);
   assert.ok(state.launched.has("a"));
+});
+
+test("tailBuffer keeps everything while under the limit", () => {
+  const tail = tailBuffer(10);
+  tail.push("abc");
+  tail.push("de");
+  assert.equal(tail.text(), "abcde");
+});
+
+test("tailBuffer drops the head so the failure at the end survives", () => {
+  const tail = tailBuffer(5);
+  tail.push("aaaaaaa");
+  tail.push("die: git worktree add failed");
+  assert.equal(tail.text(), "ailed");
+});
+
+test("tailBuffer truncates a single oversized push", () => {
+  const tail = tailBuffer(4);
+  tail.push("0123456789");
+  assert.equal(tail.text(), "6789");
+});
+
+test("tailBuffer of an empty stream is empty", () => {
+  assert.equal(tailBuffer(10).text(), "");
+});
+
+test("releaseLaunch un-latches a failed launch so the next heartbeat retries it", () => {
+  const state = freshDeployState();
+  const logs: string[] = [];
+  state.launched.add("a");
+  releaseLaunch(state, "a", "ENG-1", (m) => void logs.push(m));
+  assert.ok(!state.launched.has("a"), "an exit-non-zero launch must not stay latched");
+  assert.equal(state.attempts.get("a"), 1);
+  assert.deepEqual(logs, [], "one failure is not worth a give-up line");
+});
+
+test("releaseLaunch gives up at the attempt cap instead of relaunching forever", () => {
+  const state = freshDeployState();
+  const logs: string[] = [];
+  const log = (m: string) => void logs.push(m);
+  for (let i = 0; i < MAX_LAUNCH_ATTEMPTS; i++) {
+    state.launched.add("a");
+    releaseLaunch(state, "a", "ENG-1", log);
+  }
+  assert.ok(state.launched.has("a"), "at the cap the latch stays so the retry loop ends");
+  assert.equal(logs.length, 1, "the give-up is reported once, not every heartbeat");
+  assert.ok(logs[0].includes("ENG-1"));
+  // A later exit for the same issue must not re-log or un-latch.
+  releaseLaunch(state, "a", "ENG-1", log);
+  assert.ok(state.launched.has("a"));
+  assert.equal(logs.length, 1);
+});
+
+test("releaseLaunch tracks attempts per issue", () => {
+  const state = freshDeployState();
+  state.launched.add("a");
+  state.launched.add("b");
+  releaseLaunch(state, "a", "ENG-1", () => {});
+  assert.equal(state.attempts.get("a"), 1);
+  assert.equal(state.attempts.get("b"), undefined);
+  assert.ok(!state.launched.has("a"));
+  assert.ok(state.launched.has("b"), "one issue's failure must not un-latch another");
+});
+
+test("deployOnce relaunches an issue releaseLaunch un-latched", async () => {
+  const state = freshDeployState();
+  const { deps, launched } = deployDeps();
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+  releaseLaunch(state, "a", "ENG-1", () => {}); // new-session.sh exited non-zero
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug", "eng-1-fix-bug"], "the retry actually happens");
 });
 
 test("deployOnce survives a fetch failure without launching or latching", async () => {

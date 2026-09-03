@@ -143,4 +143,52 @@ assert_eq "$(awk 'NR%2==1{if($0 !~ /^start-/) bad=1} NR%2==0{if($0 !~ /^end-/) b
 assert_eq "$(wc -l < "$SERIAL_LOG" | tr -d ' ')" "6" "every held command ran"
 rm -f "$SERIAL_LOG"
 
+# --- pre / post ---
+assert_defined payload_field
+assert_defined wait_for_head
+assert_defined cmd_pre
+assert_defined cmd_post
+
+rm -f "$(queue_dir)"/*.json
+
+# A cheap command produces no decision and no ticket: the hot path must stay
+# silent so Claude Code runs the command exactly as written.
+PRE_OUT=$(printf '%s' '{"session_id":"s1","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"git status"}}' | cmd_pre)
+assert_eq "$PRE_OUT" "" "a cheap command yields no decision"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "a cheap command writes no ticket"
+
+# A heavy command on an empty queue is allowed straight through, rewritten to
+# run under hold.
+PRE_OUT=$(printf '%s' '{"session_id":"s2","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_pre)
+assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "allow" "a heavy command is allowed"
+assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')" "$HEAVY_SELF hold 'task generate'" "the command is rewritten through hold"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a heavy command leaves a running ticket"
+assert_eq "$(ticket_field "$(ticket_head)" state)" "running" "the head ticket is marked running"
+
+# Quoting is what breaks a command rewrite, so test the quoter directly.
+assert_defined shell_quote
+assert_eq "$(eval "printf '%s' $(shell_quote "it's fine")")" "it's fine" "shell_quote survives a single quote"
+DQ_INPUT='a "b" c'
+assert_eq "$(eval "printf '%s' $(shell_quote "$DQ_INPUT")")" "$DQ_INPUT" "shell_quote survives double quotes"
+assert_eq "$(eval "printf '%s' $(shell_quote 'a $(rm -rf /) b')")" 'a $(rm -rf /) b' "shell_quote defuses command substitution"
+
+# post removes only this session's ticket.
+rm -f "$(queue_dir)"/*.json
+printf '%s' '{"session_id":"s4","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_pre > /dev/null
+OTHER=$(ticket_path); ticket_write "$OTHER" "ENG-9" "pnpm build" waiting
+printf '%s' '{"session_id":"s4","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_post
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "post drops one ticket"
+assert_eq "$(ticket_field "$(ticket_head)" key)" "ENG-9" "post left the other session's ticket alone"
+rm -f "$(queue_dir)"/*.json
+
+# Waiting behind a live ticket times out rather than hanging forever, and the
+# timeout path still lets the command run.
+BLOCKER=$(ticket_path); ticket_write "$BLOCKER" "ENG-8" "task build-all" running
+MINE=$(ticket_path); ticket_write "$MINE" "ENG-7" "task generate" waiting
+assert_fails env HEAVY_WAIT_TIMEOUT=1 bash -c "source '$(dirname "$0")/heavy-queue.sh'; heavy_conf_load; HEAVY_WAIT_TIMEOUT=1; wait_for_head '$MINE'"
+rm -f "$(queue_dir)"/*.json
+
+# A malformed payload is not a reason to block a session.
+assert_eq "$(printf 'not json' | cmd_pre; echo "rc=$?")" "rc=0" "a malformed payload yields no decision and no error"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: heavy-queue.sh tests"; else exit 1; fi

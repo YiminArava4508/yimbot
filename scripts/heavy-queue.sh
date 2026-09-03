@@ -144,6 +144,79 @@ heavy_log() {
   printf '[%s] heavy-queue: %s\n' "$(date '+%H:%M:%S')" "$*" >> "$HEAVY_STATE_DIR/queue.log" 2>/dev/null || true
 }
 
-case "${1:-}" in
-  hold) cmd_hold "$2" ;;
-esac
+# jq rather than a bash regex: the command field is JSON-escaped and can carry
+# quotes and newlines, and getting that wrong means matching the wrong string.
+payload_field() {
+  printf '%s' "$1" | jq -er "$2" 2>/dev/null
+}
+
+# Single-quote a string for safe reinjection into a shell command line.
+shell_quote() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+session_ticket_file() {
+  local d=$HEAVY_STATE_DIR/current
+  mkdir -p "$d" 2>/dev/null
+  printf '%s/%s' "$d" "${1//[^A-Za-z0-9_-]/_}"
+}
+
+# Poll until this ticket reaches the head. Touch it every pass: that heartbeat
+# is what lets other waiters reap this ticket promptly if the session dies.
+wait_for_head() {
+  local mine=$1 deadline=$(( $(date +%s) + HEAVY_WAIT_TIMEOUT ))
+  while true; do
+    ticket_reap
+    [ -e "$mine" ] || return 1
+    [ "$(ticket_head)" = "$mine" ] && return 0
+    [ "$(date +%s)" -ge "$deadline" ] && return 1
+    touch "$mine" 2>/dev/null
+    sleep 0.5
+  done
+}
+
+cmd_pre() {
+  local payload cmd cwd session mine
+  payload=$(cat)
+  cmd=$(payload_field "$payload" '.tool_input.command') || return 0
+  [ -n "$cmd" ] || return 0
+  is_heavy "$cmd" || return 0
+
+  cwd=$(payload_field "$payload" '.cwd') || cwd=$PWD
+  session=$(payload_field "$payload" '.session_id') || session=$$
+  mine=$(ticket_path)
+  ticket_write "$mine" "$(heavy_key_for "$cwd")" "$(strip_cd_prefix "$cmd")" waiting
+  printf '%s' "$mine" > "$(session_ticket_file "$session")" 2>/dev/null
+
+  if ! wait_for_head "$mine"; then
+    rm -f "$mine"
+    heavy_log "timed out waiting for the slot, running unqueued: $cmd"
+    return 0
+  fi
+  ticket_write "$mine" "$(heavy_key_for "$cwd")" "$(strip_cd_prefix "$cmd")" running
+
+  jq -nc --arg c "$HEAVY_SELF hold $(shell_quote "$cmd")" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",updatedInput:{command:$c}},systemMessage:"yimbot: holding the heavy-job slot"}'
+}
+
+cmd_post() {
+  local payload session f
+  payload=$(cat)
+  session=$(payload_field "$payload" '.session_id') || return 0
+  f=$(session_ticket_file "$session")
+  [ -f "$f" ] || return 0
+  rm -f "$(cat "$f" 2>/dev/null)" "$f" 2>/dev/null
+  return 0
+}
+
+# Source-guard: sourcing loads the helpers, executing dispatches a subcommand.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  heavy_conf_load
+  case ${1:-} in
+    pre) cmd_pre ;;
+    post) cmd_post ;;
+    hold) shift; cmd_hold "${1:-}"; exit $? ;;
+    *) echo "usage: heavy-queue.sh {pre|post|hold <cmd>|status [--json]}" >&2; exit 2 ;;
+  esac
+  exit 0
+fi

@@ -219,6 +219,26 @@ the reuse audit above), and only then decide how to slice it into PRs.
 - Repeat until the whole series is open, then move the ticket **and every
   slice subticket** to the Review column, once each.
 
+**If a slice did end up stacked on a sibling** (a PR based on another slice's
+branch rather than `main`), it gets no real CI: the CI workflow only triggers on
+PRs whose base matches, so the stack sits on `pr-size` alone. Reroot it onto
+`main`, but do the move **in place, on the ticket branch**:
+
+```bash
+git switch <ticket-branch>
+git branch backup/<ticket>-pre-reroot HEAD
+git rebase --onto main <sibling-branch>
+```
+
+Never build the rerooted history on a temp branch to move back afterwards. That
+is two steps, and if the second is denied or the session ends between them, the
+worktree is stranded on a branch carrying no ticket slug, which breaks the
+board's row and its session jump. If any git command in the sequence is denied,
+**stop and hand the remaining commands to the human** rather than improvising a
+workaround that leaves history half-moved. Only reroot when the slice's own
+commits do not use the sibling's code: check the diff first, build the affected
+modules after.
+
 Prefer to catch large scope at **plan time**: if the plan clearly exceeds
 ~500 LOC, anticipate the split from the start. Even so, implement the whole
 thing on the ticket branch first; only slice it into PRs once it is done and

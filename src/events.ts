@@ -64,10 +64,13 @@ export function deriveKey(opts: { identifier?: string; branch?: string; pr?: num
   return { key, label: key };
 }
 
-// A ticket-keyed board row can cover several PRs at once: split slices all
-// carry the ticket slug, so every slice branch derives to the same key. A single
-// merged slice must not mark the whole row merged while sibling PRs are open —
-// return only the merged branches whose key no open PR still maps to.
+// A ticket-keyed board row can cover several PRs at once: every branch carrying
+// the same ticket slug derives to one key, so a follow-up or stacked PR on a
+// ticket shares its row (as does a split slice branched off the parent's slug
+// rather than its own subticket -- the skills name slices after their subticket,
+// but nothing enforces it). One merged branch must not mark the whole row merged
+// while another open PR still maps to it, so return only the merged branches
+// whose key no open PR still claims.
 export function branchesFullyMerged(merged: Set<string>, open: Set<string>): string[] {
   const openKeys = new Set([...open].map((b) => deriveKey({ branch: b }).key));
   return [...merged].filter((b) => !openKeys.has(deriveKey({ branch: b }).key));

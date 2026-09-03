@@ -30,7 +30,7 @@ test("deriveKey: bare pr", () => {
   assert.deepEqual(deriveKey({ pr: 5 }), { key: "pr:5", label: "PR #5" });
 });
 
-test("branchesFullyMerged holds back a merged slice while a sibling slice PR is open", () => {
+test("branchesFullyMerged holds back a merged branch while another PR on its row is open", () => {
   const merged = new Set(["sc-1234-thing-part-1"]);
   const open = new Set(["sc-1234-thing-part-2", "sc-1234-thing-part-3"]);
   assert.deepEqual(branchesFullyMerged(merged, open), []);
@@ -44,7 +44,7 @@ test("branchesFullyMerged releases the key once no open PR shares it", () => {
   );
 });
 
-test("branchesFullyMerged only holds back branches sharing the open key", () => {
+test("branchesFullyMerged only holds back branches sharing the open row key", () => {
   const merged = new Set(["eng-9-solo", "sc-1234-thing-part-1"]);
   const open = new Set(["sc-1234-thing-part-2"]);
   assert.deepEqual(branchesFullyMerged(merged, open), ["eng-9-solo"]);

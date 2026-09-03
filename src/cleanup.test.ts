@@ -329,7 +329,7 @@ test("cleanupOnce hands the merged branch set to reconcileMerged, even with no w
   assert.deepEqual([...(seen as unknown as Set<string>)].sort(), ["eng-2-b", "eng-3-c"]);
 });
 
-test("cleanupOnce hands the open branch set to reconcileMerged, so split slices are not marked merged early", async () => {
+test("cleanupOnce hands the open branch set to reconcileMerged, so a shared row is not marked merged early", async () => {
   let openSeen: Set<string> | null = null;
   const { deps: d } = deps({
     listWorktrees: () => [],
@@ -343,8 +343,8 @@ test("cleanupOnce hands the open branch set to reconcileMerged, so split slices 
 });
 
 test("cleanupOnce skips reconcileMerged when the open PR list fails", async () => {
-  // With the open set unknown, a merged split slice would mark its whole
-  // ticket row merged while sibling slice PRs are still open; sit the tick out.
+  // With the open set unknown, a merged branch would mark its whole ticket row
+  // merged while another PR on that row is still open; sit the tick out.
   let called = false;
   const { deps: d, logs } = deps({
     listWorktrees: () => [],

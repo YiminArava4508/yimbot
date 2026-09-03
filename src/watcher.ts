@@ -1223,8 +1223,9 @@ export function startWatcher(config: WatcherConfig): () => void {
     // Every tick, transition any board row still shown as active to merged once its
     // PR has merged, even with no worktree left for teardown to emit against (the
     // worktree was reaped, or cleaned up out of band). Scoped to keys already on the
-    // board so a backlog of old merges never spawns fresh rows. Split slices share
-    // their ticket's key, so a key is only marked merged once no open PR maps to it.
+    // board so a backlog of old merges never spawns fresh rows. A ticket's
+    // follow-up or stacked PR shares its row key, so a key is only marked merged
+    // once no open PR maps to it.
     reconcileMerged: (mergedBranches, openBranches) => {
       const active = new Set(
         reduceRows(readEvents(), Date.now())

@@ -50,8 +50,9 @@ export type CleanupDeps = {
   // Reconcile the board against the full merged-branch set each tick. Called even
   // when a merged PR has no worktree left to tear down, so a row stuck on a stale
   // action status (e.g. "fixing CI") still transitions to merged. The open set
-  // rides along so a merged split slice never marks its ticket's row merged while
-  // sibling slice PRs are still open; skipped when the open list can't be fetched.
+  // rides along so a merged branch never marks its ticket's row merged while
+  // another PR on that row is still open; skipped when the open list can't be
+  // fetched.
   reconcileMerged?: (mergedBranches: Set<string>, openBranches: Set<string>) => void;
   // How each split parent's row should read this tick (see splitParentRows),
   // reported by branch. Skipped when the open PR list can't be fetched, like

@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   type AC,
   AC_COMMENT_MARKER,
@@ -963,9 +963,35 @@ export function worktreeKeysUnder(worktrees: Worktree[], dir: string): Set<strin
   const keys = new Set<string>();
   for (const w of worktrees) {
     if (!w.path.startsWith(prefix)) continue;
-    keys.add(deriveKey({ branch: w.branch }).key);
+    keys.add(worktreeKey(w));
   }
   return keys;
+}
+
+// The board key a branch or dir name yields, or null when it names no ticket:
+// deriveKey echoes the name back unchanged when it finds no ticket slug in it.
+function ticketKey(name: string): string | null {
+  const key = deriveKey({ branch: name }).key;
+  return key === name ? null : key;
+}
+
+// A worktree's board key. Normally its branch carries the ticket slug, but a
+// reroot or rebase can park a worktree on an off-ticket branch (tmp-*, a fixup
+// branch) mid-flight, and new-session.sh's dir still names the ticket. Falling
+// back to the dir keeps the row on the board and its session jump working
+// through any such detour. A dir naming no ticket either (a hand-made worktree)
+// leaves the branch key alone, so those rows keep matching their PR events.
+function worktreeKey(w: Worktree): string {
+  return ticketKey(w.branch) ?? ticketKey(basename(w.path)) ?? w.branch;
+}
+
+// The ticket identifier backing a worktree, from its branch or, when the branch
+// is off-ticket, its dir. Null when neither names one.
+function worktreeIdentifier(w: Worktree): string | null {
+  const m =
+    WORKTREE_IDENTIFIER_RE.exec(w.branch.toLowerCase()) ??
+    WORKTREE_IDENTIFIER_RE.exec(basename(w.path).toLowerCase());
+  return m ? m[0] : null;
 }
 
 export function liveWorktreeKeys(codebasePath: string, dir: string = worktreesDir): Set<string> {
@@ -996,23 +1022,23 @@ export function liveRefineKeys(sessions: string[]): Set<string> {
 }
 
 // The live tmux session backing a board row's key, so the TUI can jump to it.
-// Finds the worktree whose branch maps to `key` (the same deriveKey the board
-// uses), then the session for that branch: exact name first, else the identifier
-// prefix so a title edit since launch still resolves. Null when no worktree backs
-// the key (e.g. a merged/PR-only row) or no session is live.
+// Finds the worktree whose key matches (worktreeKey, the same mapping the board
+// uses), then the session for it: the exact branch name first, else the ticket
+// identifier prefix so a title edit since launch still resolves. Null when no
+// worktree backs the key (e.g. a merged/PR-only row) or no session is live.
 export function resolveSessionForKey(
   key: string,
   worktrees: Worktree[],
   sessions: string[],
 ): string | null {
-  const wt = worktrees.find((w) => deriveKey({ branch: w.branch }).key === key);
+  const wt = worktrees.find((w) => worktreeKey(w) === key);
   if (!wt) {
     const refine = `refine-${key.toLowerCase()}`;
     return sessions.includes(refine) ? refine : null;
   }
   if (sessions.includes(wt.branch)) return wt.branch;
-  const m = WORKTREE_IDENTIFIER_RE.exec(wt.branch.toLowerCase());
-  return m ? findExistingSession(m[0], sessions, []) : null;
+  const identifier = worktreeIdentifier(wt);
+  return identifier ? findExistingSession(identifier, sessions, []) : null;
 }
 
 // Deliver the autonomous-mode nudge into a pane: Escape first (declines a

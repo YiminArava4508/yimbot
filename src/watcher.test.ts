@@ -570,6 +570,13 @@ test("resolveSessionForKey matches despite a title change since launch", () => {
   assert.equal(session, "eng-42-old-title");
 });
 
+test("resolveSessionForKey falls back to the worktree dir slug when the branch is off-ticket", () => {
+  // A reroot/rebase parks the worktree on a temp branch; the dir still names the ticket.
+  const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "tmp-reroot-42" }];
+  const session = resolveSessionForKey("ENG-42", worktrees, ["eng-42-fix-login"]);
+  assert.equal(session, "eng-42-fix-login");
+});
+
 test("resolveSessionForKey returns null when no worktree backs the key", () => {
   const worktrees = [{ path: "/wt/eng-7-other", branch: "eng-7-other" }];
   assert.equal(resolveSessionForKey("ENG-42", worktrees, ["eng-7-other"]), null);
@@ -578,6 +585,16 @@ test("resolveSessionForKey returns null when no worktree backs the key", () => {
 test("resolveSessionForKey returns null when the worktree has no live session", () => {
   const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "eng-42-fix-login" }];
   assert.equal(resolveSessionForKey("ENG-42", worktrees, []), null);
+});
+
+test("worktreeKeysUnder keys a worktree by its dir slug when the branch is off-ticket", () => {
+  const keys = worktreeKeysUnder([{ path: "/wt/eng-42-fix-login", branch: "tmp-reroot-42" }], "/wt");
+  assert.deepEqual([...keys], ["ENG-42"]);
+});
+
+test("worktreeKeysUnder keeps the branch key when neither branch nor dir names a ticket", () => {
+  const keys = worktreeKeysUnder([{ path: "/wt/readme-diagrams", branch: "docs/readme-diagrams" }], "/wt");
+  assert.deepEqual([...keys], ["docs/readme-diagrams"]);
 });
 
 test("liveRefineKeys maps refine sessions to board keys", () => {

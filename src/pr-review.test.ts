@@ -597,7 +597,12 @@ test("supervised: flags changes-requested even while a fix is in flight", async 
     inFlightFixKinds: () => ["fix"],
   });
   await reviewOnce(freshReviewState(), d);
-  assert.equal(flagRaised.length, 1);
+  // The harness default carries an unresolved human comment too, so both human
+  // signals report; emitFlagged dedupes them into the one flag downstream.
+  assert.deepEqual(
+    flagRaised.map((f) => f.reason),
+    ["changes-requested", "human-comment"],
+  );
 });
 
 test("supervised: raises on every tick the block persists (emitFlagged dedupes)", async () => {
@@ -784,4 +789,48 @@ test("reviewOnce keeps a running blocked fix from spawning other fix kinds", asy
   });
   await reviewOnce(freshReviewState(), d);
   assert.equal(spawned.length + ciSpawned.length + conflictSpawned.length + blockedSpawned.length, 0);
+});
+
+test("a new human comment flags the row even while a fixer is in flight", async () => {
+  const h = deps({
+    mode: () => "supervised",
+    inFlightFixKinds: () => ["fix"],
+    unresolvedInfo: async () => info(1, 5000, { humanTs: 5000 }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(
+    h.flagRaised.map((f) => f.reason),
+    ["human-comment"],
+  );
+  // The running fixer is still the review step's to reap, not to pre-empt.
+  assert.deepEqual(h.spawned, []);
+});
+
+test("an acknowledged human comment does not re-flag a PR with a fixer in flight", async () => {
+  const h = deps({
+    mode: () => "supervised",
+    inFlightFixKinds: () => ["fix"],
+    flagState: () => ({ flagged: false, clearedAt: 6000 }),
+    unresolvedInfo: async () => info(1, 5000, { humanTs: 5000 }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.flagRaised, []);
+});
+
+test("a failed thread read does not stop the in-flight fixer from being reaped", async () => {
+  const h = deps({
+    mode: () => "supervised",
+    inFlightFixKinds: () => ["fix"],
+    unresolvedInfo: async () => {
+      throw new Error("gh down");
+    },
+    now: () => 100 * 60 * 1000,
+  });
+  const state = freshReviewState();
+  state.fixSeenAt.set("4706:fix", 0);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(
+    h.reaped.map((r) => r.kind),
+    ["fix"],
+  );
 });

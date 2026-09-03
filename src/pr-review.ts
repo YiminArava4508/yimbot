@@ -141,11 +141,16 @@ async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewD
 // One review-step tick, run every heartbeat. For each open PR (drafts included:
 // supervised mode opens PRs as drafts and a human marks them ready), in
 // supervised mode first notice human review signals (a changes-requested review
-// by a non-trusted reviewer, then, after the thread read, a non-trusted
+// by a non-trusted reviewer, then, from the thread read, a non-trusted
 // comment): each raises the board flag, and a flagged PR gets NO fix work of
 // any kind until a person unflags it. Unflagging acknowledges the signals it
 // covered; only a strictly newer signal re-raises. In autonomous mode no review
 // signal is read or raised and nothing blocks.
+//
+// Both signals are read before the in-flight check below, so a human comment
+// landing mid-fix raises the flag on the next heartbeat rather than waiting out
+// the fixer (up to a 90-minute stale reap). The running fixer is left to finish
+// or be reaped; only new fix work is what a flag holds off.
 //
 // Then skip if any fix (comment, conflict, blocked, or CI) is actively
 // running, then handle in priority order: comments, then conflict, then
@@ -210,6 +215,20 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
         deps.log(`review decision read failed for PR #${pr.number}: ${err}`);
       }
     }
+    // Read before the in-flight skip below, so a human comment landing mid-fix
+    // flags the row now instead of staying invisible until the fixer is reaped
+    // (a stale reap is 90 minutes). A failed read leaves info null and only
+    // costs this tick's comment handling; the reap below still runs.
+    let info: UnresolvedInfo | null = null;
+    try {
+      info = await deps.unresolvedInfo(pr.number);
+    } catch (err) {
+      deps.log(`thread info failed for PR #${pr.number}: ${err}`);
+    }
+    if (mode === "supervised" && info !== null && info.newestHumanCommentAt !== null && !acknowledged(info.newestHumanCommentAt)) {
+      deps.raiseFlag(pr.number, pr.headRefName, "human-comment", info.newestHumanCommentAt);
+      humanBlocked = true;
+    }
     const running = deps.inFlightFixKinds(pr.number, pr.headRefName);
     // Prune timers for kinds no longer in flight so a future fix of that kind
     // starts a fresh stale clock (runs even when nothing is in flight now).
@@ -251,18 +270,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     // landing on the shared worktree until this one becomes visible.
     const pending = state.pendingSpawn.get(pr.number);
 
-    let info: UnresolvedInfo;
-    try {
-      info = await deps.unresolvedInfo(pr.number);
-    } catch (err) {
-      deps.log(`thread info failed for PR #${pr.number}: ${err}`);
-      continue;
-    }
-
-    if (mode === "supervised" && info.newestHumanCommentAt !== null && !acknowledged(info.newestHumanCommentAt)) {
-      deps.raiseFlag(pr.number, pr.headRefName, "human-comment", info.newestHumanCommentAt);
-      humanBlocked = true;
-    }
+    if (info === null) continue; // the read above failed; only this tick is lost
     // Supervised: a flagged PR belongs to a human. Spawn nothing (comment,
     // conflict, blocked, or CI) until they unflag it.
     if (humanBlocked) continue;

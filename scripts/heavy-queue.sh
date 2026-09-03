@@ -61,12 +61,17 @@ lock_path() {
 }
 
 heavy_key_for() {
-  local branch
+  local branch p n
   branch=$(git -C "$1" branch --show-current 2>/dev/null)
-  if [[ $branch =~ ^(eng|sc|ENG|SC)-([0-9]+) ]]; then
-    printf '%s-%s' "$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')" "${BASH_REMATCH[2]}"
+  shopt -s nocasematch
+  if [[ $branch =~ ^(eng|sc)-([0-9]+) ]]; then
+    p=${BASH_REMATCH[1]}
+    n=${BASH_REMATCH[2]}
+    shopt -u nocasematch
+    printf '%s-%s' "$(printf '%s' "$p" | tr '[:lower:]' '[:upper:]')" "$n"
     return
   fi
+  shopt -u nocasematch
   printf '?'
 }
 
@@ -117,8 +122,9 @@ ticket_reap() {
 
 ticket_head() {
   local t
-  for t in $(ls -1 "$(queue_dir)" 2>/dev/null | sort); do
-    printf '%s/%s' "$(queue_dir)" "$t"
+  for t in $(printf '%s\n' "$(queue_dir)"/*.json 2>/dev/null | sort); do
+    [ -e "$t" ] || continue
+    printf '%s' "$t"
     return
   done
 }

@@ -48,3 +48,77 @@ is_heavy() {
   case $cmd in *heavy-queue.sh\ hold*) return 1 ;; esac
   printf '%s' "$cmd" | grep -Eq "$HEAVY_PATTERNS"
 }
+
+queue_dir() {
+  local d=$HEAVY_STATE_DIR/queue
+  mkdir -p "$d" 2>/dev/null
+  printf '%s' "$d"
+}
+
+lock_path() {
+  mkdir -p "$HEAVY_STATE_DIR" 2>/dev/null
+  printf '%s' "$HEAVY_STATE_DIR/heavy.lock"
+}
+
+heavy_key_for() {
+  local branch
+  branch=$(git -C "$1" branch --show-current 2>/dev/null)
+  if [[ $branch =~ ^(eng|sc|ENG|SC)-([0-9]+) ]]; then
+    printf '%s-%s' "$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')" "${BASH_REMATCH[2]}"
+    return
+  fi
+  printf '?'
+}
+
+ticket_path() {
+  printf '%s/%s-%s.json' "$(queue_dir)" "$(date +%s%N)" "$$"
+}
+
+json_escape() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/ }
+  s=${s//$'\t'/ }
+  printf '%s' "$s"
+}
+
+ticket_write() {
+  local path=$1 key=$2 cmd=$3 state=$4
+  printf '{"key":"%s","cmd":"%s","state":"%s","since":%s}\n' \
+    "$(json_escape "$key")" "$(json_escape "$cmd")" "$state" "$(( $(date +%s%N) / 1000000 ))" \
+    > "$path" 2>/dev/null
+}
+
+ticket_field() {
+  local line
+  line=$(cat "$1" 2>/dev/null) || return 1
+  [[ $line =~ \"$2\":\"(([^\"\\]|\\.)*)\" ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+ticket_stale() {
+  local state mtime age limit
+  mtime=$(stat -c %Y "$1" 2>/dev/null) || return 0
+  state=$(ticket_field "$1" state)
+  age=$(( $(date +%s) - mtime ))
+  limit=$HEAVY_STALE_WAIT
+  [ "$state" = "running" ] && limit=$HEAVY_MAX_JOB
+  [ "$age" -gt "$limit" ]
+}
+
+ticket_reap() {
+  local t
+  for t in "$(queue_dir)"/*.json; do
+    [ -e "$t" ] || continue
+    ticket_stale "$t" && rm -f "$t"
+  done
+  return 0
+}
+
+ticket_head() {
+  local t
+  for t in $(ls -1 "$(queue_dir)" 2>/dev/null | sort); do
+    printf '%s/%s' "$(queue_dir)" "$t"
+    return
+  done
+}

@@ -103,6 +103,20 @@ assert_eq "$(ticket_head)" "$T2" "head advances after a reap"
 rm -f "$QD"/*.json
 assert_eq "$(ticket_head)" "" "empty queue has no head"
 
+# heavy_key_for extracts board keys from branches, handling any case consistently.
+# Create a throwaway repo to test mixed-case branches.
+TEST_REPO=$(mktemp -d)
+git init "$TEST_REPO" >/dev/null 2>&1
+git -C "$TEST_REPO" config user.email "test@test" && git -C "$TEST_REPO" config user.name "Test"
+git -C "$TEST_REPO" commit --allow-empty -m "init" >/dev/null 2>&1
+git -C "$TEST_REPO" checkout -b "eng-1925-foo" >/dev/null 2>&1
+assert_eq "$(heavy_key_for "$TEST_REPO")" "ENG-1925" "lowercase branch keys correctly"
+git -C "$TEST_REPO" checkout -b "Eng-1926-bar" >/dev/null 2>&1
+assert_eq "$(heavy_key_for "$TEST_REPO")" "ENG-1926" "mixed-case branch keys correctly"
+git -C "$TEST_REPO" checkout -b "sc-99-baz" >/dev/null 2>&1
+assert_eq "$(heavy_key_for "$TEST_REPO")" "SC-99" "sc- prefix keys correctly"
+rm -rf "$TEST_REPO"
+
 # An unrecognizable cwd still yields a usable key rather than an empty one.
 assert_eq "$(heavy_key_for /nonexistent)" "?" "unknown cwd keys as ?"
 

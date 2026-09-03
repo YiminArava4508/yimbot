@@ -5,6 +5,7 @@ import blessed from "neo-blessed";
 import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
+import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
   key: "ENG-1",
@@ -559,19 +560,42 @@ test("applyOrder keeps a row without a PR at the end rather than dropping it", (
 });
 
 test("boardLayout reserves an equal third of the body for every pane", () => {
-  const l = boardLayout(24);
+  const l = boardLayout(24, 200);
   // Body is 22 rows (title + footer), a third is 7; tasks keeps the remainder.
   assert.equal(l.merge.height, 7);
   assert.equal(l.merge.bottom, 1);
   assert.equal(l.review.height, 7);
   assert.equal(l.review.bottom, 8);
-  assert.deepEqual(l.tasks, { top: 1, left: 0, right: 0, bottom: 15 });
+  assert.deepEqual(l.tasks, { top: 1, left: 0, right: QUEUE_PANE_WIDTH, bottom: 15 });
 });
 
 test("boardLayout keeps every pane at least one visible row on a tiny screen", () => {
-  const l = boardLayout(10);
+  const l = boardLayout(10, 200);
   assert.equal(l.merge.height, 4);
   assert.equal(l.review.height, 4);
+});
+
+test("boardLayout reserves the right edge for the queue pane", () => {
+  const layout = boardLayout(40, 200);
+  assert.ok(layout.queue, "a wide screen gets a queue pane");
+  assert.equal(layout.queue!.width, QUEUE_PANE_WIDTH);
+  assert.equal(layout.queue!.right, 0);
+  assert.equal(layout.tasks.right, QUEUE_PANE_WIDTH);
+  assert.equal(layout.review.right, QUEUE_PANE_WIDTH);
+  assert.equal(layout.merge.right, QUEUE_PANE_WIDTH);
+});
+
+test("boardLayout drops the queue pane on a narrow screen", () => {
+  const layout = boardLayout(40, 50);
+  assert.equal(layout.queue, null);
+  assert.equal(layout.tasks.right, 0);
+  assert.equal(layout.merge.right, 0);
+});
+
+test("boardLayout keeps the queue pane spanning the full board height", () => {
+  const layout = boardLayout(40, 200);
+  assert.equal(layout.queue!.top, layout.tasks.top);
+  assert.equal(layout.queue!.bottom, 1);
 });
 
 test("movePane moves up and down the stack, skipping empty panes", () => {

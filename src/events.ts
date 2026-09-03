@@ -12,6 +12,7 @@ export type EventKind =
   | "ready_to_merge"
   | "draft_pr"
   | "ready_regressed"
+  | "awaiting_slices"
   | "merged"
   | "flagged"
   | "unflagged"
@@ -91,6 +92,7 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   ready_to_merge: { status: "ready to merge", terminal: false },
   draft_pr: { status: "draft pr", terminal: false },
   ready_regressed: { status: "working", terminal: false },
+  awaiting_slices: { status: "waiting on slices", terminal: false },
   merged: { status: "merged", terminal: true },
   needs_decision: { status: "needs decision", terminal: false },
   review_findings: { status: "review findings", terminal: false },
@@ -128,6 +130,15 @@ export function sectionKind(section: Section): EventKind {
 }
 
 const MERGED_STATUS = STATUS.merged!.status;
+
+// Statuses that mean a human already owes this row an answer. A status derived
+// from somewhere other than the row's own session (the split parent's "waiting
+// on slices") must not overwrite one, or the row stops saying what it needs.
+const HOLD_STATUSES = new Set([STATUS.needs_decision!.status, STATUS.review_findings!.status]);
+
+export function isHoldStatus(status: string | undefined): boolean {
+  return status !== undefined && HOLD_STATUSES.has(status);
+}
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(0);
@@ -224,17 +235,23 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
 // (a PR gone green, a merged worktree) without bloating the log or the board, so
 // a row transitions off a stale action status even when no write drove it.
 export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
-  // Only status-bearing kinds count: a flag or section event landing after the
-  // status must not read back as "no status", which would defeat the dedupe and
-  // re-append the same status every heartbeat.
-  let lastStatus: string | undefined;
-  for (const e of readEvents()) {
-    if (e.key !== ev.key) continue;
-    const mapped = statusFor(e.kind);
-    if (mapped) lastStatus = mapped.status;
-  }
+  const lastStatus = currentStatus(ev.key);
   if (lastStatus !== undefined && lastStatus === statusFor(ev.kind)?.status) return;
   emitEvent(ev);
+}
+
+// The status a key's row currently shows, or undefined for a key with no
+// status-bearing event yet. Only status-bearing kinds count: a flag or section
+// event landing after the status must not read back as "no status", which would
+// defeat emitStatus's dedupe and re-append the same status every heartbeat.
+export function currentStatus(key: string, events: YimbotEvent[] = readEvents()): string | undefined {
+  let last: string | undefined;
+  for (const e of events) {
+    if (e.key !== key) continue;
+    const mapped = statusFor(e.kind);
+    if (mapped) last = mapped.status;
+  }
+  return last;
 }
 
 // A PR the operator queued by hand: the board's r, or y at the end of a review

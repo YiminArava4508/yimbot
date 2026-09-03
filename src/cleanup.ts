@@ -53,6 +53,10 @@ export type CleanupDeps = {
   // rides along so a merged split slice never marks its ticket's row merged while
   // sibling slice PRs are still open; skipped when the open list can't be fetched.
   reconcileMerged?: (mergedBranches: Set<string>, openBranches: Set<string>) => void;
+  // The split parents whose row should read "waiting on slices" this tick (see
+  // parentsAwaitingSlices), reported by branch. Skipped when the open PR list
+  // can't be fetched, like every other open-set-dependent path here.
+  reportAwaitingSlices?: (parentBranches: string[]) => void;
   // Live tmux session names, for the pr-<n>-fix session scan below.
   listSessions: () => string[];
   // Kill a tmux session by exact name (a merged PR's fix session).
@@ -165,6 +169,24 @@ export function groupReady(
     group.sliceBranches.every((b) => mergedBranches.has(b) || closedBranches.has(b)) &&
     (group.integrationBranch === null || !openBranches.has(group.integrationBranch))
   );
+}
+
+// The split parents whose board row should read "waiting on slices". Each slice
+// is its own ticket with its own row, so no slice can speak for the group; the
+// tracking ticket is the only row that covers the whole split. A parent
+// qualifies while at least one slice PR is still open and it has no open PR of
+// its own -- an open PR on the parent branch means it is doing work, not
+// tracking. The session name doubles as the parent branch, so it stands in when
+// the integration worktree is already gone.
+export function parentsAwaitingSlices(groups: SplitGroup[], openBranches: Set<string>): string[] {
+  const out: string[] = [];
+  for (const g of groups) {
+    if (openBranches.has(g.session)) continue;
+    if (g.integrationBranch !== null && openBranches.has(g.integrationBranch)) continue;
+    if (!g.sliceBranches.some((b) => openBranches.has(b))) continue;
+    out.push(g.session);
+  }
+  return out;
 }
 
 // Worktrees to tear down: branch is in the merged set AND the worktree lives
@@ -386,6 +408,8 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   // paths below so a single slice resolving never tears the group down early.
   const groups = buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir);
   const groupedPaths = new Set(groups.flatMap((g) => g.worktreePaths));
+
+  if (openBranches !== null) deps.reportAwaitingSlices?.(parentsAwaitingSlices(groups, openBranches));
 
   // Without the open set, a slice PR opened from the integration branch is
   // invisible, so falling back to slices-only readiness could reap a live group;

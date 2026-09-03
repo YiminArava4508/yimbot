@@ -8,6 +8,7 @@ import {
   type CleanupDeps,
   cleanupOnce,
   groupReady,
+  parentsAwaitingSlices,
   type OrphanFacts,
   type OrphanSweepDeps,
   readParentSession,
@@ -1241,4 +1242,41 @@ test("readParentSession returns null when marker file is empty", () => {
   const dir = tempDir("yimbot-wt-");
   writeFileSync(join(dir, ".yimbot-parent-session"), "");
   assert.equal(readParentSession(dir), null);
+});
+
+function group(overrides: Partial<SplitGroup> = {}): SplitGroup {
+  return {
+    session: "eng-1320-generate-bov-entry-point",
+    integrationBranch: "eng-1320-generate-bov-entry-point",
+    integration: null,
+    sliceBranches: ["eng-2064-part-1", "eng-2065-part-2"],
+    slices: [],
+    worktreePaths: [],
+    ...overrides,
+  };
+}
+
+test("parentsAwaitingSlices: the tracking ticket speaks while a slice PR is open", () => {
+  assert.deepEqual(
+    parentsAwaitingSlices([group()], new Set(["eng-2065-part-2"])),
+    ["eng-1320-generate-bov-entry-point"],
+  );
+});
+
+test("parentsAwaitingSlices: silent once every slice PR is closed or merged", () => {
+  assert.deepEqual(parentsAwaitingSlices([group()], new Set()), []);
+});
+
+test("parentsAwaitingSlices: a parent with its own open PR is a working row, not a tracking row", () => {
+  const open = new Set(["eng-1320-generate-bov-entry-point", "eng-2065-part-2"]);
+  assert.deepEqual(parentsAwaitingSlices([group()], open), []);
+});
+
+test("parentsAwaitingSlices: a torn-down integration worktree still names its parent", () => {
+  const g = group({ integrationBranch: null });
+  assert.deepEqual(parentsAwaitingSlices([g], new Set(["eng-2065-part-2"])), [
+    "eng-1320-generate-bov-entry-point",
+  ]);
+  // The session name doubles as the parent branch, so an open PR on it still disqualifies.
+  assert.deepEqual(parentsAwaitingSlices([g], new Set(["eng-1320-generate-bov-entry-point"])), []);
 });

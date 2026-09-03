@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { branchesFullyMerged, deriveKey, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, readEvents, reduceRows, sectionKind, titleFromBranch } from "./events.ts";
+import { branchesFullyMerged, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, readEvents, reduceRows, sectionKind, titleFromBranch } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
@@ -1234,6 +1234,18 @@ export function startWatcher(config: WatcherConfig): () => void {
       for (const branch of branchesFullyMerged(mergedBranches, openBranches)) {
         const { key, label } = deriveKey({ branch });
         if (active.has(key)) emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
+      }
+    },
+    // A split's slices are their own tickets with their own rows, so none of them
+    // can say what the split as a whole is doing. The tracking ticket's row does:
+    // it reads "waiting on slices" from the moment its PR is closed to start the
+    // split until the last slice PR resolves. Never over a hold status -- that row
+    // already owes a human an answer, and this would bury it.
+    reportAwaitingSlices: (parentBranches) => {
+      for (const branch of parentBranches) {
+        const { key, label } = deriveKey({ branch });
+        if (isHoldStatus(currentStatus(key))) continue;
+        emitStatus({ kind: "awaiting_slices", key, label, title: titleFromBranch(branch) });
       }
     },
     listSessions: listTmuxSessions,

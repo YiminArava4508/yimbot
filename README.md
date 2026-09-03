@@ -221,8 +221,10 @@ row's status moves through its lifecycle as work progresses, starting at
 **working**, then **addressing review** / **fixing CI** / **resolving
 conflict** as those steps kick in, then **ready to test**, then **ready to
 merge**, then **merged**. Merged rows stay on the board for a while so you can
-see recent completions, then age out. Press `q` to quit the board; it also
-stops the daemon.
+see recent completions, then age out. A ticket split into slices keeps a row of
+its own: each slice is a subticket with its own row, and the tracking ticket
+reads **waiting on slices** until the last slice PR resolves. Press `q` to quit
+the board; it also stops the daemon.
 
 The board stacks three panes: **tasks**, **ready to review** and **ready to
 merge**. Which pane a row sits in is decided by GitHub, not by the row's status:

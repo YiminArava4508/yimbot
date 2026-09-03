@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { branchesFullyMerged, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveWorktrees, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,7 +64,21 @@ test("statusFor maps kinds; only merged is terminal", () => {
   assert.deepEqual(statusFor("ready_to_merge"), { status: "ready to merge", terminal: false });
   assert.deepEqual(statusFor("draft_pr"), { status: "draft pr", terminal: false });
   assert.deepEqual(statusFor("ready_regressed"), { status: "working", terminal: false });
+  assert.deepEqual(statusFor("awaiting_slices"), { status: "waiting on slices", terminal: false });
   assert.deepEqual(statusFor("merged"), { status: "merged", terminal: true });
+});
+
+test("currentStatus reads the key's last status, ignoring non-status events", () => {
+  const events: YimbotEvent[] = [
+    { ts: 1, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+    { ts: 2, kind: "ready_to_merge", key: "ENG-1", label: "ENG-1" },
+    { ts: 3, kind: "section_merge", key: "ENG-1", label: "ENG-1" },
+    { ts: 4, kind: "flagged", key: "ENG-1", label: "ENG-1" },
+    { ts: 5, kind: "task_started", key: "ENG-2", label: "ENG-2" },
+  ];
+  assert.equal(currentStatus("ENG-1", events), "ready to merge");
+  assert.equal(currentStatus("ENG-2", events), "working");
+  assert.equal(currentStatus("ENG-3", events), undefined);
 });
 
 test("statusFor returns undefined for a kind retired in a newer build", () => {
@@ -991,4 +1005,12 @@ test("emitQueuedToMerge is idempotent, so a repeat keypress logs nothing", () =>
     emitQueuedToMerge({ key: "ENG-9", label: "ENG-9", pr: 12 });
     assert.equal(readEvents(path).length, 2);
   });
+});
+
+test("isHoldStatus covers the statuses a human is already waiting on", () => {
+  assert.equal(isHoldStatus("needs decision"), true);
+  assert.equal(isHoldStatus("review findings"), true);
+  assert.equal(isHoldStatus("working"), false);
+  assert.equal(isHoldStatus("ready to merge"), false);
+  assert.equal(isHoldStatus(undefined), false);
 });

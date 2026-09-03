@@ -130,6 +130,7 @@ export function sectionKind(section: Section): EventKind {
 }
 
 const MERGED_STATUS = STATUS.merged!.status;
+export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
 
 // Statuses that mean a human already owes this row an answer. A status derived
 // from somewhere other than the row's own session (the split parent's "waiting

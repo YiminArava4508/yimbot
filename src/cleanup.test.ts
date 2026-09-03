@@ -8,7 +8,7 @@ import {
   type CleanupDeps,
   cleanupOnce,
   groupReady,
-  parentsAwaitingSlices,
+  splitParentRows,
   type OrphanFacts,
   type OrphanSweepDeps,
   readParentSession,
@@ -1244,6 +1244,11 @@ test("readParentSession returns null when marker file is empty", () => {
   assert.equal(readParentSession(dir), null);
 });
 
+const keyOf = (branch: string) => {
+  const m = /^(eng|sc)-(\d+)/i.exec(branch);
+  return m ? `${m[1].toUpperCase()}-${m[2]}` : branch;
+};
+
 function group(overrides: Partial<SplitGroup> = {}): SplitGroup {
   return {
     session: "eng-1320-generate-bov-entry-point",
@@ -1256,27 +1261,39 @@ function group(overrides: Partial<SplitGroup> = {}): SplitGroup {
   };
 }
 
-test("parentsAwaitingSlices: the tracking ticket speaks while a slice PR is open", () => {
-  assert.deepEqual(
-    parentsAwaitingSlices([group()], new Set(["eng-2065-part-2"])),
-    ["eng-1320-generate-bov-entry-point"],
-  );
+test("splitParentRows: the tracking ticket waits while a slice PR is open", () => {
+  assert.deepEqual(splitParentRows([group()], new Set(["eng-2065-part-2"]), keyOf), {
+    awaiting: ["eng-1320-generate-bov-entry-point"],
+    settled: [],
+  });
 });
 
-test("parentsAwaitingSlices: silent once every slice PR is closed or merged", () => {
-  assert.deepEqual(parentsAwaitingSlices([group()], new Set()), []);
+test("splitParentRows: the wait is over once every slice PR is closed or merged", () => {
+  assert.deepEqual(splitParentRows([group()], new Set(), keyOf), {
+    awaiting: [],
+    settled: ["eng-1320-generate-bov-entry-point"],
+  });
 });
 
-test("parentsAwaitingSlices: a parent with its own open PR is a working row, not a tracking row", () => {
+test("splitParentRows: a parent with its own open PR is a working row, not a tracking row", () => {
   const open = new Set(["eng-1320-generate-bov-entry-point", "eng-2065-part-2"]);
-  assert.deepEqual(parentsAwaitingSlices([group()], open), []);
+  assert.deepEqual(splitParentRows([group()], open, keyOf), { awaiting: [], settled: [] });
 });
 
-test("parentsAwaitingSlices: a torn-down integration worktree still names its parent", () => {
+test("splitParentRows: a slice sharing the parent's slug shares its row, so nobody is reported", () => {
+  // Both branches derive to ENG-1320, so the ready step already owns that row.
+  // Reporting it here too would leave the two writers alternating every tick.
+  const g = group({ sliceBranches: ["eng-1320-part-1", "eng-1320-part-2"] });
+  assert.deepEqual(splitParentRows([g], new Set(["eng-1320-part-2"]), keyOf), {
+    awaiting: [],
+    settled: [],
+  });
+});
+
+test("splitParentRows: a parent with no integration worktree has no row to write to", () => {
   const g = group({ integrationBranch: null });
-  assert.deepEqual(parentsAwaitingSlices([g], new Set(["eng-2065-part-2"])), [
-    "eng-1320-generate-bov-entry-point",
-  ]);
-  // The session name doubles as the parent branch, so an open PR on it still disqualifies.
-  assert.deepEqual(parentsAwaitingSlices([g], new Set(["eng-1320-generate-bov-entry-point"])), []);
+  assert.deepEqual(splitParentRows([g], new Set(["eng-2065-part-2"]), keyOf), {
+    awaiting: [],
+    settled: [],
+  });
 });

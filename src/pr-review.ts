@@ -215,21 +215,26 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
         deps.log(`review decision read failed for PR #${pr.number}: ${err}`);
       }
     }
+    const running = deps.inFlightFixKinds(pr.number, pr.headRefName);
     // Read before the in-flight skip below, so a human comment landing mid-fix
     // flags the row now instead of staying invisible until the fixer is reaped
-    // (a stale reap is 90 minutes). A failed read leaves info null and only
-    // costs this tick's comment handling; the reap below still runs.
+    // (a stale reap is 90 minutes). Only the flag needs it that early, and the
+    // flag is supervised-only, so a running fixer in autonomous mode skips the
+    // read rather than paying a thread query per heartbeat for nothing. A failed
+    // read leaves info null, which sits out the fix handling below for this tick;
+    // the reap still runs.
     let info: UnresolvedInfo | null = null;
-    try {
-      info = await deps.unresolvedInfo(pr.number);
-    } catch (err) {
-      deps.log(`thread info failed for PR #${pr.number}: ${err}`);
+    if (running.length === 0 || mode === "supervised") {
+      try {
+        info = await deps.unresolvedInfo(pr.number);
+      } catch (err) {
+        deps.log(`thread info failed for PR #${pr.number}: ${err}`);
+      }
     }
     if (mode === "supervised" && info !== null && info.newestHumanCommentAt !== null && !acknowledged(info.newestHumanCommentAt)) {
       deps.raiseFlag(pr.number, pr.headRefName, "human-comment", info.newestHumanCommentAt);
       humanBlocked = true;
     }
-    const running = deps.inFlightFixKinds(pr.number, pr.headRefName);
     // Prune timers for kinds no longer in flight so a future fix of that kind
     // starts a fresh stale clock (runs even when nothing is in flight now).
     for (const kind of ALL_FIX_KINDS) {
@@ -270,7 +275,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     // landing on the shared worktree until this one becomes visible.
     const pending = state.pendingSpawn.get(pr.number);
 
-    if (info === null) continue; // the read above failed; only this tick is lost
+    if (info === null) continue; // the read above failed; this PR sits the tick out
     // Supervised: a flagged PR belongs to a human. Spawn nothing (comment,
     // conflict, blocked, or CI) until they unflag it.
     if (humanBlocked) continue;

@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { branchesFullyMerged, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, readEvents, reduceRows, sectionKind, titleFromBranch } from "./events.ts";
+import { AWAITING_SLICES_STATUS, branchesFullyMerged, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, readEvents, reduceRows, sectionKind, titleFromBranch } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
@@ -1236,16 +1236,26 @@ export function startWatcher(config: WatcherConfig): () => void {
         if (active.has(key)) emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
       }
     },
+    rowKeyOf: (branch) => deriveKey({ branch }).key,
     // A split's slices are their own tickets with their own rows, so none of them
     // can say what the split as a whole is doing. The tracking ticket's row does:
-    // it reads "waiting on slices" from the moment its PR is closed to start the
-    // split until the last slice PR resolves. Never over a hold status -- that row
-    // already owes a human an answer, and this would bury it.
-    reportAwaitingSlices: (parentBranches) => {
-      for (const branch of parentBranches) {
+    // it reads "waiting on slices" while any slice PR is open. Never over a hold
+    // status -- that row already owes a human an answer, and this would bury it.
+    //
+    // Once the slices resolve the row drops back to working rather than keeping a
+    // wait that ended: teardown is gated on the parent ticket going terminal in
+    // Linear, so the row can outlive the split by a long time. Only a row still
+    // showing this status is rewritten, so no unrelated row is disturbed.
+    reportSplitParents: ({ awaiting, settled }) => {
+      for (const branch of awaiting) {
         const { key, label } = deriveKey({ branch });
         if (isHoldStatus(currentStatus(key))) continue;
         emitStatus({ kind: "awaiting_slices", key, label, title: titleFromBranch(branch) });
+      }
+      for (const branch of settled) {
+        const { key, label } = deriveKey({ branch });
+        if (currentStatus(key) !== AWAITING_SLICES_STATUS) continue;
+        emitStatus({ kind: "task_started", key, label, title: titleFromBranch(branch) });
       }
     },
     listSessions: listTmuxSessions,

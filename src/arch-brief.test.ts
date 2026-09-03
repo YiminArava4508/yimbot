@@ -88,11 +88,11 @@ test("briefRows leads with the touched section, its role and its note", () => {
   const text = briefRows({ map: MAP, ann: ANN, changed: CHANGED, stale: 0, width: 80, selected: null })
     .map((r) => r.text)
     .join("\n");
-  assert.ok(text.includes("TOUCHED BY THIS PR"));
+  assert.ok(text.includes("TOUCHED"));
   assert.ok(text.includes("domain services"));
   assert.ok(text.includes("business logic"));
   assert.ok(text.includes("split resolved per-offer"));
-  assert.ok(text.indexOf("TOUCHED BY THIS PR") < text.indexOf("DOWNSTREAM AT RISK"));
+  assert.ok(text.indexOf("TOUCHED") < text.indexOf("AT RISK"));
 });
 
 test("briefRows counts each touched node's own changed files", () => {
@@ -115,23 +115,23 @@ test("briefRows names the untouched rest without drawing it", () => {
   const text = briefRows({ map: MAP, ann: ANN, changed: CHANGED, stale: 0, width: 200, selected: null })
     .map((r) => r.text)
     .join("\n");
-  assert.ok(text.includes("REST OF THE APP"));
+  assert.ok(text.includes("UNTOUCHED"));
   for (const label of ["resolvers", "webhooks", "backfills"]) assert.ok(text.includes(label));
 });
 
 test("briefRows leads with the stale warning when files are unmapped", () => {
   const rows = briefRows({ map: MAP, ann: ANN, changed: CHANGED, stale: 3, width: 80, selected: null });
-  assert.ok(rows[0].text.includes("map stale: 3 files unmapped"));
-  assert.ok(rows[0].text.includes("G regenerate"));
+  assert.ok(rows[0].text.includes("stale: 3 unmapped"));
+  assert.ok(rows[0].text.includes("G regen"));
 });
 
 test("briefRows falls back to touched nodes only with no annotation", () => {
   const text = briefRows({ map: MAP, ann: null, changed: CHANGED, stale: 0, width: 80, selected: null })
     .map((r) => r.text)
     .join("\n");
-  assert.ok(text.includes("flow annotation unavailable"));
+  assert.ok(text.includes("no flow summary"));
   assert.ok(text.includes("domain services"));
-  assert.ok(!text.includes("DOWNSTREAM AT RISK"));
+  assert.ok(!text.includes("AT RISK"));
 });
 
 test("briefRows says so when the PR touches nothing the map claims", () => {
@@ -165,7 +165,7 @@ test("flowView draws the graph above the brief while the scope stays small", () 
   const view = flowView({ map: MAP, ann: ANN, changed: CHANGED, stale: 0, width: 80, selected: null });
   const text = view.rows.map((r) => r.text).join("\n");
   assert.ok(text.includes("[ domain services ]"));
-  assert.ok(text.indexOf("[ domain services ]") < text.indexOf("TOUCHED BY THIS PR"));
+  assert.ok(text.indexOf("[ domain services ]") < text.indexOf("TOUCHED"));
 });
 
 test("flowView drops the graph rather than route a scope too big to read", () => {
@@ -177,7 +177,7 @@ test("flowView drops the graph rather than route a scope too big to read", () =>
   const many = Array.from({ length: 8 }, (_, i) => `n${i}/a.go`);
   const view = flowView({ map: wide, ann: null, changed: many, stale: 0, width: 80, selected: null });
   assert.ok(!view.rows.some((r) => r.text.includes("[ node 0 ]")));
-  assert.ok(view.rows.some((r) => r.text.includes("TOUCHED BY THIS PR")));
+  assert.ok(view.rows.some((r) => r.text.includes("TOUCHED")));
 });
 
 test("flowView reports no selected row when nothing is selected", () => {
@@ -191,7 +191,7 @@ test("a node named as a risk edge's source is not also listed as untouched", () 
   // rest would have it appear twice saying opposite things.
   const ann: ArchAnnotation = { ...ANN, touched: [] };
   const rows = briefRows({ map: MAP, ann, changed: ["svc/a.go"], stale: 0, width: 200, selected: null });
-  const rest = rows.slice(rows.findIndex((r) => r.text.includes("REST OF THE APP")));
+  const rest = rows.slice(rows.findIndex((r) => r.text.includes("UNTOUCHED")));
   assert.ok(!rest.some((r) => r.text.includes("ent schema")));
   assert.ok(rest.some((r) => r.text.includes("resolvers")));
 });
@@ -200,7 +200,7 @@ test("the empty touched section still leaves a gap before the risk section", () 
   const rows = briefRows({ map: MAP, ann: ANN, changed: [], stale: 0, width: 80, selected: null });
   const gap = rows.findIndex((r) => r.text.includes("no mapped node")) + 1;
   assert.equal(rows[gap].text, "");
-  assert.ok(rows[gap + 1].text.includes("DOWNSTREAM AT RISK"));
+  assert.ok(rows[gap + 1].text.includes("AT RISK"));
 });
 
 test("a carries label too long for the row moves to its own line whole", () => {
@@ -242,7 +242,7 @@ test("a touched node's risk reason rides on its own row rather than a second one
   const visible = briefRows({ map: MAP, ann: BOTH, changed: CHANGED, stale: 0, width: 90, selected: null })
     .map((r) => r.text.replace(/\{[^{}]*\}/g, ""));
   assert.ok(visible.some((l) => l.includes("reads the moved shape")));
-  assert.ok(!visible.some((l) => l.includes("DOWNSTREAM AT RISK")), "the only at risk node is already listed");
+  assert.ok(!visible.some((l) => l.includes("AT RISK")), "the only at risk node is already listed");
 });
 
 test("only one row is ever marked for the selected node", () => {
@@ -273,7 +273,7 @@ test("the risk heading stays away when every entry names a node the map lost", (
   const text = briefRows({ map: MAP, ann, changed: CHANGED, stale: 0, width: 90, selected: null })
     .map((r) => r.text)
     .join("\n");
-  assert.ok(!text.includes("DOWNSTREAM AT RISK"), "a bare heading with nothing under it says nothing");
+  assert.ok(!text.includes("AT RISK"), "a bare heading with nothing under it says nothing");
 });
 
 test("the unmapped bucket counts its files once, in the label the merge gave it", () => {

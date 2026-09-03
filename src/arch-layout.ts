@@ -278,12 +278,20 @@ export function renderGrid(
   return grid;
 }
 
+// The de-emphasized tier: idle nodes, node roles, via: lines, the flow summary,
+// the untouched roster. Not ANSI grey, which is color 8 and which a dark theme
+// is free to put a few points off its own background (omarchy's is #666666 on
+// #222222, about 2.4:1), leaving the tier unreadable rather than quiet. A hex
+// grey sidesteps the palette: blessed maps it into the 256-colour cube, whose
+// greys are fixed, and 247 is an exact hit.
+export const DIM_TAG = "#9e9e9e-fg";
+
 export const STATE_TAGS: Record<NodeState, [string, string]> = {
   touched: ["{bold}{white-fg}", "{/white-fg}{/bold}"],
   "at-risk": ["{red-fg}", "{/red-fg}"],
   added: ["{green-fg}", "{/green-fg}"],
   unmapped: ["{yellow-fg}", "{/yellow-fg}"],
-  idle: ["{grey-fg}", "{/grey-fg}"],
+  idle: [`{${DIM_TAG}}`, `{/${DIM_TAG}}`],
 };
 
 // Tags go on last, over a finished grid: routing never reasons about markup,

@@ -6,7 +6,7 @@
 // anyway. Scoping to what the change reaches also makes room for the three
 // fields a box chart can never show: a node's role, an edge's carries, and the
 // annotation's reason a downstream node is at risk.
-import { layoutGraph, STATE_TAGS } from "./arch-layout.ts";
+import { DIM_TAG, layoutGraph, STATE_TAGS } from "./arch-layout.ts";
 import { nodeFiles, nodeStates, UNMAPPED_ID, type ArchAnnotation, type ArchMap, type NodeState } from "./arch-map.ts";
 import { escapeTags } from "./review-diff.ts";
 
@@ -151,20 +151,20 @@ export function briefRows(s: BriefInput): BriefRow[] {
     const [fromId] = r.viaEdge.split("->").map((x) => x.trim());
     const carries = s.map.edges.find((e) => e.from === fromId && e.to === r.node)?.carries ?? "";
     const out: BriefRow[] = [];
-    if (carries !== "") out.push(...detail(`via: ${carries}`, s.width, "grey-fg"));
+    if (carries !== "") out.push(...detail(`via: ${carries}`, s.width, DIM_TAG));
     if (r.why !== "") out.push(...detail(`! ${r.why}`, s.width, "red-fg"));
     return out;
   };
 
   if (s.stale > 0) {
-    const files = `${s.stale} file${s.stale === 1 ? "" : "s"}`;
-    rows.push({ text: `{yellow-fg}map stale: ${files} unmapped   G regenerate{/yellow-fg}`, node: null });
+    const files = `${s.stale}`;
+    rows.push({ text: `{yellow-fg}stale: ${files} unmapped   G regen{/yellow-fg}`, node: null });
   }
   if (s.ann === null) {
-    rows.push({ text: "{grey-fg}flow annotation unavailable, showing touched nodes only{/grey-fg}", node: null });
+    rows.push({ text: `{${DIM_TAG}}no flow summary, touched nodes only{/${DIM_TAG}}`, node: null });
   } else if (s.ann.flow !== "") {
     for (const line of wrapText(s.ann.flow, s.width)) {
-      rows.push({ text: `{grey-fg}${escapeTags(line)}{/grey-fg}`, node: null });
+      rows.push({ text: `{${DIM_TAG}}${escapeTags(line)}{/${DIM_TAG}}`, node: null });
     }
   }
   if (rows.length > 0) rows.push(spacer());
@@ -172,10 +172,10 @@ export function briefRows(s: BriefInput): BriefRow[] {
   const inSection = (want: NodeState[]): ArchMap["nodes"] =>
     s.map.nodes.filter((n) => want.includes(states.get(n.id) ?? "idle"));
 
-  rows.push(heading("TOUCHED BY THIS PR"));
+  rows.push(heading("TOUCHED"));
   const touched = inSection(["touched", "added", "unmapped"]);
   if (touched.length === 0) {
-    rows.push({ text: `${NODE_INDENT}{grey-fg}this PR touches no mapped node{/grey-fg}`, node: null });
+    rows.push({ text: `${NODE_INDENT}{${DIM_TAG}}no mapped node touched{/${DIM_TAG}}`, node: null });
     rows.push(spacer());
   }
   for (const n of touched) {
@@ -183,8 +183,8 @@ export function briefRows(s: BriefInput): BriefRow[] {
     const count = bucket ? -1 : nodeFiles(s.map, n.id, s.changed).length;
     const text = nodeHeader(n.label, states.get(n.id) ?? "idle", count, n.id === s.selected);
     rows.push({ text, node: n.id });
-    if (n.role !== "") rows.push(...detail(n.role, s.width, "grey-fg"));
-    if (bucket) rows.push(...detail("no node in the map claims these files", s.width, "grey-fg"));
+    if (n.role !== "") rows.push(...detail(n.role, s.width, DIM_TAG));
+    if (bucket) rows.push(...detail("no node claims these files", s.width, DIM_TAG));
     const note = s.ann?.touched.find((t) => t.node === n.id)?.note;
     if (note) rows.push(...detail(`~ ${note}`, s.width));
     // Touched wins over at-risk in nodeStates, so a node in both lists lands
@@ -219,7 +219,7 @@ export function briefRows(s: BriefInput): BriefRow[] {
     // One edge is already spelled out by the header, so only its reason is
     // left; several share a bare header and each gets its own via and reason.
     if (entries.length === 1) {
-      if (head.via !== "") riskRows.push(...detail(`via: ${head.via}`, s.width, "grey-fg"));
+      if (head.via !== "") riskRows.push(...detail(`via: ${head.via}`, s.width, DIM_TAG));
       if (first.why !== "") riskRows.push(...detail(`! ${first.why}`, s.width, "red-fg"));
     } else {
       for (const r of entries) riskRows.push(...riskDetail(r));
@@ -229,16 +229,16 @@ export function briefRows(s: BriefInput): BriefRow[] {
   // Built before the heading goes on: every entry can name a node the map no
   // longer has, and a bare heading with nothing under it says nothing.
   if (riskRows.length > 0) {
-    rows.push(heading("DOWNSTREAM AT RISK"));
+    rows.push(heading("AT RISK"));
     rows.push(...riskRows);
   }
 
   const rest = inSection(["idle"]).filter((n) => !named.has(n.id));
   if (rest.length > 0) {
-    rows.push({ text: "{grey-fg}REST OF THE APP (not touched){/grey-fg}", node: null });
+    rows.push({ text: `{${DIM_TAG}}UNTOUCHED{/${DIM_TAG}}`, node: null });
     const room = s.width - NODE_INDENT.length;
     for (const line of wrapText(rest.map((n) => n.label).join(" · "), room)) {
-      rows.push({ text: `${NODE_INDENT}{grey-fg}${escapeTags(line)}{/grey-fg}`, node: null });
+      rows.push({ text: `${NODE_INDENT}{${DIM_TAG}}${escapeTags(line)}{/${DIM_TAG}}`, node: null });
     }
   }
   return rows;

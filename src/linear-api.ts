@@ -516,24 +516,28 @@ export async function fetchIssueByIdentifier(
   };
 }
 
-// The workflow state type ("completed", "canceled", "started", ...) of an issue,
-// by identifier. Drives the cleanup step's no-PR (spike) reap: a terminal type
-// means the human closed the ticket out, so its worktree/session can go.
-export async function fetchIssueStateType(
+// The workflow state of an issue: its name and Linear's type for it. The name
+// matters because a team can map several states to one type -- "In Progress",
+// "Merged" and "Deployed To Nonprod" are all "started" -- so the type alone
+// cannot say whether the work has landed. Drives the cleanup step's gates: a
+// landed ticket's worktree/session can go.
+export type TicketState = { name: string; type: string };
+
+export async function fetchIssueState(
   apiKey: string,
   identifier: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<string> {
-  type Data = { issue: { state: { type: string } } };
+): Promise<TicketState> {
+  type Data = { issue: { state: { name: string; type: string } } };
   const data = await gql<Data>(
     apiKey,
-    `query IssueStateType($id: String!) {
-      issue(id: $id) { state { type } }
+    `query IssueState($id: String!) {
+      issue(id: $id) { state { name type } }
     }`,
     { id: identifier },
     fetchImpl,
   );
-  return data.issue.state.type;
+  return data.issue.state;
 }
 
 // The fields needed to hang a sub-issue off an issue: its uuid, team,

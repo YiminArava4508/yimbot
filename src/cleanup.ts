@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MergedPR, OpenPR } from "./gh.ts";
+import type { TicketState } from "./linear-api.ts";
 import { isContinuationBranch, issueFromBranch } from "./pr-advance.ts";
 
 export type Worktree = { path: string; branch: string };
@@ -26,15 +27,19 @@ export type CleanupDeps = {
   listClosedUnmergedPRs: () => Promise<MergedPR[]>;
   // The viewer's open PRs. A worktree with NO PR anywhere (open, merged, or
   // closed) is a spike's: its ticket's Linear state is the only completion
-  // signal, so the no-PR reap below keys off issueStateType instead of gh.
+  // signal, so the no-PR reap below keys off issueState instead of gh.
   listOpenPRs: () => Promise<OpenPR[]>;
-  // The Linear workflow state type ("completed", "canceled", "started", ...) of
-  // an issue by identifier (ENG-<n>). A terminal type on a no-PR worktree's
-  // ticket means the human closed it out, so the worktree/session can go. Also
-  // gates split-group teardown and the closed-unmerged reap: a resolved PR set
-  // alone can't prove the work is done (the next slice's or the successor PR may
-  // not exist yet), so both hold until the ticket goes terminal.
-  issueStateType: (identifier: string) => Promise<string | null>;
+  // The Linear workflow state of an issue by identifier (ENG-<n>). A landed
+  // state on a no-PR worktree's ticket means the work is finished, so the
+  // worktree/session can go. Also gates split-group teardown and the
+  // closed-unmerged reap: a resolved PR set alone can't prove the work is done
+  // (the next slice's or the successor PR may not exist yet), so both hold until
+  // the ticket lands.
+  issueState: (identifier: string) => Promise<TicketState | null>;
+  // State names that count as landed despite a non-terminal type, lowercased.
+  // Shared with the blocked-by rule (clearedStateNames), so "a blocker has
+  // landed" and "this ticket is finished" never drift apart.
+  clearedStates: Set<string>;
   // Whether a closed PR's worktree holds no work teardown would destroy: a clean
   // tree AND every commit pushed to its own origin branch (the branch survives on
   // origin, recoverable). Gates the closed-unmerged teardown. Not the base-ref
@@ -75,6 +80,18 @@ export type CleanupDeps = {
   isSplitParent: (worktreePath: string) => boolean;
   log: (msg: string) => void;
 };
+
+// Whether a ticket's work has landed, so its worktree and session can go. A
+// completed or canceled type says so outright. Otherwise the state name decides:
+// a team can map several states to "started" -- ENG has "In Progress", "In
+// Review", "Merged" and "Deployed To Nonprod" -- and the ones past merge mean
+// the work is finished even though Linear still calls the ticket started. Same
+// rule the blocked-by check uses, from the same configured set.
+export function ticketWorkLanded(state: TicketState | null, cleared: Set<string>): boolean {
+  if (state === null) return false;
+  if (state.type === "completed" || state.type === "canceled") return true;
+  return cleared.has(state.name.trim().toLowerCase());
+}
 
 // The tmux session / worktree dir a branch (or session name) maps to, mirroring
 // new-session.sh's rule exactly (`sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50`). The
@@ -451,15 +468,15 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       // can't be looked up, so readiness alone decides for them, as before.
       const identifier = issueFromBranch(g.session);
       if (identifier !== null) {
-        let stateType: string | null;
+        let state: TicketState | null;
         try {
-          stateType = await deps.issueStateType(identifier);
+          state = await deps.issueState(identifier);
         } catch (err) {
           deps.log(`issue state lookup failed for ${identifier}: ${err}`);
           continue;
         }
-        if (stateType !== "completed" && stateType !== "canceled") {
-          deps.log(`kept split group ${g.session} (ticket ${identifier} not done: ${stateType})`);
+        if (!ticketWorkLanded(state, deps.clearedStates)) {
+          deps.log(`kept split group ${g.session} (ticket ${identifier} not landed: ${state?.name ?? "unknown"})`);
           continue;
         }
       }
@@ -532,15 +549,15 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       // so PR state alone decides for them, as in the split-group path.
       const identifier = issueFromBranch(w.branch);
       if (identifier !== null) {
-        let stateType: string | null;
+        let state: TicketState | null;
         try {
-          stateType = await deps.issueStateType(identifier);
+          state = await deps.issueState(identifier);
         } catch (err) {
           deps.log(`issue state lookup failed for ${identifier}: ${err}`);
           continue;
         }
-        if (stateType !== "completed" && stateType !== "canceled") {
-          deps.log(`kept ${w.branch} (PR closed unmerged but ticket ${identifier} not done: ${stateType})`);
+        if (!ticketWorkLanded(state, deps.clearedStates)) {
+          deps.log(`kept ${w.branch} (PR closed unmerged but ticket ${identifier} not landed: ${state?.name ?? "unknown"})`);
           continue;
         }
       }
@@ -575,27 +592,27 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       if (isContinuationBranch(w.branch)) continue;
       const identifier = issueFromBranch(w.branch);
       if (identifier === null) continue;
-      let stateType: string | null;
+      let state: TicketState | null;
       try {
-        stateType = await deps.issueStateType(identifier);
+        state = await deps.issueState(identifier);
       } catch (err) {
         deps.log(`issue state lookup failed for ${identifier}: ${err}`);
         continue;
       }
-      if (stateType !== "completed" && stateType !== "canceled") continue;
+      if (!ticketWorkLanded(state, deps.clearedStates)) continue;
       // Same guards as the closed-unmerged path: a split in progress or unsaved
       // work spares the worktree.
       if (deps.isSplitParent(w.path)) {
-        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but worktree is a split parent)`);
+        deps.log(`kept ${w.branch} (ticket ${identifier} ${state!.name} but worktree is a split parent)`);
         continue;
       }
       if (!deps.hasNoUnpushedWork(w.path)) {
-        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but worktree has unsaved work)`);
+        deps.log(`kept ${w.branch} (ticket ${identifier} ${state!.name} but worktree has unsaved work)`);
         continue;
       }
       try {
         deps.teardown(w.branch);
-        deps.log(`torn down ${w.branch} (ticket ${identifier} ${stateType}, no PR)`);
+        deps.log(`torn down ${w.branch} (ticket ${identifier} ${state!.name}, no PR)`);
       } catch (err) {
         deps.log(`teardown failed for ${w.branch}: ${err}`);
       }

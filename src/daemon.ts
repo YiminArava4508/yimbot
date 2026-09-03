@@ -31,7 +31,7 @@ import {
   countAssignedInState,
   fetchMarkedCommentBody,
   fetchIssueByIdentifier,
-  fetchIssueStateType,
+  fetchIssueState,
   fetchUsers,
   resolveContext,
   upsertMarkedComment,
@@ -216,6 +216,11 @@ export async function startDaemon(): Promise<() => void> {
   // suppress no duplicate work, only cost a Linear lookup per merged/closed PR,
   // and would leave a PR that changed slices mid-flight orphaned instead of
   // reaped.
+  // "Landed" for both the blocked-by rule and the cleanup gates: the merge state
+  // and the post-merge review state, which a team maps to "started" even though
+  // the work is finished. Declared here because cleanup needs it too.
+  const mergedStateName = envOr("MERGED_STATE_NAME", "Merged");
+  const clearedStates = clearedStateNames(mergedStateName, reviewStateName);
   const cleanup =
     autoCleanup && prReview
       ? {
@@ -223,7 +228,8 @@ export async function startDaemon(): Promise<() => void> {
           listMergedPRs: () => listMyMergedPRs(gh),
           listClosedUnmergedPRs: () => listMyClosedUnmergedPRs(gh),
           listOpenPRs: () => listMyOpenPRs(gh),
-          issueStateType: (identifier: string) => fetchIssueStateType(apiKey, identifier),
+          issueState: (identifier: string) => fetchIssueState(apiKey, identifier),
+          clearedStates,
         }
       : null;
   console.log(
@@ -327,8 +333,6 @@ export async function startDaemon(): Promise<() => void> {
   // A blocker stops blocking once it reaches the merge state: Done is too late,
   // since that column means released. The review state counts too (it is past
   // merge), as does any completed/canceled state, by type.
-  const mergedStateName = envOr("MERGED_STATE_NAME", "Merged");
-  const clearedStates = clearedStateNames(mergedStateName, reviewStateName);
   console.log(
     blocked
       ? `[yimbot] blocked-by handling ON: deferring + moving back tickets whose blocker is short of "${mergedStateName}"`

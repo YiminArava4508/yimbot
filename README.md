@@ -186,8 +186,11 @@ flowchart TD
   merged, yimbot tears down that branch's workspace (its worktree) and closes its
   tmux session via `~/end-session.sh`. Work that never gets a PR (a spike whose
   deliverable is an answer on the ticket) is reaped when its Linear ticket
-  (an `eng-<n>` branch) reaches a terminal state (Done/Canceled), as long as
-  the worktree holds no local-only work. *(optional; setting: `AUTO_CLEANUP`,
+  (an `eng-<n>` branch) has landed, as long as the worktree holds no local-only
+  work. Landed means a Done/Canceled state, or the merge state
+  (`MERGED_STATE_NAME`) or review state (`REVIEW_STATE_NAME`) that a team maps
+  to "started" even though the work is finished. Same rule gates a split
+  group's teardown and the reap of a worktree whose PR closed unmerged. *(optional; setting: `AUTO_CLEANUP`,
   on by default)* Needs `gh` installed and authenticated; runs against the
   repo at `CODEBASE_PATH`.
 - **Advance the work (teal):** every heartbeat, once one of your PRs is merged,

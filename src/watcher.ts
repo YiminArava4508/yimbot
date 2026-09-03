@@ -48,6 +48,7 @@ import {
   type LinearIssue,
   moveIssueToState,
   upsertMarkedComment,
+  type TicketState,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
 import { boardReadyToMerge, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
@@ -566,7 +567,8 @@ export type WatcherConfig = {
     listClosedUnmergedPRs: () => Promise<MergedPR[]>;
     listOpenPRs: () => Promise<OpenPR[]>;
     // Linear state type of an issue by identifier, for the no-PR (spike) reap.
-    issueStateType: (identifier: string) => Promise<string | null>;
+    issueState: (identifier: string) => Promise<TicketState | null>;
+    clearedStates: Set<string>;
   } | null;
   // gh-backed hooks for the advance step; null disables it (AUTO_CONTINUE off, or
   // gh unavailable). When set, each heartbeat judges merged PRs' issues against
@@ -1212,7 +1214,8 @@ export function startWatcher(config: WatcherConfig): () => void {
     listMergedPRs: cleanup.listMergedPRs,
     listClosedUnmergedPRs: cleanup.listClosedUnmergedPRs,
     listOpenPRs: cleanup.listOpenPRs,
-    issueStateType: cleanup.issueStateType,
+    issueState: cleanup.issueState,
+    clearedStates: cleanup.clearedStates,
     hasNoUnpushedWork: worktreeFullyPushed,
     worktreesDir,
     teardown: (branch) => {

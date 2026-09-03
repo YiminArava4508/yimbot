@@ -120,4 +120,27 @@ rm -rf "$TEST_REPO"
 # An unrecognizable cwd still yields a usable key rather than an empty one.
 assert_eq "$(heavy_key_for /nonexistent)" "?" "unknown cwd keys as ?"
 
+# --- hold ---
+assert_defined cmd_hold
+
+# Exit status is the command's, not flock's.
+assert_eq "$(cmd_hold 'echo held'; echo "rc=$?")" "held
+rc=0" "hold passes stdout and a zero status through"
+assert_eq "$(cmd_hold 'exit 7' >/dev/null 2>&1; echo $?)" "7" "hold propagates a non-zero status"
+
+# The held command sees the guard, so a nested match cannot deadlock on the
+# non-reentrant lock.
+assert_eq "$(cmd_hold 'echo $YIMBOT_HEAVY_HELD')" "1" "hold marks the command as holding the slot"
+
+# Three concurrent holds serialize: no start is logged between another's
+# start and finish.
+SERIAL_LOG=$(mktemp)
+for i in 1 2 3; do
+  ( bash "$(dirname "$0")/heavy-queue.sh" hold "printf 'start-$i\n' >> $SERIAL_LOG; sleep 0.3; printf 'end-$i\n' >> $SERIAL_LOG" ) &
+done
+wait
+assert_eq "$(awk 'NR%2==1{if($0 !~ /^start-/) bad=1} NR%2==0{if($0 !~ /^end-/) bad=1} END{print bad+0}' "$SERIAL_LOG")" "0" "concurrent holds never interleave"
+assert_eq "$(wc -l < "$SERIAL_LOG" | tr -d ' ')" "6" "every held command ran"
+rm -f "$SERIAL_LOG"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: heavy-queue.sh tests"; else exit 1; fi

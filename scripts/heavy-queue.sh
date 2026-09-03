@@ -128,3 +128,22 @@ ticket_head() {
     return
   done
 }
+
+cmd_hold() {
+  local cmd=$1
+  export YIMBOT_HEAVY_HELD=1
+  if ! command -v flock >/dev/null 2>&1; then
+    heavy_log "flock missing, running unqueued"
+    bash -c "$cmd"
+    return $?
+  fi
+  flock "$(lock_path)" bash -c "$cmd"
+}
+
+heavy_log() {
+  printf '[%s] heavy-queue: %s\n' "$(date '+%H:%M:%S')" "$*" >> "$HEAVY_STATE_DIR/queue.log" 2>/dev/null || true
+}
+
+case "${1:-}" in
+  hold) cmd_hold "$2" ;;
+esac

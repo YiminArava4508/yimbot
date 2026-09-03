@@ -191,4 +191,17 @@ rm -f "$(queue_dir)"/*.json
 # A malformed payload is not a reason to block a session.
 assert_eq "$(printf 'not json' | cmd_pre; echo "rc=$?")" "rc=0" "a malformed payload yields no decision and no error"
 
+# --- session settings wiring ---
+SETTINGS_JSON="$(cd "$(dirname "$0")" && pwd)/../settings/session-settings.json"
+assert_eq "$(node -e 'const h=require(process.argv[1]).hooks||{}; process.stdout.write(String(!!h.PreToolUse&&!!h.PostToolUse))' "$SETTINGS_JSON")" "true" "settings define both queue hooks"
+PRE_HOOK=$(node -e 'const e=require(process.argv[1]).hooks.PreToolUse[0]; process.stdout.write(e.matcher+"|"+e.hooks[0].command+"|"+e.hooks[0].timeout)' "$SETTINGS_JSON")
+assert_eq "$(printf '%s' "$PRE_HOOK" | cut -d'|' -f1)" "Bash" "the queue hook only matches Bash"
+# The closing quote around the path sits right before " pre", so allow one
+# extra character there instead of requiring "sh pre" contiguous.
+assert_eq "$(printf '%s' "$PRE_HOOK" | grep -c 'heavy-queue.sh. pre')" "1" "PreToolUse runs the pre subcommand"
+# The hook must be allowed to outlast HEAVY_WAIT_TIMEOUT, or Claude Code kills
+# the wait before the queue ever gets to hand over the slot.
+assert_ok test "$(printf '%s' "$PRE_HOOK" | cut -d'|' -f3)" -gt "$HEAVY_WAIT_TIMEOUT"
+assert_eq "$(node -e 'process.stdout.write(require(process.argv[1]).hooks.PostToolUse[0].hooks[0].command)' "$SETTINGS_JSON" | grep -c 'heavy-queue.sh. post')" "1" "PostToolUse runs the post subcommand"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: heavy-queue.sh tests"; else exit 1; fi

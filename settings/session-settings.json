@@ -29,6 +29,22 @@
           { "type": "command", "command": "bash -c 'source \"$HOME/new-session.sh\" 2>/dev/null; command -v emit_hook_event >/dev/null 2>&1 && emit_hook_event input_received'" }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"$HOME/.config/yimbot/heavy-queue.sh\" pre", "timeout": 1800 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"$HOME/.config/yimbot/heavy-queue.sh\" post", "timeout": 10 }
+        ]
+      }
     ]
   }
 }

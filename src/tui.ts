@@ -1,6 +1,7 @@
 // src/tui.ts
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
+import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
 import { bus, filterToLiveRows, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 import type { Mode } from "./mode.ts";
@@ -135,12 +136,12 @@ export function boardLayout(screenHeight: number): {
 export type Pane = "tasks" | "review" | "merge";
 export type PaneCounts = Record<Pane, number>;
 
-// Each pane's resting outline; the focused pane turns white so the operator
-// can see where their keys land.
+// Each pane's resting outline; the focused pane takes the focus hue so the
+// operator can see where their keys land.
 export const PANE_BORDER: Record<Pane, string> = { tasks: "grey", review: "yellow", merge: "green" };
 
 export function paneBorderColor(pane: Pane, focused: boolean): string {
-  return focused ? "white" : PANE_BORDER[pane];
+  return focused ? FOCUS_BORDER : PANE_BORDER[pane];
 }
 
 // The pane keypresses should act on. An empty pane can never hold the focus:
@@ -591,7 +592,9 @@ export function runTui(opts: {
       if (!isOverlayOpen()) focusedWidget().focus();
     }
     for (const p of ["tasks", "review", "merge"] as const) {
-      paneWidgets[p].style.border.fg = paneBorderColor(p, p === focusedPane);
+      const fg = paneBorderColor(p, p === focusedPane);
+      paneWidgets[p].style.border.fg = fg;
+      paneWidgets[p].style.label.fg = fg;
     }
     footer.setContent(footerHint(focusedPane));
     const active = currentRows.filter((r) => !r.terminal).length;

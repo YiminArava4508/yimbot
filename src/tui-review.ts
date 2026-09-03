@@ -10,7 +10,7 @@ import { contextMarkdown, contextSignature, toggleContext } from "./review-conte
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
 import { flowView } from "./arch-brief.ts";
-import { DIM_TAG } from "./arch-layout.ts";
+import { DIM_TAG, FOCUS_BORDER } from "./arch-layout.ts";
 import { fetchAnnotation, normalizeAnnotation } from "./arch-annotate.ts";
 import { sourcePaths } from "./arch-generate.ts";
 import {
@@ -160,10 +160,10 @@ export function reviewFooterHint(s: {
   return `j/k file   space viewed   c context${clear}   g/G first/last   tab diff   1/2/3 pane${done}${sess}   q back`;
 }
 
-// Same rule as the board's paneBorderColor: the focused pane turns white so
-// the operator can see where their keys land, the rest rest grey.
+// Same rule as the board's paneBorderColor: the focused pane takes the focus
+// hue so the operator can see where their keys land, the rest rest grey.
 export function reviewPaneBorderColor(focused: boolean): string {
-  return focused ? "white" : "grey";
+  return focused ? FOCUS_BORDER : "grey";
 }
 
 // Fresh object per pane: blessed keeps the passed style by reference, so a
@@ -403,9 +403,11 @@ export function openReview(
     diff.top = 1 + gh;
     claude.top = 1 + gh;
     diff.setContent(diffPaneLines(fd).join("\n"));
-    plan.style.border.fg = reviewPaneBorderColor(focused === "plan");
-    diff.style.border.fg = reviewPaneBorderColor(focused === "diff");
-    claude.style.border.fg = reviewPaneBorderColor(focused === "claude");
+    for (const [pane, box] of [["plan", plan], ["diff", diff], ["claude", claude]] as const) {
+      const fg = reviewPaneBorderColor(focused === pane);
+      box.style.border.fg = fg;
+      box.style.label.fg = fg;
+    }
     claude.setLabel(claudePaneLabel(selectedPath, contextFiles.size));
     // While the flow chart covers the columns the claude box sits hidden with
     // whatever stale dimensions it last had; re-fitting the pty to them would
@@ -437,6 +439,7 @@ export function openReview(
         chart.setContent(NO_ARCH_MAP);
       }
       chart.style.border.fg = reviewPaneBorderColor(true);
+      chart.style.label.fg = reviewPaneBorderColor(true);
     }
     let hint = footerOverride;
     if (hint === undefined && flowOpen) {

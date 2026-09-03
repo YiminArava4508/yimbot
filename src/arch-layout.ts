@@ -286,6 +286,12 @@ export function renderGrid(
 // greys are fixed, and 247 is an exact hit.
 export const DIM_TAG = "#9e9e9e-fg";
 
+// The focus ring: the outline and label of whichever pane the keys act on, on
+// the board and in the review overlay. ANSI white sits too close to the resting
+// grey on a dark theme (tokyo night paints white #a9b1d6), so the ring takes a
+// hex cyan the palette cannot mute, and which no resting outline uses.
+export const FOCUS_BORDER = "#7dcfff";
+
 export const STATE_TAGS: Record<NodeState, [string, string]> = {
   touched: ["{bold}{white-fg}", "{/white-fg}{/bold}"],
   "at-risk": ["{red-fg}", "{/red-fg}"],

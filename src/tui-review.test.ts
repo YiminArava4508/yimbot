@@ -6,7 +6,7 @@ import blessed from "neo-blessed";
 // bundled CJS output, so the value import goes through the default export.
 import xtermHeadless from "@xterm/headless";
 import type { ClaudeSession } from "./claude-sessions.ts";
-import { DIM_TAG } from "./arch-layout.ts";
+import { DIM_TAG, FOCUS_BORDER } from "./arch-layout.ts";
 import {
   claudePaneLabel,
   diffPaneLines,
@@ -249,8 +249,8 @@ test("reviewLayout gives the panes resting grey borders and labels like the boar
   }
 });
 
-test("reviewPaneBorderColor turns the focused pane white and rests grey", () => {
-  assert.equal(reviewPaneBorderColor(true), "white");
+test("reviewPaneBorderColor gives the focused pane the focus hue and rests grey", () => {
+  assert.equal(reviewPaneBorderColor(true), FOCUS_BORDER);
   assert.equal(reviewPaneBorderColor(false), "grey");
 });
 
@@ -532,12 +532,16 @@ test("openReview highlights the focused pane's border, tab moves it", async () =
   await flush();
   const plan = screen.children.find((c: any) => c.options.label === " review plan ");
   const diff = screen.children.find((c: any) => c.options.label === " diff ");
-  assert.equal(plan.style.border.fg, "white");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER);
+  assert.equal(plan.style.label.fg, FOCUS_BORDER, "the focused pane's label must carry the focus hue too");
   assert.equal(diff.style.border.fg, "grey");
+  assert.equal(diff.style.label.fg, "grey");
   press(screen, "tab");
   await flush();
   assert.equal(plan.style.border.fg, "grey");
-  assert.equal(diff.style.border.fg, "white");
+  assert.equal(plan.style.label.fg, "grey");
+  assert.equal(diff.style.border.fg, FOCUS_BORDER);
+  assert.equal(diff.style.label.fg, FOCUS_BORDER);
   screen.destroy();
 });
 
@@ -551,11 +555,11 @@ test("openReview jumps focus with 1/2/3 from plan and diff; 3 needs a claude ses
   const diff = paneByLabel(screen, " diff ");
   const claude = paneByLabel(screen, " claude ");
   press(screen, "2");
-  assert.equal(diff.style.border.fg, "white");
+  assert.equal(diff.style.border.fg, FOCUS_BORDER);
   press(screen, "1");
-  assert.equal(plan.style.border.fg, "white");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER);
   press(screen, "3");
-  assert.equal(claude.style.border.fg, "white");
+  assert.equal(claude.style.border.fg, FOCUS_BORDER);
   pressUnfocus(screen);
   assert.deepEqual(fake.writes, [], "jump keys must not reach the pty");
   screen.destroy();
@@ -568,7 +572,7 @@ test("openReview ignores 3 when no claude session exists", async () => {
   await flush();
   const plan = paneByLabel(screen, " review plan ");
   press(screen, "3");
-  assert.equal(plan.style.border.fg, "white");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER);
   screen.destroy();
 });
 
@@ -768,20 +772,20 @@ test("openReview forwards keystrokes (C-c included) to the claude pty; the unfoc
   press(screen, "tab");
   const claude = paneByLabel(screen, " claude ");
   const plan = paneByLabel(screen, " review plan ");
-  assert.equal(claude.style.border.fg, "white", "two tabs must land focus on the claude pane");
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "two tabs must land focus on the claude pane");
   const INTR = String.fromCharCode(3);
   pressSeq(screen, "x", "x");
   pressSeq(screen, "", INTR, "C-c");
   assert.deepEqual(fake.writes, ["x", INTR], "keys and the interrupt sequence must reach the pty");
   pressUnfocus(screen);
   assert.deepEqual(fake.writes, ["x", INTR], "the unfocus chord must not be forwarded");
-  assert.equal(plan.style.border.fg, "white");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER);
   assert.equal(claude.style.border.fg, "grey");
   press(screen, "tab");
   press(screen, "tab");
   pressSeq(screen, "", String.fromCharCode(17), "C-q");
   assert.deepEqual(fake.writes, ["x", INTR], "C-q must unfocus without forwarding");
-  assert.equal(plan.style.border.fg, "white");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER);
   assert.equal(claude.style.border.fg, "grey");
   screen.destroy();
 });
@@ -878,16 +882,16 @@ test("openReview: a dead claude pty shows a notice, hands focus to plan, and sto
   const claude = paneByLabel(screen, " claude ");
   const plan = paneByLabel(screen, " review plan ");
   const diff = paneByLabel(screen, " diff ");
-  assert.equal(claude.style.border.fg, "white");
+  assert.equal(claude.style.border.fg, FOCUS_BORDER);
   fake.emitExit();
   await flush();
   assert.ok(claude.getContent().includes("claude exited"), "the pane must show the exit notice");
-  assert.equal(plan.style.border.fg, "white", "focus must return to plan when claude dies focused");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER, "focus must return to plan when claude dies focused");
   claude.emit("keypress", "x", { name: "x", full: "x", sequence: "x" });
   assert.deepEqual(fake.writes, [], "keys must not be forwarded to the dead pty");
   press(screen, "tab");
   press(screen, "tab");
-  assert.equal(plan.style.border.fg, "white", "tab must cycle plan-diff only once claude is dead");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER, "tab must cycle plan-diff only once claude is dead");
   assert.equal(diff.style.border.fg, "grey");
   assert.equal(claude.style.border.fg, "grey");
   screen.destroy();

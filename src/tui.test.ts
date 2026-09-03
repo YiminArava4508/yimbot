@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 
 const row = (over: Partial<BoardRow>): BoardRow => ({
@@ -597,11 +598,11 @@ test("nextPane cycles tasks, review, merge and skips empty panes", () => {
   assert.equal(nextPane("tasks", { tasks: 1, review: 0, merge: 0 }), "tasks");
 });
 
-test("paneBorderColor gives each pane its own outline and white to the focused one", () => {
+test("paneBorderColor gives each pane its own outline and the focus hue to the focused one", () => {
   assert.equal(paneBorderColor("tasks", false), "grey");
   assert.equal(paneBorderColor("review", false), "yellow");
   assert.equal(paneBorderColor("merge", false), "green");
-  assert.equal(paneBorderColor("review", true), "white");
+  assert.equal(paneBorderColor("review", true), FOCUS_BORDER);
 });
 
 test("bindPaneNavKeys maps ctrl-jk (and the linefeed alias) to moves, gated by overlays", () => {

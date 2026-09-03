@@ -387,6 +387,16 @@ export const hostLinks: HostLink[] = [
     target: join(homedir(), ".config/yimbot/session-settings.json"),
     label: "session deny-list (~/.config/yimbot/session-settings.json)",
   },
+  {
+    source: join(repoRoot, "scripts/heavy-queue.sh"),
+    target: join(homedir(), ".config/yimbot/heavy-queue.sh"),
+    label: "heavy job queue (~/.config/yimbot/heavy-queue.sh)",
+  },
+  {
+    source: join(repoRoot, "settings/heavy-jobs.conf"),
+    target: join(homedir(), ".config/yimbot/heavy-jobs.conf"),
+    label: "heavy job patterns (~/.config/yimbot/heavy-jobs.conf)",
+  },
 ];
 
 // Whether `target` is already our symlink to `source`, some other existing
@@ -910,6 +920,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".config/yimbot/session-settings.json"),
       label: "~/.config/yimbot/session-settings.json",
       role: "deny-list safety net for spawned sessions (recommended)",
+    },
+    {
+      path: join(homedir(), ".config/yimbot/heavy-queue.sh"),
+      label: "~/.config/yimbot/heavy-queue.sh",
+      role: "serializes CPU-heavy jobs across sessions (recommended; needs jq and flock on PATH)",
     },
   ];
   p.note(

@@ -386,4 +386,11 @@ test("hostLinks installs the session deny-list settings", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/session-settings.json"));
   assert.ok(link, "session-settings host link is present");
   assert.ok(link!.source.endsWith("settings/session-settings.json"), "sourced from settings/session-settings.json");
+
+  const queueLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/heavy-queue.sh"));
+  assert.ok(queueLink, "heavy-queue.sh host link is present");
+  assert.ok(queueLink!.source.endsWith("scripts/heavy-queue.sh"), "sourced from scripts/heavy-queue.sh");
+  const confLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/heavy-jobs.conf"));
+  assert.ok(confLink, "heavy-jobs.conf host link is present");
+  assert.ok(confLink!.source.endsWith("settings/heavy-jobs.conf"), "sourced from settings/heavy-jobs.conf");
 });

@@ -4,6 +4,7 @@ import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
 import { bus, filterToLiveRows, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
@@ -118,18 +119,30 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 // of the body (tasks takes the remainder) whether or not it has rows, so the
 // panes never jump around as PRs move between them. The floor of 4 keeps one
 // data row visible (header + 2 border rows) on a tiny screen.
-export function boardLayout(screenHeight: number): {
+//
+// Below this the board's nine columns no longer fit beside the queue, so the
+// queue gives way rather than squeezing the rows it exists to annotate.
+const QUEUE_MIN_SCREEN_WIDTH = 60;
+
+export function boardLayout(
+  screenHeight: number,
+  screenWidth: number,
+): {
   tasks: { top: number; left: number; right: number; bottom: number };
   review: { left: number; right: number; bottom: number; height: number };
   merge: { left: number; right: number; bottom: number; height: number };
+  queue: { top: number; right: number; width: number; bottom: number } | null;
 } {
   const footerRows = 1;
   const titleRows = 1;
   const third = Math.max(4, Math.floor((screenHeight - titleRows - footerRows) / 3));
+  const showQueue = screenWidth >= QUEUE_MIN_SCREEN_WIDTH;
+  const inset = showQueue ? QUEUE_PANE_WIDTH : 0;
   return {
-    tasks: { top: titleRows, left: 0, right: 0, bottom: footerRows + 2 * third },
-    review: { left: 0, right: 0, bottom: footerRows + third, height: third },
-    merge: { left: 0, right: 0, bottom: footerRows, height: third },
+    tasks: { top: titleRows, left: 0, right: inset, bottom: footerRows + 2 * third },
+    review: { left: 0, right: inset, bottom: footerRows + third, height: third },
+    merge: { left: 0, right: inset, bottom: footerRows, height: third },
+    queue: showQueue ? { top: titleRows, right: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows } : null,
   };
 }
 
@@ -532,6 +545,21 @@ export function runTui(opts: {
   const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane };
   tasksPane.focus();
 
+  // Read-only: never focused, never in the pane rotation. Inspection and
+  // force-release live in `pnpm heavy status`.
+  const queuePane = blessed.listtable({
+    parent: screen,
+    top: 1,
+    right: 0,
+    width: QUEUE_PANE_WIDTH,
+    bottom: 1,
+    tags: true,
+    align: "left",
+    border: { type: "line" },
+    noCellBorders: true,
+    style: { header: { bold: true }, border: { fg: "grey" }, label: { fg: "grey" } },
+  });
+
   const title = blessed.text({ parent: screen, ...titleLayout(), content: "yimbot" });
   const status = blessed.text({ parent: screen, ...statusLayout(), content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout() });
@@ -563,7 +591,7 @@ export function runTui(opts: {
     currentTasks = tasks;
     currentMerge = merge;
     const now = Date.now();
-    const layout = boardLayout(Number(screen.rows) || 24);
+    const layout = boardLayout(Number(screen.rows) || 24, Number(screen.cols) || 80);
     const [tasksData, reviewData, mergeData] = alignTables([
       boardTable(tasks.map((row) => ({ row })), now),
       boardTable(currentReview.map((e) => ({ row: e.row, why: e.reason })), now),
@@ -580,6 +608,15 @@ export function runTui(opts: {
     mergePane.bottom = layout.merge.bottom;
     mergePane.setLabel(` ready to merge (${merge.length}) `);
     mergePane.setData(mergeData);
+    tasksPane.right = layout.tasks.right;
+    reviewPane.right = layout.review.right;
+    mergePane.right = layout.merge.right;
+    if (layout.queue) {
+      queuePane.setData(queueRows(readQueueState()));
+      if (!isOverlayOpen()) queuePane.show();
+    } else {
+      queuePane.hide();
+    }
     // While an overlay is open every pane stays hidden (the overlay owns
     // the screen); the close callback re-renders, which shows them again.
     if (!isOverlayOpen()) {
@@ -679,6 +716,7 @@ export function runTui(opts: {
 
   const hidePanes = () => {
     for (const p of ["tasks", "review", "merge"] as const) paneWidgets[p].hide();
+    queuePane.hide();
   };
   // The review and merge panes are deliberately not shown here: the render()
   // every caller issues right after restores them only when they have rows.

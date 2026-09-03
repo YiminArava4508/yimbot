@@ -216,6 +216,47 @@ flowchart TD
   `ready-to-merge` and must already exist in the repo; `IGNORE_CHECKS`, empty by
   default)* Needs `gh` installed and authenticated.
 
+## Heavy job queue
+
+Every session yimbot opens can be running a build, a test suite, or a code
+generator at the same time as every other one. On a laptop that means several
+CPU-heavy jobs fighting each other at once. The queue serializes those jobs
+across every session, worktree included, so only one heavy command runs at a
+time; everything else waits its turn instead of thrashing the machine.
+
+A command qualifies by matching `HEAVY_PATTERNS`, an extended regex in
+`~/.config/yimbot/heavy-jobs.conf` checked against the command with any
+leading `cd <path> &&` stripped. The default covers the common build,
+test, and codegen commands:
+
+```
+HEAVY_PATTERNS='^(task (generate|gqlgen|build-all|test|test-integration|ci-local)|pnpm (run )?(build|typecheck|test)[a-z:]*|go build|go test)'
+```
+
+Edit that file to add or drop commands.
+
+It runs on its own: a `PreToolUse` hook in `session-settings.json`
+(installed by `pnpm onboard` alongside the deny-list) intercepts a matching
+command, waits for the slot, then runs it. Sessions need no cooperation.
+
+Two tunables live in the same conf file. `HEAVY_WAIT_TIMEOUT` caps how long a
+session waits for the slot (seconds, default `1200`) before giving up and
+running anyway, so a wedged queue can never stall the board. `HEAVY_MAX_JOB`
+is how long a running job is trusted to still be alive (seconds, default
+`1800`) before its slot is presumed abandoned and reaped.
+
+The board shows the queue on a narrow pane down the right edge: the current
+holder in green, any waiters listed below it, `idle` when nothing is
+queued. It is read-only and stays out of the pane rotation.
+
+From the command line, `pnpm heavy status` prints the holder, its command,
+and how long each entry has been running or waiting. `pnpm heavy hold
+'<cmd>'` puts a command you run by hand in your own terminal through the same
+queue as a session's commands.
+
+The queue needs `jq` and `flock` on `PATH`. Without them it disables itself
+and every command runs unqueued, same as before the queue existed.
+
 ## TUI
 
 Running `pnpm start` from a terminal shows a live ticket board instead of a

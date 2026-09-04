@@ -33,6 +33,12 @@ heavy_conf_load() {
   # this long, which costs fairness only: the flock is what gates the work.
   HEAVY_STALE_WAIT=30
   [ -f "$HEAVY_CONF" ] && . "$HEAVY_CONF"
+  # The conf is hand-edited. These three feed arithmetic and flock -w, where a
+  # garbage value makes flock refuse the invocation and skip the command it was
+  # meant to queue, so fall back to the default rather than pass it on.
+  [[ ${HEAVY_WAIT_TIMEOUT:-} =~ ^[0-9]+$ ]] || HEAVY_WAIT_TIMEOUT=1200
+  [[ ${HEAVY_MAX_JOB:-} =~ ^[0-9]+$ ]] || HEAVY_MAX_JOB=1800
+  [[ ${HEAVY_STALE_WAIT:-} =~ ^[0-9]+$ ]] || HEAVY_STALE_WAIT=30
   return 0
 }
 
@@ -203,6 +209,14 @@ call_ticket_file() {
   printf '%s/%s' "$d" "${1//[^A-Za-z0-9_-]/_}"
 }
 
+# Point this tool call's pairing file at whatever HEAVY_TICKET is now. Call it
+# again after every wait: a rejoin swaps the ticket path, and a pairing file
+# left on the old one has post delete nothing and leak the live ticket.
+pair_call_ticket() {
+  [ -n "$1" ] || return 0
+  printf '%s' "$HEAVY_TICKET" 2>/dev/null > "$(call_ticket_file "$1")"
+}
+
 # Poll until HEAVY_TICKET reaches the head. Touch it every pass: that heartbeat
 # is what lets other waiters reap this ticket promptly if the session dies. A
 # waiter reaped anyway writes a fresh ticket and keeps waiting, so losing the
@@ -246,11 +260,12 @@ cmd_pre() {
   else
     call=$(payload_field "$payload" '.tool_use_id') || call=
     if [ -n "$call" ]; then
-      printf '%s' "$HEAVY_TICKET" 2>/dev/null > "$(call_ticket_file "$call")"
+      pair_call_ticket "$call"
     else
       heavy_log "payload carries no tool_use_id, leaving the ticket to the stale reap: $stripped"
     fi
     if wait_for_head "$key" "$stripped"; then
+      pair_call_ticket "$call"
       ticket_write "$HEAVY_TICKET" "$key" "$stripped" running
     else
       rm -f "$HEAVY_TICKET" 2>/dev/null

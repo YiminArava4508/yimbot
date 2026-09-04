@@ -172,6 +172,17 @@ assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "the hold ticket goe
 assert_eq "$(YIMBOT_HEAVY_TICKETED=1 cmd_hold "ls -1 $(queue_dir)/*.json 2>/dev/null | wc -l | tr -d ' '")" "0" "hold does not double-ticket behind pre"
 rm -f "$(queue_dir)"/*.json
 
+# The conf is hand-edited, and the tunables feed arithmetic and flock -w, where
+# a garbage value would make flock refuse the whole invocation and skip the
+# command rather than queue it.
+BAD_CONF=$(mktemp)
+printf 'HEAVY_MAX_JOB=abc\nHEAVY_WAIT_TIMEOUT=\nHEAVY_STALE_WAIT=-1\n' > "$BAD_CONF"
+assert_eq "$(HEAVY_CONF="$BAD_CONF" bash "$(dirname "$0")/heavy-queue.sh" hold 'echo still-ran' 2>/dev/null)" "still-ran" "a garbage conf value never skips the command"
+assert_eq "$(HEAVY_CONF="$BAD_CONF" bash "$(dirname "$0")/heavy-queue.sh" hold 'exit 7' >/dev/null 2>&1; echo $?)" "7" "a garbage conf value still returns the command's status"
+BAD_ERR=$(HEAVY_CONF="$BAD_CONF" bash "$(dirname "$0")/heavy-queue.sh" hold 'echo still-ran' 2>&1 >/dev/null)
+assert_eq "$BAD_ERR" "" "a garbage conf value leaks no flock error to stderr"
+rm -f "$BAD_CONF" "$(queue_dir)"/*.json
+
 # A lock it cannot take inside HEAVY_MAX_JOB runs the command anyway, because a
 # wedged queue must never block a session.
 flock "$(lock_path)" sleep 3 &
@@ -273,6 +284,30 @@ assert_eq "$REJOIN_RC" "0" "a reaped waiter rejoins the queue and still gets the
 assert_fails test "$HEAVY_TICKET" = "$OLD_TICKET"
 assert_ok test -e "$HEAVY_TICKET"
 rm -f "$(queue_dir)"/*.json
+
+# A rejoin replaces the ticket path, so the pairing file has to follow it or
+# post deletes a path that is already gone and the live ticket sits at the head
+# until HEAVY_MAX_JOB, starving every other waiter.
+rm -f "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/current"/*
+BLOCKER=$(ticket_path); ticket_write "$BLOCKER" "ENG-8" "task build-all" running
+REJOIN_OUT=$(mktemp)
+( hook_payload s12 tu_rejoin 'go build ./...' | bash "$(dirname "$0")/heavy-queue.sh" pre > "$REJOIN_OUT" ) &
+REJOIN_PID=$!
+for _ in $(seq 1 100); do
+  [ "$(ls -1 "$(queue_dir)"/*.json 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ] && break
+  sleep 0.1
+done
+for REJOIN_T in "$(queue_dir)"/*.json; do [ "$REJOIN_T" = "$BLOCKER" ] || rm -f "$REJOIN_T"; done
+for _ in $(seq 1 100); do
+  [ "$(ls -1 "$(queue_dir)"/*.json 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ] && break
+  sleep 0.1
+done
+rm -f "$BLOCKER"
+wait "$REJOIN_PID"
+assert_eq "$(jq -r '.hookSpecificOutput.permissionDecision' < "$REJOIN_OUT")" "allow" "a rejoined waiter still gets a decision"
+hook_payload s12 tu_rejoin 'go build ./...' | cmd_post
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "post clears the ticket a rejoin replaced"
+rm -f "$REJOIN_OUT" "$(queue_dir)"/*.json
 
 # Waiting behind a live ticket times out rather than hanging forever.
 BLOCKER=$(ticket_path); ticket_write "$BLOCKER" "ENG-8" "task build-all" running

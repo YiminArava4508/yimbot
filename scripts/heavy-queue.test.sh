@@ -21,7 +21,7 @@ heavy_conf_load
 # The shipped conf supplies every tunable.
 assert_eq "$HEAVY_WAIT_TIMEOUT" "1200" "wait timeout from conf"
 assert_eq "$HEAVY_MAX_JOB" "1800" "max job from conf"
-assert_eq "$HEAVY_STALE_WAIT" "5" "stale wait default"
+assert_eq "$HEAVY_STALE_WAIT" "30" "stale wait default"
 
 # Sessions prefix commands with a cd into the worktree; strip it before matching.
 assert_eq "$(strip_cd_prefix 'cd /home/ymbo/Work/worktrees/eng-1 && task generate')" "task generate" "strips one cd prefix"
@@ -75,6 +75,25 @@ T_Q=$(ticket_path)
 ticket_write "$T_Q" "ENG-Q" 'echo "hi"' waiting
 assert_eq "$(ticket_field "$T_Q" cmd)" 'echo \"hi\"' "a quoted cmd stays escaped in the field"
 rm -f "$T_Q"
+
+# A rewrite is atomic, so a concurrent status read never sees a half-written
+# ticket and never prints a jq parse error at the user.
+ATOMIC=$(ticket_path)
+ticket_write "$ATOMIC" "ENG-4" "task generate" waiting
+( for _ in $(seq 1 300); do ticket_write "$ATOMIC" "ENG-4" "task generate --with-a-longer-command-line-to-widen-the-write" running; done ) &
+ATOMIC_WRITER=$!
+ATOMIC_BAD=0
+# read is a builtin, so the reader samples often enough to land in the window a
+# truncating write leaves open. jq would be too slow to catch it.
+while kill -0 "$ATOMIC_WRITER" 2>/dev/null; do
+  ATOMIC_LINE=""
+  read -r ATOMIC_LINE < "$ATOMIC" 2>/dev/null
+  case $ATOMIC_LINE in *'"since":'[0-9]*'}') ;; *) ATOMIC_BAD=$(( ATOMIC_BAD + 1 )) ;; esac
+done
+wait "$ATOMIC_WRITER"
+assert_eq "$ATOMIC_BAD" "0" "a concurrent reader never sees a half-written ticket"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "2" "ticket_write leaves no temp file behind"
+rm -f "$ATOMIC"
 
 # Head is the oldest live ticket, so the queue is FIFO.
 T2=$(ticket_path)
@@ -143,6 +162,26 @@ assert_eq "$(awk 'NR%2==1{if($0 !~ /^start-/) bad=1} NR%2==0{if($0 !~ /^end-/) b
 assert_eq "$(wc -l < "$SERIAL_LOG" | tr -d ' ')" "6" "every held command ran"
 rm -f "$SERIAL_LOG"
 
+# A hand-run hold is invisible to `heavy status` and to the board pane unless it
+# writes its own ticket, so both would claim idle while it holds the machine.
+rm -f "$(queue_dir)"/*.json
+assert_eq "$(cmd_hold "ls -1 $(queue_dir)/*.json 2>/dev/null | wc -l | tr -d ' '")" "1" "a hand-run hold writes its own ticket"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "the hold ticket goes away when the hold exits"
+
+# pre already wrote a ticket for the session path, so hold must not add a second.
+assert_eq "$(YIMBOT_HEAVY_TICKETED=1 cmd_hold "ls -1 $(queue_dir)/*.json 2>/dev/null | wc -l | tr -d ' '")" "0" "hold does not double-ticket behind pre"
+rm -f "$(queue_dir)"/*.json
+
+# A lock it cannot take inside HEAVY_MAX_JOB runs the command anyway, because a
+# wedged queue must never block a session.
+flock "$(lock_path)" sleep 3 &
+LOCK_HOLDER=$!
+sleep 0.2
+assert_eq "$(HEAVY_MAX_JOB=1 cmd_hold 'echo ran-anyway' 2>/dev/null)" "ran-anyway" "hold runs the command when the lock never frees up"
+kill "$LOCK_HOLDER" 2>/dev/null
+wait "$LOCK_HOLDER" 2>/dev/null
+rm -f "$(queue_dir)"/*.json
+
 # --- pre / post ---
 assert_defined payload_field
 assert_defined wait_for_head
@@ -161,7 +200,7 @@ assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "a cheap command wri
 # run under hold.
 PRE_OUT=$(printf '%s' '{"session_id":"s2","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_pre)
 assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "allow" "a heavy command is allowed"
-assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')" "$HEAVY_SELF hold 'task generate'" "the command is rewritten through hold"
+assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')" "YIMBOT_HEAVY_TICKETED=1 $HEAVY_SELF hold 'task generate'" "the command is rewritten through hold"
 assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a heavy command leaves a running ticket"
 assert_eq "$(ticket_field "$(ticket_head)" state)" "running" "the head ticket is marked running"
 
@@ -172,21 +211,100 @@ DQ_INPUT='a "b" c'
 assert_eq "$(eval "printf '%s' $(shell_quote "$DQ_INPUT")")" "$DQ_INPUT" "shell_quote survives double quotes"
 assert_eq "$(eval "printf '%s' $(shell_quote 'a $(rm -rf /) b')")" 'a $(rm -rf /) b' "shell_quote defuses command substitution"
 
-# post removes only this session's ticket.
+hook_payload() {
+  printf '{"session_id":"%s","tool_use_id":"%s","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"%s"}}' "$1" "$2" "$3"
+}
+
+# post removes only this tool call's ticket.
 rm -f "$(queue_dir)"/*.json
-printf '%s' '{"session_id":"s4","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_pre > /dev/null
+hook_payload s4 tu_a 'task generate' | cmd_pre > /dev/null
 OTHER=$(ticket_path); ticket_write "$OTHER" "ENG-9" "pnpm build" waiting
-printf '%s' '{"session_id":"s4","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_post
+hook_payload s4 tu_a 'task generate' | cmd_post
 assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "post drops one ticket"
-assert_eq "$(ticket_field "$(ticket_head)" key)" "ENG-9" "post left the other session's ticket alone"
+assert_eq "$(ticket_field "$(ticket_head)" key)" "ENG-9" "post left the other call's ticket alone"
 rm -f "$(queue_dir)"/*.json
 
-# Waiting behind a live ticket times out rather than hanging forever, and the
-# timeout path still lets the command run.
+# One session issues several Bash calls at once, so a cheap call finishing first
+# must not drop the heavy call's ticket out from under it.
+hook_payload s5 tu_heavy 'task generate' | cmd_pre > /dev/null
+hook_payload s5 tu_cheap 'ls -la' | cmd_pre > /dev/null
+hook_payload s5 tu_cheap 'ls -la' | cmd_post
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a cheap call's post leaves the heavy call's ticket alone"
+assert_eq "$(ticket_field "$(ticket_head)" cmd)" "task generate" "the surviving ticket is the heavy call's"
+hook_payload s5 tu_heavy 'task generate' | cmd_post
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "the heavy call's own post clears its ticket"
+
+# Two heavy calls in one batch share a session_id, so each must clean up the
+# ticket it wrote rather than whichever was written last.
+hook_payload s6 tu_one 'task generate' | cmd_pre > /dev/null
+SECOND_OUT=$(mktemp)
+( hook_payload s6 tu_two 'pnpm build' | bash "$(dirname "$0")/heavy-queue.sh" pre > "$SECOND_OUT" ) &
+SECOND_PID=$!
+for _ in $(seq 1 100); do
+  [ "$(ls -1 "$(queue_dir)"/*.json 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ] && break
+  sleep 0.1
+done
+hook_payload s6 tu_one 'task generate' | cmd_post
+wait "$SECOND_PID"
+assert_eq "$(jq -r '.hookSpecificOutput.permissionDecision' < "$SECOND_OUT")" "allow" "the second heavy call gets the slot once the first releases"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "the first call's post left the second call's ticket alone"
+assert_eq "$(ticket_field "$(ticket_head)" cmd)" "pnpm build" "the surviving ticket is the second call's"
+hook_payload s6 tu_two 'pnpm build' | cmd_post
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "the second call's own post clears its ticket"
+rm -f "$SECOND_OUT" "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/current"/*
+
+# A payload carrying no tool_use_id cannot pair, so pre writes no pairing file
+# rather than one that would delete somebody else's ticket.
+printf '%s' '{"session_id":"s7","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_pre > /dev/null
+assert_eq "$(ls -1 "$HEAVY_STATE_DIR/current" 2>/dev/null | wc -l | tr -d ' ')" "0" "an unpairable payload writes no pairing file"
+rm -f "$(queue_dir)"/*.json
+
+# Being reaped mid-wait costs a place in line, never the serialization: the
+# waiter writes a fresh ticket and keeps waiting.
+BLOCKER=$(ticket_path); ticket_write "$BLOCKER" "ENG-8" "task build-all" running
+HEAVY_TICKET=$(ticket_path); ticket_write "$HEAVY_TICKET" "ENG-7" "task generate" waiting
+OLD_TICKET=$HEAVY_TICKET
+rm -f "$HEAVY_TICKET"
+( sleep 0.8; rm -f "$BLOCKER" ) &
+HEAVY_WAIT_TIMEOUT=10 wait_for_head "ENG-7" "task generate"
+REJOIN_RC=$?
+wait
+assert_eq "$REJOIN_RC" "0" "a reaped waiter rejoins the queue and still gets the slot"
+assert_fails test "$HEAVY_TICKET" = "$OLD_TICKET"
+assert_ok test -e "$HEAVY_TICKET"
+rm -f "$(queue_dir)"/*.json
+
+# Waiting behind a live ticket times out rather than hanging forever.
 BLOCKER=$(ticket_path); ticket_write "$BLOCKER" "ENG-8" "task build-all" running
 MINE=$(ticket_path); ticket_write "$MINE" "ENG-7" "task generate" waiting
-assert_fails env HEAVY_WAIT_TIMEOUT=1 bash -c "source '$(dirname "$0")/heavy-queue.sh'; heavy_conf_load; HEAVY_WAIT_TIMEOUT=1; wait_for_head '$MINE'"
+assert_fails env HEAVY_WAIT_TIMEOUT=1 bash -c "source '$(dirname "$0")/heavy-queue.sh'; heavy_conf_load; HEAVY_WAIT_TIMEOUT=1; HEAVY_TICKET='$MINE'; wait_for_head 'ENG-7' 'task generate'"
 rm -f "$(queue_dir)"/*.json
+
+# Giving up on the queue costs the place in line, never the lock: the timeout
+# path still rewrites the command through hold, and drops its ticket so hold
+# writes a fresh one for what it is about to run.
+BLOCKER=$(ticket_path); ticket_write "$BLOCKER" "ENG-8" "task build-all" running
+TIMEOUT_OUT=$(hook_payload s8 tu_slow 'task generate' | HEAVY_WAIT_TIMEOUT=1 cmd_pre)
+assert_eq "$(printf '%s' "$TIMEOUT_OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "allow" "a timed-out wait still allows the command"
+assert_eq "$(printf '%s' "$TIMEOUT_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')" "$HEAVY_SELF hold 'task generate'" "a timed-out wait still runs the command through hold"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a timed-out wait drops its own ticket"
+rm -f "$(queue_dir)"/*.json
+
+# A state dir it cannot write is not a reason to block a session or to leak raw
+# redirect errors onto hook stderr. pre gives up its place in line at once and
+# hold runs the command without a lock it cannot open.
+RO_BASE=$(mktemp -d)
+chmod 500 "$RO_BASE"
+RO_OUT=$(mktemp)
+RO_ERR=$(printf '%s' '{"session_id":"s9","tool_use_id":"tu_ro","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' \
+  | HEAVY_STATE_DIR="$RO_BASE/yimbot" timeout 20 bash "$(dirname "$0")/heavy-queue.sh" pre 2>&1 > "$RO_OUT")
+assert_eq "$RO_ERR" "" "an unwritable state dir leaks nothing to hook stderr"
+assert_eq "$(jq -r '.hookSpecificOutput.updatedInput.command' < "$RO_OUT")" "$HEAVY_SELF hold 'task generate'" "an unwritable state dir still runs the command through hold"
+RO_ERR=$(HEAVY_STATE_DIR="$RO_BASE/yimbot" timeout 20 bash "$(dirname "$0")/heavy-queue.sh" hold 'echo ran-it' 2>&1 > "$RO_OUT")
+assert_eq "$RO_ERR" "" "a lock it cannot open leaks nothing to stderr"
+assert_eq "$(cat "$RO_OUT")" "ran-it" "a lock it cannot open still runs the command"
+chmod 700 "$RO_BASE"
+rm -rf "$RO_BASE" "$RO_OUT"
 
 # A malformed payload is not a reason to block a session.
 assert_eq "$(printf 'not json' | cmd_pre; echo "rc=$?")" "rc=0" "a malformed payload yields no decision and no error"
@@ -217,6 +335,12 @@ assert_eq "$(cmd_status --json | jq -r '.running.key')" "ENG-1" "the head ticket
 assert_eq "$(cmd_status --json | jq -r '.waiting[0].key')" "ENG-2" "the rest are reported as waiting"
 assert_eq "$(cmd_status --json | jq -r '.waiting | length')" "1" "only the non-head tickets wait"
 assert_eq "$(cmd_status | grep -c 'ENG-1')" "1" "the human table names the holder"
+
+# The human table reports how long each entry has held or waited for the slot.
+printf '{"key":"ENG-1","cmd":"task generate","state":"running","since":%s}\n' "$(( ( $(date +%s) - 90 ) * 1000 ))" > "$R"
+assert_eq "$(cmd_status | head -1 | cut -f2)" "1m" "the human table shows how long the holder has held the slot"
+printf '{"key":"ENG-1","cmd":"task generate","state":"running","since":%s}\n' "$(( ( $(date +%s) - 5 ) * 1000 ))" > "$R"
+assert_eq "$(cmd_status | head -1 | cut -f2)" "5s" "a short hold reports in seconds"
 rm -f "$(queue_dir)"/*.json
 
 if [ "$fail" -eq 0 ]; then echo "PASS: heavy-queue.sh tests"; else exit 1; fi

@@ -240,19 +240,25 @@ It runs on its own: a `PreToolUse` hook in `session-settings.json`
 command, waits for the slot, then runs it. Sessions need no cooperation.
 
 Two tunables live in the same conf file. `HEAVY_WAIT_TIMEOUT` caps how long a
-session waits for the slot (seconds, default `1200`) before giving up and
-running anyway, so a wedged queue can never stall the board. `HEAVY_MAX_JOB`
-is how long a running job is trusted to still be alive (seconds, default
-`1800`) before its slot is presumed abandoned and reaped.
+session waits for its turn (seconds, default `1200`). Past that it gives up its
+place in line and runs the command anyway, still under the lock, so a wedged
+queue costs a session its fairness and never its serialization.
+`HEAVY_MAX_JOB` is how long a running job is trusted to still be alive
+(seconds, default `1800`) before its slot is presumed abandoned and reaped. It
+is also the longest a command sits on the lock itself before giving up and
+running unserialized, so nothing can block forever.
 
 The board shows the queue on a narrow pane down the right edge: the current
 holder in green, any waiters listed below it, `idle` when nothing is
-queued. It is read-only and stays out of the pane rotation.
+queued. It is never focused and stays out of the pane rotation. Reading the
+queue also reaps tickets left behind by dead sessions, so the pane is what
+keeps the queue tidy on a live board.
 
-From the command line, `pnpm heavy status` prints the holder, its command,
-and how long each entry has been running or waiting. `pnpm heavy hold
+From the command line, `pnpm heavy status` prints a row per entry: the board
+key, how long it has been running or waiting, and the command. `pnpm heavy hold
 '<cmd>'` puts a command you run by hand in your own terminal through the same
-queue as a session's commands.
+queue as a session's commands, ticket included, so the pane and `heavy status`
+both name it while it holds the machine.
 
 The queue needs `jq` and `flock` on `PATH`. Without them it disables itself
 and every command runs unqueued, same as before the queue existed.

@@ -8,7 +8,7 @@
 # Subcommands:
 #   pre     PreToolUse hook. Reads the payload on stdin, waits for the slot, and
 #           prints an updatedInput decision rewriting the command through `hold`.
-#   post    PostToolUse hook. Drops this process group's ticket.
+#   post    PostToolUse hook. Drops the ticket this tool call took.
 #   hold    Runs a command under the flock. What `pre` rewrites commands to.
 #   status  Prints the queue, --json for machines.
 #
@@ -19,6 +19,8 @@ set -uo pipefail
 HEAVY_STATE_DIR=${HEAVY_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/yimbot}
 HEAVY_CONF=${HEAVY_CONF:-$HOME/.config/yimbot/heavy-jobs.conf}
 HEAVY_SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
+# The ticket this invocation owns. wait_for_head reassigns it when it rejoins.
+HEAVY_TICKET=${HEAVY_TICKET:-}
 
 # Defaults matching settings/heavy-jobs.conf, so a missing or partial conf still
 # yields a working queue rather than an unset-variable crash in the hot path.
@@ -26,7 +28,10 @@ heavy_conf_load() {
   HEAVY_PATTERNS='^(task (generate|gqlgen|build-all|test|test-integration|ci-local)|pnpm (run )?(build|typecheck|test)[a-z:]*|go build|go test)'
   HEAVY_WAIT_TIMEOUT=1200
   HEAVY_MAX_JOB=1800
-  HEAVY_STALE_WAIT=5
+  # A 0.5s heartbeat needs a window wide enough to survive the loaded machine
+  # this queue exists for. A dead waiter's ticket then delays others by up to
+  # this long, which costs fairness only: the flock is what gates the work.
+  HEAVY_STALE_WAIT=30
   [ -f "$HEAVY_CONF" ] && . "$HEAVY_CONF"
   return 0
 }
@@ -88,11 +93,16 @@ json_escape() {
   printf '%s' "$s"
 }
 
+# Write to a sibling and rename: truncating in place lets a concurrent status
+# read see an empty or half-written file and print a jq parse error at the user.
+# The 2>/dev/null comes first so a failing redirect on a full or unwritable
+# state dir is silenced too, not just the printf.
 ticket_write() {
-  local path=$1 key=$2 cmd=$3 state=$4
+  local path=$1 key=$2 cmd=$3 state=$4 tmp=$1.$$.tmp
   printf '{"key":"%s","cmd":"%s","state":"%s","since":%s}\n' \
     "$(json_escape "$key")" "$(json_escape "$cmd")" "$state" "$(( $(date +%s%N) / 1000000 ))" \
-    > "$path" 2>/dev/null
+    2>/dev/null > "$tmp" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$path" 2>/dev/null
 }
 
 ticket_field() {
@@ -129,19 +139,48 @@ ticket_head() {
   done
 }
 
+# A hold reached by hand, or by a pre that gave up its place in line, carries no
+# ticket, so `heavy status` and the board pane would both report idle while it
+# holds the machine. Ticket first, trap second, lock last: a ticket that cannot
+# be written is not a reason to skip the lock.
+hold_ticket() {
+  [ -n "${YIMBOT_HEAVY_TICKETED:-}" ] && return 0
+  HEAVY_TICKET=$(ticket_path)
+  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(strip_cd_prefix "$1")" running || return 0
+  trap 'rm -f "$HEAVY_TICKET" 2>/dev/null' EXIT
+  return 0
+}
+
 cmd_hold() {
-  local cmd=$1
+  local cmd=$1 rc lock
   export YIMBOT_HEAVY_HELD=1
   if ! command -v flock >/dev/null 2>&1; then
     heavy_log "flock missing, running unqueued"
     bash -c "$cmd"
     return $?
   fi
-  flock "$(lock_path)" bash -c "$cmd"
+  lock=$(lock_path)
+  if ! : 2>/dev/null >> "$lock"; then
+    heavy_log "cannot open the lock file, running unqueued: $cmd"
+    bash -c "$cmd"
+    return $?
+  fi
+  hold_ticket "$cmd"
+  # -E 99 marks "could not take the lock in time" so nothing waits forever. A
+  # command that legitimately exits 99 is indistinguishable here and gets run a
+  # second time, which is the accepted cost of never blocking a session.
+  flock -w "$HEAVY_MAX_JOB" -E 99 "$lock" bash -c "$cmd"
+  rc=$?
+  if [ "$rc" = 99 ]; then
+    heavy_log "no lock after ${HEAVY_MAX_JOB}s, running unqueued: $cmd"
+    bash -c "$cmd"
+    return $?
+  fi
+  return $rc
 }
 
 heavy_log() {
-  printf '[%s] heavy-queue: %s\n' "$(date '+%H:%M:%S')" "$*" >> "$HEAVY_STATE_DIR/queue.log" 2>/dev/null || true
+  printf '[%s] heavy-queue: %s\n' "$(date '+%H:%M:%S')" "$*" 2>/dev/null >> "$HEAVY_STATE_DIR/queue.log" || true
 }
 
 # jq rather than a bash regex: the command field is JSON-escaped and can carry
@@ -155,55 +194,82 @@ shell_quote() {
   printf "'%s'" "${1//\'/\'\\\'\'}"
 }
 
-session_ticket_file() {
+# Keyed on tool_use_id, not session_id: one session issues several Bash calls at
+# once, so a session-keyed file has them all overwriting and deleting each
+# other's tickets. A tool call is exactly the lifetime of one ticket.
+call_ticket_file() {
   local d=$HEAVY_STATE_DIR/current
   mkdir -p "$d" 2>/dev/null
   printf '%s/%s' "$d" "${1//[^A-Za-z0-9_-]/_}"
 }
 
-# Poll until this ticket reaches the head. Touch it every pass: that heartbeat
-# is what lets other waiters reap this ticket promptly if the session dies.
+# Poll until HEAVY_TICKET reaches the head. Touch it every pass: that heartbeat
+# is what lets other waiters reap this ticket promptly if the session dies. A
+# waiter reaped anyway writes a fresh ticket and keeps waiting, so losing the
+# heartbeat race costs a place in line and never the serialization. HEAVY_TICKET
+# is read and reassigned here, since rejoining means a new path.
 wait_for_head() {
-  local mine=$1 deadline=$(( $(date +%s) + HEAVY_WAIT_TIMEOUT ))
+  local key=$1 cmd=$2 deadline=$(( $(date +%s) + HEAVY_WAIT_TIMEOUT ))
   while true; do
     ticket_reap
-    [ -e "$mine" ] || return 1
-    [ "$(ticket_head)" = "$mine" ] && return 0
+    [ "$(ticket_head)" = "$HEAVY_TICKET" ] && return 0
     [ "$(date +%s)" -ge "$deadline" ] && return 1
-    touch "$mine" 2>/dev/null
+    if [ -e "$HEAVY_TICKET" ]; then
+      touch "$HEAVY_TICKET" 2>/dev/null
+    else
+      heavy_log "ticket reaped while waiting, rejoining at the back: $cmd"
+      HEAVY_TICKET=$(ticket_path)
+      ticket_write "$HEAVY_TICKET" "$key" "$cmd" waiting || return 1
+    fi
     sleep 0.5
   done
 }
 
 cmd_pre() {
-  local payload cmd cwd session mine
+  local payload cmd cwd call key stripped prefix
   payload=$(cat)
   cmd=$(payload_field "$payload" '.tool_input.command') || return 0
   [ -n "$cmd" ] || return 0
   is_heavy "$cmd" || return 0
 
   cwd=$(payload_field "$payload" '.cwd') || cwd=$PWD
-  session=$(payload_field "$payload" '.session_id') || session=$$
-  mine=$(ticket_path)
-  ticket_write "$mine" "$(heavy_key_for "$cwd")" "$(strip_cd_prefix "$cmd")" waiting
-  printf '%s' "$mine" > "$(session_ticket_file "$session")" 2>/dev/null
-
-  if ! wait_for_head "$mine"; then
-    rm -f "$mine"
-    heavy_log "timed out waiting for the slot, running unqueued: $cmd"
-    return 0
+  key=$(heavy_key_for "$cwd")
+  stripped=$(strip_cd_prefix "$cmd")
+  # Losing the queue never costs the lock: every path below still rewrites the
+  # command through hold. Dropping the flag with the ticket is what lets hold
+  # write a fresh one for what it is about to run.
+  prefix="YIMBOT_HEAVY_TICKETED=1 "
+  HEAVY_TICKET=$(ticket_path)
+  if ! ticket_write "$HEAVY_TICKET" "$key" "$stripped" waiting; then
+    prefix=""
+    heavy_log "cannot write a ticket, holding without a place in line: $stripped"
+  else
+    call=$(payload_field "$payload" '.tool_use_id') || call=
+    if [ -n "$call" ]; then
+      printf '%s' "$HEAVY_TICKET" 2>/dev/null > "$(call_ticket_file "$call")"
+    else
+      heavy_log "payload carries no tool_use_id, leaving the ticket to the stale reap: $stripped"
+    fi
+    if wait_for_head "$key" "$stripped"; then
+      ticket_write "$HEAVY_TICKET" "$key" "$stripped" running
+    else
+      rm -f "$HEAVY_TICKET" 2>/dev/null
+      [ -n "$call" ] && rm -f "$(call_ticket_file "$call")" 2>/dev/null
+      prefix=""
+      heavy_log "timed out waiting for the slot, holding without a place in line: $stripped"
+    fi
   fi
-  ticket_write "$mine" "$(heavy_key_for "$cwd")" "$(strip_cd_prefix "$cmd")" running
 
-  jq -nc --arg c "$HEAVY_SELF hold $(shell_quote "$cmd")" \
+  jq -nc --arg c "$prefix$HEAVY_SELF hold $(shell_quote "$cmd")" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",updatedInput:{command:$c}},systemMessage:"yimbot: holding the heavy-job slot"}'
 }
 
 cmd_post() {
-  local payload session f
+  local payload call f
   payload=$(cat)
-  session=$(payload_field "$payload" '.session_id') || return 0
-  f=$(session_ticket_file "$session")
+  call=$(payload_field "$payload" '.tool_use_id') || return 0
+  [ -n "$call" ] || return 0
+  f=$(call_ticket_file "$call")
   [ -f "$f" ] || return 0
   rm -f "$(cat "$f" 2>/dev/null)" "$f" 2>/dev/null
   return 0
@@ -220,8 +286,10 @@ ticket_num_field() {
 # The head ticket is the holder regardless of its recorded state: a ticket that
 # reached the head is either running or about to be, and reporting it as waiting
 # would show an empty slot that is not actually free.
+# Reaping here makes status a writer, not a read-only observer, so anything
+# polling it on a timer is also what keeps the queue tidy.
 cmd_status() {
-  local t first=1 running=null entries=() json
+  local t first=1 running=null entries=() json now
   ticket_reap
   for t in $(printf '%s\n' "$(queue_dir)"/*.json 2>/dev/null | sort); do
     [ -e "$t" ] || continue
@@ -243,7 +311,14 @@ cmd_status() {
   # An idle queue has nothing to feed jq: return here rather than leaning on
   # jq to tolerate the stray blank line an empty entries array would add.
   [ "$running" = null ] && [ ${#entries[@]} -eq 0 ] && return 0
-  printf '%s\n' "$running" "${entries[@]}" | jq -r 'select(. != null) | "\(.key)\t\(.cmd)"'
+  now=$(( $(date +%s%N) / 1000000 ))
+  printf '%s\n' "$running" "${entries[@]}" | jq -r --argjson now "$now" '
+    select(. != null)
+    | ((($now - .since) / 1000 | floor) | if . < 0 then 0 else . end) as $s
+    | (if $s < 60 then "\($s)s"
+       elif $s < 3600 then "\($s / 60 | floor)m"
+       else "\($s / 3600 | floor)h\($s % 3600 / 60 | floor)m" end) as $age
+    | "\(.key)\t\($age)\t\(.cmd)"'
 }
 
 # Source-guard: sourcing loads the helpers, executing dispatches a subcommand.

@@ -122,7 +122,7 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 //
 // Below this the board's nine columns no longer fit beside the queue, so the
 // queue gives way rather than squeezing the rows it exists to annotate.
-const QUEUE_MIN_SCREEN_WIDTH = 60;
+const QUEUE_MIN_SCREEN_WIDTH = 80;
 
 export function boardLayout(
   screenHeight: number,

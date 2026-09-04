@@ -37,7 +37,28 @@ test("queueRows marks the holder and lists waiters in order", () => {
       { key: "ENG-3", cmd: "go test ./...", since: 30 },
     ],
   });
-  assert.deepEqual(rows, [["QUEUE"], ["{green-fg}▶ ENG-1{/green-fg}"], ["  ENG-2"], ["  ENG-3"]]);
+  assert.deepEqual(rows, [
+    ["QUEUE"],
+    ["{green-fg}▶ ENG-1{/green-fg} {grey-fg}task generate{/grey-fg}"],
+    ["  ENG-2 {grey-fg}pnpm build{/grey-fg}"],
+    ["  ENG-3 {grey-fg}go test ./...{/grey-fg}"],
+  ]);
+});
+
+test("queueRows truncates a command that would overflow the pane", () => {
+  const rows = queueRows({
+    running: { key: "ENG-1234", cmd: "task api:gqlgen --force --verbose", since: 10 },
+    waiting: [],
+  });
+  const visible = rows[1][0].replace(/\{[^{}]*\}/g, "");
+  assert.ok(visible.length <= QUEUE_PANE_WIDTH - 4, `"${visible}" fits the pane interior`);
+  assert.ok(visible.startsWith("▶ ENG-1234 task"), `"${visible}" keeps the key and the head of the command`);
+  assert.ok(visible.endsWith("…"), `"${visible}" marks the truncation`);
+});
+
+test("queueRows leaves the key alone when a ticket carries no command", () => {
+  const rows = queueRows({ running: { key: "ENG-1", cmd: "", since: 10 }, waiting: [] });
+  assert.deepEqual(rows[1], ["{green-fg}▶ ENG-1{/green-fg}"]);
 });
 
 test("queueRows says idle rather than rendering a bare header", () => {

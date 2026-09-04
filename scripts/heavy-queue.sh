@@ -52,10 +52,28 @@ strip_cd_prefix() {
   printf '%s' "$cmd"
 }
 
+# A command also reaches the hook behind an env assignment, inside a subshell,
+# or as the body of a `bash -c`. Peel every layer so both the match and the
+# ticket see the real command rather than its wrapper.
+unwrap_command() {
+  local cmd=$1 prev=
+  while [ "$cmd" != "$prev" ]; do
+    prev=$cmd
+    cmd=$(strip_cd_prefix "$cmd")
+    [[ $cmd =~ ^[[:space:]]*\((.*)\)[[:space:]]*$ ]] && cmd=${BASH_REMATCH[1]}
+    [[ $cmd =~ ^[[:space:]]*(ba|z|)sh[[:space:]]+-c[[:space:]]+\"(.*)\"[[:space:]]*$ ]] && cmd=${BASH_REMATCH[2]}
+    [[ $cmd =~ ^[[:space:]]*(ba|z|)sh[[:space:]]+-c[[:space:]]+\'(.*)\'[[:space:]]*$ ]] && cmd=${BASH_REMATCH[2]}
+    while [[ $cmd =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+(.*)$ ]]; do
+      cmd=${BASH_REMATCH[1]}
+    done
+  done
+  printf '%s' "$cmd"
+}
+
 is_heavy() {
   local cmd
   [ -n "${YIMBOT_HEAVY_HELD:-}" ] && return 1
-  cmd=$(strip_cd_prefix "$1")
+  cmd=$(unwrap_command "$1")
   case $cmd in *heavy-queue.sh\ hold*) return 1 ;; esac
   printf '%s' "$cmd" | grep -Eq "$HEAVY_PATTERNS"
 }
@@ -152,7 +170,7 @@ ticket_head() {
 hold_ticket() {
   [ -n "${YIMBOT_HEAVY_TICKETED:-}" ] && return 0
   HEAVY_TICKET=$(ticket_path)
-  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(strip_cd_prefix "$1")" running || return 0
+  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(unwrap_command "$1")" running || return 0
   trap 'rm -f "$HEAVY_TICKET" 2>/dev/null' EXIT
   return 0
 }
@@ -248,7 +266,7 @@ cmd_pre() {
 
   cwd=$(payload_field "$payload" '.cwd') || cwd=$PWD
   key=$(heavy_key_for "$cwd")
-  stripped=$(strip_cd_prefix "$cmd")
+  stripped=$(unwrap_command "$cmd")
   # Losing the queue never costs the lock: every path below still rewrites the
   # command through hold. Dropping the flag with the ticket is what lets hold
   # write a fresh one for what it is about to run.

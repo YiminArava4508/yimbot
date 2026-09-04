@@ -15,6 +15,7 @@ assert_fails() { if "$@"; then echo "FAIL: expected failure: $*"; fail=1; fi; }
 assert_defined heavy_conf_load
 assert_defined strip_cd_prefix
 assert_defined is_heavy
+assert_defined unwrap_command
 
 heavy_conf_load
 
@@ -41,6 +42,33 @@ assert_fails is_heavy 'git status'
 assert_fails is_heavy 'ls -la'
 assert_fails is_heavy 'echo task generate'
 assert_fails is_heavy 'cat Taskfile.yaml'
+
+# Commands reach the hook wrapped: an env assignment, a subshell, or a `bash -c`
+# around the real work. Unwrap before matching, or the queue sees none of them.
+assert_eq "$(unwrap_command 'CGO_ENABLED=0 go build ./...')" "go build ./..." "strips an env assignment"
+assert_eq "$(unwrap_command 'GOOS=linux GOFLAGS=-mod=mod go build ./...')" "go build ./..." "strips a run of env assignments"
+assert_eq "$(unwrap_command 'cd /a && CGO_ENABLED=0 go build ./...')" "go build ./..." "strips a cd then an env assignment"
+assert_eq "$(unwrap_command '(cd api && go build ./...)')" "go build ./..." "strips a subshell"
+assert_eq "$(unwrap_command 'bash -c "go build ./..."')" "go build ./..." "strips a bash -c wrapper"
+assert_eq "$(unwrap_command "sh -c 'go build ./...'")" "go build ./..." "strips an sh -c wrapper"
+assert_eq "$(unwrap_command 'go build ./...')" "go build ./..." "leaves an unwrapped command alone"
+assert_ok is_heavy 'CGO_ENABLED=0 go build ./...'
+assert_ok is_heavy '(cd api && go build ./...)'
+assert_ok is_heavy 'bash -c "go build ./..."'
+
+# gqlgen is the codegen step this queue exists for, in every form a session runs
+# it: the task wrapper, the module through `go run`, and the bare binary.
+assert_ok is_heavy 'task api:gqlgen'
+assert_ok is_heavy 'go run github.com/99designs/gqlgen generate'
+assert_ok is_heavy 'gqlgen generate'
+
+# `go run` otherwise stays out: it is usually serve-graphql, which never exits.
+assert_fails is_heavy 'go run ./cmd/serve-graphql'
+
+# The config flag takes its value with a space as often as with an `=`.
+assert_ok is_heavy 'graphql-codegen --config codegen.ts'
+assert_ok is_heavy 'graphql-codegen --config=codegen.ts'
+assert_fails is_heavy 'graphql-codegen --watch'
 
 # A command already holding the slot must not queue behind itself: the flock is
 # not reentrant, so a nested match would deadlock against its own parent.
@@ -372,9 +400,9 @@ assert_eq "$(cmd_status --json | jq -r '.waiting | length')" "1" "only the non-h
 assert_eq "$(cmd_status | grep -c 'ENG-1')" "1" "the human table names the holder"
 
 # The human table reports how long each entry has held or waited for the slot.
-printf '{"key":"ENG-1","cmd":"task generate","state":"running","since":%s}\n' "$(( ( $(date +%s) - 90 ) * 1000 ))" > "$R"
+printf '{"key":"ENG-1","cmd":"task generate","state":"running","since":%s}\n' "$(( $(date +%s%N) / 1000000 - 90000 ))" > "$R"
 assert_eq "$(cmd_status | head -1 | cut -f2)" "1m" "the human table shows how long the holder has held the slot"
-printf '{"key":"ENG-1","cmd":"task generate","state":"running","since":%s}\n' "$(( ( $(date +%s) - 5 ) * 1000 ))" > "$R"
+printf '{"key":"ENG-1","cmd":"task generate","state":"running","since":%s}\n' "$(( $(date +%s%N) / 1000000 - 5000 ))" > "$R"
 assert_eq "$(cmd_status | head -1 | cut -f2)" "5s" "a short hold reports in seconds"
 rm -f "$(queue_dir)"/*.json
 

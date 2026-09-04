@@ -585,6 +585,11 @@ test("boardLayout reserves the right edge for the queue pane", () => {
   assert.equal(layout.merge.right, QUEUE_PANE_WIDTH);
 });
 
+test("boardLayout drops the queue pane rather than let it crowd the board", () => {
+  assert.equal(boardLayout(40, 72).queue, null);
+  assert.ok(boardLayout(40, 80).queue, "80 columns leaves room for the board beside the pane");
+});
+
 test("boardLayout drops the queue pane on a narrow screen", () => {
   const layout = boardLayout(40, 50);
   assert.equal(layout.queue, null);

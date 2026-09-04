@@ -545,7 +545,8 @@ export function runTui(opts: {
   const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane };
   tasksPane.focus();
 
-  // Read-only: never focused, never in the pane rotation. Inspection and
+  // Never focused, never in the pane rotation. Reading the queue reaps stale
+  // tickets, so this pane is a writer and not an observer. Inspection and
   // force-release live in `pnpm heavy status`.
   const queuePane = blessed.listtable({
     parent: screen,
@@ -611,9 +612,11 @@ export function runTui(opts: {
     tasksPane.right = layout.tasks.right;
     reviewPane.right = layout.review.right;
     mergePane.right = layout.merge.right;
-    if (layout.queue) {
+    // Skip the read while an overlay hides the pane: it reaps tickets, so
+    // polling it here would write state nobody can see.
+    if (layout.queue && !isOverlayOpen()) {
       queuePane.setData(queueRows(readQueueState()));
-      if (!isOverlayOpen()) queuePane.show();
+      queuePane.show();
     } else {
       queuePane.hide();
     }

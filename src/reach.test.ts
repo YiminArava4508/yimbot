@@ -184,13 +184,6 @@ test("observeReach marks the service down on an unauthorized failure and rethrow
   assert.deepEqual(unreachable(), ["linear"]);
 });
 
-test("the mcp services sort after the daemon's own three", () => {
-  resetReach();
-  recordReach("github-mcp", false, 0);
-  recordReach("github", false, 0);
-  assert.deepEqual(unreachable(0), ["github", "github-mcp"]);
-});
-
 test("classifyError keeps a claude exit as reached even when its stderr quotes a credential hint", () => {
   assert.equal(classifyError(new Error("claude exited 1: tool failed: run gh auth login first")), "reached");
 });

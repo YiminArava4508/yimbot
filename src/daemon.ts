@@ -39,7 +39,6 @@ import {
 import { readMode } from "./mode.ts";
 import { setOpenPrKeys } from "./open-prs.ts";
 import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
-import { startMcpHealth } from "./mcp-health.ts";
 import { observeReach } from "./reach.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { ensureHostLinks } from "./setup.ts";
@@ -406,11 +405,9 @@ export async function startDaemon(): Promise<() => void> {
   };
   void safeSync();
   const syncTimer = setInterval(() => void safeSync(), heartbeatIntervalMinutes * 60 * 1000);
-  const stopMcpHealth = startMcpHealth((msg) => console.log(`[yimbot] ${msg}`));
 
   return () => {
     clearInterval(syncTimer);
-    stopMcpHealth();
     stop();
   };
 }

@@ -1,27 +1,23 @@
 // src/reach.ts
-// Whether the outside services the daemon depends on are answering. The first
-// three are not polled: every real gh, Linear and claude call reports its own
+// Whether the three outside services the daemon depends on are answering.
+// Nothing is polled: every real gh, Linear and claude call reports its own
 // outcome through observeReach, so the signal is exactly what the daemon
-// experienced. github-mcp is the one exception: the ticket sessions reach
-// GitHub through Claude Code's MCP plugin, which the daemon never calls, so
-// mcp-health.ts probes it on a slow timer and records the result here. A
-// service nobody has called has nothing to say, and the board shows a warning
-// only for one that is currently failing.
+// experienced. A service nobody has called has nothing to say, and the board
+// shows a warning only for one that is currently failing.
 import { connect } from "node:net";
 import { envOr } from "./env.ts";
 
-export type Service = "github" | "linear" | "claude" | "github-mcp";
+export type Service = "github" | "linear" | "claude";
 
 // The order the board lists them in, so two failing services always read the
 // same way round.
-const SERVICES: Service[] = ["github", "linear", "claude", "github-mcp"];
+const SERVICES: Service[] = ["github", "linear", "claude"];
 
 // Where to knock when a call dies without saying why (see "timeout" below).
 const HOSTS: Record<Service, string> = {
   github: "api.github.com",
   linear: "api.linear.app",
   claude: "api.anthropic.com",
-  "github-mcp": "api.githubcopilot.com",
 };
 
 // How long a recorded failure keeps showing without a further signal. gh and

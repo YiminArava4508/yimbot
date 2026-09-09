@@ -312,18 +312,28 @@ more judged round and `MAX_CONTINUATIONS` counts from zero again. This is true
 of any restart, including quitting the board.
 
 The status line stays quiet while the outside services answer. When one stops
-answering, a red `⚠ github`, `⚠ linear` or `⚠ claude` appears at its left.
-Nothing is polled behind it: every gh, Linear and claude call the daemon already
-makes reports its own outcome. Only a failure that never got an answer counts, so
-a 404, a GraphQL error and a non-zero claude exit all leave the service marked
-reachable, and a failure whose wording we do not recognize leaves the last state
-standing rather than guessing. The one exception is a call killed at our own
-deadline: the claude CLI retries a transport failure internally instead of
+answering, a red `⚠ github`, `⚠ linear`, `⚠ claude` or `⚠ github-mcp` appears at
+its left. For the first three nothing is polled: every gh, Linear and claude
+call the daemon already makes reports its own outcome. A failure that never got
+an answer counts, and so does a rejected credential (an expired Linear key, a gh
+token that needs `gh auth login`), since every call will fail until someone fixes
+it. A 404, an ordinary GraphQL error and a non-zero claude exit all leave the
+service marked reachable, and a failure whose wording we do not recognize leaves
+the last state standing rather than guessing. The one exception is a call killed
+at our own deadline: the claude CLI retries a transport failure internally instead of
 exiting, so an Anthropic outage reaches us only as that timeout, and a single TCP
 connect to the host settles whether it was the network or just a slow prompt. A
 warning clears on that service's next successful call, and expires on its own
 after `REACH_TTL_MS` (15 minutes by default) so a one-off failure on a
 rarely-called service does not sit there.
+
+`github-mcp` is the one probed service: the ticket sessions reach GitHub through
+Claude Code's `plugin:github:github` MCP, which the daemon never calls itself.
+Every `MCP_HEALTH_INTERVAL_MINUTES` (30 by default; `0` or `off` disables) it
+runs `claude mcp list`, which connects to each registered server, and marks the
+plugin down when it fails to connect, needs authentication or is not registered.
+The reason lands in the daemon log as `mcp health: github-mcp down: ...`. A
+killed or failing `claude mcp list` only logs and leaves the last state standing.
 
 While the board runs it binds `prefix + Y` on the tmux
 server, so `prefix + Y` from any session (a ticket session yimbot opened or one
@@ -395,9 +405,11 @@ begins with a two-tier prerequisite pre-flight:
   manager, or `npm`/`corepack` for `claude`/`pnpm`, `gh auth login` for auth) and
   re-checks; the rest show exact instructions and loop until fixed.
 - **Recommended (warns, never blocks):** `gh` token `repo`+`workflow` scopes and
-  git identity (both offered as one-command fixes), the `linear-server` /
-  `shortcut` MCP servers the ticket sessions fetch through, and a tmux
-  status line that shows `@feature_status` (the ready-to-test flag).
+  git identity (both offered as one-command fixes), the `shortcut` MCP server
+  the `sc-*` sessions fetch through, and a tmux status line that shows
+  `@feature_status` (the ready-to-test flag). Linear sessions need no MCP: they
+  read and write tickets through `~/get-ticket.sh`, `~/comment-ticket.sh` and
+  `~/move-ticket.sh`, which use the daemon's `LINEAR_API_KEY`.
 
 Then it authenticates your Linear API key, lets you pick your team and workflow
 states from the real Linear data, validates the codebase path is a git repo,

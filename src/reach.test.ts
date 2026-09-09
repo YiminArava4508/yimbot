@@ -161,3 +161,36 @@ test("observeReach clears the warning on a killed call whose host answers the pr
   );
   assert.deepEqual(unreachable(), []);
 });
+
+test("classifyError calls a rejected credential unauthorized, not the service answering", () => {
+  assert.equal(classifyError(execErr({ stderr: "HTTP 401: Bad credentials (https://api.github.com/graphql)" })), "unauthorized");
+  assert.equal(classifyError(execErr({ stderr: "To get started with GitHub CLI, please run:  gh auth login" })), "unauthorized");
+  assert.equal(classifyError(new Error("Linear API 401: unauthorized")), "unauthorized");
+  assert.equal(classifyError(new Error("Linear API 403: forbidden")), "unauthorized");
+  assert.equal(classifyError(new Error("Linear GraphQL: Authentication required, not authenticated")), "unauthorized");
+});
+
+test("classifyError still reads a Linear reply with any other status as reached", () => {
+  assert.equal(classifyError(new Error("Linear API 500: boom")), "reached");
+});
+
+test("observeReach marks the service down on an unauthorized failure and rethrows", async () => {
+  resetReach();
+  await assert.rejects(
+    observeReach("linear", async () => {
+      throw new Error("Linear API 401: unauthorized");
+    }),
+  );
+  assert.deepEqual(unreachable(), ["linear"]);
+});
+
+test("the mcp services sort after the daemon's own three", () => {
+  resetReach();
+  recordReach("github-mcp", false, 0);
+  recordReach("github", false, 0);
+  assert.deepEqual(unreachable(0), ["github", "github-mcp"]);
+});
+
+test("classifyError keeps a claude exit as reached even when its stderr quotes a credential hint", () => {
+  assert.equal(classifyError(new Error("claude exited 1: tool failed: run gh auth login first")), "reached");
+});

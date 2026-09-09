@@ -1,6 +1,7 @@
 import type { Blocker } from "./blocked.ts";
 import { labelFilterAllows, type LabelFilter } from "./labels.ts";
 import { observeReach } from "./reach.ts";
+import type { Ticket } from "./ticket-format.ts";
 
 const API_URL = "https://api.linear.app/graphql";
 
@@ -56,37 +57,34 @@ async function gql<T>(
   variables: Record<string, unknown>,
   fetchImpl: typeof fetch,
 ): Promise<T> {
-  // Wrapped so the board can warn when Linear stops answering. The body read is
-  // inside the wrapper too: a connection dropped after the headers fails there,
-  // not on the fetch, and would otherwise be invisible. A GraphQL error or a
-  // non-2xx below is not a reachability problem, since we got a reply.
+  // Wrapped so the board can warn when Linear stops answering. The body read
+  // and the reply checks are inside the wrapper too: a connection dropped after
+  // the headers fails on the read, and a rejected key arrives as a 400 whose
+  // GraphQL error says "not authenticated". classifyError sorts those out: a
+  // 404 or an ordinary GraphQL error is the service answering, a credential
+  // rejection marks it down.
   type Payload = { data?: T; errors?: { message: string }[] };
-  const reply = await observeReach<{ ok: true; payload: Payload } | { ok: false; status: number; body: string }>(
-    "linear",
-    async () => {
-      const res = await fetchImpl(API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: apiKey,
-        },
-        body: JSON.stringify({ query, variables }),
-      });
-      if (!res.ok) return { ok: false, status: res.status, body: await res.text() };
-      return { ok: true, payload: (await res.json()) as Payload };
-    },
-  );
-  if (!reply.ok) {
-    throw new Error(`Linear API ${reply.status}: ${reply.body}`);
-  }
-  const payload = reply.payload;
-  if (payload.errors?.length) {
-    throw new Error(`Linear GraphQL: ${payload.errors.map((e) => e.message).join("; ")}`);
-  }
-  if (!payload.data) {
-    throw new Error("Linear GraphQL: response had no data");
-  }
-  return payload.data;
+  return observeReach("linear", async () => {
+    const res = await fetchImpl(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: apiKey,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!res.ok) {
+      throw new Error(`Linear API ${res.status}: ${await res.text()}`);
+    }
+    const payload = (await res.json()) as Payload;
+    if (payload.errors?.length) {
+      throw new Error(`Linear GraphQL: ${payload.errors.map((e) => e.message).join("; ")}`);
+    }
+    if (!payload.data) {
+      throw new Error("Linear GraphQL: response had no data");
+    }
+    return payload.data;
+  });
 }
 
 // Linear reports a missing entity (e.g. issue(id) with no matching issue) as a
@@ -668,6 +666,15 @@ export async function upsertMarkedComment(
     if (!data.commentUpdate.success) throw new Error(`commentUpdate failed for ${existing.id}`);
     return;
   }
+  await createComment(apiKey, issueId, body, fetchImpl);
+}
+
+export async function createComment(
+  apiKey: string,
+  issueId: string,
+  body: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
   type CreateData = { commentCreate: { success: boolean } };
   const data = await gql<CreateData>(
     apiKey,
@@ -678,6 +685,99 @@ export async function upsertMarkedComment(
     fetchImpl,
   );
   if (!data.commentCreate.success) throw new Error(`commentCreate failed for ${issueId}`);
+}
+
+// Everything a session needs to read a ticket: what get-ticket.sh prints.
+// Linear pages a bare connection at 50; 250 is its ceiling per request, and a
+// ticket with more comments than that is not a realistic case.
+export type FullTicket = Ticket & { id: string; teamId: string };
+
+export async function fetchTicket(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<FullTicket> {
+  type Data = {
+    issue: {
+      id: string;
+      identifier: string;
+      title: string;
+      url: string;
+      description: string | null;
+      estimate: number | null;
+      state: { name: string };
+      labels: { nodes: { name: string }[] };
+      parent: { identifier: string } | null;
+      assignee: { name: string } | null;
+      team: { id: string };
+      comments: { nodes: { body: string; createdAt: string; user: { name: string } | null }[] };
+    } | null;
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query Ticket($id: String!) {
+      issue(id: $id) {
+        id identifier title url description estimate
+        state { name }
+        labels { nodes { name } }
+        parent { identifier }
+        assignee { name }
+        team { id }
+        comments(first: 250) { nodes { body createdAt user { name } } }
+      }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  const issue = data.issue;
+  if (!issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  const comments = issue.comments.nodes
+    .map((c) => ({ author: c.user?.name ?? null, createdAt: c.createdAt, body: c.body }))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return {
+    id: issue.id,
+    teamId: issue.team.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    url: issue.url,
+    description: issue.description ?? "",
+    estimate: issue.estimate,
+    state: issue.state.name,
+    labels: issue.labels.nodes.map((l) => l.name),
+    parent: issue.parent?.identifier ?? null,
+    assignee: issue.assignee?.name ?? null,
+    comments,
+  };
+}
+
+// Move an issue into the team state with this name (case-insensitive), and
+// return the state's canonical name. What move-ticket.sh runs.
+export async function moveIssueToStateByName(
+  apiKey: string,
+  identifier: string,
+  stateName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  type Data = { issue: { id: string; team: { id: string } } | null };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueTeam($id: String!) { issue(id: $id) { id team { id } } }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  if (!data.issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  const states = await fetchTeamStates(apiKey, data.issue.team.id, fetchImpl);
+  const want = stateName.trim().toLowerCase();
+  const state = states.find((s) => s.name.toLowerCase() === want);
+  if (!state) {
+    throw new Error(`no state "${stateName}" on this team; states are: ${states.map((s) => s.name).join(", ")}`);
+  }
+  await moveIssueToState(apiKey, data.issue.id, state.id, fetchImpl);
+  return state.name;
 }
 
 export async function fetchMarkedCommentBody(

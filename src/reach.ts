@@ -1,23 +1,27 @@
 // src/reach.ts
-// Whether the three outside services the daemon depends on are answering.
-// Nothing is polled: every real gh, Linear and claude call reports its own
+// Whether the outside services the daemon depends on are answering. The first
+// three are not polled: every real gh, Linear and claude call reports its own
 // outcome through observeReach, so the signal is exactly what the daemon
-// experienced. A service nobody has called has nothing to say, and the board
-// shows a warning only for one that is currently failing.
+// experienced. github-mcp is the one exception: the ticket sessions reach
+// GitHub through Claude Code's MCP plugin, which the daemon never calls, so
+// mcp-health.ts probes it on a slow timer and records the result here. A
+// service nobody has called has nothing to say, and the board shows a warning
+// only for one that is currently failing.
 import { connect } from "node:net";
 import { envOr } from "./env.ts";
 
-export type Service = "github" | "linear" | "claude";
+export type Service = "github" | "linear" | "claude" | "github-mcp";
 
 // The order the board lists them in, so two failing services always read the
 // same way round.
-const SERVICES: Service[] = ["github", "linear", "claude"];
+const SERVICES: Service[] = ["github", "linear", "claude", "github-mcp"];
 
 // Where to knock when a call dies without saying why (see "timeout" below).
 const HOSTS: Record<Service, string> = {
   github: "api.github.com",
   linear: "api.linear.app",
   claude: "api.anthropic.com",
+  "github-mcp": "api.githubcopilot.com",
 };
 
 // How long a recorded failure keeps showing without a further signal. gh and
@@ -57,6 +61,9 @@ export function unreachable(now: number = Date.now()): Service[] {
 //   unreachable - we never got an answer, and the error says why.
 //   reached     - the service answered, just not with what we wanted (a 404, a
 //                 GraphQL error, a non-zero exit).
+//   unauthorized - the service answered by rejecting our credential. Reachable
+//                 in the strict sense, but every call will fail until someone
+//                 fixes the key, so it shows as down.
 //   timeout     - the call was killed at our own deadline. Proves nothing on its
 //                 own: the claude CLI retries a transport failure internally
 //                 rather than exiting, so a real Anthropic outage arrives here
@@ -65,7 +72,7 @@ export function unreachable(now: number = Date.now()): Service[] {
 //   unknown     - none of the above. Leaves the last known state standing,
 //                 because guessing "reached" would blink a live warning off
 //                 whenever an outage threw a phrasing we do not recognize.
-export type Outcome = "unreachable" | "reached" | "timeout" | "unknown";
+export type Outcome = "unreachable" | "reached" | "unauthorized" | "timeout" | "unknown";
 
 // Node's fetch reports a transport failure as `TypeError: fetch failed` with the
 // real reason on `cause.code`; gh and other Go tools print theirs to stderr.
@@ -104,6 +111,16 @@ const NET_TEXT = [
   "terminated",
 ];
 
+// How gh and Linear word a rejected credential. gh prints the first two; Linear
+// answers a bad key with a 400 whose GraphQL error carries the last two.
+const AUTH_TEXT = [
+  "bad credentials",
+  "gh auth login",
+  "authentication required",
+  "not authenticated",
+];
+const LINEAR_AUTH_STATUS = /^linear api (401|403)\b/;
+
 function codeOf(err: unknown): unknown {
   const e = err as { code?: unknown; cause?: { code?: unknown } };
   return e?.code ?? e?.cause?.code;
@@ -125,6 +142,10 @@ export function classifyError(err: unknown): Outcome {
   if (typeof code === "string" && NET_CODES.has(code)) return "unreachable";
   const text = evidence(err);
   if (NET_TEXT.some((t) => text.includes(t))) return "unreachable";
+  // A claude exit is the API answering, whatever its stderr happens to quote;
+  // the credential wordings below belong to gh and Linear only.
+  if (text.startsWith("claude exited ")) return "reached";
+  if (AUTH_TEXT.some((t) => text.includes(t)) || LINEAR_AUTH_STATUS.test(text)) return "unauthorized";
   // Killed at our own deadline: execFile sets killed/signal with a null exit
   // code, and runHeadless says so in as many words.
   const e = err as { killed?: unknown };
@@ -133,7 +154,7 @@ export function classifyError(err: unknown): Outcome {
   // A real exit code means the process ran and reported back, so the service
   // behind it answered. Same for the two wordings we build ourselves.
   if (typeof code === "number") return "reached";
-  if (text.startsWith("claude exited ") || text.startsWith("linear graphql")) return "reached";
+  if (text.startsWith("linear ")) return "reached";
   return "unknown";
 }
 
@@ -165,6 +186,7 @@ export async function observeReach<T>(service: Service, call: () => Promise<T>, 
   } catch (err) {
     switch (classifyError(err)) {
       case "unreachable":
+      case "unauthorized":
         recordReach(service, false);
         break;
       case "reached":

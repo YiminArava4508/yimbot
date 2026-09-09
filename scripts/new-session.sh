@@ -69,9 +69,9 @@ seed_prompt_for() {
   elif [[ "$name" =~ ^sc-([0-9]+)- ]]; then
     printf 'Fetch Shortcut story %s via the Shortcut MCP (mcp__shortcut__stories-get-by-id) and read its description, acceptance criteria, and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^eng-([0-9]+)-cont-[0-9]+$ ]]; then
-    printf 'Fetch Linear issue ENG-%s via the Linear MCP (mcp__linear-server__get_issue) and read the yimbot acceptance-criteria tracker comment. Implement ONLY the still-open (unchecked) criteria, cutting your PR from main. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
+    printf 'Run ~/get-ticket.sh ENG-%s to read Linear issue ENG-%s and find the yimbot acceptance-criteria tracker comment. Implement ONLY the still-open (unchecked) criteria, cutting your PR from main. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}" "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^eng-([0-9]+)- ]]; then
-    printf 'Fetch Linear issue ENG-%s via the Linear MCP (mcp__linear-server__get_issue) and read its description and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
+    printf 'Run ~/get-ticket.sh ENG-%s to read Linear issue ENG-%s (description and comments). Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}" "${BASH_REMATCH[1]}"
   fi
 }
 

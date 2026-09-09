@@ -4,6 +4,7 @@ import { resetReach, unreachable } from "./reach.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
+  createComment,
   createSubIssue,
   fetchIssueEstimate,
   fetchIssueSplitInfo,
@@ -17,9 +18,11 @@ import {
   fetchIssueByIdentifier,
   fetchIssueState,
   fetchTeamLabels,
+  fetchTicket,
   fetchViewer,
   isMissingEntityError,
   moveIssueToState,
+  moveIssueToStateByName,
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
@@ -684,4 +687,92 @@ test("a Linear error response leaves linear reachable, since it answered", async
     })) as unknown as typeof fetch;
   await assert.rejects(fetchViewer("key", refusing));
   assert.deepEqual(unreachable(), []);
+});
+
+test("a rejected Linear key marks linear down, even though it answered", async () => {
+  resetReach();
+  const rejecting = fakeFetch({ errors: [{ message: "Authentication required, not authenticated" }] }, false, 400);
+  await assert.rejects(fetchViewer("bad", rejecting));
+  assert.deepEqual(unreachable(), ["linear"]);
+});
+
+// Answers each GraphQL call from the queue in order, recording what it was asked.
+function fakeSequence(replies: JsonBody[]) {
+  const calls: { query: string; variables: Record<string, unknown> }[] = [];
+  const fetchImpl = (async (_url: string, init: { body: string }) => {
+    calls.push(JSON.parse(init.body));
+    const data = replies.shift();
+    return { ok: true, status: 200, json: async () => ({ data }), text: async () => "" };
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+test("fetchTicket maps the issue, its parent and its comments oldest first", async () => {
+  const { fetchImpl } = fakeSequence([
+    {
+      issue: {
+        id: "uuid-1",
+        identifier: "ENG-42",
+        title: "Add widget",
+        url: "https://linear.app/x/issue/ENG-42",
+        description: "Build it",
+        estimate: 3,
+        state: { name: "Todo" },
+        labels: { nodes: [{ name: "api" }] },
+        parent: { identifier: "ENG-40" },
+        assignee: { name: "Yimin" },
+        team: { id: "team-1" },
+        comments: {
+          nodes: [
+            { body: "second", createdAt: "2026-09-02T00:00:00.000Z", user: { name: "B" } },
+            { body: "first", createdAt: "2026-09-01T00:00:00.000Z", user: null },
+          ],
+        },
+      },
+    },
+  ]);
+  const t = await fetchTicket("key", "ENG-42", fetchImpl);
+  assert.equal(t.id, "uuid-1");
+  assert.equal(t.teamId, "team-1");
+  assert.equal(t.parent, "ENG-40");
+  assert.equal(t.assignee, "Yimin");
+  assert.equal(t.state, "Todo");
+  assert.deepEqual(t.labels, ["api"]);
+  assert.deepEqual(
+    t.comments.map((c) => [c.author, c.body]),
+    [
+      [null, "first"],
+      ["B", "second"],
+    ],
+  );
+});
+
+test("fetchTicket throws the missing-entity wording for an unknown identifier", async () => {
+  const { fetchImpl } = fakeSequence([{ issue: null }]);
+  await assert.rejects(fetchTicket("key", "ENG-999", fetchImpl), /Entity not found/);
+});
+
+test("createComment posts the body against the issue id", async () => {
+  const { fetchImpl, calls } = fakeSequence([{ commentCreate: { success: true } }]);
+  await createComment("key", "uuid-1", "hello", fetchImpl);
+  assert.deepEqual(calls[0].variables, { issueId: "uuid-1", body: "hello" });
+});
+
+test("moveIssueToStateByName resolves the team's state by name, case-insensitively", async () => {
+  const { fetchImpl, calls } = fakeSequence([
+    { issue: { id: "uuid-1", team: { id: "team-1" } } },
+    { team: { states: { nodes: [{ id: "s-todo", name: "Todo", type: "unstarted" }, { id: "s-rev", name: "In Review", type: "started" }] } } },
+    { issueUpdate: { success: true } },
+  ]);
+  const moved = await moveIssueToStateByName("key", "ENG-42", "in review", fetchImpl);
+  assert.equal(moved, "In Review");
+  assert.deepEqual(calls[2].variables, { id: "uuid-1", stateId: "s-rev" });
+});
+
+test("moveIssueToStateByName names the team's states when the target does not exist", async () => {
+  const { fetchImpl } = fakeSequence([
+    { issue: { id: "uuid-1", team: { id: "team-1" } } },
+    { team: { states: { nodes: [{ id: "s-todo", name: "Todo", type: "unstarted" }] } } },
+  ]);
+  await assert.rejects(moveIssueToStateByName("key", "ENG-42", "Nope", fetchImpl), /no state "Nope".*Todo/);
 });

@@ -116,11 +116,14 @@ review, split, and local-server steps above do not apply.
 
 1. **Investigate** as cheaply as correctness allows. Any code you write is
    throwaway scaffolding: never open a PR for it.
-2. **Report findings on the ticket.** Post a comment (Linear or Shortcut MCP)
-   with: the question, what you tried, the answer or recommendation, and
-   suggested next steps (for example the follow-up ticket to write).
-3. **Move the ticket to the Review column.** The human reads the findings there
-   and moves it to Done. For Linear tickets (`eng-*` branches) the daemon then
+2. **Report findings on the ticket.** Post a comment with: the question, what
+   you tried, the answer or recommendation, and suggested next steps (for
+   example the follow-up ticket to write). Linear tickets (`eng-*`): write the
+   markdown to a file and run `~/comment-ticket.sh <TICKET> - < findings.md`.
+   Shortcut tickets (`sc-*`): use the Shortcut MCP.
+3. **Move the ticket to the Review column.** Linear: run
+   `~/move-ticket.sh <TICKET> "In Review"`. Shortcut: use the Shortcut MCP.
+   The human reads the findings there and moves it to Done. For Linear tickets (`eng-*` branches) the daemon then
    reaps this worktree and session once the ticket reaches Done or Canceled,
    but only if step 4 was honored. Shortcut tickets (`sc-*`) are not watched by
    the daemon: note in the findings summary that the session should be ended

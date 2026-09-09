@@ -121,7 +121,8 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 // data row visible (header + 2 border rows) on a tiny screen.
 //
 // Below this the board's nine columns no longer fit beside the queue, so the
-// queue gives way rather than squeezing the rows it exists to annotate.
+// queue gives way rather than squeezing the rows it exists to annotate. The
+// queue holds the left edge and the board panes inset past it.
 const QUEUE_MIN_SCREEN_WIDTH = 80;
 
 export function boardLayout(
@@ -131,7 +132,7 @@ export function boardLayout(
   tasks: { top: number; left: number; right: number; bottom: number };
   review: { left: number; right: number; bottom: number; height: number };
   merge: { left: number; right: number; bottom: number; height: number };
-  queue: { top: number; right: number; width: number; bottom: number } | null;
+  queue: { top: number; left: number; width: number; bottom: number } | null;
 } {
   const footerRows = 1;
   const titleRows = 1;
@@ -139,10 +140,10 @@ export function boardLayout(
   const showQueue = screenWidth >= QUEUE_MIN_SCREEN_WIDTH;
   const inset = showQueue ? QUEUE_PANE_WIDTH : 0;
   return {
-    tasks: { top: titleRows, left: 0, right: inset, bottom: footerRows + 2 * third },
-    review: { left: 0, right: inset, bottom: footerRows + third, height: third },
-    merge: { left: 0, right: inset, bottom: footerRows, height: third },
-    queue: showQueue ? { top: titleRows, right: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows } : null,
+    tasks: { top: titleRows, left: inset, right: 0, bottom: footerRows + 2 * third },
+    review: { left: inset, right: 0, bottom: footerRows + third, height: third },
+    merge: { left: inset, right: 0, bottom: footerRows, height: third },
+    queue: showQueue ? { top: titleRows, left: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows } : null,
   };
 }
 
@@ -551,7 +552,7 @@ export function runTui(opts: {
   const queuePane = blessed.listtable({
     parent: screen,
     top: 1,
-    right: 0,
+    left: 0,
     width: QUEUE_PANE_WIDTH,
     bottom: 1,
     tags: true,
@@ -609,9 +610,9 @@ export function runTui(opts: {
     mergePane.bottom = layout.merge.bottom;
     mergePane.setLabel(` ready to merge (${merge.length}) `);
     mergePane.setData(mergeData);
-    tasksPane.right = layout.tasks.right;
-    reviewPane.right = layout.review.right;
-    mergePane.right = layout.merge.right;
+    tasksPane.left = layout.tasks.left;
+    reviewPane.left = layout.review.left;
+    mergePane.left = layout.merge.left;
     // Skip the read while an overlay hides the pane: it reaps tickets, so
     // polling it here would write state nobody can see.
     if (layout.queue && !isOverlayOpen()) {

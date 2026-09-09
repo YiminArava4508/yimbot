@@ -8,7 +8,8 @@
 # Subcommands:
 #   pre     PreToolUse hook. Reads the payload on stdin, waits for the slot, and
 #           prints an updatedInput decision rewriting the command through `hold`.
-#   post    PostToolUse hook. Drops the ticket this tool call took.
+#   post    PostToolUse hook. Drops the ticket this tool call took, unless the
+#           hold it handed the ticket to is still running the command.
 #   hold    Runs a command under the flock. What `pre` rewrites commands to.
 #   status  Prints the queue, --json for machines.
 #
@@ -122,9 +123,9 @@ json_escape() {
 # The 2>/dev/null comes first so a failing redirect on a full or unwritable
 # state dir is silenced too, not just the printf.
 ticket_write() {
-  local path=$1 key=$2 cmd=$3 state=$4 tmp=$1.$$.tmp
-  printf '{"key":"%s","cmd":"%s","state":"%s","since":%s}\n' \
-    "$(json_escape "$key")" "$(json_escape "$cmd")" "$state" "$(( $(date +%s%N) / 1000000 ))" \
+  local path=$1 key=$2 cmd=$3 state=$4 owner=${5:-0} tmp=$1.$$.tmp
+  printf '{"key":"%s","cmd":"%s","state":"%s","owner":%s,"since":%s}\n' \
+    "$(json_escape "$key")" "$(json_escape "$cmd")" "$state" "$owner" "$(( $(date +%s%N) / 1000000 ))" \
     2>/dev/null > "$tmp" || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$path" 2>/dev/null
 }
@@ -135,9 +136,35 @@ ticket_field() {
   [[ $line =~ \"$2\":\"(([^\"\\]|\\.)*)\" ]] && printf '%s' "${BASH_REMATCH[1]}"
 }
 
+# since and owner are written as bare JSON numbers, so ticket_field's
+# quoted-string regex cannot read them back.
+ticket_num_field() {
+  local line
+  line=$(cat "$1" 2>/dev/null) || return 1
+  [[ $line =~ \"$2\":([0-9]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# The owner is the process holding the lock, and it is the only thing that knows
+# when the job is over. Claude Code returns a Bash call that outruns its 120s
+# timeout and leaves the command running in the background, so neither the tool
+# call nor a heartbeat can speak for a job that is still pegging the machine.
+ticket_owner_alive() {
+  local owner
+  owner=$(ticket_num_field "$1" owner) || return 1
+  [ -n "$owner" ] && [ "$owner" != 0 ] && kill -0 "$owner" 2>/dev/null
+}
+
 ticket_stale() {
-  local state mtime age limit
+  local state mtime age limit owner
   mtime=$(stat -c %Y "$1" 2>/dev/null) || return 0
+  # A ticket naming an owner is answered by that process and nothing else: alive
+  # means the job is still going however long it takes, gone means the ticket
+  # died with it, whether or not its trap got the chance to run.
+  owner=$(ticket_num_field "$1" owner)
+  if [ -n "$owner" ] && [ "$owner" != 0 ]; then
+    ! kill -0 "$owner" 2>/dev/null
+    return
+  fi
   state=$(ticket_field "$1" state)
   age=$(( $(date +%s) - mtime ))
   limit=$HEAVY_STALE_WAIT
@@ -163,21 +190,30 @@ ticket_head() {
   done
 }
 
-# A hold reached by hand, or by a pre that gave up its place in line, carries no
-# ticket, so `heavy status` and the board pane would both report idle while it
-# holds the machine. Ticket first, trap second, lock last: a ticket that cannot
-# be written is not a reason to skip the lock.
+# The ticket belongs to this process from here on: it takes over the one pre
+# handed it in HEAVY_TICKET, names itself the owner, and drops it on the way
+# out. A hold reached by hand, or by a pre that gave up its place in line,
+# arrives without one and writes its own, so `heavy status` and the board pane
+# cannot report idle while it holds the machine. Ticket first, trap second,
+# lock last: a ticket that cannot be written is not a reason to skip the lock.
 hold_ticket() {
-  [ -n "${YIMBOT_HEAVY_TICKETED:-}" ] && return 0
-  HEAVY_TICKET=$(ticket_path)
-  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(unwrap_command "$1")" running || return 0
-  trap 'rm -f "$HEAVY_TICKET" 2>/dev/null' EXIT
+  # A ticket reaped between pre and here is gone for good, so rejoin at the back
+  # rather than resurrect a path no other waiter is looking at any more.
+  { [ -n "$HEAVY_TICKET" ] && [ -e "$HEAVY_TICKET" ]; } || HEAVY_TICKET=$(ticket_path)
+  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(unwrap_command "$1")" running "$$" || return 0
+  # The path goes into the trap now, not at exit: this hold drops the ticket it
+  # owns even if something reassigns HEAVY_TICKET in between.
+  trap "rm -f $(shell_quote "$HEAVY_TICKET") 2>/dev/null" EXIT
   return 0
 }
 
 cmd_hold() {
   local cmd=$1 rc lock
   export YIMBOT_HEAVY_HELD=1
+  # pre passes the ticket in as an environment assignment. Stop it there: a
+  # nested hold that adopted this ticket would drop it when the inner command
+  # exits, mid-job.
+  export -n HEAVY_TICKET 2>/dev/null
   if ! command -v flock >/dev/null 2>&1; then
     heavy_log "flock missing, running unqueued"
     bash -c "$cmd"
@@ -268,12 +304,11 @@ cmd_pre() {
   key=$(heavy_key_for "$cwd")
   stripped=$(unwrap_command "$cmd")
   # Losing the queue never costs the lock: every path below still rewrites the
-  # command through hold. Dropping the flag with the ticket is what lets hold
-  # write a fresh one for what it is about to run.
-  prefix="YIMBOT_HEAVY_TICKETED=1 "
+  # command through hold. Dropping the handover with the ticket is what lets
+  # hold write a fresh one for what it is about to run.
   HEAVY_TICKET=$(ticket_path)
+  prefix=""
   if ! ticket_write "$HEAVY_TICKET" "$key" "$stripped" waiting; then
-    prefix=""
     heavy_log "cannot write a ticket, holding without a place in line: $stripped"
   else
     call=$(payload_field "$payload" '.tool_use_id') || call=
@@ -285,10 +320,13 @@ cmd_pre() {
     if wait_for_head "$key" "$stripped"; then
       pair_call_ticket "$call"
       ticket_write "$HEAVY_TICKET" "$key" "$stripped" running
+      # Hand hold the ticket to take over, read after the wait rather than
+      # before it: a rejoin swaps the path, and handing over the old one has
+      # hold rejoin at the back for no reason.
+      prefix="HEAVY_TICKET=$(shell_quote "$HEAVY_TICKET") "
     else
       rm -f "$HEAVY_TICKET" 2>/dev/null
       [ -n "$call" ] && rm -f "$(call_ticket_file "$call")" 2>/dev/null
-      prefix=""
       heavy_log "timed out waiting for the slot, holding without a place in line: $stripped"
     fi
   fi
@@ -298,22 +336,21 @@ cmd_pre() {
 }
 
 cmd_post() {
-  local payload call f
+  local payload call f ticket
   payload=$(cat)
   call=$(payload_field "$payload" '.tool_use_id') || return 0
   [ -n "$call" ] || return 0
   f=$(call_ticket_file "$call")
   [ -f "$f" ] || return 0
-  rm -f "$(cat "$f" 2>/dev/null)" "$f" 2>/dev/null
+  ticket=$(cat "$f" 2>/dev/null)
+  rm -f "$f" 2>/dev/null
+  # The call can return long before the command does: Claude Code moves one that
+  # outruns its 120s timeout to the background, and every command this queue
+  # exists for outruns it. So the ticket goes only if nothing is holding the
+  # lock behind it; otherwise that hold's own exit is what clears it.
+  ticket_owner_alive "$ticket" && return 0
+  rm -f "$ticket" 2>/dev/null
   return 0
-}
-
-# since is written as a bare JSON number, so ticket_field's quoted-string
-# regex cannot read it back.
-ticket_num_field() {
-  local line
-  line=$(cat "$1" 2>/dev/null) || return 1
-  [[ $line =~ \"$2\":([0-9]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
 }
 
 # The head ticket is the holder regardless of its recorded state: a ticket that

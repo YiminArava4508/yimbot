@@ -142,6 +142,28 @@ assert_fails ticket_stale "$T3"
 touch -d "@$(( $(date +%s) - HEAVY_MAX_JOB - 60 ))" "$T3"
 assert_ok ticket_stale "$T3"
 
+# A ticket naming a live owner is never stale: a real build outruns HEAVY_MAX_JOB
+# now and then, and reaping the holder's ticket reports an idle queue while the
+# machine is pegged. Once the owner is gone the ticket goes at once, without
+# waiting out the clock.
+sleep 60 &
+OWNER_PID=$!
+T_OWNED=$(ticket_path)
+ticket_write "$T_OWNED" "ENG-5" "task build-all" running "$OWNER_PID"
+touch -d "@$(( $(date +%s) - HEAVY_MAX_JOB - 60 ))" "$T_OWNED"
+assert_fails ticket_stale "$T_OWNED"
+kill "$OWNER_PID" 2>/dev/null
+wait "$OWNER_PID" 2>/dev/null
+assert_ok ticket_stale "$T_OWNED"
+rm -f "$T_OWNED"
+
+# A hold killed outright never runs its trap, so a dead owner clears the head at
+# once rather than blocking every other waiter until HEAVY_MAX_JOB.
+T_DEAD=$(ticket_path)
+ticket_write "$T_DEAD" "ENG-6" "task build-all" running "$OWNER_PID"
+assert_ok ticket_stale "$T_DEAD"
+rm -f "$T_DEAD"
+
 # Reaping clears the stale ones and promotes the next live ticket to head.
 ticket_reap
 assert_fails test -f "$T1"
@@ -196,8 +218,30 @@ rm -f "$(queue_dir)"/*.json
 assert_eq "$(cmd_hold "ls -1 $(queue_dir)/*.json 2>/dev/null | wc -l | tr -d ' '")" "1" "a hand-run hold writes its own ticket"
 assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "the hold ticket goes away when the hold exits"
 
-# pre already wrote a ticket for the session path, so hold must not add a second.
-assert_eq "$(YIMBOT_HEAVY_TICKETED=1 cmd_hold "ls -1 $(queue_dir)/*.json 2>/dev/null | wc -l | tr -d ' '")" "0" "hold does not double-ticket behind pre"
+# pre hands its ticket over rather than leaving hold to write a second one, and
+# hold owns it from there: the ticket has to outlive the tool call, so the
+# process holding the lock is what drops it.
+rm -f "$(queue_dir)"/*.json
+ADOPT=$(ticket_path)
+ticket_write "$ADOPT" "ENG-A" "task generate" running
+assert_eq "$(HEAVY_TICKET="$ADOPT" cmd_hold "ls -1 $(queue_dir)/*.json 2>/dev/null | wc -l | tr -d ' '")" "1" "hold adopts pre's ticket instead of writing a second"
+assert_fails test -e "$ADOPT"
+rm -f "$(queue_dir)"/*.json
+
+# A ticket handed to hold names hold as its owner, which is what keeps a reap
+# and a post off it while the job runs.
+ADOPT=$(ticket_path)
+ticket_write "$ADOPT" "ENG-A" "task generate" running
+ADOPT_COPY=$(mktemp)
+( HEAVY_TICKET="$ADOPT" cmd_hold "cat '$ADOPT' > '$ADOPT_COPY'" )
+assert_eq "$(ticket_num_field "$ADOPT_COPY" owner)" "$$" "hold records itself as the ticket owner"
+rm -f "$ADOPT_COPY" "$(queue_dir)"/*.json
+
+# The held command must not inherit the handover: a nested hold that adopted its
+# parent's ticket would drop it on the inner command's exit.
+ADOPT=$(ticket_path)
+ticket_write "$ADOPT" "ENG-A" "task generate" running
+assert_eq "$(HEAVY_TICKET="$ADOPT" cmd_hold 'printf "[%s]" "${HEAVY_TICKET:-}"')" "[]" "the held command sees no ticket to adopt"
 rm -f "$(queue_dir)"/*.json
 
 # The conf is hand-edited, and the tunables feed arithmetic and flock -w, where
@@ -239,7 +283,9 @@ assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "a cheap command wri
 # run under hold.
 PRE_OUT=$(printf '%s' '{"session_id":"s2","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"task generate"}}' | cmd_pre)
 assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "allow" "a heavy command is allowed"
-assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')" "YIMBOT_HEAVY_TICKETED=1 $HEAVY_SELF hold 'task generate'" "the command is rewritten through hold"
+PRE_CMD=$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')
+assert_eq "${PRE_CMD#HEAVY_TICKET=* }" "$HEAVY_SELF hold 'task generate'" "the command is rewritten through hold"
+assert_eq "${PRE_CMD%% *}" "HEAVY_TICKET=$(shell_quote "$(ticket_head)")" "the rewrite hands pre's ticket to hold"
 assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a heavy command leaves a running ticket"
 assert_eq "$(ticket_field "$(ticket_head)" state)" "running" "the head ticket is marked running"
 
@@ -291,6 +337,34 @@ assert_eq "$(ticket_field "$(ticket_head)" cmd)" "pnpm build" "the surviving tic
 hook_payload s6 tu_two 'pnpm build' | cmd_post
 assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "the second call's own post clears its ticket"
 rm -f "$SECOND_OUT" "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/current"/*
+
+# Claude Code moves a Bash command that outruns its own 120s timeout into the
+# background, and PostToolUse fires there and then while the job keeps holding
+# the lock. Every command this queue exists for outruns that timeout, so a post
+# that dropped the ticket would leave the board reporting an idle queue for the
+# rest of the build.
+rm -f "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/current"/*
+BG_GATE=$(mktemp)
+BG_READY=$(mktemp)
+rm -f "$BG_READY"
+BG_OUT=$(hook_payload s13 tu_bg 'task generate' | cmd_pre)
+BG_REWRITE=$(printf '%s' "$BG_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')
+( eval "${BG_REWRITE%% *} bash '$HEAVY_SELF' hold 'printf ready > $BG_READY; while [ -e $BG_GATE ]; do sleep 0.05; done'" ) &
+BG_PID=$!
+for _ in $(seq 1 100); do [ -e "$BG_READY" ] && break; sleep 0.1; done
+hook_payload s13 tu_bg 'task generate' | cmd_post
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a backgrounded tool call keeps the live hold's ticket"
+assert_eq "$(cmd_status --json | jq -r '.running != null')" "true" "status still names the holder after the tool call returns"
+rm -f "$BG_GATE"
+wait "$BG_PID"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "the ticket goes away when the job itself exits"
+rm -f "$BG_READY" "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/current"/*
+
+# A tool call that never ran the command leaves nothing to own the ticket, so
+# post is still what clears it.
+hook_payload s13 tu_never 'task generate' | cmd_pre > /dev/null
+hook_payload s13 tu_never 'task generate' | cmd_post
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "post clears a ticket whose command never ran"
 
 # A payload carrying no tool_use_id cannot pair, so pre writes no pairing file
 # rather than one that would delete somebody else's ticket.

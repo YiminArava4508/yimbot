@@ -71,12 +71,25 @@ unwrap_command() {
   printf '%s' "$cmd"
 }
 
+# grep matches line by line, so the ^ anchor in HEAVY_PATTERNS lands on every
+# line of a heredoc body too. Drop the bodies before matching.
+strip_heredocs() {
+  printf '%s\n' "$1" | awk '
+    delim != "" { if ($0 == delim) delim = ""; next }
+    match($0, /(^|[^<])<<-?[[:space:]]*["'\'']?[A-Za-z_][A-Za-z0-9_]*["'\'']?/) {
+      delim = substr($0, RSTART, RLENGTH)
+      sub(/^[^<]?<<-?[[:space:]]*/, "", delim)
+      gsub(/["'\'']/, "", delim)
+    }
+    { print }'
+}
+
 is_heavy() {
   local cmd
   [ -n "${YIMBOT_HEAVY_HELD:-}" ] && return 1
   cmd=$(unwrap_command "$1")
   case $cmd in *heavy-queue.sh\ hold*) return 1 ;; esac
-  printf '%s' "$cmd" | grep -Eq "$HEAVY_PATTERNS"
+  strip_heredocs "$cmd" | grep -Eq "$HEAVY_PATTERNS"
 }
 
 queue_dir() {
@@ -123,11 +136,22 @@ json_escape() {
 # The 2>/dev/null comes first so a failing redirect on a full or unwritable
 # state dir is silenced too, not just the printf.
 ticket_write() {
-  local path=$1 key=$2 cmd=$3 state=$4 owner=${5:-0} tmp=$1.$$.tmp
-  printf '{"key":"%s","cmd":"%s","state":"%s","owner":%s,"since":%s}\n' \
-    "$(json_escape "$key")" "$(json_escape "$cmd")" "$state" "$owner" "$(( $(date +%s%N) / 1000000 ))" \
+  local path=$1 key=$2 cmd=$3 state=$4 owner=${5:-0} tmp=$1.$$.tmp start=0
+  [ "$owner" != 0 ] && start=$(proc_start "$owner")
+  printf '{"key":"%s","cmd":"%s","state":"%s","owner":%s,"owner_start":%s,"since":%s}\n' \
+    "$(json_escape "$key")" "$(json_escape "$cmd")" "$state" "$owner" "${start:-0}" "$(( $(date +%s%N) / 1000000 ))" \
     2>/dev/null > "$tmp" || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$path" 2>/dev/null
+}
+
+# Field 22 of /proc/<pid>/stat, taken after the last ")" because comm may itself
+# hold spaces and parentheses.
+proc_start() {
+  local stat
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  stat=${stat##*) }
+  set -- $stat
+  printf '%s' "${20:-}"
 }
 
 ticket_field() {
@@ -149,9 +173,12 @@ ticket_num_field() {
 # timeout and leaves the command running in the background, so neither the tool
 # call nor a heartbeat can speak for a job that is still pegging the machine.
 ticket_owner_alive() {
-  local owner
+  local owner start
   owner=$(ticket_num_field "$1" owner) || return 1
-  [ -n "$owner" ] && [ "$owner" != 0 ] && kill -0 "$owner" 2>/dev/null
+  { [ -n "$owner" ] && [ "$owner" != 0 ] && kill -0 "$owner" 2>/dev/null; } || return 1
+  # kill -0 cannot tell the owner from a stranger that inherited its recycled PID.
+  start=$(ticket_num_field "$1" owner_start)
+  [ -z "$start" ] || [ "$start" = 0 ] || [ "$start" = "$(proc_start "$owner")" ]
 }
 
 ticket_stale() {
@@ -162,7 +189,7 @@ ticket_stale() {
   # died with it, whether or not its trap got the chance to run.
   owner=$(ticket_num_field "$1" owner)
   if [ -n "$owner" ] && [ "$owner" != 0 ]; then
-    ! kill -0 "$owner" 2>/dev/null
+    ! ticket_owner_alive "$1"
     return
   fi
   state=$(ticket_field "$1" state)
@@ -173,10 +200,14 @@ ticket_stale() {
 }
 
 ticket_reap() {
-  local t
+  local t p
   for t in "$(queue_dir)"/*.json; do
     [ -e "$t" ] || continue
     ticket_stale "$t" && rm -f "$t"
+  done
+  for p in "$HEAVY_STATE_DIR"/current/*; do
+    [ -e "$p" ] || continue
+    [ -e "$(cat "$p" 2>/dev/null)" ] || rm -f "$p"
   done
   return 0
 }
@@ -319,7 +350,6 @@ cmd_pre() {
     fi
     if wait_for_head "$key" "$stripped"; then
       pair_call_ticket "$call"
-      ticket_write "$HEAVY_TICKET" "$key" "$stripped" running
       # Hand hold the ticket to take over, read after the wait rather than
       # before it: a rejoin swaps the path, and handing over the old one has
       # hold rejoin at the back for no reason.

@@ -78,6 +78,12 @@ assert_fails env YIMBOT_HEAVY_HELD=1 bash -c "source '$(dirname "$0")/heavy-queu
 # Claude copies a rewritten command out of its own transcript.
 assert_fails is_heavy "/home/ymbo/.config/yimbot/heavy-queue.sh hold 'task generate'"
 
+# grep anchors ^ at every line, so a heredoc body quoting a build command would
+# otherwise send a plain file write to the back of the heavy queue.
+assert_fails is_heavy "$(printf 'cat > plan.md <<'"'"'EOF'"'"'\n# Plan\npnpm compile\npnpm typecheck\nEOF\necho written')"
+assert_ok is_heavy "$(printf 'cat > note.md <<EOF\nnotes\nEOF\ngo build ./...')"
+assert_ok is_heavy "$(printf 'echo start\ngo build ./...')"
+
 # --- ticket primitives ---
 assert_defined queue_dir
 assert_defined ticket_path
@@ -163,6 +169,22 @@ T_DEAD=$(ticket_path)
 ticket_write "$T_DEAD" "ENG-6" "task build-all" running "$OWNER_PID"
 assert_ok ticket_stale "$T_DEAD"
 rm -f "$T_DEAD"
+
+# kill -0 only says a PID answers, and the kernel recycles PIDs. A ticket whose
+# owner PID now belongs to some other process would otherwise pin the head for
+# as long as that stranger lives, so the ticket records when its owner started
+# and a mismatch reads as dead.
+sleep 60 &
+REUSED_PID=$!
+T_REUSED=$(ticket_path)
+ticket_write "$T_REUSED" "ENG-6" "task build-all" running "$REUSED_PID"
+assert_eq "$(ticket_num_field "$T_REUSED" owner_start)" "$(proc_start "$REUSED_PID")" "a ticket records its owner's start time"
+assert_fails ticket_stale "$T_REUSED"
+sed -i 's/"owner_start":[0-9]*/"owner_start":1/' "$T_REUSED"
+assert_ok ticket_stale "$T_REUSED"
+kill "$REUSED_PID" 2>/dev/null
+wait "$REUSED_PID" 2>/dev/null
+rm -f "$T_REUSED"
 
 # Reaping clears the stale ones and promotes the next live ticket to head.
 ticket_reap
@@ -286,8 +308,15 @@ assert_eq "$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.permissionDecis
 PRE_CMD=$(printf '%s' "$PRE_OUT" | jq -r '.hookSpecificOutput.updatedInput.command')
 assert_eq "${PRE_CMD#HEAVY_TICKET=* }" "$HEAVY_SELF hold 'task generate'" "the command is rewritten through hold"
 assert_eq "${PRE_CMD%% *}" "HEAVY_TICKET=$(shell_quote "$(ticket_head)")" "the rewrite hands pre's ticket to hold"
-assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a heavy command leaves a running ticket"
-assert_eq "$(ticket_field "$(ticket_head)" state)" "running" "the head ticket is marked running"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "a heavy command leaves one ticket for hold to adopt"
+# Only hold writes running: pre has returned by then and nothing heartbeats the
+# ticket, so if the tool call is interrupted before hold starts, the handed-over
+# ticket must age out at HEAVY_STALE_WAIT rather than squat at the head for
+# HEAVY_MAX_JOB with every other session queued behind it.
+assert_eq "$(ticket_field "$(ticket_head)" state)" "waiting" "pre leaves the ticket waiting until hold claims it"
+PHANTOM=$(ticket_head)
+touch -d "@$(( $(date +%s) - HEAVY_STALE_WAIT - 1 ))" "$PHANTOM"
+assert_ok ticket_stale "$PHANTOM"
 
 # Quoting is what breaks a command rewrite, so test the quoter directly.
 assert_defined shell_quote
@@ -307,6 +336,19 @@ OTHER=$(ticket_path); ticket_write "$OTHER" "ENG-9" "pnpm build" waiting
 hook_payload s4 tu_a 'task generate' | cmd_post
 assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "1" "post drops one ticket"
 assert_eq "$(ticket_field "$(ticket_head)" key)" "ENG-9" "post left the other call's ticket alone"
+
+# post is the only thing that drops a pairing file, and post never fires for an
+# interrupted tool call, so the reap has to clear pairings whose ticket is gone
+# while leaving one that still points at a live ticket.
+rm -f "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/current"/*
+hook_payload s4 tu_orphan 'task generate' | cmd_pre > /dev/null
+rm -f "$(cat "$(call_ticket_file tu_orphan)")"
+hook_payload s4 tu_live 'task generate' | cmd_pre > /dev/null
+ticket_reap
+assert_fails test -e "$(call_ticket_file tu_orphan)"
+assert_ok test -e "$(call_ticket_file tu_live)"
+hook_payload s4 tu_live 'task generate' | cmd_post
+rm -f "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/current"/*
 rm -f "$(queue_dir)"/*.json
 
 # One session issues several Bash calls at once, so a cheap call finishing first

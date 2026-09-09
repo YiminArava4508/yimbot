@@ -323,6 +323,23 @@ test("handleReadyPress reports the same outcome the review overlay does", async 
   assert.match(notices[1], /#481 ready to merge/);
 });
 
+test("handleReadyPress hands the row's repo to the label writer", async () => {
+  const seen: (string | undefined)[] = [];
+  await handleReadyPress(
+    row({ pr: 12, repo: "acme/tf" }),
+    (_pr, _key, _label, repo) => {
+      seen.push(repo);
+      return Promise.resolve();
+    },
+    () => {},
+  );
+  await handleReadyPress(row({ pr: 13 }), (_pr, _key, _label, repo) => {
+    seen.push(repo);
+    return Promise.resolve();
+  }, () => {});
+  assert.deepEqual(seen, ["acme/tf", undefined]);
+});
+
 test("handleReadyPress surfaces the failure instead of losing it to console", async () => {
   const notices: string[] = [];
   await handleReadyPress(

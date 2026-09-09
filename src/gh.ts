@@ -4,7 +4,9 @@ import { observeReach } from "./reach.ts";
 
 const execFileAsync = promisify(execFile);
 
-export type OpenPR = { number: number; headRefName: string; isDraft: boolean };
+// `repo` is the owner/name slug when the PR lives in one of EXTRA_REPOS;
+// absent for the codebase repo, which is what every other reader assumes.
+export type OpenPR = { number: number; headRefName: string; isDraft: boolean; repo?: string };
 export type RepoSlug = { owner: string; name: string };
 
 // Injectable `gh` invoker: takes CLI args, resolves to stdout. The default shells
@@ -12,28 +14,47 @@ export type RepoSlug = { owner: string; name: string };
 // Async so the network round-trip never blocks the heartbeat's event loop.
 export type GhRunner = (args: string[]) => Promise<string>;
 
-export function ghRunner(cwd: string): GhRunner {
+type ExecGh = (
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; encoding: "utf8"; maxBuffer: number; env?: NodeJS.ProcessEnv },
+) => Promise<{ stdout: string }>;
+
+// `repo` (owner/name) points gh at one of EXTRA_REPOS through GH_REPO, which
+// the pr and label subcommands honour; `repo view` does not (it reads the cwd's
+// origin, so repoSlug is only ever asked of the codebase runner) and `api
+// graphql` takes the slug as query variables instead. The cwd stays the
+// codebase checkout either way.
+export function ghRunner(cwd: string, repo?: string, exec: ExecGh = execFileAsync): GhRunner {
+  const env = repo ? { ...process.env, GH_REPO: repo } : undefined;
   return async (args) => {
     // Wrapped so the board can warn when GitHub stops answering. gh folds its
     // stderr into the rejection, so a transport failure ("no route to host",
     // "could not resolve host") is visible there; a 404 or a rejected flag is
     // not a reachability problem.
     const { stdout } = await observeReach("github", () =>
-      execFileAsync("gh", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 }),
+      exec("gh", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, env }),
     );
     return stdout;
   };
 }
 
-export function parseOpenPRs(json: string): OpenPR[] {
+export function parseOpenPRs(json: string, repo?: string): OpenPR[] {
   const rows = JSON.parse(json) as OpenPR[];
-  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName, isDraft: r.isDraft }));
+  return rows.map((r) => ({
+    number: r.number,
+    headRefName: r.headRefName,
+    isDraft: r.isDraft,
+    ...(repo ? { repo } : {}),
+  }));
 }
 
 // The viewer's open PRs in the runner's repo (drafts included; callers filter).
-export async function listMyOpenPRs(run: GhRunner): Promise<OpenPR[]> {
+// `repo` tags each row when the runner points at an extra repo.
+export async function listMyOpenPRs(run: GhRunner, repo?: string): Promise<OpenPR[]> {
   return parseOpenPRs(
     await run(["pr", "list", "--author", "@me", "--state", "open", "--json", "number,headRefName,isDraft", "--limit", "100"]),
+    repo,
   );
 }
 

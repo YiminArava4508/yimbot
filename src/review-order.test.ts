@@ -105,6 +105,24 @@ test("orderCacheKey is insensitive to PR order", () => {
   assert.notEqual(orderCacheKey([1, 2]), orderCacheKey([1, 2, 3]));
 });
 
+test("makeOrderFetcher passes each PR's repo to fetchMeta", async () => {
+  const seen: [number, string | undefined][] = [];
+  const f = makeOrderFetcher({
+    fetchMeta: async (pr, repo) => {
+      seen.push([pr, repo]);
+      return { title: `t${pr}`, body: "", additions: 1, deletions: 0 };
+    },
+    run: async () => '{"order": []}',
+    onUpdate: () => {},
+  });
+  f.ensure([1, 2], new Map([[2, "acme/tf"]]));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(seen, [
+    [1, undefined],
+    [2, "acme/tf"],
+  ]);
+});
+
 test("makeOrderFetcher fetches once per PR set and repaints when the order lands", async () => {
   let metaCalls = 0;
   let runCalls = 0;

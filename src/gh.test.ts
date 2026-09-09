@@ -6,6 +6,7 @@ import {
   blockedInfo,
   checksInfo,
   type GhRunner,
+  ghRunner,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
@@ -63,6 +64,23 @@ test("listMyOpenPRs requests author=@me open PRs and parses them", async () => {
   const prs = await listMyOpenPRs(run);
   assert.deepEqual(prs, [{ number: 1, headRefName: "eng-1-a", isDraft: true }]);
   assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "open"]);
+});
+
+test("listMyOpenPRs tags rows with the repo it was asked about", async () => {
+  const { run } = capturingRunner([JSON.stringify([{ number: 3, headRefName: "eng-3-a", isDraft: true }])]);
+  const prs = await listMyOpenPRs(run, "acme/terraform-aws-platform");
+  assert.deepEqual(prs, [{ number: 3, headRefName: "eng-3-a", isDraft: true, repo: "acme/terraform-aws-platform" }]);
+});
+
+test("ghRunner: an extra repo sets GH_REPO for the child, the codebase runner does not", async () => {
+  const seen: (string | undefined)[] = [];
+  const exec = async (_cmd: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+    seen.push(opts.env?.GH_REPO);
+    return { stdout: "" };
+  };
+  await ghRunner("/tmp", undefined, exec)(["pr", "list"]);
+  await ghRunner("/tmp", "acme/tf", exec)(["pr", "list"]);
+  assert.deepEqual(seen, [undefined, "acme/tf"]);
 });
 
 test("parseMergedPRs keeps only number/headRefName", () => {

@@ -127,20 +127,22 @@ if (process.stdout.isTTY) {
   // draft, label it, then move its row now rather than leaving it where it was
   // until the next heartbeat re-reports the section. Shared by the board's r
   // and the review overlay's y.
-  const queueToMerge = async (pr: number, key: string, label: string): Promise<void> => {
+  // `repo` is the row's EXTRA_REPOS slug when its PR lives outside the
+  // codebase repo; the runner then points gh there.
+  const queueToMerge = async (pr: number, key: string, label: string, repo?: string): Promise<void> => {
     const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
-    await applyReadyLabel(ghRunner(currentCodebasePath()), pr, readyLabel);
-    emitQueuedToMerge({ key, label, pr });
+    await applyReadyLabel(ghRunner(currentCodebasePath(), repo), pr, readyLabel);
+    emitQueuedToMerge({ key, label, pr, repo });
   };
-  const reviewDeps = (pr: number, key: string, label: string): ReviewDeps => {
-    const run = ghRunner(currentCodebasePath());
+  const reviewDeps = (pr: number, key: string, label: string, repo?: string): ReviewDeps => {
+    const run = ghRunner(currentCodebasePath(), repo);
     const cwd = worktreeForKey(key);
     return {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
       runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
-      queueToMerge: () => queueToMerge(pr, key, label),
+      queueToMerge: () => queueToMerge(pr, key, label, repo),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
       loadGroups: (headSha) => readGroups(pr, headSha),
@@ -219,7 +221,7 @@ if (process.stdout.isTTY) {
     settings,
     reviewDeps,
     orderDeps: {
-      fetchMeta: (pr) => prReviewMeta(ghRunner(currentCodebasePath()), pr),
+      fetchMeta: (pr, repo) => prReviewMeta(ghRunner(currentCodebasePath(), repo), pr),
       run: (prompt) =>
         headless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
     },

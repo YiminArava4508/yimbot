@@ -174,6 +174,13 @@ flowchart TD
   human. Re-triggers only when the head moves, so a re-block caused by another
   PR in the batch never loops. Settings: `BLOCKED_LABEL` (defaults to
   `blocked`); re-queue reuses `READY_MERGE_LABEL`.
+- **Watch other repos:** a ticket whose change lands outside the codebase repo
+  (a terraform repo, say) still links its PR to the session's row, moves it to
+  the review pane, reports draft / ready to merge, and queues with `r`, as long
+  as the branch there carries the ticket slug and the repo is listed in
+  `EXTRA_REPOS` (comma-separated `owner/name`). A merge in any listed repo
+  reaps the ticket's worktree. Fix sessions (comments, CI, conflicts, queue
+  blocks) run on the codebase repo only.
 - **Flag changes-requested reviews:** every heartbeat, any of your open
   non-draft PRs blocked by a changes-requested review raises that row's `⚑` on
   the board. No fix session can lift that block, only the reviewer re-reviewing
@@ -298,7 +305,7 @@ error with your edit still pending. If that rollback restart also fails, the
 board's status line reads `daemon stopped` until a later save succeeds, even
 if you close and reopen the settings screen without saving in between.
 Settings the wizard never asks about (`BLOCKED_LABEL`, `IGNORE_CHECKS`,
-`READY_MERGE_LABEL`, `MERGED_STATE_NAME`, the reap timeout and the `TUI_*` vars)
+`READY_MERGE_LABEL`, `EXTRA_REPOS`, `MERGED_STATE_NAME`, the reap timeout and the `TUI_*` vars)
 stay hand-edited in `.env`: both `pnpm onboard` and the settings panel carry
 forward any plain `KEY=value` line (one line, no `export`, no spaces around the `=`) that the
 generated sections above don't own, so a save doesn't drop it. That parser is

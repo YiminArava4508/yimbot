@@ -33,6 +33,9 @@ export type YimbotEvent = {
   label: string;
   title?: string;
   pr?: number;
+  // owner/name when `pr` lives in one of EXTRA_REPOS; absent for the codebase
+  // repo. The TUI's gh calls for the row route through it.
+  repo?: string;
   // Why a raise event (needs_input/flagged) raised the flag: input,
   // changes-requested, human-comment, stuck, decision, findings, or manual.
   // Absent on events from older builds; the fold defaults those by kind.
@@ -261,7 +264,7 @@ export function currentStatus(key: string, events: YimbotEvent[] = readEvents())
 // A PR the operator queued by hand: the board's r, or y at the end of a review
 // pass. Recording the section alongside the status moves the row now instead of
 // leaving it where it was until the next heartbeat re-reports it.
-export function emitQueuedToMerge(ev: { key: string; label: string; pr: number }): void {
+export function emitQueuedToMerge(ev: { key: string; label: string; pr: number; repo?: string }): void {
   emitStatus({ kind: "ready_to_merge", ...ev });
   emitSection({ kind: sectionKind("merge"), ...ev });
 }
@@ -364,6 +367,7 @@ export type BoardRow = {
   label: string;
   title?: string;
   pr?: number;
+  repo?: string;
   status: string;
   terminal: boolean;
   // The pane this row belongs in, independent of status. See Section above.
@@ -408,6 +412,7 @@ export function reduceRows(
       label: e.label,
       title: e.title ?? prev?.title,
       pr: e.pr ?? prev?.pr,
+      repo: e.repo ?? prev?.repo,
       status: mapped.status,
       terminal: mapped.terminal,
       section: "tasks",

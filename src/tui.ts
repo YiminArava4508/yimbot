@@ -334,7 +334,7 @@ export function statusContent(
 
 export async function handleReadyPress(
   row: BoardRow | undefined,
-  addReady: (pr: number, key: string, label: string) => Promise<void>,
+  addReady: (pr: number, key: string, label: string, repo?: string) => Promise<void>,
   setNotice: (text: string, ttlMs: number) => void,
 ): Promise<void> {
   if (!row) return;
@@ -344,7 +344,7 @@ export async function handleReadyPress(
   }
   setNotice(`queueing #${row.pr} to merge…`, NOTICE_TTL_MS);
   try {
-    await addReady(row.pr, row.key, row.label);
+    await addReady(row.pr, row.key, row.label, row.repo);
     setNotice(`{green-fg}#${row.pr} ready to merge{/green-fg}`, NOTICE_TTL_MS);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -523,12 +523,12 @@ export function runTui(opts: {
   manualLiveKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
-  onAddReadyLabel: (pr: number, key: string, label: string) => Promise<void>;
+  onAddReadyLabel: (pr: number, key: string, label: string, repo?: string) => Promise<void>;
   mode: () => Mode;
   onToggleMode: () => Mode;
   refineEnabled: () => boolean;
   settings: SettingsDeps;
-  reviewDeps: (pr: number, key: string, label: string) => ReviewDeps;
+  reviewDeps: (pr: number, key: string, label: string, repo?: string) => ReviewDeps;
   // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
   // headless prompt runner (same claude -p shape as the review grouping).
   orderDeps: OrderSourceDeps;
@@ -605,7 +605,11 @@ export function runTui(opts: {
       opts.openPrKeys(),
     );
     const { review, merge, tasks } = partitionRows(currentRows);
-    orderFetcher.ensure(review.map((r) => r.pr).filter((n): n is number => n != null));
+    const withPr = review.filter((r): r is BoardRow & { pr: number } => r.pr != null);
+    orderFetcher.ensure(
+      withPr.map((r) => r.pr),
+      new Map(withPr.flatMap((r) => (r.repo ? [[r.pr, r.repo] as const] : []))),
+    );
     currentReview = applyOrder(review, orderFetcher.get());
     currentTasks = tasks;
     currentMerge = merge;
@@ -792,7 +796,7 @@ export function runTui(opts: {
     }
     reviewOpen = true;
     hidePanes();
-    const overlay = openReview(screen, opts.reviewDeps(r.pr, r.key, r.label), (noticeMsg, isError) => {
+    const overlay = openReview(screen, opts.reviewDeps(r.pr, r.key, r.label, r.repo), (noticeMsg, isError) => {
       reviewOpen = false;
       showPanes();
       if (noticeMsg) setNotice(noticeMsg, isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);

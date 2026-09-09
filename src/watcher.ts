@@ -591,7 +591,12 @@ export type WatcherConfig = {
   refine: { autoRefineDefault: boolean; maxRefining: number; labelFilter: LabelFilter; assigneeIds: string[] };
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
-  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> | null;
+  // listOpenPRs spans every repo (EXTRA_REPOS included) for the board and the
+  // ready step; listFixableOpenPRs is the codebase repo's only, since a fix
+  // session's worktree is cut from codebasePath.
+  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> & {
+    listFixableOpenPRs: () => Promise<OpenPR[]>;
+  }) | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
@@ -1250,7 +1255,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   // Per-tick memo for flagState below; reset at the top of every heartbeat.
   let attentionSnapshot: ReturnType<typeof foldAttention> | null = null;
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
-    listOpenPRs: config.prReview.listOpenPRs,
+    listOpenPRs: config.prReview.listFixableOpenPRs,
     unresolvedInfo: config.prReview.unresolvedInfo,
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
@@ -1418,16 +1423,23 @@ export function startWatcher(config: WatcherConfig): () => void {
   // other step instead of by PR number, letting them unify with the ticket's
   // row. Cleared each tick so closed/merged PRs do not accumulate forever.
   const prBranchByNumber = new Map<number, string>();
+  // The PR's EXTRA_REPOS slug, so the row's TUI actions address the right repo.
+  const prRepoByNumber = new Map<number, string>();
   const keyForPr = (n: number) => {
     const branch = prBranchByNumber.get(n);
-    return branch ? deriveKey({ branch }) : deriveKey({ pr: n });
+    const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
+    return { ...k, repo: prRepoByNumber.get(n) };
   };
   const readyDeps: PrReadyDeps | null = config.ready && {
     ...config.ready,
     listOpenPRs: async () => {
       const prs = await config.ready!.listOpenPRs();
       prBranchByNumber.clear();
-      for (const pr of prs) prBranchByNumber.set(pr.number, pr.headRefName);
+      prRepoByNumber.clear();
+      for (const pr of prs) {
+        prBranchByNumber.set(pr.number, pr.headRefName);
+        if (pr.repo) prRepoByNumber.set(pr.number, pr.repo);
+      }
       return prs;
     },
     // Board emission is owned by onVerdict below (fires whether or not a label
@@ -1439,14 +1451,14 @@ export function startWatcher(config: WatcherConfig): () => void {
     onVerdict: (n: number, verdict, hasLabel, isDraft) => {
       if (!boardReadyToMerge(verdict, hasLabel)) return;
       const k = keyForPr(n);
-      emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n });
+      emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     // Where the row sits, reported separately from its status so a queued PR
     // stays in the merge pane while its status walks through a CI fix or a
     // review round. Deduped by emitSection, so this is a no-op most heartbeats.
     onSection: (n: number, section) => {
       const k = keyForPr(n);
-      emitSection({ kind: sectionKind(section), key: k.key, label: k.label, pr: n });
+      emitSection({ kind: sectionKind(section), key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,

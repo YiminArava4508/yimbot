@@ -411,6 +411,26 @@ test("reduceRows: a later event with a new pr overwrites the earlier one", () =>
   assert.equal(rows[0].pr, 200);
 });
 
+test("reduceRows: carries repo forward and lets a later event overwrite it", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "draft_pr", pr: 5, repo: "acme/tf" }),
+      ev({ ts: 2, kind: "review_started" }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].repo, "acme/tf");
+  const moved = reduceRows(
+    [
+      ev({ ts: 1, kind: "draft_pr", pr: 5, repo: "acme/tf" }),
+      ev({ ts: 2, kind: "draft_pr", pr: 6, repo: "acme/tf2" }),
+    ],
+    100,
+  );
+  assert.equal(moved[0].repo, "acme/tf2");
+  assert.equal(reduceRows([ev({ ts: 1, kind: "task_started" })], 100)[0].repo, undefined);
+});
+
 test("reduceRows: pr is undefined for a key that never carried one", () => {
   const rows = reduceRows([ev({ ts: 1, kind: "task_started" })], 100);
   assert.equal(rows[0].pr, undefined);

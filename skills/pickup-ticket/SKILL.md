@@ -99,6 +99,11 @@ asking for a behavior change.
    - **If over the hard limit:** follow the split flow described in **PR
      Size Limits** below instead of opening a single PR. The ticket branch
      itself never gets a PR in a split; only its slice branches do.
+   - **If the change lands in another repo** (a terraform repo, say), branch
+     there under the same name as this worktree's branch and open the PR from
+     that checkout (`gh pr create` in that directory). The board links a PR to
+     this session by the ticket slug in its branch name, so a differently
+     named branch leaves the row without a PR.
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
      PR, or in a split the whole series, is open.

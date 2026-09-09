@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -831,4 +831,16 @@ test("statusContent leads with the reach warnings, ahead of the chips", () => {
 
 test("statusContent says nothing about reachability while every service answers", () => {
   assert.doesNotMatch(statusContent("supervised", true, 2, null, 0, []), /⚠/);
+});
+
+test("applyPaneFocusStyle highlights the focused pane's row and nobody else's", () => {
+  const pane = () => ({ style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } });
+  const widgets = { tasks: pane(), review: pane(), merge: pane() };
+  applyPaneFocusStyle(widgets, "review");
+  assert.equal(widgets.review.style.selected.inverse, true);
+  assert.equal(widgets.tasks.style.selected.inverse, false);
+  assert.equal(widgets.merge.style.selected.inverse, false);
+  assert.equal(widgets.review.style.border.fg, FOCUS_BORDER);
+  assert.equal(widgets.tasks.style.border.fg, "grey");
+  assert.equal(widgets.merge.style.label.fg, "green");
 });

@@ -158,6 +158,23 @@ export function paneBorderColor(pane: Pane, focused: boolean): string {
   return focused ? FOCUS_BORDER : PANE_BORDER[pane];
 }
 
+// Outline plus row highlight in one pass. Only the focused pane inverses its
+// selected row: keys act on that pane alone, so a second inversed row on an
+// unfocused pane reads as a cursor that does nothing. neo-blessed aliases
+// style.selected to style.cell.selected on a listtable and resolves it at
+// paint time, so mutating it here is enough.
+export function applyPaneFocusStyle(
+  widgets: Record<Pane, { style: { border: { fg: string }; label: { fg: string }; selected: { inverse: boolean } } }>,
+  focused: Pane,
+): void {
+  for (const p of ["tasks", "review", "merge"] as const) {
+    const fg = paneBorderColor(p, p === focused);
+    widgets[p].style.border.fg = fg;
+    widgets[p].style.label.fg = fg;
+    widgets[p].style.selected.inverse = p === focused;
+  }
+}
+
 // The pane keypresses should act on. An empty pane can never hold the focus:
 // with every row a ready draft the tasks pane can be empty, and without this
 // the operator's f/r/R/enter would silently no-op against it.
@@ -632,11 +649,7 @@ export function runTui(opts: {
       focusedPane = pane;
       if (!isOverlayOpen()) focusedWidget().focus();
     }
-    for (const p of ["tasks", "review", "merge"] as const) {
-      const fg = paneBorderColor(p, p === focusedPane);
-      paneWidgets[p].style.border.fg = fg;
-      paneWidgets[p].style.label.fg = fg;
-    }
+    applyPaneFocusStyle(paneWidgets, focusedPane);
     footer.setContent(footerHint(focusedPane));
     const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(

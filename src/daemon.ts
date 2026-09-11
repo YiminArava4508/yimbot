@@ -8,7 +8,7 @@ import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
-import { deriveKey, pinEventsLog } from "./events.ts";
+import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
 import { envCsvSet, envOr } from "./env.ts";
 import {
   addLabel,
@@ -239,7 +239,7 @@ export async function startDaemon(): Promise<() => void> {
       // Only on success: a gh failure throws above and leaves the previous
       // set cached, so the board does not blank its worktree-less rows for a
       // heartbeat over one bad list.
-      setOpenPrKeys(new Set(prs.map((pr) => deriveKey({ branch: pr.headRefName, pr: pr.number }).key)));
+      setOpenPrKeys(new Set(prs.map((pr) => prRowKey({ branch: pr.headRefName, pr: pr.number, repo: pr.repo }).key)));
       return prs;
     };
     prReview = {

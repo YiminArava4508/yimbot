@@ -58,11 +58,11 @@ export type CleanupDeps = {
   // rides along so a merged branch never marks its ticket's row merged while
   // another PR on that row is still open; skipped when the open list can't be
   // fetched.
-  reconcileMerged?: (mergedBranches: Set<string>, openBranches: Set<string>) => void;
+  reconcileMerged?: (merged: MergedPR[], open: OpenPR[]) => void;
   // How each split parent's row should read this tick (see splitParentRows),
   // reported by branch. Skipped when the open PR list can't be fetched, like
   // every other open-set-dependent path here.
-  reportSplitParents?: (rows: { awaiting: string[]; settled: string[] }) => void;
+  reportSplitParents?: (rows: { awaiting: string[]; tracking: string[] }) => void;
   // A branch's board row key, so the guard above can compare rows rather than
   // branch names. Supplied by the caller that owns key derivation.
   rowKeyOf?: (branch: string) => string;
@@ -195,13 +195,13 @@ export function groupReady(
 // How each split parent's board row should read. Each slice is its own ticket
 // with its own row, so no slice can speak for the group; the tracking ticket is
 // the only row that covers the whole split. `awaiting` is the parents with a
-// slice PR still open; `settled` is the parents whose slices have all resolved,
-// so a row still claiming to wait on them should stop.
+// slice PR still open; `tracking` is every other split parent: the slices all
+// resolved, or none has a worktree yet. A split parent never has work of its
+// own, so a row reading "working" there is wrong in both windows.
 //
-// Settled parents matter because teardown (the only other thing that moves this
-// row) is gated on the parent ticket going terminal in Linear. Between the last
-// slice merging and a human closing the ticket, nothing is pending, and the row
-// must not keep saying otherwise.
+// `markedBranches` are the worktrees carrying the split-parent marker. It is
+// written before the first slice exists, so it is the only sign of a split in
+// the window before buildSplitGroups can see a group.
 //
 // Both guards are on the derived row key, not the branch, because a slice branch
 // carrying the parent's ticket slug derives to the parent's key: the two share
@@ -216,17 +216,25 @@ export function splitParentRows(
   groups: SplitGroup[],
   openBranches: Set<string>,
   keyOf: (branch: string) => string,
-): { awaiting: string[]; settled: string[] } {
+  markedBranches: string[] = [],
+): { awaiting: string[]; tracking: string[] } {
   const openKeys = new Set([...openBranches].map(keyOf));
   const awaiting: string[] = [];
-  const settled: string[] = [];
+  const tracking: string[] = [];
+  const seen = new Set<string>();
   for (const g of groups) {
     if (g.integrationBranch === null) continue;
+    seen.add(g.integrationBranch);
     if (openKeys.has(keyOf(g.integrationBranch))) continue;
-    const bucket = g.sliceBranches.some((b) => openBranches.has(b)) ? awaiting : settled;
+    const bucket = g.sliceBranches.some((b) => openBranches.has(b)) ? awaiting : tracking;
     bucket.push(g.integrationBranch);
   }
-  return { awaiting, settled };
+  for (const branch of markedBranches) {
+    if (seen.has(branch) || openKeys.has(keyOf(branch))) continue;
+    seen.add(branch);
+    tracking.push(branch);
+  }
+  return { awaiting, tracking };
 }
 
 // Worktrees to tear down: branch is in the merged set AND the worktree lives
@@ -418,14 +426,15 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   // Fetched before the board reconcile: without the open set, a merged split
   // slice would mark its whole ticket row merged while sibling PRs are open.
   // Also feeds path (a3) below. On failure both sit the tick out.
-  let openBranches: Set<string> | null = null;
+  let openPRs: OpenPR[] | null = null;
   try {
-    openBranches = new Set((await deps.listOpenPRs()).map((p) => p.headRefName));
+    openPRs = await deps.listOpenPRs();
   } catch (err) {
     deps.log(`open PR list failed: ${err}`);
   }
+  const openBranches: Set<string> | null = openPRs && new Set(openPRs.map((p) => p.headRefName));
 
-  if (openBranches !== null) deps.reconcileMerged?.(mergedBranches, openBranches);
+  if (openPRs !== null) deps.reconcileMerged?.(merged, openPRs);
 
   // Closed-but-not-merged PRs (spikes, abandoned/superseded work). Fetched up front
   // because both the split-group readiness below and path (a2) need it. A failure to
@@ -450,7 +459,8 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   const groupedPaths = new Set(groups.flatMap((g) => g.worktreePaths));
 
   if (openBranches !== null && deps.rowKeyOf) {
-    deps.reportSplitParents?.(splitParentRows(groups, openBranches, deps.rowKeyOf));
+    const marked = worktrees.filter((w) => deps.isSplitParent(w.path)).map((w) => w.branch);
+    deps.reportSplitParents?.(splitParentRows(groups, openBranches, deps.rowKeyOf, marked));
   }
 
   // Without the open set, a slice PR opened from the integration branch is

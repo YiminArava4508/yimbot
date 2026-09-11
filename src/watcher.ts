@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { AWAITING_SLICES_STATUS, branchesFullyMerged, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, readEvents, reduceRows, sectionKind, titleFromBranch } from "./events.ts";
+import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, titleFromBranch, type YimbotEvent } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
@@ -1015,6 +1015,37 @@ export function manuallyLiveKeys(worktrees: Worktree[], sessions: string[], dir:
   return keys;
 }
 
+export type SplitParentReportDeps = {
+  currentStatus: (key: string) => string | undefined;
+  emitStatus: (ev: Omit<YimbotEvent, "ts">) => void;
+};
+
+// A split's slices are their own tickets with their own rows, so none of them
+// can say what the split as a whole is doing. The tracking ticket's row does:
+// "waiting on slices" while any slice PR is open, "tracker ticket" otherwise,
+// since a split parent has no work of its own to be "working" on. Never over a
+// hold status -- that row already owes a human an answer, and this would bury
+// it. The tracker status also never replaces anything but the "working" a
+// fresh session starts with or a wait that ended, so no unrelated row is
+// disturbed.
+export function reportSplitParentRows(
+  rows: { awaiting: string[]; tracking: string[] },
+  deps: SplitParentReportDeps,
+): void {
+  const replaceable = new Set([WORKING_STATUS, AWAITING_SLICES_STATUS]);
+  const report = (branches: string[], kind: "awaiting_slices" | "tracking", replaces: (s: string) => boolean) => {
+    for (const branch of branches) {
+      const { key, label } = deriveKey({ branch });
+      const current = deps.currentStatus(key);
+      if (isHoldStatus(current)) continue;
+      if (current !== undefined && !replaces(current)) continue;
+      deps.emitStatus({ kind, key, label, title: titleFromBranch(branch) });
+    }
+  };
+  report(rows.awaiting, "awaiting_slices", () => true);
+  report(rows.tracking, "tracking", (s) => replaceable.has(s));
+}
+
 // Board keys of split-slice worktrees under `dir`: those carrying a
 // parent-session marker, which cleanup holds until the whole group resolves.
 // The board shows their merged rows as waiting on the group rather than as
@@ -1341,39 +1372,18 @@ export function startWatcher(config: WatcherConfig): () => void {
     // board so a backlog of old merges never spawns fresh rows. A ticket's
     // follow-up or stacked PR shares its row key, so a key is only marked merged
     // once no open PR maps to it.
-    reconcileMerged: (mergedBranches, openBranches) => {
+    reconcileMerged: (merged, open) => {
       const active = new Set(
         reduceRows(readEvents(), Date.now())
           .filter((r) => !r.terminal)
           .map((r) => r.key),
       );
-      for (const branch of branchesFullyMerged(mergedBranches, openBranches)) {
-        const { key, label } = deriveKey({ branch });
-        if (active.has(key)) emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
+      for (const k of mergedRowKeys(merged, open)) {
+        if (active.has(k.key)) emitStatus({ kind: "merged", key: k.key, label: k.label });
       }
     },
     rowKeyOf: (branch) => deriveKey({ branch }).key,
-    // A split's slices are their own tickets with their own rows, so none of them
-    // can say what the split as a whole is doing. The tracking ticket's row does:
-    // it reads "waiting on slices" while any slice PR is open. Never over a hold
-    // status -- that row already owes a human an answer, and this would bury it.
-    //
-    // Once the slices resolve the row drops back to working rather than keeping a
-    // wait that ended: teardown is gated on the parent ticket going terminal in
-    // Linear, so the row can outlive the split by a long time. Only a row still
-    // showing this status is rewritten, so no unrelated row is disturbed.
-    reportSplitParents: ({ awaiting, settled }) => {
-      for (const branch of awaiting) {
-        const { key, label } = deriveKey({ branch });
-        if (isHoldStatus(currentStatus(key))) continue;
-        emitStatus({ kind: "awaiting_slices", key, label, title: titleFromBranch(branch) });
-      }
-      for (const branch of settled) {
-        const { key, label } = deriveKey({ branch });
-        if (currentStatus(key) !== AWAITING_SLICES_STATUS) continue;
-        emitStatus({ kind: "task_started", key, label, title: titleFromBranch(branch) });
-      }
-    },
+    reportSplitParents: (rows) => reportSplitParentRows(rows, { currentStatus, emitStatus }),
     listSessions: listTmuxSessions,
     killSession: killTmuxSession,
     readParentSession,
@@ -1442,8 +1452,9 @@ export function startWatcher(config: WatcherConfig): () => void {
   const prRepoByNumber = new Map<number, string>();
   const keyForPr = (n: number) => {
     const branch = prBranchByNumber.get(n);
-    const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-    return { ...k, repo: prRepoByNumber.get(n) };
+    const repo = prRepoByNumber.get(n);
+    const k = branch ? prRowKey({ branch, pr: n, repo }) : deriveKey({ pr: n });
+    return { ...k, repo };
   };
   const readyDeps: PrReadyDeps | null = config.ready && {
     ...config.ready,

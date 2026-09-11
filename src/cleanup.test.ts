@@ -329,19 +329,19 @@ function deps(overrides: Partial<CleanupDeps> = {}): {
 }
 
 test("cleanupOnce hands the merged branch set to reconcileMerged, even with no worktree present", async () => {
-  let seen: Set<string> | null = null;
+  let seen: MergedPR[] | null = null;
   const { deps: d } = deps({
     listWorktrees: () => [], // worktree already gone
     listMergedPRs: async () => [mpr(2, "eng-2-b"), mpr(3, "eng-3-c")],
-    reconcileMerged: (branches) => void (seen = branches),
+    reconcileMerged: (merged) => void (seen = merged),
   });
   await cleanupOnce(d);
   assert.ok(seen, "reconcileMerged was called");
-  assert.deepEqual([...(seen as unknown as Set<string>)].sort(), ["eng-2-b", "eng-3-c"]);
+  assert.deepEqual((seen as unknown as MergedPR[]).map((p) => p.headRefName).sort(), ["eng-2-b", "eng-3-c"]);
 });
 
 test("cleanupOnce hands the open branch set to reconcileMerged, so a shared row is not marked merged early", async () => {
-  let openSeen: Set<string> | null = null;
+  let openSeen: OpenPR[] | null = null;
   const { deps: d } = deps({
     listWorktrees: () => [],
     listMergedPRs: async () => [mpr(2, "sc-9-x-part-1")],
@@ -350,7 +350,7 @@ test("cleanupOnce hands the open branch set to reconcileMerged, so a shared row 
   });
   await cleanupOnce(d);
   assert.ok(openSeen, "reconcileMerged was called");
-  assert.deepEqual([...(openSeen as unknown as Set<string>)], ["sc-9-x-part-2"]);
+  assert.deepEqual((openSeen as unknown as OpenPR[]).map((p) => p.headRefName), ["sc-9-x-part-2"]);
 });
 
 test("cleanupOnce skips reconcileMerged when the open PR list fails", async () => {
@@ -370,15 +370,15 @@ test("cleanupOnce skips reconcileMerged when the open PR list fails", async () =
 });
 
 test("cleanupOnce still reconciles merged branches when a later teardown throws", async () => {
-  let seen: Set<string> | null = null;
+  let seen: MergedPR[] | null = null;
   const { deps: d } = deps({
-    reconcileMerged: (branches) => void (seen = branches),
+    reconcileMerged: (merged) => void (seen = merged),
     teardown: () => {
       throw new Error("boom");
     },
   });
   await cleanupOnce(d);
-  assert.deepEqual([...(seen as unknown as Set<string>)], ["eng-2-b"]);
+  assert.deepEqual((seen as unknown as MergedPR[]).map((p) => p.headRefName), ["eng-2-b"]);
 });
 
 test("cleanupOnce tears down each merged worktree", async () => {
@@ -1292,20 +1292,20 @@ function group(overrides: Partial<SplitGroup> = {}): SplitGroup {
 test("splitParentRows: the tracking ticket waits while a slice PR is open", () => {
   assert.deepEqual(splitParentRows([group()], new Set(["eng-2065-part-2"]), keyOf), {
     awaiting: ["eng-1320-generate-bov-entry-point"],
-    settled: [],
+    tracking: [],
   });
 });
 
-test("splitParentRows: the wait is over once every slice PR is closed or merged", () => {
+test("splitParentRows: once every slice PR is closed or merged the parent is a plain tracker", () => {
   assert.deepEqual(splitParentRows([group()], new Set(), keyOf), {
     awaiting: [],
-    settled: ["eng-1320-generate-bov-entry-point"],
+    tracking: ["eng-1320-generate-bov-entry-point"],
   });
 });
 
 test("splitParentRows: a parent with its own open PR is a working row, not a tracking row", () => {
   const open = new Set(["eng-1320-generate-bov-entry-point", "eng-2065-part-2"]);
-  assert.deepEqual(splitParentRows([group()], open, keyOf), { awaiting: [], settled: [] });
+  assert.deepEqual(splitParentRows([group()], open, keyOf), { awaiting: [], tracking: [] });
 });
 
 test("splitParentRows: a slice sharing the parent's slug shares its row, so nobody is reported", () => {
@@ -1314,7 +1314,7 @@ test("splitParentRows: a slice sharing the parent's slug shares its row, so nobo
   const g = group({ sliceBranches: ["eng-1320-part-1", "eng-1320-part-2"] });
   assert.deepEqual(splitParentRows([g], new Set(["eng-1320-part-2"]), keyOf), {
     awaiting: [],
-    settled: [],
+    tracking: [],
   });
 });
 
@@ -1322,10 +1322,39 @@ test("splitParentRows: a parent with no integration worktree has no row to write
   const g = group({ integrationBranch: null });
   assert.deepEqual(splitParentRows([g], new Set(["eng-2065-part-2"]), keyOf), {
     awaiting: [],
-    settled: [],
+    tracking: [],
   });
 });
 
+test("splitParentRows: a marked split parent with no slice worktree yet is a tracker", () => {
+  assert.deepEqual(splitParentRows([], new Set(), keyOf, ["eng-1929-share-links"]), {
+    awaiting: [],
+    tracking: ["eng-1929-share-links"],
+  });
+});
+
+test("splitParentRows: a marked split parent that also heads a group is reported once", () => {
+  const rows = splitParentRows([group()], new Set(["eng-2065-part-2"]), keyOf, ["eng-1320-generate-bov-entry-point"]);
+  assert.deepEqual(rows, { awaiting: ["eng-1320-generate-bov-entry-point"], tracking: [] });
+});
+
+test("splitParentRows: a marked split parent with its own open PR is left to the ready step", () => {
+  const rows = splitParentRows([], new Set(["eng-1929-share-links"]), keyOf, ["eng-1929-share-links"]);
+  assert.deepEqual(rows, { awaiting: [], tracking: [] });
+});
+
+test("cleanupOnce reports a marked split parent with no slices as a tracker row", async () => {
+  let seen: { awaiting: string[]; tracking: string[] } | null = null;
+  const { deps: d } = deps({
+    listWorktrees: () => [wt("eng-1929-share-links")],
+    listMergedPRs: async () => [],
+    isSplitParent: (p) => p === `${WT}/eng-1929-share-links`,
+    rowKeyOf: keyOf,
+    reportSplitParents: (rows) => void (seen = rows),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(seen, { awaiting: [], tracking: ["eng-1929-share-links"] });
+});
 
 test("ticketWorkLanded: completed and canceled land by type", () => {
   assert.equal(ticketWorkLanded({ name: "Done", type: "completed" }, CLEARED), true);

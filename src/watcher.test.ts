@@ -28,6 +28,7 @@ import {
   isLaunchMarkerActive,
   liveRefineKeys,
   manuallyLiveKeys,
+  reportSplitParentRows,
   splitSliceKeys,
   markFeatureReady,
   parseWorktreePorcelain,
@@ -1203,4 +1204,50 @@ test("claimOnce claims normally when no dependency scan is configured", async ()
   });
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 1);
+});
+
+function splitReporter(current: Record<string, string | undefined>) {
+  const emitted: { kind: string; key: string }[] = [];
+  const report = (rows: { awaiting: string[]; tracking: string[] }) =>
+    reportSplitParentRows(rows, {
+      currentStatus: (key) => current[key],
+      emitStatus: (ev) => void emitted.push({ kind: ev.kind, key: ev.key }),
+    });
+  return { report, emitted };
+}
+
+test("reportSplitParentRows: a parent with an open slice PR reads waiting on slices", () => {
+  const { report, emitted } = splitReporter({ "ENG-1320": "working" });
+  report({ awaiting: ["eng-1320-parent"], tracking: [] });
+  assert.deepEqual(emitted, [{ kind: "awaiting_slices", key: "ENG-1320" }]);
+});
+
+test("reportSplitParentRows: a working split parent with nothing pending reads tracker ticket", () => {
+  const { report, emitted } = splitReporter({ "ENG-1929": "working" });
+  report({ awaiting: [], tracking: ["eng-1929-parent"] });
+  assert.deepEqual(emitted, [{ kind: "tracking", key: "ENG-1929" }]);
+});
+
+test("reportSplitParentRows: a wait that ended drops to tracker ticket, not working", () => {
+  const { report, emitted } = splitReporter({ "ENG-1320": "waiting on slices" });
+  report({ awaiting: [], tracking: ["eng-1320-parent"] });
+  assert.deepEqual(emitted, [{ kind: "tracking", key: "ENG-1320" }]);
+});
+
+test("reportSplitParentRows: a tracker ticket starts waiting once a slice PR opens", () => {
+  const { report, emitted } = splitReporter({ "ENG-1929": "tracker ticket" });
+  report({ awaiting: ["eng-1929-parent"], tracking: [] });
+  assert.deepEqual(emitted, [{ kind: "awaiting_slices", key: "ENG-1929" }]);
+});
+
+test("reportSplitParentRows: never writes over a hold status", () => {
+  const { report, emitted } = splitReporter({ "ENG-1320": "needs decision", "ENG-1929": "review findings" });
+  report({ awaiting: ["eng-1320-parent"], tracking: ["eng-1929-parent"] });
+  assert.deepEqual(emitted, []);
+});
+
+test("reportSplitParentRows: leaves a row with any other status alone", () => {
+  const { report, emitted } = splitReporter({ "ENG-1929": "ready to merge" });
+  report({ awaiting: [], tracking: ["eng-1929-parent"] });
+  assert.deepEqual(emitted, []);
 });

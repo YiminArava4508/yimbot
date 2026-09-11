@@ -535,6 +535,9 @@ export function runTui(opts: {
   // Keys of worktrees whose tmux session is still live: their merged rows
   // render as "working (manual)" instead of aging off the board.
   manualLiveKeys: () => Set<string>;
+  // Merged split slices whose worktree cleanup holds for the group; their rows
+  // read "merged, waiting on slices" and stay on the merge pane.
+  heldSliceKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
   onAddReadyLabel: (pr: number, key: string, label: string, repo?: string) => Promise<void>;
@@ -614,7 +617,7 @@ export function runTui(opts: {
   });
   const render = () => {
     currentRows = filterToLiveRows(
-      reduceRows(readEvents(), Date.now(), { manualLiveKeys: opts.manualLiveKeys() }),
+      reduceRows(readEvents(), Date.now(), { manualLiveKeys: opts.manualLiveKeys(), heldSliceKeys: opts.heldSliceKeys() }),
       opts.liveKeys(),
       opts.openPrKeys(),
     );

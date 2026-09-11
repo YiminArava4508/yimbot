@@ -28,6 +28,7 @@ import {
   isLaunchMarkerActive,
   liveRefineKeys,
   manuallyLiveKeys,
+  splitSliceKeys,
   markFeatureReady,
   parseWorktreePorcelain,
   pollOnce,
@@ -107,6 +108,20 @@ test("manuallyLiveKeys keeps only worktrees under the dir that have a live sessi
     "/home/u/Work/worktrees",
   );
   assert.deepEqual([...keys], ["ENG-1383"]);
+});
+
+test("splitSliceKeys keeps only worktrees under the dir that carry a parent-session marker", () => {
+  const keys = splitSliceKeys(
+    [
+      { path: "/home/u/Work/worktrees/eng-2275-1-2-exclude-bots", branch: "eng-2275-1-2-exclude-bots" },
+      { path: "/home/u/Work/worktrees/eng-1417-polish", branch: "eng-1417-polish" }, // no marker
+      { path: "/home/u/Work/worktrees/eng-9-outside", branch: "eng-9-outside" },
+      { path: "/home/u/Work/gemini", branch: "main" }, // outside dir
+    ],
+    (path) => (path.includes("eng-2275") || path.includes("main") ? "eng-2249-parent" : null),
+    "/home/u/Work/worktrees",
+  );
+  assert.deepEqual([...keys], ["ENG-2275"]);
 });
 
 test("pollOnce launches new issues and marks them seen", async () => {

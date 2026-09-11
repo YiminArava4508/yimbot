@@ -30,6 +30,7 @@ import {
   liveRefineKeys,
   liveWorktreeKeys,
   manuallyLiveKeys,
+  splitSliceKeys,
   resolveSessionForKey,
   switchToSession,
   unbindReturnKey,
@@ -204,6 +205,7 @@ if (process.stdout.isTTY) {
     },
     openPrKeys,
     manualLiveKeys: () => manuallyLiveKeys(listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
+    heldSliceKeys: () => splitSliceKeys(listGitWorktrees(currentCodebasePath())),
     onToggleFlag: (key, label, flagged) =>
       emitEvent(
         flagged

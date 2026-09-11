@@ -477,6 +477,34 @@ test("reduceRows: manual conversion applies inside the merged linger window too"
   assert.equal(rows[0].status, "working (manual)");
 });
 
+test("reduceRows: a merged split slice held for its group says so instead of working (manual)", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "merged", ts: 10 })], 1000, {
+    keepMergedMs: 100,
+    manualLiveKeys: new Set(["A"]),
+    heldSliceKeys: new Set(["A"]),
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "merged, waiting on slices");
+  assert.equal(rows[0].terminal, false);
+  assert.equal(rows[0].section, "merge");
+});
+
+test("reduceRows: a held slice stays on the board past the linger window even without a session", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "merged", ts: 10 })], 1000, {
+    keepMergedMs: 100,
+    heldSliceKeys: new Set(["A"]),
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "merged, waiting on slices");
+});
+
+test("reduceRows: held slice keys leave non-merged rows untouched", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "task_started", ts: 10 })], 50, {
+    heldSliceKeys: new Set(["A"]),
+  });
+  assert.equal(rows[0].status, "working");
+});
+
 test("reduceRows: manual live keys leave non-terminal rows untouched", () => {
   const rows = reduceRows([ev({ key: "A", label: "A", kind: "task_started", ts: 10 })], 50, {
     manualLiveKeys: new Set(["A"]),

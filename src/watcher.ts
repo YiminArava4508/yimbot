@@ -1015,6 +1015,21 @@ export function manuallyLiveKeys(worktrees: Worktree[], sessions: string[], dir:
   return keys;
 }
 
+// Board keys of split-slice worktrees under `dir`: those carrying a
+// parent-session marker, which cleanup holds until the whole group resolves.
+// The board shows their merged rows as waiting on the group rather than as
+// manual work or history.
+export function splitSliceKeys(
+  worktrees: Worktree[],
+  readParent: (worktreePath: string) => string | null = readParentSession,
+  dir: string = worktreesDir,
+): Set<string> {
+  return worktreeKeysUnder(
+    worktrees.filter((w) => readParent(w.path) !== null),
+    dir,
+  );
+}
+
 // Board keys of live refine sessions. Refine rows have no worktree, so the
 // board's live-key filter unions these in to keep them visible while refining.
 export function liveRefineKeys(sessions: string[]): Set<string> {

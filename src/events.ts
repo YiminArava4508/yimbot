@@ -136,6 +136,7 @@ export function sectionKind(section: Section): EventKind {
 }
 
 const MERGED_STATUS = STATUS.merged!.status;
+export const HELD_SLICE_STATUS = "merged, waiting on slices";
 export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
 
 // Statuses that mean a human already owes this row an answer. A status derived
@@ -396,7 +397,7 @@ export function isFlagged(row: BoardRow): boolean {
 export function reduceRows(
   events: YimbotEvent[],
   now: number,
-  opts: { keepMergedMs?: number; maxRows?: number; manualLiveKeys?: Set<string> } = {},
+  opts: { keepMergedMs?: number; maxRows?: number; manualLiveKeys?: Set<string>; heldSliceKeys?: Set<string> } = {},
 ): BoardRow[] {
   const keepMergedMs = opts.keepMergedMs ?? keepMergedMsDefault();
   const maxRows = opts.maxRows ?? maxRowsDefault();
@@ -442,13 +443,23 @@ export function reduceRows(
   // A terminal key whose worktree still has a live session is manual work in
   // progress (cleanup declined the teardown), not history: show it as working
   // instead of "merged"/aging it out. `manualLiveKeys` carries those keys.
+  // A merged split slice whose worktree cleanup is holding for the rest of
+  // its group (`heldSliceKeys`) is neither history nor manual work: say what
+  // it is waiting on and keep it on the merge pane until the group goes.
   const manualLive = opts.manualLiveKeys ?? new Set<string>();
+  const heldSlices = opts.heldSliceKeys ?? new Set<string>();
+  const holdRow = (r: BoardRow): BoardRow => {
+    if (!r.terminal) return r;
+    if (r.status === MERGED_STATUS && heldSlices.has(r.key)) {
+      return { ...r, status: HELD_SLICE_STATUS, terminal: false };
+    }
+    if (manualLive.has(r.key)) {
+      return { ...r, status: "working (manual)", terminal: false, section: sections.get(r.key) ?? "tasks" };
+    }
+    return r;
+  };
   let rows = [...byKey.values()]
-    .map((r) =>
-      r.terminal && manualLive.has(r.key)
-        ? { ...r, status: "working (manual)", terminal: false, section: sections.get(r.key) ?? "tasks" }
-        : r,
-    )
+    .map(holdRow)
     .filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
   rows.sort((a, b) => b.ts - a.ts);
 

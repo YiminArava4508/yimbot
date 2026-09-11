@@ -195,7 +195,7 @@ export async function startDaemon(): Promise<() => void> {
     return prs;
   };
   const listAllMergedPRs = async () =>
-    (await Promise.all([listMyMergedPRs(gh), ...extraRunners.map((r) => listMyMergedPRs(r.run))])).flat();
+    (await Promise.all([listMyMergedPRs(gh), ...extraRunners.map((r) => listMyMergedPRs(r.run, r.repo))])).flat();
   const listAllClosedUnmergedPRs = async () =>
     (
       await Promise.all([listMyClosedUnmergedPRs(gh), ...extraRunners.map((r) => listMyClosedUnmergedPRs(r.run))])

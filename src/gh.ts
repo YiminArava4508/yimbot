@@ -58,18 +58,19 @@ export async function listMyOpenPRs(run: GhRunner, repo?: string): Promise<OpenP
   );
 }
 
-export type MergedPR = { number: number; headRefName: string };
+export type MergedPR = { number: number; headRefName: string; repo?: string };
 
-export function parseMergedPRs(json: string): MergedPR[] {
+export function parseMergedPRs(json: string, repo?: string): MergedPR[] {
   const rows = JSON.parse(json) as MergedPR[];
-  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName }));
+  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName, ...(repo ? { repo } : {}) }));
 }
 
 // The viewer's merged PRs in the runner's repo. Bounded to the 100 most recent:
 // a worktree whose PR merged more than 100 merges ago is not a realistic case.
-export async function listMyMergedPRs(run: GhRunner): Promise<MergedPR[]> {
+export async function listMyMergedPRs(run: GhRunner, repo?: string): Promise<MergedPR[]> {
   return parseMergedPRs(
     await run(["pr", "list", "--author", "@me", "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
+    repo,
   );
 }
 

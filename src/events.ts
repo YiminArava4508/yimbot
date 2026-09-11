@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { envOr } from "./env.ts";
+import type { MergedPR, OpenPR } from "./gh.ts";
 
 export type EventKind =
   | "task_started"
@@ -13,6 +14,7 @@ export type EventKind =
   | "draft_pr"
   | "ready_regressed"
   | "awaiting_slices"
+  | "tracking"
   | "merged"
   | "flagged"
   | "unflagged"
@@ -67,6 +69,16 @@ export function deriveKey(opts: { identifier?: string; branch?: string; pr?: num
   return { key, label: key };
 }
 
+// The board row a PR belongs to. A codebase-repo PR folds into its ticket's
+// row; a PR in an EXTRA_REPOS repo gets a row of its own, keyed by ticket and
+// repo but labeled like the ticket, so a ticket spanning repos shows one row
+// per PR instead of one row flipping between them.
+export function prRowKey(opts: { branch: string; pr: number; repo?: string }): { key: string; label: string } {
+  const base = deriveKey({ branch: opts.branch, pr: opts.pr });
+  if (!opts.repo) return base;
+  return { key: `${base.key}@${opts.repo}`, label: base.label };
+}
+
 // A ticket-keyed board row can cover several PRs at once: every branch carrying
 // the same ticket slug derives to one key, so a follow-up or stacked PR on a
 // ticket shares its row (as does a split slice branched off the parent's slug
@@ -77,6 +89,32 @@ export function deriveKey(opts: { identifier?: string; branch?: string; pr?: num
 export function branchesFullyMerged(merged: Set<string>, open: Set<string>): string[] {
   const openKeys = new Set([...open].map((b) => deriveKey({ branch: b }).key));
   return [...merged].filter((b) => !openKeys.has(deriveKey({ branch: b }).key));
+}
+
+// The board rows to mark merged. A codebase-repo PR shares the ticket's row
+// with every other PR of the ticket, so it waits for all of them
+// (branchesFullyMerged). An extra-repo PR has a row of its own and only waits
+// on open PRs of the same branch in the same repo.
+export function mergedRowKeys(merged: MergedPR[], open: OpenPR[]): { key: string; label: string }[] {
+  const fully = new Set(
+    branchesFullyMerged(
+      new Set(merged.filter((p) => !p.repo).map((p) => p.headRefName)),
+      new Set(open.map((p) => p.headRefName)),
+    ),
+  );
+  const out: { key: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (const p of merged) {
+    const blocked = p.repo
+      ? open.some((o) => o.repo === p.repo && o.headRefName === p.headRefName)
+      : !fully.has(p.headRefName);
+    if (blocked) continue;
+    const k = prRowKey({ branch: p.headRefName, pr: p.number, repo: p.repo });
+    if (seen.has(k.key)) continue;
+    seen.add(k.key);
+    out.push(k);
+  }
+  return out;
 }
 
 export function titleFromBranch(branch: string): string {
@@ -99,6 +137,7 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   draft_pr: { status: "draft pr", terminal: false },
   ready_regressed: { status: "working", terminal: false },
   awaiting_slices: { status: "waiting on slices", terminal: false },
+  tracking: { status: "tracker ticket", terminal: false },
   merged: { status: "merged", terminal: true },
   needs_decision: { status: "needs decision", terminal: false },
   review_findings: { status: "review findings", terminal: false },
@@ -138,6 +177,7 @@ export function sectionKind(section: Section): EventKind {
 const MERGED_STATUS = STATUS.merged!.status;
 export const HELD_SLICE_STATUS = "merged, waiting on slices";
 export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
+export const WORKING_STATUS = STATUS.task_started!.status;
 
 // Statuses that mean a human already owes this row an answer. A status derived
 // from somewhere other than the row's own session (the split parent's "waiting

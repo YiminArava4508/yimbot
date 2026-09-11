@@ -83,6 +83,12 @@ test("ghRunner: an extra repo sets GH_REPO for the child, the codebase runner do
   assert.deepEqual(seen, [undefined, "acme/tf"]);
 });
 
+test("parseMergedPRs tags rows with the extra repo slug when given", () => {
+  const json = JSON.stringify([{ number: 7, headRefName: "eng-1-x" }]);
+  assert.deepEqual(parseMergedPRs(json, "acme/tf"), [{ number: 7, headRefName: "eng-1-x", repo: "acme/tf" }]);
+  assert.deepEqual(parseMergedPRs(json), [{ number: 7, headRefName: "eng-1-x" }]);
+});
+
 test("parseMergedPRs keeps only number/headRefName", () => {
   const prs = parseMergedPRs(
     JSON.stringify([{ number: 4700, headRefName: "eng-900-y", state: "MERGED", title: "ignored" }]),

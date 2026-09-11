@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { branchesFullyMerged, mergedRowKeys, prRowKey, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,37 @@ import { tempDir } from "./test-temp.ts";
 
 test("deriveKey: identifier wins and is uppercased", () => {
   assert.deepEqual(deriveKey({ identifier: "eng-42" }), { key: "ENG-42", label: "ENG-42" });
+});
+
+test("prRowKey: codebase repo PR folds into the ticket row", () => {
+  assert.deepEqual(prRowKey({ branch: "eng-2063-enable-pdf", pr: 5970 }), { key: "ENG-2063", label: "ENG-2063" });
+});
+
+test("prRowKey: extra-repo PR gets its own row keyed by ticket and repo, same label", () => {
+  assert.deepEqual(prRowKey({ branch: "eng-2063-enable-pdf", pr: 1507, repo: "acme/tf" }), {
+    key: "ENG-2063@acme/tf",
+    label: "ENG-2063",
+  });
+});
+
+test("prRowKey: no ticket slug falls back to the pr key, suffixed for an extra repo", () => {
+  assert.deepEqual(prRowKey({ branch: "spike-thing", pr: 9 }), { key: "pr:9", label: "PR #9" });
+  assert.deepEqual(prRowKey({ branch: "spike-thing", pr: 9, repo: "acme/tf" }), { key: "pr:9@acme/tf", label: "PR #9" });
+});
+
+test("mergedRowKeys: a codebase branch is merged only once no PR on its ticket is open anywhere", () => {
+  const merged = [{ number: 5970, headRefName: "eng-2063-a" }];
+  const open = [{ number: 1507, headRefName: "eng-2063-a", isDraft: false, repo: "acme/tf" }];
+  assert.deepEqual(mergedRowKeys(merged, open), []);
+  assert.deepEqual(mergedRowKeys(merged, []), [{ key: "ENG-2063", label: "ENG-2063" }]);
+});
+
+test("mergedRowKeys: an extra-repo branch is merged on its own row once its repo has no open PR on it", () => {
+  const merged = [{ number: 1507, headRefName: "eng-2063-a", repo: "acme/tf" }];
+  const openSameRepo = [{ number: 1600, headRefName: "eng-2063-a", isDraft: false, repo: "acme/tf" }];
+  const openOtherRepo = [{ number: 5970, headRefName: "eng-2063-a", isDraft: false }];
+  assert.deepEqual(mergedRowKeys(merged, openSameRepo), []);
+  assert.deepEqual(mergedRowKeys(merged, openOtherRepo), [{ key: "ENG-2063@acme/tf", label: "ENG-2063" }]);
 });
 
 test("deriveKey: branch normalizes to ticket key", () => {
@@ -65,6 +96,7 @@ test("statusFor maps kinds; only merged is terminal", () => {
   assert.deepEqual(statusFor("draft_pr"), { status: "draft pr", terminal: false });
   assert.deepEqual(statusFor("ready_regressed"), { status: "working", terminal: false });
   assert.deepEqual(statusFor("awaiting_slices"), { status: "waiting on slices", terminal: false });
+  assert.deepEqual(statusFor("tracking"), { status: "tracker ticket", terminal: false });
   assert.deepEqual(statusFor("merged"), { status: "merged", terminal: true });
 });
 

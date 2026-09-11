@@ -2,6 +2,7 @@
 // Pure parser for `gh pr diff` output (git unified diff format). No fs, no
 // subprocess: raw text in, per-file structures out, so tests stay hermetic.
 import { DEFAULT_THEME, highlight as cliHighlight } from "cli-highlight";
+import "./review-diff-langs.ts";
 
 export type DiffLineKind = "add" | "del" | "ctx" | "hunk" | "meta";
 export type DiffLine = { kind: DiffLineKind; text: string };
@@ -77,6 +78,7 @@ const EXT_LANG: Record<string, string> = {
   sh: "bash", bash: "bash", zsh: "bash", json: "json", md: "markdown",
   yml: "yaml", yaml: "yaml", toml: "ini", ini: "ini", sql: "sql",
   css: "css", scss: "scss", html: "xml", xml: "xml", vue: "xml", php: "php",
+  graphql: "graphql", gql: "graphql", tf: "terraform", tfvars: "terraform", hcl: "terraform",
 };
 
 export function languageFor(path: string): string | null {

@@ -17,6 +17,9 @@ importers:
       cli-highlight:
         specifier: ^2.1.11
         version: 2.1.11
+      highlight.js:
+        specifier: ^10.7.3
+        version: 10.7.3
       neo-blessed:
         specifier: ^0.2.0
         version: 0.2.0

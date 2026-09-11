@@ -121,6 +121,11 @@ test("languageFor maps known extensions and returns null otherwise", () => {
   assert.equal(languageFor("main.go"), "go");
   assert.equal(languageFor("lib.rs"), "rust");
   assert.equal(languageFor("style.css"), "css");
+  assert.equal(languageFor("schema.graphql"), "graphql");
+  assert.equal(languageFor("query.gql"), "graphql");
+  assert.equal(languageFor("infra/main.tf"), "terraform");
+  assert.equal(languageFor("prod.tfvars"), "terraform");
+  assert.equal(languageFor("cfg.hcl"), "terraform");
   assert.equal(languageFor("logo.png"), null);
   assert.equal(languageFor("Makefile"), null);
 });
@@ -169,7 +174,9 @@ test("renderFileDiff emits only blessed tags, no raw ANSI escapes or sentinels",
     "@@ -1,1 +1,1 @@",
     "+some *bold* and _italic_ text",
     "",
-  ].join("\n");
+  ].join("\n")
+    + ONE_FILE("s.graphql", "type Query { user(id: ID!): User @deprecated }", 'query Q($id: ID!) { user(id: $id) { ...F } } # "c"')
+    + ONE_FILE("m.tf", 'resource "aws_s3_bucket" "b" { bucket = "${var.name}-x" }', "locals { n = length(var.list) > 0 ? 1 : 0 } // c", "/* block */ enabled = false");
   for (const f of parseUnifiedDiff(diff).concat(parseUnifiedDiff(TWO_FILE_DIFF))) {
     for (const line of renderFileDiff(f)) {
       assert.ok(!line.includes(String.fromCharCode(27)), `ANSI escape leaked: ${JSON.stringify(line)}`);
@@ -177,6 +184,46 @@ test("renderFileDiff emits only blessed tags, no raw ANSI escapes or sentinels",
       assert.ok(!line.includes(String.fromCharCode(2)));
     }
   }
+});
+
+const ONE_FILE = (path: string, ...added: string[]) =>
+  [`diff --git a/${path} b/${path}`, "index 1..2 100644", `--- a/${path}`, `+++ b/${path}`, `@@ -1,${added.length} +1,${added.length} @@`, ...added.map((l) => `+${l}`), ""].join("\n");
+
+test("renderFileDiff highlights graphql schema files", () => {
+  const [f] = parseUnifiedDiff(ONE_FILE("schema.graphql", "type Query {", "  user(id: ID!): User @deprecated", '  # comment "here"', "}"));
+  const out = renderFileDiff(f);
+  const typeLine = out.find((l) => l.includes("Query"));
+  assert.ok(typeLine);
+  assert.ok(typeLine.startsWith("{green-fg}+{/green-fg}"));
+  assert.ok(typeLine.includes("{magenta-fg}type{/magenta-fg}"));
+  const field = out.find((l) => l.includes("user"));
+  assert.ok(field);
+  assert.ok(field.includes("{yellow-fg}user{/yellow-fg}"));
+  assert.ok(field.includes("{grey-fg}@deprecated{/grey-fg}"));
+  const comment = out.find((l) => l.includes("comment"));
+  assert.ok(comment);
+  assert.ok(comment.includes('{grey-fg}# comment "here"{/grey-fg}'));
+});
+
+test("renderFileDiff highlights terraform files", () => {
+  const [f] = parseUnifiedDiff(ONE_FILE("main.tf", 'resource "aws_s3_bucket" "b" {', "  bucket = var.name # trailing", "  count  = 3", "  tags   = { env = true }", "}"));
+  const out = renderFileDiff(f);
+  const res = out.find((l) => l.includes("aws_s3_bucket"));
+  assert.ok(res);
+  assert.ok(res.startsWith("{green-fg}+{/green-fg}"));
+  assert.ok(res.includes("{magenta-fg}resource{/magenta-fg}"));
+  assert.ok(res.includes('{green-fg}"aws_s3_bucket"{/green-fg}'));
+  const attr = out.find((l) => l.includes("trailing"));
+  assert.ok(attr);
+  assert.ok(attr.includes("{cyan-fg}bucket{/cyan-fg}"));
+  assert.ok(attr.includes("{cyan-fg}var.{/cyan-fg}"));
+  assert.ok(attr.includes("{grey-fg}# trailing{/grey-fg}"));
+  const count = out.find((l) => l.includes("count"));
+  assert.ok(count);
+  assert.ok(count.includes("{yellow-fg}3{/yellow-fg}"));
+  const tags = out.find((l) => l.includes("tags"));
+  assert.ok(tags);
+  assert.ok(tags.includes("{magenta-fg}true{/magenta-fg}"));
 });
 
 test("renderFileDiff escapes braces inside highlighted code lines", () => {

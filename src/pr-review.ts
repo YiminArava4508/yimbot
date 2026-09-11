@@ -66,7 +66,7 @@ export type ReviewState = {
   lastHandledBlockedSha: Map<number, string>;
   pendingSpawn: Map<number, FixKind>;
   // "<prNumber>:<kind>" -> epoch ms the fix was first seen in flight. Drives the
-  // stale reap backstop. In-memory: a restart resets the timers.
+  // stale reap backstop. The watcher persists it (fix-timers.json) across restarts.
   fixSeenAt: Map<string, number>;
 };
 

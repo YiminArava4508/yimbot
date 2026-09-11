@@ -29,6 +29,7 @@ import {
   type Worktree,
 } from "./cleanup.ts";
 import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
+import { loadFixSeenAt, saveFixSeenAt } from "./fix-timers.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
@@ -1299,7 +1300,10 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   // Review step (gh-driven): each heartbeat, address comments on open PRs.
+  // The stale-reap timers come back from disk so a restart mid-fix does not
+  // restart a stuck fixer's 90-minute clock.
   const reviewState = freshReviewState();
+  reviewState.fixSeenAt = loadFixSeenAt();
   // Per-tick memo for flagState below; reset at the top of every heartbeat.
   let attentionSnapshot: ReturnType<typeof foldAttention> | null = null;
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
@@ -1643,7 +1647,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
-      if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);
+      if (prReviewDeps) {
+        await reviewOnce(reviewState, prReviewDeps);
+        saveFixSeenAt(reviewState.fixSeenAt);
+      }
       if (cleanupDeps) await cleanupOnce(cleanupDeps);
       // The reattach step MUST run after cleanup: cleanup tears down resolved
       // (merged/closed) worktrees, and reattach re-couples the rest. Running it

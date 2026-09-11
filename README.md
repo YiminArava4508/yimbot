@@ -162,7 +162,8 @@ flowchart TD
   heartbeat the order is comment, then conflict, then CI. Re-triggers only when
   the PR head moves, so a clean bail never loops. Needs `gh` installed and
   authenticated. Any fix session (comment, CI, or conflict) that lingers too
-  long is torn down as a backstop, regardless of PR state. *(setting:
+  long is torn down as a backstop, regardless of PR state; the clock survives
+  a daemon restart (`fix-timers.json` next to the events log). *(setting:
   `YIMBOT_FIX_REAP_STALE_MINUTES`, defaults to 90)*
 - **Handle queue blocks (orange):** every heartbeat, for each of your open PRs
   the merge queue (Aviator) kicked out after its combined-CI batch failed (it

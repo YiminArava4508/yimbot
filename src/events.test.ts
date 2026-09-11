@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, mergedRowKeys, prRowKey, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,11 +26,42 @@ test("prRowKey: no ticket slug falls back to the pr key, suffixed for an extra r
   assert.deepEqual(prRowKey({ branch: "spike-thing", pr: 9, repo: "acme/tf" }), { key: "pr:9@acme/tf", label: "PR #9" });
 });
 
-test("mergedRowKeys: a codebase branch is merged only once no PR on its ticket is open anywhere", () => {
+test("ticketKeyOf: strips the repo suffix of an extra-repo row key, leaves other keys alone", () => {
+  assert.equal(ticketKeyOf("ENG-2063@acme/tf"), "ENG-2063");
+  assert.equal(ticketKeyOf("ENG-2063"), "ENG-2063");
+  assert.equal(ticketKeyOf("pr:9@acme/tf"), "pr:9");
+});
+
+test("reduceRows: a legacy extra-repo event keyed by ticket alone folds into the repo row, not the ticket row", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-2063", label: "ENG-2063" }),
+      ev({ ts: 2, kind: "ready_to_merge", key: "ENG-2063", label: "ENG-2063", pr: 1507, repo: "acme/tf" }),
+      ev({ ts: 3, kind: "section_review", key: "ENG-2063", label: "ENG-2063", pr: 1507, repo: "acme/tf" }),
+    ],
+    100,
+  );
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  assert.equal(byKey.get("ENG-2063")?.pr, undefined);
+  assert.equal(byKey.get("ENG-2063")?.repo, undefined);
+  assert.equal(byKey.get("ENG-2063")?.section, "tasks");
+  assert.equal(byKey.get("ENG-2063@acme/tf")?.pr, 1507);
+  assert.equal(byKey.get("ENG-2063@acme/tf")?.section, "review");
+});
+
+test("mergedRowKeys: a codebase branch is merged once no codebase PR on its ticket is open; extra-repo PRs have their own rows", () => {
   const merged = [{ number: 5970, headRefName: "eng-2063-a" }];
-  const open = [{ number: 1507, headRefName: "eng-2063-a", isDraft: false, repo: "acme/tf" }];
-  assert.deepEqual(mergedRowKeys(merged, open), []);
+  const openCodebaseSibling = [{ number: 6000, headRefName: "eng-2063-b", isDraft: false }];
+  const openExtra = [{ number: 1507, headRefName: "eng-2063-a", isDraft: false, repo: "acme/tf" }];
+  assert.deepEqual(mergedRowKeys(merged, openCodebaseSibling), []);
+  assert.deepEqual(mergedRowKeys(merged, openExtra), [{ key: "ENG-2063", label: "ENG-2063" }]);
   assert.deepEqual(mergedRowKeys(merged, []), [{ key: "ENG-2063", label: "ENG-2063" }]);
+});
+
+test("mergedRowKeys: an extra-repo row is held by any open PR of its ticket in the same repo, not only the same branch", () => {
+  const merged = [{ number: 1507, headRefName: "eng-2063-a", repo: "acme/tf" }];
+  const openSibling = [{ number: 1600, headRefName: "eng-2063-b", isDraft: false, repo: "acme/tf" }];
+  assert.deepEqual(mergedRowKeys(merged, openSibling), []);
 });
 
 test("mergedRowKeys: an extra-repo branch is merged on its own row once its repo has no open PR on it", () => {
@@ -443,23 +474,17 @@ test("reduceRows: a later event with a new pr overwrites the earlier one", () =>
   assert.equal(rows[0].pr, 200);
 });
 
-test("reduceRows: carries repo forward and lets a later event overwrite it", () => {
+test("reduceRows: carries repo forward on the extra-repo row", () => {
   const rows = reduceRows(
     [
-      ev({ ts: 1, kind: "draft_pr", pr: 5, repo: "acme/tf" }),
-      ev({ ts: 2, kind: "review_started" }),
+      ev({ ts: 1, kind: "draft_pr", key: "ENG-1@acme/tf", pr: 5, repo: "acme/tf" }),
+      ev({ ts: 2, kind: "review_started", key: "ENG-1@acme/tf" }),
     ],
     100,
   );
+  assert.equal(rows.length, 1);
   assert.equal(rows[0].repo, "acme/tf");
-  const moved = reduceRows(
-    [
-      ev({ ts: 1, kind: "draft_pr", pr: 5, repo: "acme/tf" }),
-      ev({ ts: 2, kind: "draft_pr", pr: 6, repo: "acme/tf2" }),
-    ],
-    100,
-  );
-  assert.equal(moved[0].repo, "acme/tf2");
+  assert.equal(rows[0].pr, 5);
   assert.equal(reduceRows([ev({ ts: 1, kind: "task_started" })], 100)[0].repo, undefined);
 });
 
@@ -507,6 +532,18 @@ test("reduceRows: manual conversion applies inside the merged linger window too"
     manualLiveKeys: new Set(["A"]),
   });
   assert.equal(rows[0].status, "working (manual)");
+});
+
+test("reduceRows: a merged row whose worktree cleanup holds for its ticket says so instead of working (manual)", () => {
+  const rows = reduceRows([ev({ key: "A", label: "A", kind: "merged", ts: 10 })], 1000, {
+    keepMergedMs: 100,
+    manualLiveKeys: new Set(["A"]),
+    heldMergedKeys: new Set(["A"]),
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "merged, waiting on ticket");
+  assert.equal(rows[0].terminal, false);
+  assert.equal(rows[0].section, "merge");
 });
 
 test("reduceRows: a merged split slice held for its group says so instead of working (manual)", () => {

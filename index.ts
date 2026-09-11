@@ -8,6 +8,7 @@ import { envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
 import { applyReadyLabel, ghRunner, prDiff, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
+import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
 import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
@@ -206,6 +207,7 @@ if (process.stdout.isTTY) {
     openPrKeys,
     manualLiveKeys: () => manuallyLiveKeys(listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
     heldSliceKeys: () => splitSliceKeys(listGitWorktrees(currentCodebasePath())),
+    heldMergedKeys,
     onToggleFlag: (key, label, flagged) =>
       emitEvent(
         flagged

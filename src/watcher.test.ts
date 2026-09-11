@@ -593,6 +593,12 @@ test("resolveSessionForKey falls back to the worktree dir slug when the branch i
   assert.equal(session, "eng-42-fix-login");
 });
 
+test("resolveSessionForKey resolves an extra-repo PR row to its ticket's session", () => {
+  const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "eng-42-fix-login" }];
+  const session = resolveSessionForKey("ENG-42@acme/tf", worktrees, ["eng-42-fix-login"]);
+  assert.equal(session, "eng-42-fix-login");
+});
+
 test("resolveSessionForKey returns null when no worktree backs the key", () => {
   const worktrees = [{ path: "/wt/eng-7-other", branch: "eng-7-other" }];
   assert.equal(resolveSessionForKey("ENG-42", worktrees, ["eng-7-other"]), null);

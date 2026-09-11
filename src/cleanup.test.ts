@@ -440,6 +440,46 @@ test("merged teardown sits the tick out when the open PR list failed", async () 
   assert.ok(logs.some((l) => l.includes("merged teardown deferred (open PR list unavailable)")));
 });
 
+test("cleanupOnce does not kill a codebase fix session when an extra-repo PR with the same number merges", async () => {
+  const { deps: d, killed } = deps({
+    listWorktrees: () => [],
+    listMergedPRs: async () => [{ ...mpr(42, "eng-42-x"), repo: "acme/tf" }],
+    listSessions: () => ["pr-42-ci"],
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(killed, []);
+});
+
+test("cleanupOnce reports the merged worktrees it held, by branch", async () => {
+  let held: string[] | null = null;
+  const { deps: d } = deps({
+    listWorktrees: () => [wt("eng-2-b"), wt("eng-3-c"), wt("eng-4-d")],
+    listMergedPRs: async () => [mpr(2, "eng-2-b"), mpr(3, "eng-3-c"), mpr(4, "eng-4-d")],
+    listOpenPRs: async () => [{ ...opr(9, "eng-3-c"), repo: "acme/tf" }],
+    issueState: async (id) => {
+      if (id === "ENG-2") return st("started", "In Progress");
+      if (id === "ENG-4") return st("completed");
+      throw new Error("lookup boom");
+    },
+    reportHeldMerged: (branches) => void (held = branches),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual((held as unknown as string[]).sort(), ["eng-2-b", "eng-3-c"]);
+});
+
+test("cleanupOnce only scans worktrees under the worktrees dir for the split-parent marker", async () => {
+  let rows: { awaiting: string[]; tracking: string[] } | null = null;
+  const { deps: d } = deps({
+    listWorktrees: () => [{ path: "/home/ymbo/Work/yimbot", branch: "master" }, wt("eng-5-e")],
+    listMergedPRs: async () => [],
+    isSplitParent: () => true,
+    rowKeyOf: (b) => b,
+    reportSplitParents: (r) => void (rows = r),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(rows, { awaiting: [], tracking: ["eng-5-e"] });
+});
+
 test("cleanupOnce tears down each merged worktree", async () => {
   const { deps: d, torn } = deps({ issueState: async (id) => (id === "ENG-2" ? st("completed") : null) });
   await cleanupOnce(d);

@@ -63,6 +63,10 @@ export type CleanupDeps = {
   // reported by branch. Skipped when the open PR list can't be fetched, like
   // every other open-set-dependent path here.
   reportSplitParents?: (rows: { awaiting: string[]; tracking: string[] }) => void;
+  // The merged worktrees held this tick (open sibling PR, ticket not landed, or
+  // its lookup failed), by branch, so their rows can say so. Called with the
+  // full list every tick the merged path runs, so a lifted hold clears.
+  reportHeldMerged?: (branches: string[]) => void;
   // A branch's board row key, so the guard above can compare rows rather than
   // branch names. Supplied by the caller that owns key derivation.
   rowKeyOf?: (branch: string) => string;
@@ -395,6 +399,35 @@ export function selectMergedFixSessions(sessions: string[], mergedPrNumbers: Set
   });
 }
 
+// One Linear answer per ticket per tick: a branch in both the merged and the
+// closed set, or several worktrees of one ticket, would otherwise each pay a
+// round trip.
+type LandedMemo = Map<string, Promise<TicketState | null>>;
+
+// Why a ticket-backed branch's teardown must wait, or null to proceed. A
+// branch with no Linear identifier (Shortcut, ad-hoc) has nothing to ask, so
+// its PR state alone decides. A failed lookup holds too: reaping on an
+// unanswered question is the one mistake that cannot be undone.
+async function ticketHold(branch: string, deps: CleanupDeps, memo: LandedMemo): Promise<string | null> {
+  const identifier = issueFromBranch(branch);
+  if (identifier === null) return null;
+  let pending = memo.get(identifier);
+  if (!pending) {
+    pending = deps.issueState(identifier);
+    memo.set(identifier, pending);
+  }
+  let state: TicketState | null;
+  try {
+    state = await pending;
+  } catch (err) {
+    return `issue state lookup failed for ${identifier}: ${err}`;
+  }
+  if (!ticketWorkLanded(state, deps.clearedStates)) {
+    return `ticket ${identifier} not landed: ${state?.name ?? "unknown"}`;
+  }
+  return null;
+}
+
 // One cleanup-step tick, run every heartbeat. Independent reconciliations against
 // the viewer's PRs: (a) tear down each merged worktree (removes the worktree + its
 // branch-named ticket session); (a2) tear down each closed-unmerged worktree that
@@ -420,8 +453,12 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
     return;
   }
 
+  const worktreesPrefix = deps.worktreesDir.endsWith("/") ? deps.worktreesDir : `${deps.worktreesDir}/`;
+  const landedMemo: LandedMemo = new Map();
   const mergedBranches = new Set(merged.map((p) => p.headRefName));
-  const mergedNumbers = new Set(merged.map((p) => p.number));
+  // Fix sessions only ever run on codebase-repo PRs, and PR numbers are
+  // per-repo counters, so an extra repo's merge must not match one by number.
+  const mergedNumbers = new Set(merged.filter((p) => !p.repo).map((p) => p.number));
 
   // Fetched before the board reconcile: without the open set, a merged split
   // slice would mark its whole ticket row merged while sibling PRs are open.
@@ -459,7 +496,9 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   const groupedPaths = new Set(groups.flatMap((g) => g.worktreePaths));
 
   if (openBranches !== null && deps.rowKeyOf) {
-    const marked = worktrees.filter((w) => deps.isSplitParent(w.path)).map((w) => w.branch);
+    const marked = worktrees
+      .filter((w) => w.path.startsWith(worktreesPrefix) && deps.isSplitParent(w.path))
+      .map((w) => w.branch);
     deps.reportSplitParents?.(splitParentRows(groups, openBranches, deps.rowKeyOf, marked));
   }
 
@@ -477,19 +516,10 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       // Linear state is the authority on "all work done" — hold the group until the
       // ticket goes terminal. Sessions with no Linear identifier (Shortcut splits)
       // can't be looked up, so readiness alone decides for them, as before.
-      const identifier = issueFromBranch(g.session);
-      if (identifier !== null) {
-        let state: TicketState | null;
-        try {
-          state = await deps.issueState(identifier);
-        } catch (err) {
-          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
-          continue;
-        }
-        if (!ticketWorkLanded(state, deps.clearedStates)) {
-          deps.log(`kept split group ${g.session} (ticket ${identifier} not landed: ${state?.name ?? "unknown"})`);
-          continue;
-        }
+      const hold = await ticketHold(g.session, deps, landedMemo);
+      if (hold !== null) {
+        deps.log(`kept split group ${g.session} (${hold})`);
+        continue;
       }
       // Gate only the members not backed by a merged PR — the integration worktree
       // and any closed slice — on having no unpushed work, so an abandoned slice
@@ -527,24 +557,18 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   if (openBranches === null) {
     if (mergedWorktrees.length > 0) deps.log(`merged teardown deferred (open PR list unavailable)`);
   } else {
+    const held: string[] = [];
     for (const w of mergedWorktrees) {
       if (openBranches.has(w.branch)) {
         deps.log(`kept ${w.branch} (PR merged but branch has an open PR)`);
+        held.push(w.branch);
         continue;
       }
-      const identifier = issueFromBranch(w.branch);
-      if (identifier !== null) {
-        let state: TicketState | null;
-        try {
-          state = await deps.issueState(identifier);
-        } catch (err) {
-          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
-          continue;
-        }
-        if (!ticketWorkLanded(state, deps.clearedStates)) {
-          deps.log(`kept ${w.branch} (PR merged but ticket ${identifier} not landed: ${state?.name ?? "unknown"})`);
-          continue;
-        }
+      const hold = await ticketHold(w.branch, deps, landedMemo);
+      if (hold !== null) {
+        deps.log(`kept ${w.branch} (PR merged but ${hold})`);
+        held.push(w.branch);
+        continue;
       }
       try {
         deps.teardown(w.branch);
@@ -553,6 +577,7 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
         deps.log(`teardown failed for ${w.branch}: ${err}`);
       }
     }
+    deps.reportHeldMerged?.(held);
   }
 
   // (a2) closed-but-not-merged PRs (spikes, abandoned/superseded work): tear down
@@ -585,19 +610,10 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       }
       // Branches with no Linear identifier (Shortcut, ad-hoc) can't be looked up,
       // so PR state alone decides for them, as in the split-group path.
-      const identifier = issueFromBranch(w.branch);
-      if (identifier !== null) {
-        let state: TicketState | null;
-        try {
-          state = await deps.issueState(identifier);
-        } catch (err) {
-          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
-          continue;
-        }
-        if (!ticketWorkLanded(state, deps.clearedStates)) {
-          deps.log(`kept ${w.branch} (PR closed unmerged but ticket ${identifier} not landed: ${state?.name ?? "unknown"})`);
-          continue;
-        }
+      const hold = await ticketHold(w.branch, deps, landedMemo);
+      if (hold !== null) {
+        deps.log(`kept ${w.branch} (PR closed unmerged but ${hold})`);
+        continue;
       }
       if (!deps.hasNoUnpushedWork(w.path)) {
         deps.log(`kept ${w.branch} (PR closed unmerged but worktree has unsaved work)`);

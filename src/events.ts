@@ -79,6 +79,23 @@ export function prRowKey(opts: { branch: string; pr: number; repo?: string }): {
   return { key: `${base.key}@${opts.repo}`, label: base.label };
 }
 
+// The ticket (or pr:<n>) key behind a row key: an extra-repo row's key minus
+// its repo suffix. Worktrees and sessions are keyed by ticket, so every lookup
+// from a row to its session goes through this.
+export function ticketKeyOf(key: string): string {
+  const at = key.indexOf("@");
+  return at === -1 ? key : key.slice(0, at);
+}
+
+// Events from builds before prRowKey keyed an extra-repo PR by ticket alone,
+// with the repo only in `repo`. Fold them onto the row they would get today,
+// so a replayed events log neither duplicates the row nor leaks the PR onto
+// the ticket row.
+function rowKeyOf(e: YimbotEvent): string {
+  if (e.repo && !e.key.includes("@")) return `${e.key}@${e.repo}`;
+  return e.key;
+}
+
 // A ticket-keyed board row can cover several PRs at once: every branch carrying
 // the same ticket slug derives to one key, so a follow-up or stacked PR on a
 // ticket shares its row (as does a split slice branched off the parent's slug
@@ -91,26 +108,17 @@ export function branchesFullyMerged(merged: Set<string>, open: Set<string>): str
   return [...merged].filter((b) => !openKeys.has(deriveKey({ branch: b }).key));
 }
 
-// The board rows to mark merged. A codebase-repo PR shares the ticket's row
-// with every other PR of the ticket, so it waits for all of them
-// (branchesFullyMerged). An extra-repo PR has a row of its own and only waits
-// on open PRs of the same branch in the same repo.
+// The board rows to mark merged: every merged PR's row that no open PR still
+// maps to. Rows are per ticket per repo, so a codebase PR waits on the
+// ticket's other codebase PRs and an extra-repo PR on the ticket's other PRs
+// in that repo; the worktree teardown, not the row, waits across repos.
 export function mergedRowKeys(merged: MergedPR[], open: OpenPR[]): { key: string; label: string }[] {
-  const fully = new Set(
-    branchesFullyMerged(
-      new Set(merged.filter((p) => !p.repo).map((p) => p.headRefName)),
-      new Set(open.map((p) => p.headRefName)),
-    ),
-  );
+  const openKeys = new Set(open.map((o) => prRowKey({ branch: o.headRefName, pr: o.number, repo: o.repo }).key));
   const out: { key: string; label: string }[] = [];
   const seen = new Set<string>();
   for (const p of merged) {
-    const blocked = p.repo
-      ? open.some((o) => o.repo === p.repo && o.headRefName === p.headRefName)
-      : !fully.has(p.headRefName);
-    if (blocked) continue;
     const k = prRowKey({ branch: p.headRefName, pr: p.number, repo: p.repo });
-    if (seen.has(k.key)) continue;
+    if (openKeys.has(k.key) || seen.has(k.key)) continue;
     seen.add(k.key);
     out.push(k);
   }
@@ -176,6 +184,7 @@ export function sectionKind(section: Section): EventKind {
 
 const MERGED_STATUS = STATUS.merged!.status;
 export const HELD_SLICE_STATUS = "merged, waiting on slices";
+export const HELD_MERGED_STATUS = "merged, waiting on ticket";
 export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
 export const WORKING_STATUS = STATUS.task_started!.status;
 
@@ -366,7 +375,7 @@ export function foldSections(events: YimbotEvent[]): Map<string, Section> {
   const sections = new Map<string, Section>();
   for (const e of events) {
     const mapped = sectionFor(e.kind);
-    if (mapped) sections.set(e.key, mapped);
+    if (mapped) sections.set(rowKeyOf(e), mapped);
   }
   return sections;
 }
@@ -437,7 +446,13 @@ export function isFlagged(row: BoardRow): boolean {
 export function reduceRows(
   events: YimbotEvent[],
   now: number,
-  opts: { keepMergedMs?: number; maxRows?: number; manualLiveKeys?: Set<string>; heldSliceKeys?: Set<string> } = {},
+  opts: {
+    keepMergedMs?: number;
+    maxRows?: number;
+    manualLiveKeys?: Set<string>;
+    heldSliceKeys?: Set<string>;
+    heldMergedKeys?: Set<string>;
+  } = {},
 ): BoardRow[] {
   const keepMergedMs = opts.keepMergedMs ?? keepMergedMsDefault();
   const maxRows = opts.maxRows ?? maxRowsDefault();
@@ -446,10 +461,11 @@ export function reduceRows(
   for (const e of events) {
     const mapped = statusFor(e.kind);
     if (!mapped) continue; // flag signals + any kind retired in a newer build
-    const prev = byKey.get(e.key);
+    const key = rowKeyOf(e);
+    const prev = byKey.get(key);
     const startTs = prev ? (prev.terminal ? e.ts : prev.startTs) : e.ts;
-    byKey.set(e.key, {
-      key: e.key,
+    byKey.set(key, {
+      key,
       label: e.label,
       title: e.title ?? prev?.title,
       pr: e.pr ?? prev?.pr,
@@ -484,14 +500,20 @@ export function reduceRows(
   // progress (cleanup declined the teardown), not history: show it as working
   // instead of "merged"/aging it out. `manualLiveKeys` carries those keys.
   // A merged split slice whose worktree cleanup is holding for the rest of
-  // its group (`heldSliceKeys`) is neither history nor manual work: say what
-  // it is waiting on and keep it on the merge pane until the group goes.
+  // its group (`heldSliceKeys`), or a merged worktree cleanup is holding for
+  // the ticket's other PRs or its Linear state (`heldMergedKeys`), is neither
+  // history nor manual work: say what it is waiting on and keep it on the
+  // merge pane until the hold lifts.
   const manualLive = opts.manualLiveKeys ?? new Set<string>();
   const heldSlices = opts.heldSliceKeys ?? new Set<string>();
+  const heldMerged = opts.heldMergedKeys ?? new Set<string>();
   const holdRow = (r: BoardRow): BoardRow => {
     if (!r.terminal) return r;
     if (r.status === MERGED_STATUS && heldSlices.has(r.key)) {
       return { ...r, status: HELD_SLICE_STATUS, terminal: false };
+    }
+    if (r.status === MERGED_STATUS && heldMerged.has(r.key)) {
+      return { ...r, status: HELD_MERGED_STATUS, terminal: false };
     }
     if (manualLive.has(r.key)) {
       return { ...r, status: "working (manual)", terminal: false, section: sections.get(r.key) ?? "tasks" };

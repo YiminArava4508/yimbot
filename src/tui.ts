@@ -1,7 +1,6 @@
 // src/tui.ts
 // neo-blessed ships no types; treat as any at the import boundary.
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
@@ -11,6 +10,7 @@ import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
+import { configFromEnv } from "./settings-model.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 
 // How often the board repaints on its own, independent of daemon events. Without
@@ -399,7 +399,7 @@ export function repoDisplayName(row: Pick<BoardRow, "pr" | "repo">, codebaseName
 }
 
 function codebaseRepoName(): string {
-  return basename(envOr("CODEBASE_PATH", join(homedir(), "Work/gemini")));
+  return basename(configFromEnv(process.env).codebasePath);
 }
 
 export type BoardEntry = { row: BoardRow; why?: string };
@@ -558,6 +558,9 @@ export function runTui(opts: {
   // Merged split slices whose worktree cleanup holds for the group; their rows
   // read "merged, waiting on slices" and stay on the merge pane.
   heldSliceKeys: () => Set<string>;
+  // Merged worktrees the cleanup step is holding for the ticket's other PRs or
+  // its Linear state; their rows read "merged, waiting on ticket".
+  heldMergedKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
   onAddReadyLabel: (pr: number, key: string, label: string, repo?: string) => Promise<void>;
@@ -637,7 +640,11 @@ export function runTui(opts: {
   });
   const render = () => {
     currentRows = filterToLiveRows(
-      reduceRows(readEvents(), Date.now(), { manualLiveKeys: opts.manualLiveKeys(), heldSliceKeys: opts.heldSliceKeys() }),
+      reduceRows(readEvents(), Date.now(), {
+        manualLiveKeys: opts.manualLiveKeys(),
+        heldSliceKeys: opts.heldSliceKeys(),
+        heldMergedKeys: opts.heldMergedKeys(),
+      }),
       opts.liveKeys(),
       opts.openPrKeys(),
     );

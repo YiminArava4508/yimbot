@@ -28,8 +28,9 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, titleFromBranch, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
+import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import {
@@ -1082,9 +1083,10 @@ export function resolveSessionForKey(
   worktrees: Worktree[],
   sessions: string[],
 ): string | null {
-  const wt = worktrees.find((w) => worktreeKey(w) === key);
+  const ticket = ticketKeyOf(key);
+  const wt = worktrees.find((w) => worktreeKey(w) === ticket);
   if (!wt) {
-    const refine = `refine-${key.toLowerCase()}`;
+    const refine = `refine-${ticket.toLowerCase()}`;
     return sessions.includes(refine) ? refine : null;
   }
   if (sessions.includes(wt.branch)) return wt.branch;
@@ -1383,6 +1385,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       }
     },
     rowKeyOf: (branch) => deriveKey({ branch }).key,
+    reportHeldMerged: (branches) => setHeldMergedKeys(new Set(branches.map((b) => deriveKey({ branch: b }).key))),
     reportSplitParents: (rows) => reportSplitParentRows(rows, { currentStatus, emitStatus }),
     listSessions: listTmuxSessions,
     killSession: killTmuxSession,
@@ -1475,8 +1478,16 @@ export function startWatcher(config: WatcherConfig): () => void {
     // draft says "draft pr" instead: it cannot merge until a human marks it
     // ready for review.
     onVerdict: (n: number, verdict, hasLabel, isDraft) => {
-      if (!boardReadyToMerge(verdict, hasLabel)) return;
       const k = keyForPr(n);
+      if (!boardReadyToMerge(verdict, hasLabel)) {
+        // An extra-repo PR's row exists only through its own events (no
+        // session ever emitted task_started for it), so a PR that is not yet
+        // ready still needs a row to sit in the review pane.
+        if (k.repo && currentStatus(k.key) === undefined) {
+          emitStatus({ kind: "task_started", key: k.key, label: k.label, pr: n, repo: k.repo });
+        }
+        return;
+      }
       emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     // Where the row sits, reported separately from its status so a queued PR

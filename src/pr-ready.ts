@@ -42,8 +42,17 @@ export type PrReadyDeps = {
   // sitting in `hold` with the label surfaces as ready-to-merge too (rather than
   // stalling on whatever fix status last touched its row). Carries `isDraft` so
   // the board can say "draft pr" instead of "ready to merge" while a supervised
-  // draft waits for a human to mark it ready for review.
-  onVerdict?: (prNumber: number, verdict: ReadyVerdict, hasLabel: boolean, isDraft: boolean) => void;
+  // draft waits for a human to mark it ready for review. Carries `reason` for a
+  // regressed verdict (which hard failure tripped it) so the board can name the
+  // failure on a row that still claims readiness, instead of leaving "ready to
+  // merge" standing while a fixer that is already live works the PR.
+  onVerdict?: (
+    prNumber: number,
+    verdict: ReadyVerdict,
+    hasLabel: boolean,
+    isDraft: boolean,
+    reason?: RegressReason,
+  ) => void;
   // Report which board pane a PR belongs in, for every open PR including the
   // blocked ones onVerdict skips: reporting a section is a read, and a blocked
   // PR has lost the ready label, so the board must move it out of the merge
@@ -69,6 +78,9 @@ export type PrReadyDeps = {
 //               mergeable state, or a merge conflict (the label-driven conflict
 //               sweep heals those). No add: readiness is not yet proven.
 export type ReadyVerdict = "ready" | "regressed" | "hold";
+// Which hard failure produced a regressed verdict.
+export type RegressReason = "threads" | "ci";
+type Classified = { verdict: ReadyVerdict; reason?: RegressReason };
 
 // `latched`: PR numbers that have carried the ready label at least once this
 // daemon run, whether the bot added it or it was observed already on (e.g.
@@ -108,20 +120,20 @@ export function boardSection(isDraft: boolean, hasLabel: boolean): Section {
 // Reads short-circuit in cheap-first order (an unresolved thread returns before
 // the mergeable/CI reads), so a regressed PR costs the fewest gh calls. A read
 // rejecting propagates to readyOnce, which skips the PR for this tick.
-async function classify(prNumber: number, deps: PrReadyDeps): Promise<ReadyVerdict> {
-  if ((await deps.unresolvedInfo(prNumber)).count !== 0) return "regressed";
+async function classify(prNumber: number, deps: PrReadyDeps): Promise<Classified> {
+  if ((await deps.unresolvedInfo(prNumber)).count !== 0) return { verdict: "regressed", reason: "threads" };
   // A conflict is a hold, not a regression: the repo's resolve-generated-conflicts
   // sweep discovers PRs by the ready-to-merge/blocked labels, so stripping the
   // label here would hide the PR from the auto-heal (and its approval-preserving
   // App push). Real conflicts get a "needs a human" comment from that sweep, and
   // Aviator relabels to blocked if a queued conflict fails its speculative merge.
   const mergeable = (await deps.mergeableInfo(prNumber)).state;
-  if (mergeable === "conflicting") return "hold";
-  if (mergeable === "unknown") return "hold";
+  if (mergeable === "conflicting") return { verdict: "hold" };
+  if (mergeable === "unknown") return { verdict: "hold" };
   const ci = (await deps.checksInfo(prNumber)).state;
-  if (ci === "failing") return "regressed";
-  if (ci === "pending") return "hold";
-  return "ready"; // passing or none
+  if (ci === "failing") return { verdict: "regressed", reason: "ci" };
+  if (ci === "pending") return { verdict: "hold" };
+  return { verdict: "ready" }; // passing or none
 }
 
 // One ready-step tick, run every heartbeat. The label write is add-only and
@@ -180,8 +192,9 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel));
 
     let verdict: ReadyVerdict;
+    let reason: RegressReason | undefined;
     try {
-      verdict = await classify(pr.number, deps);
+      ({ verdict, reason } = await classify(pr.number, deps));
     } catch (err) {
       deps.log(`readiness check failed for PR #${pr.number}: ${err}`);
       continue;
@@ -198,7 +211,7 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
       deps.onBlocked?.(pr.number);
       continue; // blocked-fix flow owns this PR's labels
     }
-    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft);
+    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft, reason);
     if (deps.mode() === "supervised") continue; // the label is a human's to manage
     // A draft is a human's to promote: never add the label (which queues it to
     // merge). A stale label on a draft is likewise left for a human to clear.

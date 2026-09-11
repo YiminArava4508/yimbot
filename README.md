@@ -295,8 +295,9 @@ merge**. Which pane a row sits in is decided by GitHub, not by the row's status:
 a draft PR is always in ready-to-review, a non-draft PR carrying the
 `ready-to-merge` label is always in ready-to-merge, and everything else is in
 tasks. So a queued PR whose CI breaks stays in ready-to-merge and its status
-reads **fixing CI** — the row moves only when the label comes off (which is what
-Aviator does when it blocks a PR). All three panes share one set of columns, in
+reads **CI failing**, then **fixing CI** once the fix window opens. The row
+moves only when the label comes off (which is what Aviator does when it blocks
+a PR). All three panes share one set of columns, in
 one order, on one grid, so a row reads the same wherever it sits; the `WHY`
 column carries the ready-to-review pane's ordering rationale and is blank in the
 other two.

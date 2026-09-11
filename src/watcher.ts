@@ -1445,6 +1445,8 @@ export function startWatcher(config: WatcherConfig): () => void {
   // of the fixers, which keep running on every open PR, so a labeled PR that
   // regresses is still fixed and simply keeps its label while the fixers work.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
+  const isReadyClaim = (status: string | undefined) =>
+    status === statusFor("ready_to_merge")?.status || status === statusFor("draft_pr")?.status;
   const readyState = freshReadyState();
   // Rebuilt from scratch by listOpenPRs each tick, before addLabel runs (see
   // readyOnce), so the wraps below can key events by branch like every
@@ -1477,14 +1479,22 @@ export function startWatcher(config: WatcherConfig): () => void {
     // stale fix status. The label writers stay pure GitHub side effects. A ready
     // draft says "draft pr" instead: it cannot merge until a human marks it
     // ready for review.
-    onVerdict: (n: number, verdict, hasLabel, isDraft) => {
+    onVerdict: (n: number, verdict, hasLabel, isDraft, reason) => {
       const k = keyForPr(n);
       if (!boardReadyToMerge(verdict, hasLabel)) {
+        const status = currentStatus(k.key);
         // An extra-repo PR's row exists only through its own events (no
         // session ever emitted task_started for it), so a PR that is not yet
         // ready still needs a row to sit in the review pane.
-        if (k.repo && currentStatus(k.key) === undefined) {
+        if (k.repo && status === undefined) {
           emitStatus({ kind: "task_started", key: k.key, label: k.label, pr: n, repo: k.repo });
+        }
+        // A row still claiming readiness after a hard failure names the failure.
+        // Only a readiness claim is replaced: a fixer's own status ("fixing CI",
+        // "addressing review") is already the truth and is left alone.
+        if (verdict === "regressed" && reason && isReadyClaim(status)) {
+          const kind = reason === "ci" ? "ci_failing" : "review_unresolved";
+          emitStatus({ kind, key: k.key, label: k.label, pr: n, repo: k.repo });
         }
         return;
       }

@@ -308,6 +308,18 @@ test("readyOnce reports a regressed verdict via onVerdict", async () => {
   assert.deepEqual(verdicts, ["regressed"]);
 });
 
+test("readyOnce reports why a PR regressed via onVerdict", async () => {
+  const reasons: (string | undefined)[] = [];
+  const onVerdict: PrReadyDeps["onVerdict"] = (_n, _v, _hasLabel, _isDraft, reason) => void reasons.push(reason);
+  const ci_ = harness({ checksInfo: async () => ci("failing"), onVerdict }, [LABEL]);
+  await readyOnce(ci_.state, ci_.deps);
+  const threads = harness({ unresolvedInfo: async () => info(1), onVerdict }, [LABEL]);
+  await readyOnce(threads.state, threads.deps);
+  const ready = harness({ onVerdict }, [LABEL]);
+  await readyOnce(ready.state, ready.deps);
+  assert.deepEqual(reasons, ["ci", "threads", undefined]);
+});
+
 test("readyOnce reports the hold verdict for a labeled held PR so the board reconciles", async () => {
   const seen: { v: string; hasLabel: boolean }[] = [];
   const h = harness(

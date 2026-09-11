@@ -1,5 +1,7 @@
 // src/tui.ts
 // neo-blessed ships no types; treat as any at the import boundary.
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
@@ -385,11 +387,28 @@ export function fmtDuration(ms: number): string {
 // One header for all three panes, in one order, so a row reads the same
 // wherever it sits. WHY only ever fills in the review pane (the AI ordering's
 // rationale); it stays blank in the other two rather than shifting the grid.
-export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON", "WHY"];
+export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON", "WHY"];
+
+// What the REPO column reads: nothing until the row has a PR, the codebase
+// checkout's directory name for a codebase-repo PR, the name half of the
+// owner/name slug for an extra-repo PR.
+export function repoDisplayName(row: Pick<BoardRow, "pr" | "repo">, codebaseName: string): string {
+  if (row.pr == null) return "";
+  if (!row.repo) return codebaseName;
+  return row.repo.split("/").pop() ?? row.repo;
+}
+
+function codebaseRepoName(): string {
+  return basename(envOr("CODEBASE_PATH", join(homedir(), "Work/gemini")));
+}
 
 export type BoardEntry = { row: BoardRow; why?: string };
 
-export function boardTable(entries: BoardEntry[], now: number = Date.now()): string[][] {
+export function boardTable(
+  entries: BoardEntry[],
+  now: number = Date.now(),
+  codebaseName: string = codebaseRepoName(),
+): string[][] {
   const body = entries.map(({ row: r, why }) => {
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
     return [
@@ -398,6 +417,7 @@ export function boardTable(entries: BoardEntry[], now: number = Date.now()): str
       r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
       r.label,
       r.pr != null ? `#${r.pr}` : "",
+      repoDisplayName(r, codebaseName),
       r.title ?? "",
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
       r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",

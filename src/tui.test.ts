@@ -22,7 +22,7 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
 
 test("every pane shares one header, in one order", () => {
   assert.deepEqual(BOARD_HEADER, [
-    "TIME", "DUR", "STATUS", "TICKET", "PR", "TITLE", "FLAG", "REASON", "WHY",
+    "TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON", "WHY",
   ]);
   assert.deepEqual(boardTable([])[0], BOARD_HEADER);
 });
@@ -30,7 +30,16 @@ test("every pane shares one header, in one order", () => {
 test("boardTable renders #N in the PR column and the title", () => {
   const [, body] = boardTable([{ row: row({ pr: 481, title: "add column" }) }], 0);
   assert.equal(body[4], "#481");
-  assert.equal(body[5], "add column");
+  assert.equal(body[6], "add column");
+});
+
+test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
+  const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
+  assert.equal(extra[5], "terraform-x");
+  const codebase = boardTable([{ row: row({ pr: 5970 }) }], 0, "gemini")[1];
+  assert.equal(codebase[5], "gemini");
+  const none = boardTable([{ row: row({}) }], 0, "gemini")[1];
+  assert.equal(none[5], "");
 });
 
 test("boardTable leaves the PR cell blank when pr is absent", () => {
@@ -50,9 +59,9 @@ test("boardTable DUR is frozen at ts - startTs for a terminal row", () => {
 
 test("boardTable marks a flagged row and leaves others blank", () => {
   const [, flagged] = boardTable([{ row: row({ flagged: true, flagReasons: ["manual"] }) }], 0);
-  assert.equal(flagged[6], "{red-fg}⚑{/red-fg}");
+  assert.equal(flagged[7], "{red-fg}⚑{/red-fg}");
   const [, plain] = boardTable([{ row: row({}) }], 0);
-  assert.equal(plain[6], "");
+  assert.equal(plain[7], "");
 });
 
 test("boardTable joins the flag reasons in the REASON cell", () => {
@@ -60,12 +69,12 @@ test("boardTable joins the flag reasons in the REASON cell", () => {
     [{ row: row({ flagged: true, flagReasons: ["input", "changes-requested"] }) }],
     0,
   );
-  assert.equal(body[7], "{red-fg}input,changes-requested{/red-fg}");
+  assert.equal(body[8], "{red-fg}input,changes-requested{/red-fg}");
 });
 
 test("boardTable leaves the REASON cell blank when unflagged", () => {
   const [, body] = boardTable([{ row: row({}) }], 0);
-  assert.equal(body[7], "");
+  assert.equal(body[8], "");
 });
 
 test("boardTable dims a terminal row's status", () => {
@@ -75,9 +84,9 @@ test("boardTable dims a terminal row's status", () => {
 
 test("boardTable puts the review pane's ordering rationale in WHY, blank elsewhere", () => {
   const [, why] = boardTable([{ row: row({ pr: 11 }), why: "base of the stack" }], 0);
-  assert.equal(why[8], "base of the stack");
+  assert.equal(why[9], "base of the stack");
   const [, plain] = boardTable([{ row: row({}) }], 0);
-  assert.equal(plain[8], "");
+  assert.equal(plain[9], "");
 });
 
 test("fmtDuration formats seconds, minutes, and hours", () => {

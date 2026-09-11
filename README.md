@@ -427,6 +427,17 @@ rm, `dropdb`); a denied command fails silently rather than prompting, so it adds
 safety without any hang risk. Point `SESSION_SETTINGS` at your own file to extend
 it per repo.
 
+The same file wires a `PreToolUse` hook, `scripts/no-self-rebase.sh`, that
+denies rebasing a branch onto its own remote in any spelling (`git pull
+--rebase`, `git pull -r`, a bare `git pull` under `pull.rebase=true`,
+`git rebase origin/<branch>`, `git rebase @{u}`). Fix sessions bring main in
+with a merge; if a bot pushed to the branch meanwhile, a rebase onto the remote
+flattens that merge and replays main's commits onto the PR as duplicates, and
+the push then fast-forwards past the force-push deny. The hook tells the session
+to `git pull --no-rebase` instead. Rebasing onto anything else stays allowed
+(`git rebase --onto main <slice>` in split work), since landing it would need
+the force push the deny-list already blocks.
+
 ### Running a second instance
 
 Two machines can share one Linear account and one GitHub account as long as they

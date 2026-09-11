@@ -175,12 +175,13 @@ flowchart TD
   PR in the batch never loops. Settings: `BLOCKED_LABEL` (defaults to
   `blocked`); re-queue reuses `READY_MERGE_LABEL`.
 - **Watch other repos:** a ticket whose change lands outside the codebase repo
-  (a terraform repo, say) still links its PR to the session's row, moves it to
-  the review pane, reports draft / ready to merge, and queues with `r`, as long
-  as the branch there carries the ticket slug and the repo is listed in
-  `EXTRA_REPOS` (comma-separated `owner/name`). A merge in any listed repo
-  reaps the ticket's worktree. Fix sessions (comments, CI, conflicts, queue
-  blocks) run on the codebase repo only.
+  (a terraform repo, say) still links its PR to the board, moves it to the
+  review pane, reports draft / ready to merge, and queues with `r`, as long as
+  the branch there carries the ticket slug and the repo is listed in
+  `EXTRA_REPOS` (comma-separated `owner/name`). Each PR gets its own row, and
+  the `REPO` column names the repo, so a ticket spanning two repos shows two
+  rows. Fix sessions (comments, CI, conflicts, queue blocks) run on the
+  codebase repo only.
 - **Flag changes-requested reviews:** every heartbeat, any of your open
   non-draft PRs blocked by a changes-requested review raises that row's `⚑` on
   the board. No fix session can lift that block, only the reviewer re-reviewing
@@ -191,7 +192,9 @@ flowchart TD
   dev there to try it. (yimbot no longer starts the dev env for you.)
 - **Clean up finished work (red):** every heartbeat, once one of your PRs is
   merged, yimbot tears down that branch's workspace (its worktree) and closes its
-  tmux session via `~/end-session.sh`. Work that never gets a PR (a spike whose
+  tmux session via `~/end-session.sh`, but only once no PR on that branch is
+  still open in any watched repo and the ticket has landed (see below). Work
+  that never gets a PR (a spike whose
   deliverable is an answer on the ticket) is reaped when its Linear ticket
   (an `eng-<n>` branch) has landed, as long as the worktree holds no local-only
   work. Landed means a Done/Canceled state, or the merge state
@@ -280,8 +283,9 @@ conflict** as those steps kick in, then **ready to test**, then **ready to
 merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. A ticket split into slices keeps a row of
 its own: each slice is a subticket with its own row, and the tracking ticket
-reads **waiting on slices** until the last slice PR resolves. Press `q` to quit
-the board; it also stops the daemon.
+reads **tracker ticket**, or **waiting on slices** while a slice PR is open,
+since it has no work of its own. Press `q` to quit the board; it also stops
+the daemon.
 
 The board stacks three panes: **tasks**, **ready to review** and **ready to
 merge**. Which pane a row sits in is decided by GitHub, not by the row's status:

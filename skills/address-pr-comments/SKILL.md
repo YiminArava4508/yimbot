@@ -32,6 +32,11 @@ not, no matter how blocked the PR looks.
    `git status --porcelain` before you touch anything. Those files are not yours
    to commit: never blanket-stage the tree (step 6).
 
+   Before you merge, fast-forward the local branch to its remote (a bot or another
+   session may have pushed): `git fetch origin main "$(git branch --show-current)"`
+   then `git merge --ff-only "origin/$(git branch --show-current)"`. If that
+   fast-forward fails the branch has diverged; stop and report it.
+
 2. **Fetch every unresolved review thread** (any author, humans and bots alike):
 
    ```bash
@@ -98,15 +103,17 @@ not, no matter how blocked the PR looks.
    ```
 
    If the push is **rejected** (non-fast-forward: the branch advanced on the
-   remote), rebase onto the remote and retry once:
+   remote), merge the remote branch in and retry once. Never `git pull --rebase`
+   here: a rebase flattens the main merge and replays main's commits onto the
+   branch as duplicates, muddying the PR history.
 
    ```bash
-   git pull --rebase origin "$(git branch --show-current)" && git push
+   git pull --no-rebase --no-edit origin "$(git branch --show-current)" && git push
    ```
 
-   If the rebase hits a conflict or the push still fails, **stop**: run
-   `git rebase --abort`, do NOT resolve any threads, leave the session open, and
-   report in the summary that the branch diverged and needs a human. Do not force
+   If the merge hits a conflict or the push still fails, **stop**: run
+   `git merge --abort`, do NOT resolve any threads, leave the session open, and
+   report in the summary that the branch diverged and needs a human. Never force
    push.
 
 7. **Resolve the threads you fixed in code.** If a reply genuinely helps, post

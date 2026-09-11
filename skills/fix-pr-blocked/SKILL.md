@@ -27,6 +27,11 @@ before you touch any code.
    the user may be running local dev in it, so record the pre-existing state with
    `git status --porcelain` before you touch anything. Never blanket-stage the tree.
 
+   Before you merge, fast-forward the local branch to its remote (a bot or another
+   session may have pushed): `git fetch origin main "$(git branch --show-current)"`
+   then `git merge --ff-only "origin/$(git branch --show-current)"`. If that
+   fast-forward fails the branch has diverged; stop and report it.
+
 2. **Read the Aviator block.** Read the queue's comment to learn what failed and
    where:
 
@@ -72,10 +77,12 @@ before you touch any code.
    git push
    ```
 
-   If the push is rejected (non-fast-forward), rebase onto the remote and retry
-   once: `git pull --rebase origin "$(git branch --show-current)" && git push`. If
-   the rebase conflicts or the push still fails, run `git rebase --abort`, leave the
-   session open, and report that the branch diverged and needs a human.
+   If the push is rejected (non-fast-forward), merge the remote branch in and
+   retry once: `git pull --no-rebase --no-edit origin "$(git branch --show-current)"
+   && git push`. Never `git pull --rebase` here: a rebase flattens any main merge
+   and replays main's commits onto the branch as duplicates. If the merge
+   conflicts or the push still fails, run `git merge --abort`, leave the session
+   open, and report that the branch diverged and needs a human. Never force push.
 
 6. **Unblock and re-queue.** This is the required final action on the success path,
    whether or not step 4 pushed anything (a transient or other-PR failure is

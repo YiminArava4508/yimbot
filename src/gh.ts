@@ -210,7 +210,7 @@ type RollupNode = {
 // carry no timestamps but the API already returns one row per context, so they key
 // by context and never collide. A freshly queued rerun reports no timestamps at
 // all; rank it as newest (not oldest) so it wins over the prior completed run and
-// the rollup reads pending, preserving the "pending takes precedence" contract.
+// the rollup reads pending instead of green.
 function latestPerCheck(nodes: RollupNode[]): RollupNode[] {
   const rank = (n: RollupNode) => n.startedAt ?? n.completedAt ?? "￿";
   const latest = new Map<string, RollupNode>();
@@ -224,8 +224,11 @@ function latestPerCheck(nodes: RollupNode[]): RollupNode[] {
 }
 
 // CI summary for a PR from `gh pr view --json headRefOid,statusCheckRollup`.
-// `pending` takes precedence over `failing`: while any check is still running we
-// wait rather than act on a half-finished run. A rollup node is a CheckRun
+// `failing` takes precedence over `pending`: a check that concluded red on this
+// head will not turn green without a new push (a rerun shows up as a newer node,
+// see latestPerCheck), so waiting for the rest of the run only delays the CI fix
+// and lets a labeled PR read as "ready to merge" for as long as the slowest job
+// takes. `pending` means every check so far is green or still running. A rollup node is a CheckRun
 // (status + conclusion) or a StatusContext (state); classify off whichever fields
 // are present so a missing __typename never misreads a node. `ignore` drops
 // matching checks (by CheckRun name or StatusContext context) before classifying,
@@ -245,7 +248,7 @@ export function parseChecksInfo(json: string, ignore?: (name: string) => boolean
       failing = true;
     }
   }
-  const state: CiState = nodes.length === 0 ? "none" : pending ? "pending" : failing ? "failing" : "passing";
+  const state: CiState = nodes.length === 0 ? "none" : failing ? "failing" : pending ? "pending" : "passing";
   return { state, headSha: data.headRefOid };
 }
 

@@ -10,6 +10,7 @@ export type EventKind =
   | "ci_fix_started"
   | "conflict_fix_started"
   | "blocked_fix_started"
+  | "merge_blocked"
   | "ready_to_merge"
   | "draft_pr"
   | "ready_regressed"
@@ -141,6 +142,7 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   ci_fix_started: { status: "fixing CI", terminal: false },
   conflict_fix_started: { status: "resolving conflict", terminal: false },
   blocked_fix_started: { status: "unblocking", terminal: false },
+  merge_blocked: { status: "merge queue blocked", terminal: false },
   ready_to_merge: { status: "ready to merge", terminal: false },
   draft_pr: { status: "draft pr", terminal: false },
   ready_regressed: { status: "working", terminal: false },

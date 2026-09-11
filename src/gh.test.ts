@@ -236,8 +236,15 @@ test("parseChecksInfo reports failing on a failed StatusContext state", () => {
   assert.deepEqual(parseChecksInfo(json), { state: "failing", headSha: "sha2" });
 });
 
-test("parseChecksInfo treats an unfinished check as pending, even alongside a failure", () => {
+test("parseChecksInfo reports failing once any check has concluded red, even while others still run", () => {
+  // A concluded failure on this head will not turn green on its own; waiting for
+  // the rest of the run only delays the CI fix and lets a labeled PR read as a hold.
   const json = rollupJson("sha3", [checkRun("COMPLETED", "FAILURE", "a"), checkRun("IN_PROGRESS", null, "b")]);
+  assert.equal(parseChecksInfo(json).state, "failing");
+});
+
+test("parseChecksInfo stays pending while checks run and none has failed", () => {
+  const json = rollupJson("sha3b", [checkRun("COMPLETED", "SUCCESS", "a"), checkRun("IN_PROGRESS", null, "b")]);
   assert.equal(parseChecksInfo(json).state, "pending");
 });
 

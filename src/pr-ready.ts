@@ -50,6 +50,11 @@ export type PrReadyDeps = {
   // pane. Derived from labels and the draft flag alone, so it still fires when
   // the readiness reads fail.
   onSection?: (prNumber: number, section: Section) => void;
+  // Report a PR the merge queue kicked out (it carries the blocked label). The
+  // ready step reports no verdict for such a PR, and the blocked fixer only
+  // writes a status when it spawns (deduped per head), so without this the row
+  // would keep saying "ready to merge" for as long as the label stays on.
+  onBlocked?: (prNumber: number) => void;
   log: (msg: string) => void;
 };
 
@@ -189,7 +194,10 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     } else {
       state.readySince.delete(pr.number);
     }
-    if (isBlocked) continue; // blocked-fix flow owns this PR's labels
+    if (isBlocked) {
+      deps.onBlocked?.(pr.number);
+      continue; // blocked-fix flow owns this PR's labels
+    }
     deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft);
     if (deps.mode() === "supervised") continue; // the label is a human's to manage
     // A draft is a human's to promote: never add the label (which queues it to

@@ -141,8 +141,9 @@ flowchart TD
   every comment, gets tests green, pushes, resolves the threads, and re-requests
   review. Needs `gh` installed and authenticated; runs against the repo at
   `CODEBASE_PATH`.
-- **Fix failing CI (yellow):** every heartbeat, for each of your open PRs whose
-  CI has concluded as failing, it adds a `pr-<n>-ci` fix window to that PR's
+- **Fix failing CI (yellow):** every heartbeat, for each of your open PRs where
+  any check has concluded as failing (even while the rest of the run is still
+  going), it adds a `pr-<n>-ci` fix window to that PR's
   ticket session (or opens a standalone session) that first syncs with `main`
   when the branch is stale (a common cause), otherwise fixes the build, then
   pushes and closes itself. It's a separate session from the comment fix and the
@@ -172,7 +173,9 @@ flowchart TD
   re-queues by removing the `blocked` label and re-adding `ready-to-merge`. If
   it cannot determine or safely fix the cause, it leaves the PR blocked for a
   human. Re-triggers only when the head moves, so a re-block caused by another
-  PR in the batch never loops. Settings: `BLOCKED_LABEL` (defaults to
+  PR in the batch never loops. While the label is on, the board row reads
+  "merge queue blocked" (or "unblocking" once the fix window has opened) instead
+  of staying on "ready to merge". Settings: `BLOCKED_LABEL` (defaults to
   `blocked`); re-queue reuses `READY_MERGE_LABEL`.
 - **Watch other repos:** a ticket whose change lands outside the codebase repo
   (a terraform repo, say) still links its PR to the board, moves it to the

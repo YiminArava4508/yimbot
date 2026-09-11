@@ -335,6 +335,20 @@ test("readyOnce does not report a verdict for a blocked PR", async () => {
   assert.deepEqual(verdicts, []);
 });
 
+test("readyOnce reports a blocked PR via onBlocked, so the board leaves ready-to-merge", async () => {
+  const blocked: number[] = [];
+  const h = harness({ onBlocked: (n) => void blocked.push(n) }, ["blocked"]);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(blocked, [4706]);
+});
+
+test("readyOnce does not call onBlocked for an unblocked PR", async () => {
+  const blocked: number[] = [];
+  const h = harness({ onBlocked: (n) => void blocked.push(n) }, [LABEL]);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(blocked, []);
+});
+
 // The latch: once the label has been on a PR (added by the bot or observed),
 // the ready step never adds it again for that PR. A removal by a human or the
 // merge queue is final, not fought every heartbeat.

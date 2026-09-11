@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
@@ -1496,6 +1496,14 @@ export function startWatcher(config: WatcherConfig): () => void {
     onSection: (n: number, section) => {
       const k = keyForPr(n);
       emitSection({ kind: sectionKind(section), key: k.key, label: k.label, pr: n, repo: k.repo });
+    },
+    // A queue-blocked PR stops reading as ready-to-merge. Left alone once the
+    // blocked fixer has claimed the row ("unblocking"), so this never stomps a
+    // fix in flight; the label coming off hands the row back to onVerdict.
+    onBlocked: (n: number) => {
+      const k = keyForPr(n);
+      if (currentStatus(k.key) === statusFor("blocked_fix_started")?.status) return;
+      emitStatus({ kind: "merge_blocked", key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,

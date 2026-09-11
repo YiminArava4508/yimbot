@@ -517,14 +517,41 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   }
 
   // (a) normal merged worktrees (excluding any that belong to a split group) →
-  // tear down worktree + branch-named ticket session.
-  for (const w of selectMergedWorktrees(worktrees, mergedBranches, deps.worktreesDir)) {
-    if (groupedPaths.has(w.path)) continue;
-    try {
-      deps.teardown(w.branch);
-      deps.log(`torn down ${w.branch} (PR merged)`);
-    } catch (err) {
-      deps.log(`teardown failed for ${w.branch}: ${err}`);
+  // tear down worktree + branch-named ticket session. A merge in one repo is not
+  // the ticket done: a sibling PR on the same branch in another repo may be
+  // open, and the ticket may still be in flight, so both gates hold the worktree
+  // (mirroring the closed-unmerged path below).
+  const mergedWorktrees = selectMergedWorktrees(worktrees, mergedBranches, deps.worktreesDir).filter(
+    (w) => !groupedPaths.has(w.path),
+  );
+  if (openBranches === null) {
+    if (mergedWorktrees.length > 0) deps.log(`merged teardown deferred (open PR list unavailable)`);
+  } else {
+    for (const w of mergedWorktrees) {
+      if (openBranches.has(w.branch)) {
+        deps.log(`kept ${w.branch} (PR merged but branch has an open PR)`);
+        continue;
+      }
+      const identifier = issueFromBranch(w.branch);
+      if (identifier !== null) {
+        let state: TicketState | null;
+        try {
+          state = await deps.issueState(identifier);
+        } catch (err) {
+          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
+          continue;
+        }
+        if (!ticketWorkLanded(state, deps.clearedStates)) {
+          deps.log(`kept ${w.branch} (PR merged but ticket ${identifier} not landed: ${state?.name ?? "unknown"})`);
+          continue;
+        }
+      }
+      try {
+        deps.teardown(w.branch);
+        deps.log(`torn down ${w.branch} (PR merged)`);
+      } catch (err) {
+        deps.log(`teardown failed for ${w.branch}: ${err}`);
+      }
     }
   }
 

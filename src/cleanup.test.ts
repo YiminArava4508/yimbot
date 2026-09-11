@@ -381,8 +381,67 @@ test("cleanupOnce still reconciles merged branches when a later teardown throws"
   assert.deepEqual((seen as unknown as MergedPR[]).map((p) => p.headRefName), ["eng-2-b"]);
 });
 
+test("merged teardown waits while another repo still has an open PR on the branch", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-2-b")],
+    listMergedPRs: async () => [mpr(2, "eng-2-b")],
+    listOpenPRs: async () => [{ ...opr(9, "eng-2-b"), repo: "acme/tf" }],
+    issueState: async () => ({ name: "Merged", type: "started" }),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => l.includes("kept eng-2-b (PR merged but branch has an open PR)")));
+});
+
+test("merged teardown waits until the ticket has landed", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-2-b")],
+    listMergedPRs: async () => [mpr(2, "eng-2-b")],
+    issueState: async () => ({ name: "In Progress", type: "started" }),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => l.includes("kept eng-2-b (PR merged but ticket ENG-2 not landed: In Progress)")));
+});
+
+test("merged teardown fires once no PR is open and the ticket landed", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("eng-2-b")],
+    listMergedPRs: async () => [mpr(2, "eng-2-b")],
+    issueState: async () => ({ name: "Deployed To Nonprod", type: "started" }),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["eng-2-b"]);
+});
+
+test("merged teardown skips the Linear gate for a branch with no ticket slug", async () => {
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [wt("spike-x")],
+    listMergedPRs: async () => [mpr(2, "spike-x")],
+    issueState: async () => {
+      throw new Error("should not be asked");
+    },
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, ["spike-x"]);
+});
+
+test("merged teardown sits the tick out when the open PR list failed", async () => {
+  const { deps: d, torn, logs } = deps({
+    listWorktrees: () => [wt("eng-2-b")],
+    listMergedPRs: async () => [mpr(2, "eng-2-b")],
+    listOpenPRs: async () => {
+      throw new Error("gh down");
+    },
+    issueState: async () => ({ name: "Done", type: "completed" }),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual(torn, []);
+  assert.ok(logs.some((l) => l.includes("merged teardown deferred (open PR list unavailable)")));
+});
+
 test("cleanupOnce tears down each merged worktree", async () => {
-  const { deps: d, torn } = deps();
+  const { deps: d, torn } = deps({ issueState: async (id) => (id === "ENG-2" ? st("completed") : null) });
   await cleanupOnce(d);
   assert.deepEqual(torn, ["eng-2-b"]);
 });
@@ -462,6 +521,7 @@ test("cleanupOnce continues to other worktrees when one teardown throws", async 
   const attempted: string[] = [];
   const { deps: d, logs } = deps({
     listMergedPRs: async () => [mpr(1, "eng-1-a"), mpr(2, "eng-2-b")],
+    issueState: async () => st("completed"),
     teardown: (branch) => {
       attempted.push(branch);
       if (branch === "eng-1-a") throw new Error("docker down failed");
@@ -691,6 +751,7 @@ test("cleanupOnce still reaps merged worktrees when the closed-PR list fails", a
     listClosedUnmergedPRs: async () => {
       throw new Error("gh 503");
     },
+    issueState: async () => st("completed"),
   });
   await cleanupOnce(d);
   assert.deepEqual(torn, ["eng-2-b"]);
@@ -1027,6 +1088,7 @@ test("cleanupOnce still tears down a normal (non-split) merged worktree", async 
   const { deps, tornDown } = recorderDeps({
     worktrees: [{ path: `${WT}/eng-9`, branch: "eng-9" }],
     merged: [mpr(9, "eng-9")],
+    issueState: async () => st("completed"),
   });
   await cleanupOnce(deps);
   assert.deepEqual(tornDown, ["eng-9"]);
@@ -1140,9 +1202,11 @@ test("cleanupOnce keeps a resolved split group while the integration branch has 
   assert.deepEqual(killed, []);
 });
 
-test("cleanupOnce defers split-group teardown when the open PR list fails, but still reaps normal merged worktrees", async () => {
+test("cleanupOnce defers split-group and normal merged teardown when the open PR list fails", async () => {
   // Without the open set, an open integration-branch PR is invisible, so the
-  // group loop must sit the tick out rather than fall back to slices-only readiness.
+  // group loop must sit the tick out rather than fall back to slices-only
+  // readiness. A normal merged worktree waits too: a sibling PR on the same
+  // branch in another repo would be just as invisible.
   const { deps, tornDown } = recorderDeps({
     worktrees: [
       { path: `${WT}/eng-1`, branch: "eng-1" },
@@ -1157,7 +1221,7 @@ test("cleanupOnce defers split-group teardown when the open PR list fails, but s
     issueState: async () => st("completed"),
   });
   await cleanupOnce(deps);
-  assert.deepEqual(tornDown, ["eng-9"]);
+  assert.deepEqual(tornDown, []);
 });
 
 test("cleanupOnce keeps a resolved split group while its ticket has not landed", async () => {

@@ -219,6 +219,20 @@ export function bindPaneFocusSync(
   }
 }
 
+// Hiding the focused pane makes blessed rewind focus onto the last visible
+// pane in its history (screen.js rewindFocus), which the sync above would
+// record as a pane switch; the overlay's close then puts the highlight and the
+// keys on that other pane. Hide, then put the pane the operator was on back.
+export function hidePanesKeepingFocus(
+  widgets: Record<Pane, { hide: () => void }>,
+  get: () => Pane,
+  set: (pane: Pane) => void,
+): void {
+  const focused = get();
+  for (const pane of Object.keys(widgets) as Pane[]) widgets[pane].hide();
+  set(focused);
+}
+
 // The row the operator's keypress should act on: each pane keeps its own blessed
 // selection (1-based, row 0 is the column header), and the focused pane wins.
 export function selectedBoardRow(
@@ -736,7 +750,13 @@ export function runTui(opts: {
   });
 
   const hidePanes = () => {
-    for (const p of ["tasks", "review", "merge"] as const) paneWidgets[p].hide();
+    hidePanesKeepingFocus(
+      paneWidgets,
+      () => focusedPane,
+      (p) => {
+        focusedPane = p;
+      },
+    );
     queuePane.hide();
   };
   // The review and merge panes are deliberately not shown here: the render()

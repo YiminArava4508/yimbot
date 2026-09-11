@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -730,6 +730,27 @@ test("bindPaneFocusSync tracks blessed focus, so a mouse click that moves focus 
   assert.equal(pane, "merge");
   tasks.focus();
   assert.equal(pane, "tasks");
+  screen.destroy();
+});
+
+test("hidePanesKeepingFocus survives blessed rewinding focus onto a sibling pane", () => {
+  const { input, output } = fakeTty(80, 24);
+  const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true });
+  const tasks = blessed.listtable({ parent: screen, top: 5, height: 5, keys: true, mouse: true });
+  const review = blessed.listtable({ parent: screen, top: 0, height: 5, keys: true, mouse: true });
+  const merge = blessed.listtable({ parent: screen, top: 10, height: 5, keys: true, mouse: true });
+  const widgets = { tasks, review, merge };
+  let pane: "tasks" | "review" | "merge" = "tasks";
+  bindPaneFocusSync(widgets, (p) => { pane = p; });
+  // Operator visited merge, then came back to tasks: blessed's focus history
+  // now holds merge behind tasks, so hiding tasks rewinds focus onto merge.
+  merge.focus();
+  tasks.focus();
+  hidePanesKeepingFocus(widgets, () => pane, (p) => { pane = p; });
+  assert.equal(pane, "tasks");
+  assert.equal(tasks.hidden, true);
+  assert.equal(review.hidden, true);
+  assert.equal(merge.hidden, true);
   screen.destroy();
 });
 

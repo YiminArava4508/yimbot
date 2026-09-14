@@ -2,6 +2,10 @@
 // Per-PR embedded claude sessions for the review overlay. One pty + headless
 // terminal per PR, spawned on first review open, surviving overlay close,
 // killed on yimbot exit. The spawner is injected so tests never fork a pty.
+// Claude runs in a .yimbot subdir of the worktree, not the worktree itself:
+// claude keys transcripts by cwd, and a review session that shared the
+// worktree's cwd was what `claude --continue` resumed when the daemon
+// re-coupled the work session.
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn as nodePtySpawn } from "node-pty";
@@ -9,7 +13,7 @@ import type { Terminal as TerminalType } from "@xterm/headless";
 // Node's ESM loader cannot statically detect named exports on this package's
 // bundled CJS output, so the value import goes through the default export.
 import xtermHeadless from "@xterm/headless";
-import { CONTEXT_RELPATH } from "./review-context.ts";
+import { contextFilePath } from "./review-context.ts";
 
 const { Terminal } = xtermHeadless;
 
@@ -29,22 +33,26 @@ export type ClaudeSession = {
   exited: boolean;
 };
 
-export function seedPrompt(pr: number): string {
+export function sessionCwd(worktree: string): string {
+  return join(worktree, ".yimbot", "review");
+}
+
+export function seedPrompt(pr: number, worktree: string): string {
   return (
-    `You are assisting a live review of PR #${pr}. ` +
-    `Before answering each message, read ${CONTEXT_RELPATH} in the working directory; ` +
+    `You are assisting a live review of PR #${pr}, checked out in ${worktree}. ` +
+    `Before answering each message, read ${contextFilePath(worktree)}; ` +
     `it holds the diffs currently under review and is rewritten as the reviewer moves around. ` +
     `Wait for questions; do not start working on anything unprompted.`
   );
 }
 
-export function claudeArgs(pr: number): string[] {
-  return ["--permission-mode", "auto", seedPrompt(pr)];
+export function claudeArgs(pr: number, worktree: string): string[] {
+  return ["--permission-mode", "auto", seedPrompt(pr, worktree)];
 }
 
 export function ensureContextScaffold(cwd: string): void {
   const dir = join(cwd, ".yimbot");
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(sessionCwd(cwd), { recursive: true });
   const gitignore = join(dir, ".gitignore");
   if (!existsSync(gitignore)) writeFileSync(gitignore, "*\n");
 }
@@ -69,7 +77,7 @@ export function makeSessionRegistry(
       const existing = sessions.get(pr);
       if (existing && !existing.exited) return existing;
       scaffold(cwd);
-      const pty = spawn(cwd, claudeArgs(pr), COLS, ROWS);
+      const pty = spawn(sessionCwd(cwd), claudeArgs(pr, cwd), COLS, ROWS);
       const term = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
       const session: ClaudeSession = { pr, cwd, pty, term, exited: false };
       pty.onData((d) => term.write(d));

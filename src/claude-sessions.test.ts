@@ -4,12 +4,13 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "./test-temp.ts";
-import { CONTEXT_RELPATH } from "./review-context.ts";
+import { contextFilePath } from "./review-context.ts";
 import {
   claudeArgs,
   ensureContextScaffold,
   makeSessionRegistry,
   seedPrompt,
+  sessionCwd,
   type PtyLike,
 } from "./claude-sessions.ts";
 
@@ -40,24 +41,43 @@ function fakePty(): PtyLike & { killed: boolean; emitData(d: string): void; emit
   };
 }
 
-test("seedPrompt names the PR and the context file claude must read", () => {
-  const p = seedPrompt(42);
-  assert.ok(p.includes("#42"));
-  assert.ok(p.includes(CONTEXT_RELPATH));
+test("sessionCwd is a .yimbot subdir so claude --continue in the worktree never resumes it", () => {
+  assert.equal(sessionCwd("/wt"), "/wt/.yimbot/review");
+});
+
+test("seedPrompt names the PR and the absolute context file claude must read", () => {
+  const p = seedPrompt(42, "/wt");
+  assert.ok(p.includes("PR #42"));
+  assert.ok(p.includes(contextFilePath("/wt")));
 });
 
 test("claudeArgs runs permission-mode auto with the seed as the trailing arg", () => {
-  const args = claudeArgs(42);
+  const args = claudeArgs(42, "/wt");
   assert.deepEqual(args.slice(0, 2), ["--permission-mode", "auto"]);
-  assert.equal(args.at(-1), seedPrompt(42));
+  assert.equal(args.at(-1), seedPrompt(42, "/wt"));
 });
 
-test("ensureContextScaffold creates a self-ignoring .yimbot dir", () => {
+test("ensureContextScaffold creates a self-ignoring .yimbot dir with the session cwd inside", () => {
   const cwd = tempDir("yimbot-ctx-");
   ensureContextScaffold(cwd);
   assert.equal(readFileSync(join(cwd, ".yimbot/.gitignore"), "utf8"), "*\n");
+  assert.ok(existsSync(sessionCwd(cwd)));
   ensureContextScaffold(cwd);
   assert.ok(existsSync(join(cwd, ".yimbot")));
+});
+
+test("getOrSpawn spawns the pty in the session cwd but records the worktree", () => {
+  let spawnedCwd = "";
+  const reg = makeSessionRegistry(
+    (cwd) => {
+      spawnedCwd = cwd;
+      return fakePty();
+    },
+    () => {},
+  );
+  const s = reg.getOrSpawn(7, "/wt");
+  assert.equal(spawnedCwd, sessionCwd("/wt"));
+  assert.equal(s.cwd, "/wt");
 });
 
 test("getOrSpawn reuses a live session and respawns after exit", () => {

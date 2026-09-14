@@ -1331,6 +1331,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     reapFix,
     now: Date.now,
     reapStaleMs: config.reapStaleMs,
+    pendingSpawnMaxMs: 2 * config.heartbeatIntervalMinutes * 60 * 1000,
     spawnFix: (name, branch, prNumber) => {
       const { key, label } = deriveKey({ branch });
       emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch), pr: prNumber });

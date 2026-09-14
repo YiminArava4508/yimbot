@@ -42,7 +42,10 @@ export function fixSessionNames(prNumber: number): string[] {
 // different session name) spawn onto the PR's shared worktree in that window.
 // The latch blocks the other kind until the first becomes visible (then it
 // clears and `inFlightFixKinds` takes over), while still allowing a genuinely
-// newer round of the same kind to re-trigger.
+// newer round of the same kind to re-trigger. It is also time-bound: a fixer
+// that finishes inside one heartbeat (a quick conflict merge) is never seen
+// live, so nothing else would ever clear it; after `pendingSpawnMaxMs` the
+// setup window it covers is over and the latch is dropped.
 // In-memory: a restart clears it (at most one already-handled round re-runs).
 export type FixKind = "fix" | "ci" | "conflict" | "blocked";
 
@@ -64,7 +67,7 @@ export type ReviewState = {
   lastHandledCiSha: Map<number, string>;
   lastHandledConflictSha: Map<number, string>;
   lastHandledBlockedSha: Map<number, string>;
-  pendingSpawn: Map<number, FixKind>;
+  pendingSpawn: Map<number, { kind: FixKind; at: number }>;
   // "<prNumber>:<kind>" -> epoch ms the fix was first seen in flight. Drives the
   // stale reap backstop. The watcher persists it (fix-timers.json) across restarts.
   fixSeenAt: Map<string, number>;
@@ -116,6 +119,9 @@ export type PrReviewDeps = {
   now: () => number;
   // Stale-reap threshold: reap a fix in flight longer than this regardless of state.
   reapStaleMs: number;
+  // How long the mid-spawn latch may block the other fix kinds before it is
+  // assumed to have run its course unseen (a couple of heartbeats).
+  pendingSpawnMaxMs: number;
   // Launch a comment-fix session (session name, branch to check out, PR number).
   spawnFix: (sessionName: string, branch: string, prNumber: number) => void;
   // Launch a CI-fix session (session name, branch to check out, PR number).
@@ -178,6 +184,16 @@ async function reapObjectiveMet(kind: FixKind, prNumber: number, deps: PrReviewD
 // CI has concluded as failing (passing/pending/none do nothing); skip if we
 // already handled this failing head SHA (so a red build re-triggers only when a
 // fix push moves the head); otherwise spawn a CI fix and record the SHA.
+// The fix kind latched as mid-spawn for a PR, or undefined once the latch has
+// aged past `pendingSpawnMaxMs` (dropped on read).
+function pendingKind(state: ReviewState, prNumber: number, deps: PrReviewDeps): FixKind | undefined {
+  const entry = state.pendingSpawn.get(prNumber);
+  if (entry === undefined) return undefined;
+  if (deps.now() - entry.at < deps.pendingSpawnMaxMs) return entry.kind;
+  state.pendingSpawn.delete(prNumber);
+  return undefined;
+}
+
 export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -273,7 +289,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     // A fixer we spawned but have not yet seen live: blocks the *other* kind
     // (which has a different session name the tmux guard can't dedupe) from
     // landing on the shared worktree until this one becomes visible.
-    const pending = state.pendingSpawn.get(pr.number);
+    const pending = pendingKind(state, pr.number, deps);
 
     if (info === null) continue; // the read above failed; this PR sits the tick out
     // Supervised: a flagged PR belongs to a human. Spawn nothing (comment,
@@ -292,7 +308,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       try {
         deps.spawnFix(name, pr.headRefName, pr.number);
         state.lastHandledAt.set(pr.number, actionableAt as number);
-        state.pendingSpawn.set(pr.number, "fix");
+        state.pendingSpawn.set(pr.number, { kind: "fix", at: deps.now() });
         deps.log(`spawned ${name} for PR #${pr.number} (${info.count} unresolved, new comment)`);
       } catch (err) {
         deps.log(`spawn failed for PR #${pr.number}: ${err}`);
@@ -318,7 +334,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
         try {
           deps.spawnConflictFix(name, pr.headRefName, pr.number);
           state.lastHandledConflictSha.set(pr.number, mergeable.headSha);
-          state.pendingSpawn.set(pr.number, "conflict");
+          state.pendingSpawn.set(pr.number, { kind: "conflict", at: deps.now() });
           deps.log(`spawned ${name} for PR #${pr.number} (conflicting @ ${mergeable.headSha})`);
         } catch (err) {
           deps.log(`conflict spawn failed for PR #${pr.number}: ${err}`);
@@ -347,7 +363,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
         try {
           deps.spawnBlockedFix(name, pr.headRefName, pr.number);
           state.lastHandledBlockedSha.set(pr.number, blocked.headSha);
-          state.pendingSpawn.set(pr.number, "blocked");
+          state.pendingSpawn.set(pr.number, { kind: "blocked", at: deps.now() });
           deps.log(`spawned ${name} for PR #${pr.number} (blocked @ ${blocked.headSha})`);
         } catch (err) {
           deps.log(`blocked spawn failed for PR #${pr.number}: ${err}`);
@@ -371,7 +387,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     try {
       deps.spawnCiFix(ciName, pr.headRefName, pr.number);
       state.lastHandledCiSha.set(pr.number, checks.headSha);
-      state.pendingSpawn.set(pr.number, "ci");
+      state.pendingSpawn.set(pr.number, { kind: "ci", at: deps.now() });
       deps.log(`spawned ${ciName} for PR #${pr.number} (CI failing @ ${checks.headSha})`);
     } catch (err) {
       deps.log(`ci spawn failed for PR #${pr.number}: ${err}`);

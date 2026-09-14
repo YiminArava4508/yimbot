@@ -72,6 +72,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     now: () => 0,
     reapStaleMs: 90 * 60 * 1000,
+    pendingSpawnMaxMs: 6 * 60 * 1000,
     spawnFix: (name, branch, prNumber) => void spawned.push({ name, branch, prNumber }),
     spawnCiFix: (name, branch, prNumber) => void ciSpawned.push({ name, branch, prNumber }),
     spawnConflictFix: (name, branch, prNumber) => void conflictSpawned.push({ name, branch, prNumber }),
@@ -182,6 +183,32 @@ test("reviewOnce does not spawn a comment fix while a just-spawned CI fix is not
   await reviewOnce(state, d); // must NOT spawn the comment fix onto the shared worktree
   assert.equal(ciSpawned.length, 1);
   assert.equal(spawned.length, 0);
+});
+
+test("reviewOnce lets the CI fix through once the mid-spawn latch has aged out unseen", async () => {
+  // A conflict fixer that merges, pushes, and closes itself inside one heartbeat
+  // is never observed in flight, so nothing clears the latch. Once it is older
+  // than pendingSpawnMaxMs it has served its purpose and must stop blocking the
+  // CI fix on the new (red) head.
+  let now = 0;
+  let mergeable: MergeableInfo = merge("conflicting", "old");
+  const { deps: d, conflictSpawned, ciSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => mergeable,
+    checksInfo: async () => ci("failing", "new"),
+    now: () => now,
+    pendingSpawnMaxMs: 6 * 60 * 1000,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // tick 1: spawn conflict fix (latch = conflict)
+  mergeable = noConflict; // the fixer pushed its merge and closed itself, unseen
+  now = 3 * 60 * 1000;
+  await reviewOnce(state, d); // tick 2: latch still fresh → CI must wait
+  assert.equal(ciSpawned.length, 0);
+  now = 6 * 60 * 1000;
+  await reviewOnce(state, d); // tick 3: latch aged out → CI fix spawns
+  assert.equal(conflictSpawned.length, 1);
+  assert.deepEqual(ciSpawned.map((s) => s.name), ["pr-4706-ci"]);
 });
 
 test("reviewOnce skips CI when a fix is already in flight", async () => {

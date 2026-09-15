@@ -363,6 +363,11 @@ export const hostLinks: HostLink[] = [
     label: "refine-ticket skill (~/.claude/skills/refine-ticket)",
   },
   {
+    source: join(repoRoot, "skills/qa-instructions"),
+    target: join(homedir(), ".claude/skills/qa-instructions"),
+    label: "qa-instructions skill (~/.claude/skills/qa-instructions)",
+  },
+  {
     source: join(repoRoot, "skills/pickup-ticket"),
     target: join(homedir(), ".claude/skills/pickup-ticket"),
     label: "pickup-ticket skill (~/.claude/skills/pickup-ticket)",
@@ -905,6 +910,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".claude/skills/refine-ticket"),
       label: "~/.claude/skills/refine-ticket",
       role: "refine session flow (required for refine)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/qa-instructions"),
+      label: "~/.claude/skills/qa-instructions",
+      role: "QA session flow (required for the QA step)",
     },
     {
       path: join(homedir(), ".claude/skills/pickup-ticket"),

@@ -27,6 +27,11 @@ export type EventKind =
   | "review_findings"
   | "refine_started"
   | "refined"
+  | "qa_waiting"
+  | "qa_awaiting_deploy"
+  | "qa_started"
+  | "qa_posted"
+  | "qa_failed"
   | "section_tasks"
   | "section_review"
   | "section_merge";
@@ -157,6 +162,11 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   review_findings: { status: "review findings", terminal: false },
   refine_started: { status: "refining", terminal: false },
   refined: { status: "refined", terminal: true },
+  qa_waiting: { status: "qa: waiting on children", terminal: false },
+  qa_awaiting_deploy: { status: "qa: awaiting deploy", terminal: false },
+  qa_started: { status: "qa: in session", terminal: false },
+  qa_posted: { status: "qa posted", terminal: true },
+  qa_failed: { status: "qa failed", terminal: false },
 };
 
 // Takes a plain string, not EventKind: the log persists across versions, so a

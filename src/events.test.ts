@@ -1154,3 +1154,11 @@ test("isHoldStatus covers the statuses a human is already waiting on", () => {
   assert.equal(isHoldStatus("ready to merge"), false);
   assert.equal(isHoldStatus(undefined), false);
 });
+
+test("qa kinds map to statuses; only posted is terminal", () => {
+  assert.deepEqual(statusFor("qa_waiting"), { status: "qa: waiting on children", terminal: false });
+  assert.deepEqual(statusFor("qa_awaiting_deploy"), { status: "qa: awaiting deploy", terminal: false });
+  assert.deepEqual(statusFor("qa_started"), { status: "qa: in session", terminal: false });
+  assert.deepEqual(statusFor("qa_posted"), { status: "qa posted", terminal: true });
+  assert.deepEqual(statusFor("qa_failed"), { status: "qa failed", terminal: false });
+});

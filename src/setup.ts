@@ -343,6 +343,11 @@ export const hostLinks: HostLink[] = [
     label: "ticket commenter (~/comment-ticket.sh)",
   },
   {
+    source: join(repoRoot, "scripts/attach-ticket.sh"),
+    target: join(homedir(), "attach-ticket.sh"),
+    label: "ticket file attacher (~/attach-ticket.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/move-ticket.sh"),
     target: join(homedir(), "move-ticket.sh"),
     label: "ticket state mover (~/move-ticket.sh)",
@@ -885,6 +890,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), "estimate-ticket.sh"),
       label: "~/estimate-ticket.sh",
       role: "sets estimates during refine (required for refine)",
+    },
+    {
+      path: join(homedir(), "attach-ticket.sh"),
+      label: "~/attach-ticket.sh",
+      role: "uploads screenshots during QA sessions (required for the QA step)",
     },
     {
       path: join(homedir(), ".claude/skills/refine-ticket"),

@@ -229,6 +229,61 @@ test("a transient failure leaves the phase and the latch untouched", async () =>
   assert.equal(state.processedPRs.size, 0);
 });
 
+test("a newly spawned session is not checked for liveness in the same tick it starts", async () => {
+  const state = freshQaState();
+  const d = deps({ hasSession: () => false });
+  await qaOnce(state, d);
+  const unit = state.units.get("ENG-90")!;
+  assert.equal(unit.phase, "in-session");
+  assert.deepEqual(d.killed, []);
+  assert.ok(!d.emitted.includes("qa_failed:ENG-90"));
+
+  d.hasSession = () => true;
+  await qaOnce(state, d);
+  assert.equal(state.units.get("ENG-90")!.phase, "in-session");
+  assert.deepEqual(d.killed, []);
+});
+
+test("a second merged PR on an awaiting-deploy unit keeps its merge sha and phase", async () => {
+  const state = freshQaState();
+  state.units.set("ENG-90", {
+    identifier: "ENG-90", id: "u90", phase: "awaiting-deploy", lastPr: 5, prs: ["#5"], mergeSha: "sha-old",
+  });
+  const d = deps({ deployedHeadShas: async () => [] });
+  await qaOnce(state, d);
+  const unit = state.units.get("ENG-90")!;
+  assert.equal(unit.lastPr, 12);
+  assert.deepEqual(unit.prs, ["#5", "#12"]);
+  assert.equal(unit.phase, "awaiting-deploy");
+  assert.equal(unit.mergeSha, "sha-old");
+});
+
+test("a second merged PR on an in-session unit keeps startedAt and does not fail", async () => {
+  const state = freshQaState();
+  state.units.set("ENG-90", {
+    identifier: "ENG-90", id: "u90", phase: "in-session", lastPr: 5, prs: ["#5"], mergeSha: "sha-old", startedAt: 5_000,
+  });
+  const d = deps({});
+  await qaOnce(state, d);
+  const unit = state.units.get("ENG-90")!;
+  assert.equal(unit.lastPr, 12);
+  assert.equal(unit.phase, "in-session");
+  assert.equal(unit.startedAt, 5_000);
+  assert.deepEqual(d.emitted, []);
+});
+
+test("a merged PR whose Linear issue was deleted is latched instead of retried forever", async () => {
+  const state = freshQaState();
+  const d = deps({
+    fetchFamily: async () => {
+      throw new Error('Entity not found: no issue for identifier "ENG-101"');
+    },
+  });
+  await qaOnce(state, d);
+  assert.equal(state.units.size, 0);
+  assert.ok(state.processedPRs.has("#12"));
+});
+
 test("a unit whose parent vanished is dropped", async () => {
   const state = freshQaState();
   const unit: QaUnit = { identifier: "ENG-90", id: "u90", phase: "waiting-children", lastPr: 12, prs: ["#12"] };

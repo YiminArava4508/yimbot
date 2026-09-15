@@ -83,13 +83,20 @@ async function adoptMergedPRs(state: QaState, deps: QaDeps): Promise<void> {
       unit.lastPr = pr.number;
       unit.repo = pr.repo;
       if (!unit.prs.includes(key)) unit.prs.push(key);
-      if (unit.phase === "posted" || unit.phase === "failed") unit.phase = "waiting-children";
-      delete unit.mergeSha;
-      delete unit.startedAt;
+      if (unit.phase === "posted" || unit.phase === "failed") {
+        unit.phase = "waiting-children";
+        delete unit.mergeSha;
+        delete unit.startedAt;
+      }
       state.units.set(unitId, unit);
       state.processedPRs.add(key);
       deps.log(`${identifier} merged (#${pr.number}); QA unit ${unitId}`);
     } catch (err) {
+      if (isMissing(err)) {
+        state.processedPRs.add(key);
+        deps.log(`${identifier} no longer exists in Linear; PR #${pr.number} latched and skipped`);
+        continue;
+      }
       deps.log(`adopt failed for ${identifier}: ${err}`);
     }
   }
@@ -116,10 +123,11 @@ async function stepWaitingChildren(unit: QaUnit, deps: QaDeps): Promise<void> {
 }
 
 async function isDeployed(unit: QaUnit, cfg: { workflow: string }, deps: QaDeps): Promise<boolean> {
+  if (!unit.mergeSha) return false;
   const heads = await deps.deployedHeadShas(cfg.workflow, unit.repo);
   for (const head of heads) {
     if (head === unit.mergeSha) return true;
-    if (await deps.isAncestorOrEqual(unit.mergeSha!, head, unit.repo)) return true;
+    if (await deps.isAncestorOrEqual(unit.mergeSha, head, unit.repo)) return true;
   }
   return false;
 }
@@ -146,9 +154,9 @@ async function stepAwaitingDeploy(unit: QaUnit, deps: QaDeps): Promise<void> {
 async function stepInSession(unit: QaUnit, deps: QaDeps): Promise<void> {
   const name = qaSessionName(unit.identifier);
   if (await deps.hasMarker(unit.id)) {
+    deps.kill(name);
     unit.phase = "posted";
     deps.emit("qa_posted", unit.identifier);
-    deps.kill(name);
     deps.log(`${unit.identifier} QA instructions posted`);
     return;
   }
@@ -163,6 +171,9 @@ async function stepInSession(unit: QaUnit, deps: QaDeps): Promise<void> {
 
 // A unit that clears one phase this tick keeps advancing (e.g. children clear
 // and the deploy is already live) instead of waiting for the next heartbeat.
+// A unit that just spawned stops here for the tick: the session is a detached
+// process started microseconds ago, so checking hasSession immediately would
+// read it as dead and fail a QA session that never got the chance to start.
 async function runUnit(unit: QaUnit, deps: QaDeps): Promise<void> {
   let phase = unit.phase;
   while (true) {
@@ -170,7 +181,7 @@ async function runUnit(unit: QaUnit, deps: QaDeps): Promise<void> {
     else if (phase === "awaiting-deploy") await stepAwaitingDeploy(unit, deps);
     else if (phase === "in-session") await stepInSession(unit, deps);
     else return;
-    if (unit.phase === phase) return;
+    if (unit.phase === phase || unit.phase === "in-session") return;
     phase = unit.phase;
   }
 }

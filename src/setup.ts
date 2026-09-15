@@ -323,6 +323,11 @@ export const hostLinks: HostLink[] = [
     label: "refine session launcher (~/refine-session.sh)",
   },
   {
+    source: join(repoRoot, "scripts/qa-session.sh"),
+    target: join(homedir(), "qa-session.sh"),
+    label: "QA session launcher (~/qa-session.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/relate-tickets.sh"),
     target: join(homedir(), "relate-tickets.sh"),
     label: "blocks-relation writer (~/relate-tickets.sh)",

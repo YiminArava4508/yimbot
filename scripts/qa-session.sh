@@ -11,6 +11,18 @@ qa_session_name() {
   printf '%s-qa' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 }
 
+# True when none of the given arguments contain a character that could break
+# out of the double-quoted prompt tmux send-keys types into the pane's shell.
+qa_args_safe() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      *'"'* | *'`'* | *'$'* | *'\'*) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 # Pure; unit-tested via sourcing.
 qa_seed_prompt() {
   local parent=$1 url=$2 children=$3 prs=$4
@@ -31,6 +43,8 @@ NONPROD_URL=${2:-}
 CHILDREN=${3:-}
 PRS=${4:-}
 [ -n "$PARENT" ] && [ -n "$NONPROD_URL" ] || { echo "Usage: $0 <PARENT> <NONPROD_URL> <CHILDREN_CSV> <PRS_CSV>"; exit 1; }
+qa_args_safe "$PARENT" "$NONPROD_URL" "$CHILDREN" "$PRS" ||
+  { echo "ERROR: qa-session.sh arguments must not contain quotes, backticks, \$ or backslashes" >&2; exit 1; }
 CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
 
 ID_UPPER=$(printf '%s' "$PARENT" | tr '[:lower:]' '[:upper:]')

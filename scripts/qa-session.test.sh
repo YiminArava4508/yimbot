@@ -10,8 +10,20 @@ assert_defined() { if ! declare -F "$1" >/dev/null; then echo "FAIL: $1 not defi
 
 assert_defined qa_seed_prompt
 assert_defined qa_session_name
+assert_defined qa_args_safe
 
 assert_eq "$(qa_session_name ENG-90)" "eng-90-qa" "session name lowercases and appends -qa"
+
+qa_args_safe ENG-90 https://np.example "ENG-1,ENG-2" "acme/app#1,#2"
+assert_eq "$?" "0" "qa_args_safe allows plain arguments"
+qa_args_safe 'a"b'
+assert_eq "$?" "1" "qa_args_safe rejects a double quote"
+qa_args_safe 'a$b'
+assert_eq "$?" "1" "qa_args_safe rejects a dollar sign"
+qa_args_safe 'a`b'
+assert_eq "$?" "1" "qa_args_safe rejects a backtick"
+qa_args_safe 'a\b'
+assert_eq "$?" "1" "qa_args_safe rejects a backslash"
 
 SEED=$(qa_seed_prompt ENG-90 https://np.example "ENG-101,ENG-102" "acme/app#12,#7")
 assert_eq "$(printf '%s' "$SEED" | grep -c 'qa-instructions skill')" "1" "seed hands off to qa-instructions"

@@ -69,6 +69,10 @@ flowchart TD
     G7 --> T6{"Did one of your<br/>PRs just merge?"}
     T6 -- yes --> AD["Judge the issue's acceptance<br/>criteria and spawn a continuation<br/>session while any remain"]
 
+    P --> G10["Write how to test"]
+    G10 --> T9{"Did the last child of a<br/>parent ticket merge, and is<br/>that merge live on nonprod?"}
+    T9 -- yes --> QA["Open nonprod in your Chrome,<br/>screenshot the feature, and post<br/>'How to test' on the parent"]
+
     P --> G8["Flag ready to merge"]
     G8 --> T7{"An open PR of yours that's clean?<br/>green CI, comments resolved,<br/>no conflicts"}
     T7 -- yes --> RM["Add the 'ready-to-merge' label<br/>(and remove it again if the<br/>PR later regresses)"]
@@ -84,6 +88,7 @@ flowchart TD
     classDef advance fill:#c4f1f9,stroke:#0987a0,color:#1a202c;
     classDef readymerge fill:#d9f99d,stroke:#65a30d,color:#1a202c;
     classDef blocked fill:#fed7aa,stroke:#c2410c,color:#1a202c;
+    classDef qa fill:#fde68a,stroke:#b45309,color:#1a202c;
     class G1,T1,L deploy;
     class G2,PK,M claim;
     class G3,T2,R review;
@@ -95,6 +100,7 @@ flowchart TD
     class S sync;
     class G7,T6,AD advance;
     class G8,T7,RM readymerge;
+    class G10,T9,QA qa;
 ```
 
 - **Start new work (green):** when you move a card to **In Progress**, yimbot
@@ -212,6 +218,19 @@ flowchart TD
   remain unmet, spawns a continuation session to keep working the issue.
   *(optional; settings: `AUTO_CONTINUE`, on by default; `MAX_CONTINUATIONS`,
   defaults to 5; `AC_JUDGE_MODEL`, blank uses the claude default)*
+- **Write how to test (amber):** every heartbeat, once one of your PRs merges,
+  yimbot finds the ticket's parent (or the ticket itself) and waits until every
+  child sits in a landed state and the nonprod deploy workflow has a successful
+  run at or past the last merge commit. It then opens a `eng-<n>-qa` session in
+  the main checkout that walks the feature in your Chrome through the Chrome
+  MCP, uploads screenshots to Linear (the local files are deleted right after),
+  and upserts one `How to test` comment on the parent. The comment appearing is
+  the completion signal; a session that dies or runs past the timeout is killed
+  and the row shows `qa failed`. *(optional; settings: `QA_DEPLOY_WORKFLOW` and
+  `QA_NONPROD_URL` turn it on; `QA_DEPLOY_WORKFLOW_<SLUG>` / `QA_NONPROD_URL_<SLUG>`
+  per extra repo; `QA_SESSION_TIMEOUT_MINUTES`, defaults to 45)* Needs `gh`,
+  Chrome with the Claude extension signed in to nonprod, and `~/attach-ticket.sh`
+  linked by setup.
 - **Flag ready to merge (lime):** every heartbeat, for each of your open
   non-draft PRs that is clean on all three signals (no unresolved review threads,
   no merge conflicts, and CI passing or no CI at all), it adds a `ready-to-merge`

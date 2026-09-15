@@ -2,6 +2,8 @@ import type { Blocker } from "./blocked.ts";
 import { labelFilterAllows, type LabelFilter } from "./labels.ts";
 import { observeReach } from "./reach.ts";
 import type { Ticket } from "./ticket-format.ts";
+import { readFileSync } from "node:fs";
+import { basename, extname } from "node:path";
 
 const API_URL = "https://api.linear.app/graphql";
 
@@ -822,4 +824,92 @@ export async function createBlocksRelation(
   if (!data.issueRelationCreate.success) {
     throw new Error(`issueRelationCreate failed: ${blockerId} blocks ${blockedId}`);
   }
+}
+
+export type IssueFamily = {
+  id: string;
+  identifier: string;
+  parent: string | null;
+  children: { identifier: string; state: string }[];
+};
+
+// The QA step's one read per ticket: the uuid (for marked-comment lookups),
+// the parent (the QA unit), and each child's workflow state (the readiness gate).
+export async function fetchIssueFamily(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<IssueFamily> {
+  type Data = {
+    issue: {
+      id: string;
+      identifier: string;
+      parent: { identifier: string } | null;
+      children: { nodes: { identifier: string; state: { name: string } }[] };
+    } | null;
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueFamily($id: String!) {
+      issue(id: $id) {
+        id identifier
+        parent { identifier }
+        children { nodes { identifier state { name } } }
+      }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  if (!data.issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  return {
+    id: data.issue.id,
+    identifier: data.issue.identifier,
+    parent: data.issue.parent?.identifier ?? null,
+    children: data.issue.children.nodes.map((c) => ({ identifier: c.identifier, state: c.state.name })),
+  };
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+};
+
+// Two-step Linear upload: ask for a presigned slot, PUT the bytes there with the
+// headers Linear hands back, and return the asset url a comment can embed.
+export async function uploadFile(
+  apiKey: string,
+  path: string,
+  fetchImpl: typeof fetch = fetch,
+  readFile: (p: string) => Buffer = (p) => readFileSync(p),
+): Promise<string> {
+  const bytes = readFile(path);
+  const contentType = CONTENT_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream";
+  type Data = {
+    fileUpload: {
+      success: boolean;
+      uploadFile: { uploadUrl: string; assetUrl: string; headers: { key: string; value: string }[] } | null;
+    };
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `mutation FileUpload($contentType: String!, $filename: String!, $size: Int!) {
+      fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+        success
+        uploadFile { uploadUrl assetUrl headers { key value } }
+      }
+    }`,
+    { contentType, filename: basename(path), size: bytes.length },
+    fetchImpl,
+  );
+  const slot = data.fileUpload.uploadFile;
+  if (!data.fileUpload.success || !slot) throw new Error(`fileUpload failed for ${path}`);
+  const headers: Record<string, string> = { "Content-Type": contentType };
+  for (const h of slot.headers) headers[h.key] = h.value;
+  const res = await fetchImpl(slot.uploadUrl, { method: "PUT", headers, body: bytes as any });
+  if (!res.ok) throw new Error(`upload PUT ${res.status}: ${await res.text()}`);
+  return slot.assetUrl;
 }

@@ -12,6 +12,8 @@ import {
   fetchUsers,
   setIssueEstimate,
   fetchMarkedCommentBody,
+  fetchIssueFamily,
+  uploadFile,
   fetchCycleTodoIssues,
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
@@ -775,4 +777,96 @@ test("moveIssueToStateByName names the team's states when the target does not ex
     { team: { states: { nodes: [{ id: "s-todo", name: "Todo", type: "unstarted" }] } } },
   ]);
   await assert.rejects(moveIssueToStateByName("key", "ENG-42", "Nope", fetchImpl), /no state "Nope".*Todo/);
+});
+
+test("fetchIssueFamily returns uuid, parent and children with state names", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issue: {
+        id: "uuid-100",
+        identifier: "ENG-100",
+        parent: { identifier: "ENG-90" },
+        children: { nodes: [{ identifier: "ENG-101", state: { name: "Merged" } }, { identifier: "ENG-102", state: { name: "In Progress" } }] },
+      },
+    },
+  });
+  const fam = await fetchIssueFamily("key", "ENG-100", fetchImpl);
+  assert.deepEqual(fam, {
+    id: "uuid-100",
+    identifier: "ENG-100",
+    parent: "ENG-90",
+    children: [
+      { identifier: "ENG-101", state: "Merged" },
+      { identifier: "ENG-102", state: "In Progress" },
+    ],
+  });
+});
+
+test("fetchIssueFamily throws the missing-entity error for an unknown identifier", async () => {
+  await assert.rejects(
+    fetchIssueFamily("key", "ENG-999", fakeFetch({ data: { issue: null } })),
+    /no issue for identifier "ENG-999"/,
+  );
+});
+
+test("uploadFile requests a slot, PUTs the bytes with the returned headers, and returns the asset url", async () => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    if (url === "https://api.linear.app/graphql") {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "",
+        json: async () => ({
+          data: {
+            fileUpload: {
+              success: true,
+              uploadFile: {
+                uploadUrl: "https://upload.example/slot",
+                assetUrl: "https://uploads.linear.app/asset.png",
+                headers: [{ key: "x-amz-meta-foo", value: "bar" }],
+              },
+            },
+          },
+        }),
+      };
+    }
+    return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
+  }) as unknown as typeof fetch;
+  const bytes = Buffer.from("png-bytes");
+  const url = await uploadFile("key", "/tmp/shot.png", fetchImpl, () => bytes);
+  assert.equal(url, "https://uploads.linear.app/asset.png");
+  const gqlBody = JSON.parse(String(calls[0].init.body));
+  assert.deepEqual(gqlBody.variables, { contentType: "image/png", filename: "shot.png", size: bytes.length });
+  assert.equal(calls[1].url, "https://upload.example/slot");
+  assert.equal(calls[1].init.method, "PUT");
+  const headers = calls[1].init.headers as Record<string, string>;
+  assert.equal(headers["x-amz-meta-foo"], "bar");
+  assert.equal(headers["Content-Type"], "image/png");
+  assert.equal(calls[1].init.body, bytes);
+});
+
+test("uploadFile rejects when the PUT fails", async () => {
+  let n = 0;
+  const fetchImpl = (async () => {
+    n += 1;
+    if (n === 1) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "",
+        json: async () => ({
+          data: {
+            fileUpload: {
+              success: true,
+              uploadFile: { uploadUrl: "https://upload.example/slot", assetUrl: "https://a", headers: [] },
+            },
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 403, text: async () => "denied", json: async () => ({}) };
+  }) as unknown as typeof fetch;
+  await assert.rejects(uploadFile("key", "/tmp/shot.png", fetchImpl, () => Buffer.from("x")), /upload PUT 403/);
 });

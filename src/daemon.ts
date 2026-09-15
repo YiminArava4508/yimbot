@@ -356,68 +356,70 @@ export async function startDaemon(): Promise<() => void> {
   // workflow includes the last merge, spawn a session that posts "how to test"
   // on the parent. Off unless the primary repo's workflow + url are set; gated
   // on gh like the other post-merge steps.
-  const qaTimeoutMinutes = Number(envOr("QA_SESSION_TIMEOUT_MINUTES", "45"));
-  if (!Number.isFinite(qaTimeoutMinutes) || qaTimeoutMinutes <= 0) {
-    throw new Error("QA_SESSION_TIMEOUT_MINUTES must be a positive number");
-  }
   const qaPrimary = qaConfigFor(process.env);
-  const primaryBranch = await resolveDefaultBranch(codebasePath);
-  const ghFor = (repo?: string) => extraRunners.find((r) => r.repo === repo)?.run ?? gh;
-  // The deploy workflow runs on each repo's own default branch, which is not
-  // always the primary repo's. Resolved once per repo; a failed lookup falls
-  // back to the primary branch rather than parking the unit in awaiting-deploy.
-  const branchCache = new Map<string, string>();
-  const branchFor = async (repo?: string) => {
-    if (!repo) return primaryBranch;
-    const cached = branchCache.get(repo);
-    if (cached) return cached;
-    try {
-      const branch = await defaultBranch(ghFor(repo), repo);
-      if (branch) branchCache.set(repo, branch);
-      return branch || primaryBranch;
-    } catch (err) {
-      console.log(`[qa] default branch of ${repo} failed, using ${primaryBranch}: ${err}`);
-      return primaryBranch;
+  // Everything the step needs, built only when it is on, so a disabled step
+  // neither aborts startup on a bad timeout nor resolves a default branch.
+  const buildQa = async () => {
+    const qaTimeoutMinutes = Number(envOr("QA_SESSION_TIMEOUT_MINUTES", "45"));
+    if (!Number.isFinite(qaTimeoutMinutes) || qaTimeoutMinutes <= 0) {
+      throw new Error("QA_SESSION_TIMEOUT_MINUTES must be a positive number");
     }
-  };
-  const slugCache = new Map<string, { owner: string; name: string }>();
-  const slugFor = async (repo?: string) => {
-    if (repo) {
-      const [owner, name] = repo.split("/");
-      return { owner, name };
-    }
-    const cached = slugCache.get("");
-    if (cached) return cached;
-    const slug = await repoSlug(gh);
-    slugCache.set("", slug);
-    return slug;
-  };
-  const qa =
-    qaPrimary && prReview
-      ? {
-          listMergedPRs: async () => prLabelFilter(await listAllMergedPRs()),
-          fetchFamily: (identifier: string) => fetchIssueFamily(apiKey, identifier),
-          fetchState: async (identifier: string) => (await fetchIssueState(apiKey, identifier)).name,
-          clearedStates,
-          configFor: (repo?: string) => qaConfigFor(process.env, repo),
-          mergeCommit: (pr: number, repo?: string) => prMergeCommit(ghFor(repo), pr),
-          deployedHeadShas: async (workflow: string, repo?: string) =>
-            listSuccessfulRunHeadShas(ghFor(repo), workflow, await branchFor(repo)),
-          isAncestorOrEqual: async (base: string, head: string, repo?: string) => {
-            try {
-              const status = await compareStatus(ghFor(repo), await slugFor(repo), base, head);
-              return status === "identical" || status === "ahead";
-            } catch (err) {
-              console.log(`[qa] compare ${base.slice(0, 8)}...${head.slice(0, 8)} failed: ${err}`);
-              return false;
-            }
-          },
-          hasMarker: async (issueId: string) => (await fetchMarkedCommentBody(apiKey, issueId, QA_MARKER)) !== "",
-          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
-          maxInProgress,
-          sessionTimeoutMs: qaTimeoutMinutes * 60_000,
+    const primaryBranch = await resolveDefaultBranch(codebasePath);
+    const ghFor = (repo?: string) => extraRunners.find((r) => r.repo === repo)?.run ?? gh;
+    // The deploy workflow runs on each repo's own default branch, which is not
+    // always the primary repo's. Resolved once per repo; a failed lookup falls
+    // back to the primary branch rather than parking the unit in awaiting-deploy.
+    const branchCache = new Map<string, string>();
+    const branchFor = async (repo?: string) => {
+      if (!repo) return primaryBranch;
+      const cached = branchCache.get(repo);
+      if (cached) return cached;
+      try {
+        const branch = await defaultBranch(ghFor(repo), repo);
+        if (branch) branchCache.set(repo, branch);
+        return branch || primaryBranch;
+      } catch (err) {
+        console.log(`[qa] default branch of ${repo} failed, using ${primaryBranch}: ${err}`);
+        return primaryBranch;
+      }
+    };
+    const slugCache = new Map<string, { owner: string; name: string }>();
+    const slugFor = async (repo?: string) => {
+      if (repo) {
+        const [owner, name] = repo.split("/");
+        return { owner, name };
+      }
+      const cached = slugCache.get("");
+      if (cached) return cached;
+      const slug = await repoSlug(gh);
+      slugCache.set("", slug);
+      return slug;
+    };
+    return {
+      listMergedPRs: async () => prLabelFilter(await listAllMergedPRs()),
+      fetchFamily: (identifier: string) => fetchIssueFamily(apiKey, identifier),
+      fetchState: async (identifier: string) => (await fetchIssueState(apiKey, identifier)).name,
+      clearedStates,
+      configFor: (repo?: string) => qaConfigFor(process.env, repo),
+      mergeCommit: (pr: number, repo?: string) => prMergeCommit(ghFor(repo), pr),
+      deployedHeadShas: async (workflow: string, repo?: string) =>
+        listSuccessfulRunHeadShas(ghFor(repo), workflow, await branchFor(repo)),
+      isAncestorOrEqual: async (base: string, head: string, repo?: string) => {
+        try {
+          const status = await compareStatus(ghFor(repo), await slugFor(repo), base, head);
+          return status === "identical" || status === "ahead";
+        } catch (err) {
+          console.log(`[qa] compare ${base.slice(0, 8)}...${head.slice(0, 8)} failed: ${err}`);
+          return false;
         }
-      : null;
+      },
+      hasMarker: async (issueId: string) => (await fetchMarkedCommentBody(apiKey, issueId, QA_MARKER)) !== "",
+      activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
+      maxInProgress,
+      sessionTimeoutMs: qaTimeoutMinutes * 60_000,
+    };
+  };
+  const qa = qaPrimary && prReview ? await buildQa() : null;
   console.log(
     qa
       ? `[yimbot] qa step ON: how-to-test comments on parents after nonprod deploy (${qaPrimary!.workflow})`

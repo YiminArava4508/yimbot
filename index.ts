@@ -28,6 +28,7 @@ import {
   currentTmuxPane,
   listGitWorktrees,
   listTmuxSessions,
+  liveQaKeys,
   liveRefineKeys,
   liveWorktreeKeys,
   manuallyLiveKeys,
@@ -201,7 +202,9 @@ if (process.stdout.isTTY) {
     },
     liveKeys: () => {
       const keys = liveWorktreeKeys(currentCodebasePath());
-      for (const k of liveRefineKeys(listTmuxSessions())) keys.add(k);
+      const sessions = listTmuxSessions();
+      for (const k of liveRefineKeys(sessions)) keys.add(k);
+      for (const k of liveQaKeys(sessions)) keys.add(k);
       return keys;
     },
     openPrKeys,

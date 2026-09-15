@@ -26,8 +26,11 @@ import {
   freshDeployState,
   hasSessionForWorktree,
   isLaunchMarkerActive,
+  liveQaKeys,
   liveRefineKeys,
   manuallyLiveKeys,
+  qaScriptPath,
+  qaSessionArgs,
   reportSplitParentRows,
   splitSliceKeys,
   markFeatureReady,
@@ -622,6 +625,21 @@ test("worktreeKeysUnder keeps the branch key when neither branch nor dir names a
 test("liveRefineKeys maps refine sessions to board keys", () => {
   const keys = liveRefineKeys(["refine-eng-9", "eng-12-some-ticket", "refine-sc-4", "refine-plat-12"]);
   assert.deepEqual(keys, new Set(["ENG-9", "SC-4", "PLAT-12"]));
+});
+
+test("liveQaKeys maps qa sessions to board keys", () => {
+  const keys = liveQaKeys(["qa-eng-90", "eng-12-some-ticket", "refine-sc-4", "qa-sc-7"]);
+  assert.deepEqual(keys, new Set(["ENG-90", "SC-7"]));
+});
+
+test("qaSessionArgs builds the qa-session.sh argv", () => {
+  assert.deepEqual(qaSessionArgs("ENG-90", "https://np", ["ENG-101", "ENG-102"], ["acme/app#12", "#7"]), [
+    qaScriptPath,
+    "ENG-90",
+    "https://np",
+    "ENG-101,ENG-102",
+    "acme/app#12,#7",
+  ]);
 });
 
 test("resolveSessionForKey falls back to a live refine session when no worktree matches", () => {

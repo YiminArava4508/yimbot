@@ -909,7 +909,7 @@ export async function uploadFile(
   if (!data.fileUpload.success || !slot) throw new Error(`fileUpload failed for ${path}`);
   const headers: Record<string, string> = { "Content-Type": contentType };
   for (const h of slot.headers) headers[h.key] = h.value;
-  const res = await fetchImpl(slot.uploadUrl, { method: "PUT", headers, body: bytes as any });
+  const res = await fetchImpl(slot.uploadUrl, { method: "PUT", headers, body: bytes as unknown as BodyInit });
   if (!res.ok) throw new Error(`upload PUT ${res.status}: ${await res.text()}`);
   return slot.assetUrl;
 }

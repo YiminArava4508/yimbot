@@ -49,13 +49,22 @@ test("qaStateFilePath sits next to the events log", () => {
   });
 });
 
-test("serialize/parse round-trips units and processed PRs", () => {
+test("serialize/parse round-trips units, processed PRs and the seeded flag", () => {
   const state = freshQaState();
   state.units.set("ENG-90", unit);
   state.processedPRs.add("acme/app#12");
+  state.seeded = true;
   const back = parseQaState(serializeQaState(state));
   assert.deepEqual(back.units.get("ENG-90"), unit);
   assert.deepEqual([...back.processedPRs], ["acme/app#12"]);
+  assert.equal(back.seeded, true);
+});
+
+test("a fresh state is unseeded and a missing or non-boolean seeded reads as false", () => {
+  assert.equal(freshQaState().seeded, false);
+  assert.equal(parseQaState('{"units":{},"processedPRs":[]}').seeded, false);
+  assert.equal(parseQaState('{"seeded":"yes"}').seeded, false);
+  assert.equal(parseQaState('{"seeded":true}').seeded, true);
 });
 
 test("parseQaState tolerates junk", () => {

@@ -226,7 +226,9 @@ flowchart TD
   MCP, uploads screenshots to Linear (the local files are deleted right after),
   and upserts one `How to test` comment on the parent. The comment appearing is
   the completion signal; a session that dies or runs past the timeout is killed
-  and the row shows `qa failed`. *(optional; settings: `QA_DEPLOY_WORKFLOW` and
+  and the row shows `qa failed`. A parent whose children merged in different
+  repos is marked `qa failed` for now; multi-repo QA is a follow-up.
+  *(optional; settings: `QA_DEPLOY_WORKFLOW` and
   `QA_NONPROD_URL` turn it on; `QA_DEPLOY_WORKFLOW_<SLUG>` / `QA_NONPROD_URL_<SLUG>`
   per extra repo; `QA_SESSION_TIMEOUT_MINUTES`, defaults to 45)* Needs `gh`,
   Chrome with the Claude extension signed in to nonprod, and `~/attach-ticket.sh`

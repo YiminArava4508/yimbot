@@ -19,10 +19,12 @@ export type QaUnit = {
   startedAt?: number;
 };
 
-export type QaState = { units: Map<string, QaUnit>; processedPRs: Set<string> };
+// `seeded` is the cold-start guard: until the first tick latches every PR that
+// merged before QA existed, adoption would treat all of history as fresh work.
+export type QaState = { units: Map<string, QaUnit>; processedPRs: Set<string>; seeded: boolean };
 
 export function freshQaState(): QaState {
-  return { units: new Map(), processedPRs: new Set() };
+  return { units: new Map(), processedPRs: new Set(), seeded: false };
 }
 
 // PR numbers collide across repos, so the processed latch is repo-qualified.
@@ -57,7 +59,8 @@ export function parseQaState(raw: string): QaState {
     return out;
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return out;
-  const obj = parsed as { units?: unknown; processedPRs?: unknown };
+  const obj = parsed as { units?: unknown; processedPRs?: unknown; seeded?: unknown };
+  out.seeded = obj.seeded === true;
   if (typeof obj.units === "object" && obj.units !== null) {
     for (const [key, value] of Object.entries(obj.units)) {
       if (isUnit(value)) out.units.set(key, value);
@@ -70,7 +73,13 @@ export function parseQaState(raw: string): QaState {
 }
 
 export function serializeQaState(state: QaState): string {
-  return JSON.stringify({ units: Object.fromEntries(state.units), processedPRs: [...state.processedPRs] }) + "\n";
+  return (
+    JSON.stringify({
+      units: Object.fromEntries(state.units),
+      processedPRs: [...state.processedPRs],
+      seeded: state.seeded,
+    }) + "\n"
+  );
 }
 
 export function loadQaState(): QaState {

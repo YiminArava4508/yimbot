@@ -630,7 +630,7 @@ export type WatcherConfig = {
   // QA step: null disables it (no QA_DEPLOY_WORKFLOW/QA_NONPROD_URL, or gh
   // unavailable). Everything gh- or Linear-backed lives here; the watcher adds
   // tmux, spawn, events and the clock.
-  qa: Omit<QaDeps, "hasSession" | "kill" | "spawn" | "now" | "emit" | "log"> | null;
+  qa: Omit<QaDeps, "hasSession" | "kill" | "spawn" | "liveQaSessions" | "now" | "emit" | "log"> | null;
   // gh-backed hooks for the ready step; null disables it (AUTO_READY_LABEL off, or
   // gh unavailable). When set, each heartbeat adds the ready label (autonomous
   // mode only) to a non-draft open PR that has been clean on all three signals
@@ -798,11 +798,15 @@ export function spawnRefineSession(identifier: string): void {
   });
 }
 
+export function qaSessionArgs(identifier: string, nonprodUrl: string, children: string[], prs: string[]): string[] {
+  return [qaScriptPath, identifier, nonprodUrl, children.join(","), prs.join(",")];
+}
+
 // Launch a QA run: qa-session.sh <parent> <nonprod-url> <children> <prs>.
 // Detached and fire-and-forget like the other spawners; a failure is logged
 // and qaOnce sees a missing session next tick and fails the unit.
 export function spawnQaSession(identifier: string, nonprodUrl: string, children: string[], prs: string[]): void {
-  const proc = spawn("bash", [qaScriptPath, identifier, nonprodUrl, children.join(","), prs.join(",")], {
+  const proc = spawn("bash", qaSessionArgs(identifier, nonprodUrl, children, prs), {
     detached: true,
     stdio: "ignore",
     env: detachedSessionEnv(process.env),
@@ -1093,6 +1097,18 @@ export function liveRefineKeys(sessions: string[]): Set<string> {
   for (const s of sessions) {
     if (!s.startsWith("refine-")) continue;
     keys.add(deriveKey({ identifier: s.slice("refine-".length) }).key);
+  }
+  return keys;
+}
+
+// Board keys of live QA sessions. Same story as refine: a QA unit is a parent
+// ticket with no worktree and no PR of its own, so without this its rows are
+// filtered off the board.
+export function liveQaKeys(sessions: string[]): Set<string> {
+  const keys = new Set<string>();
+  for (const s of sessions) {
+    if (!s.startsWith("qa-")) continue;
+    keys.add(deriveKey({ identifier: s.slice("qa-".length) }).key);
   }
   return keys;
 }
@@ -1409,7 +1425,12 @@ export function startWatcher(config: WatcherConfig): () => void {
           .map((r) => r.key),
       );
       for (const k of mergedRowKeys(merged, open)) {
-        if (active.has(k.key)) emitStatus({ kind: "merged", key: k.key, label: k.label });
+        if (!active.has(k.key)) continue;
+        // A unit that is its own ticket has a merged PR the whole time QA runs,
+        // so without this the row flips between `merged` and its qa status every
+        // tick. The QA step owns the row until it posts or fails.
+        if (currentStatus(k.key)?.startsWith("qa")) continue;
+        emitStatus({ kind: "merged", key: k.key, label: k.label });
       }
     },
     rowKeyOf: (branch) => deriveKey({ branch }).key,
@@ -1474,6 +1495,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     hasSession: tmuxHasSession,
     kill: killTmuxSession,
     spawn: (unit, children, nonprodUrl) => spawnQaSession(unit.identifier, nonprodUrl, children, unit.prs),
+    liveQaSessions: () => listTmuxSessions().filter((n) => n.startsWith("qa-")).length,
     now: Date.now,
     emit: (kind, identifier) => {
       const { key, label } = deriveKey({ identifier });

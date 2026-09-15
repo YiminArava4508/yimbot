@@ -27,7 +27,9 @@ nonprod URL. You are in the main checkout, read-only.
 2. **Read the PRs.** For each PR run `gh pr view <N> --json title,body` and
    `gh pr diff <N>` (add `--repo owner/name` for an extra repo). Work out
    the user-visible surface: routes, screens, menu paths, and any backend
-   behaviour a user can observe in the UI.
+   behaviour a user can observe in the UI. Get the ticket each PR belongs to
+   from its head branch (`gh pr view <N> --json headRefName`), which is what
+   the `Covers` line in step 6 pairs up.
 
 3. **Open nonprod.** Call `mcp__claude-in-chrome__tabs_context_mcp`, then
    `mcp__claude-in-chrome__tabs_create_mcp` and navigate the new tab to the
@@ -46,29 +48,34 @@ nonprod URL. You are in the main checkout, read-only.
 
    It prints the Linear asset URL and deletes the file. If it exits
    non-zero, run `shred -u <saved-path>` yourself and continue without that
-   image. Never copy a screenshot anywhere else.
+   image. Then confirm the file is gone with `test ! -e <saved-path>`; if it
+   still exists, run `shred -u <saved-path>`. Never copy a screenshot
+   anywhere else.
 
 5. **Close your tabs** with `mcp__claude-in-chrome__tabs_close_mcp`.
 
 6. **Post the comment.** Pipe the body through the upsert flag so a rerun
    edits the same comment:
 
-   ```bash
-   ~/comment-ticket.sh --upsert '<!-- yimbot:qa -->' <PARENT> - <<'EOF'
-   ## How to test
+The heredoc below is unindented on purpose: copy it verbatim, because an
+indented `EOF` never terminates it.
 
-   **Preconditions**: <account or role>, nonprod at <url>, <feature flags>.
+```bash
+~/comment-ticket.sh --upsert '<!-- yimbot:qa -->' <PARENT> - <<'EOF'
+## How to test
 
-   1. Go to <route or menu path>. Expect <what should happen>.
-      ![step 1](<asset-url>)
-   2. ...
+**Preconditions**: <account or role>, nonprod at <url>, <feature flags>.
 
-   Covers: ENG-101 (#12), ENG-102 (acme/app#7)
-   EOF
-   ```
+1. Go to <route or menu path>. Expect <what should happen>.
+   ![step 1](<asset-url>)
+2. ...
 
-   Every step names where to go and what to expect. Put each image right
-   under the step it illustrates. Keep it under 20 steps.
+Covers: ENG-101 (#12), ENG-102 (acme/app#7)
+EOF
+```
+
+Every step names where to go and what to expect. Put each image right
+under the step it illustrates. Keep it under 20 steps.
 
 ## Guardrails
 

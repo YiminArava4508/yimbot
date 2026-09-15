@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { freshQaState, type QaUnit } from "./qa-state.ts";
+import { freshQaState, type QaState, type QaUnit } from "./qa-state.ts";
 import { QA_MARKER, qaConfigFor, qaOnce, qaRepoSlugEnvSuffix, qaSessionName, type QaDeps, type QaFamily } from "./qa.ts";
 
 test("QA_MARKER is the documented marker", () => {
@@ -31,6 +31,13 @@ test("qaConfigFor reads primary and per-repo vars, null when either is missing",
 });
 
 type Fam = Record<string, QaFamily>;
+
+// Past the cold-start latch, where every test below the seeding pair starts.
+function seededState(): QaState {
+  const state = freshQaState();
+  state.seeded = true;
+  return state;
+}
 
 function deps(over: Partial<QaDeps> & { families?: Fam; states?: Record<string, string> }): QaDeps & {
   emitted: string[];
@@ -63,6 +70,7 @@ function deps(over: Partial<QaDeps> & { families?: Fam; states?: Record<string, 
     kill: (n) => void killed.push(n),
     spawn: (u) => void spawned.push(u.identifier),
     activeCount: async () => 0,
+    liveQaSessions: () => 0,
     maxInProgress: 3,
     sessionTimeoutMs: 45 * 60_000,
     now: () => 10_000,
@@ -73,8 +81,46 @@ function deps(over: Partial<QaDeps> & { families?: Fam; states?: Record<string, 
   return { ...base, ...rest, emitted, spawned, killed };
 }
 
-test("a merged child PR creates a unit on the parent and latches the PR", async () => {
+test("the first tick latches every already-merged PR and creates no units", async () => {
   const state = freshQaState();
+  const logs: string[] = [];
+  const d = deps({
+    listMergedPRs: async () => [
+      { number: 12, headRefName: "eng-101-frontend" },
+      { number: 13, headRefName: "eng-102-backend" },
+    ],
+    log: (m) => void logs.push(m),
+  });
+  await qaOnce(state, d);
+  assert.equal(state.units.size, 0);
+  assert.deepEqual([...state.processedPRs], ["#12", "#13"]);
+  assert.equal(state.seeded, true);
+  assert.deepEqual(logs, ["seeded latch with 2 merged PRs; QA reacts to merges from now on"]);
+});
+
+test("after seeding, only a PR that merged since becomes a unit", async () => {
+  const state = freshQaState();
+  const d = deps({
+    listMergedPRs: async () => [
+      { number: 12, headRefName: "eng-101-frontend" },
+      { number: 13, headRefName: "eng-102-backend" },
+    ],
+    deployedHeadShas: async () => [],
+  });
+  await qaOnce(state, d);
+  d.listMergedPRs = async () => [
+    { number: 12, headRefName: "eng-101-frontend" },
+    { number: 13, headRefName: "eng-102-backend" },
+    { number: 14, headRefName: "eng-101-followup" },
+  ];
+  await qaOnce(state, d);
+  assert.deepEqual([...state.units.keys()], ["ENG-90"]);
+  assert.equal(state.units.get("ENG-90")!.lastPr, 14);
+  assert.deepEqual(state.units.get("ENG-90")!.prs, ["#14"]);
+});
+
+test("a merged child PR creates a unit on the parent and latches the PR", async () => {
+  const state = seededState();
   const d = deps({ deployedHeadShas: async () => [] });
   await qaOnce(state, d);
   const unit = state.units.get("ENG-90")!;
@@ -85,7 +131,7 @@ test("a merged child PR creates a unit on the parent and latches the PR", async 
 });
 
 test("a ticket without a parent is its own unit and waits on its own state", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({
     families: { "ENG-101": { id: "u101", parent: null, children: [] } },
     states: { "ENG-101": "In Progress" },
@@ -97,7 +143,7 @@ test("a ticket without a parent is its own unit and waits on its own state", asy
 });
 
 test("uncleared children hold the unit in waiting-children", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({
     families: {
       "ENG-101": { id: "u101", parent: "ENG-90", children: [] },
@@ -114,7 +160,7 @@ test("uncleared children hold the unit in waiting-children", async () => {
 });
 
 test("all children cleared records the merge sha and moves to awaiting-deploy, then spawns when deployed", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({});
   await qaOnce(state, d);
   const unit = state.units.get("ENG-90")!;
@@ -126,7 +172,7 @@ test("all children cleared records the merge sha and moves to awaiting-deploy, t
 });
 
 test("a deploy head that is a descendant of the merge counts as deployed", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({
     deployedHeadShas: async () => ["sha-later"],
     isAncestorOrEqual: async (base, head) => base === "sha-merge" && head === "sha-later",
@@ -136,7 +182,7 @@ test("a deploy head that is a descendant of the merge counts as deployed", async
 });
 
 test("an unrelated deploy head keeps the unit awaiting deploy", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({ deployedHeadShas: async () => ["sha-old"], isAncestorOrEqual: async () => false });
   await qaOnce(state, d);
   assert.equal(state.units.get("ENG-90")!.phase, "awaiting-deploy");
@@ -144,15 +190,40 @@ test("an unrelated deploy head keeps the unit awaiting deploy", async () => {
 });
 
 test("the WIP cap defers the spawn without changing phase", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({ activeCount: async () => 3 });
   await qaOnce(state, d);
   assert.equal(state.units.get("ENG-90")!.phase, "awaiting-deploy");
   assert.deepEqual(d.spawned, []);
 });
 
+test("a live QA session defers the spawn without changing phase", async () => {
+  const state = seededState();
+  const d = deps({ liveQaSessions: () => 1 });
+  await qaOnce(state, d);
+  assert.equal(state.units.get("ENG-90")!.phase, "awaiting-deploy");
+  assert.deepEqual(d.spawned, []);
+});
+
+test("two deployable units in one tick spawn exactly one session", async () => {
+  const state = seededState();
+  for (const id of ["ENG-90", "ENG-91"]) {
+    state.units.set(id, { identifier: id, id: `u-${id}`, phase: "awaiting-deploy", lastPr: 1, prs: ["#1"], mergeSha: "sha-merge" });
+  }
+  const d = deps({
+    listMergedPRs: async () => [],
+    families: {
+      "ENG-90": { id: "u-ENG-90", parent: null, children: [{ identifier: "ENG-101", state: "Merged" }] },
+      "ENG-91": { id: "u-ENG-91", parent: null, children: [{ identifier: "ENG-102", state: "Merged" }] },
+    },
+  });
+  await qaOnce(state, d);
+  assert.deepEqual(d.spawned, ["ENG-90"]);
+  assert.equal(state.units.get("ENG-91")!.phase, "awaiting-deploy");
+});
+
 test("the marker appearing posts the unit and kills the session", async () => {
-  const state = freshQaState();
+  const state = seededState();
   state.units.set("ENG-90", {
     identifier: "ENG-90", id: "u90", phase: "in-session", lastPr: 12, prs: ["#12"], mergeSha: "s", startedAt: 0,
   });
@@ -164,7 +235,7 @@ test("the marker appearing posts the unit and kills the session", async () => {
 });
 
 test("a dead session without the marker fails the unit", async () => {
-  const state = freshQaState();
+  const state = seededState();
   state.units.set("ENG-90", {
     identifier: "ENG-90", id: "u90", phase: "in-session", lastPr: 12, prs: ["#12"], mergeSha: "s", startedAt: 9_000,
   });
@@ -175,7 +246,7 @@ test("a dead session without the marker fails the unit", async () => {
 });
 
 test("a session past the timeout is killed and failed", async () => {
-  const state = freshQaState();
+  const state = seededState();
   state.units.set("ENG-90", {
     identifier: "ENG-90", id: "u90", phase: "in-session", lastPr: 12, prs: ["#12"], mergeSha: "s", startedAt: 0,
   });
@@ -186,7 +257,7 @@ test("a session past the timeout is killed and failed", async () => {
 });
 
 test("a new PR on a posted unit restarts it from waiting-children", async () => {
-  const state = freshQaState();
+  const state = seededState();
   state.units.set("ENG-90", {
     identifier: "ENG-90", id: "u90", phase: "posted", lastPr: 5, prs: ["#5"], mergeSha: "old",
   });
@@ -199,7 +270,7 @@ test("a new PR on a posted unit restarts it from waiting-children", async () => 
 });
 
 test("a repo without config is latched and never becomes a unit", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({
     listMergedPRs: async () => [{ number: 3, headRefName: "eng-101-x", repo: "acme/infra" }],
     configFor: (repo) => (repo ? null : { workflow: "w", nonprodUrl: "u" }),
@@ -210,7 +281,7 @@ test("a repo without config is latched and never becomes a unit", async () => {
 });
 
 test("non-ticket branches are latched and skipped", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({ listMergedPRs: async () => [{ number: 8, headRefName: "fix/typo" }] });
   await qaOnce(state, d);
   assert.equal(state.units.size, 0);
@@ -218,7 +289,7 @@ test("non-ticket branches are latched and skipped", async () => {
 });
 
 test("a transient failure leaves the phase and the latch untouched", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({
     fetchFamily: async () => {
       throw new Error("linear down");
@@ -230,7 +301,7 @@ test("a transient failure leaves the phase and the latch untouched", async () =>
 });
 
 test("a newly spawned session is not checked for liveness in the same tick it starts", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({ hasSession: () => false });
   await qaOnce(state, d);
   const unit = state.units.get("ENG-90")!;
@@ -244,22 +315,41 @@ test("a newly spawned session is not checked for liveness in the same tick it st
   assert.deepEqual(d.killed, []);
 });
 
-test("a second merged PR on an awaiting-deploy unit keeps its merge sha and phase", async () => {
-  const state = freshQaState();
+test("a second merged PR on an awaiting-deploy unit recomputes the merge sha", async () => {
+  const state = seededState();
   state.units.set("ENG-90", {
-    identifier: "ENG-90", id: "u90", phase: "awaiting-deploy", lastPr: 5, prs: ["#5"], mergeSha: "sha-old",
+    identifier: "ENG-90", id: "u90", phase: "awaiting-deploy", lastPr: 5, prs: ["#5"], mergeSha: "sha-5",
   });
-  const d = deps({ deployedHeadShas: async () => [] });
+  const d = deps({ deployedHeadShas: async () => [], mergeCommit: async (pr) => `sha-${pr}` });
   await qaOnce(state, d);
   const unit = state.units.get("ENG-90")!;
   assert.equal(unit.lastPr, 12);
   assert.deepEqual(unit.prs, ["#5", "#12"]);
   assert.equal(unit.phase, "awaiting-deploy");
-  assert.equal(unit.mergeSha, "sha-old");
+  assert.equal(unit.mergeSha, "sha-12");
+});
+
+test("a unit whose PRs span repos fails instead of waiting on one repo's deploy", async () => {
+  const state = seededState();
+  state.units.set("ENG-90", {
+    identifier: "ENG-90", id: "u90", phase: "waiting-children", lastPr: 5, prs: ["#5"],
+  });
+  const logs: string[] = [];
+  const d = deps({
+    listMergedPRs: async () => [{ number: 12, headRefName: "eng-101-frontend", repo: "acme/app" }],
+    log: (m) => void logs.push(m),
+  });
+  await qaOnce(state, d);
+  const unit = state.units.get("ENG-90")!;
+  assert.equal(unit.phase, "failed");
+  assert.deepEqual(unit.prs, ["#5", "acme/app#12"]);
+  assert.deepEqual(d.emitted, ["qa_failed:ENG-90"]);
+  assert.deepEqual(d.spawned, []);
+  assert.ok(logs.some((m) => m.includes("spans repos (codebase, acme/app); multi-repo QA is not supported yet")));
 });
 
 test("a second merged PR on an in-session unit keeps startedAt and does not fail", async () => {
-  const state = freshQaState();
+  const state = seededState();
   state.units.set("ENG-90", {
     identifier: "ENG-90", id: "u90", phase: "in-session", lastPr: 5, prs: ["#5"], mergeSha: "sha-old", startedAt: 5_000,
   });
@@ -273,7 +363,7 @@ test("a second merged PR on an in-session unit keeps startedAt and does not fail
 });
 
 test("a merged PR whose Linear issue was deleted is latched instead of retried forever", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const d = deps({
     fetchFamily: async () => {
       throw new Error('Entity not found: no issue for identifier "ENG-101"');
@@ -285,7 +375,7 @@ test("a merged PR whose Linear issue was deleted is latched instead of retried f
 });
 
 test("a unit whose parent vanished is dropped", async () => {
-  const state = freshQaState();
+  const state = seededState();
   const unit: QaUnit = { identifier: "ENG-90", id: "u90", phase: "waiting-children", lastPr: 12, prs: ["#12"] };
   state.units.set("ENG-90", unit);
   const d = deps({

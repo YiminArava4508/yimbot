@@ -52,8 +52,8 @@ CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
 ID_UPPER=$(printf '%s' "$PARENT" | tr '[:lower:]' '[:upper:]')
 SESSION=$(qa_session_name "$ID_UPPER")
 if tmux has-session -t "=$SESSION" 2>/dev/null; then
-  echo "Session '$SESSION' already exists, leaving it as is"
-  exit 0
+  echo "Session '$SESSION' already exists, leaving it as is" >&2
+  exit 1
 fi
 
 # Reuse new-session.sh's claude assembly (models, settings, permission mode).

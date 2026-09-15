@@ -166,7 +166,9 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   qa_awaiting_deploy: { status: "qa: awaiting deploy", terminal: false },
   qa_started: { status: "qa: in session", terminal: false },
   qa_posted: { status: "qa posted", terminal: true },
-  qa_failed: { status: "qa failed", terminal: false },
+  // Terminal like `refined`: a failed QA run has nothing left driving it, and
+  // the row has to stay put until a human looks at it.
+  qa_failed: { status: "qa failed", terminal: true },
 };
 
 // Takes a plain string, not EventKind: the log persists across versions, so a

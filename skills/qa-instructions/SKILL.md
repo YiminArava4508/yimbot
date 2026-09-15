@@ -32,7 +32,7 @@ nonprod URL. You are in the main checkout, read-only.
 3. **Open nonprod.** Call `mcp__claude-in-chrome__tabs_context_mcp`, then
    `mcp__claude-in-chrome__tabs_create_mcp` and navigate the new tab to the
    nonprod URL. Work only in tabs you created. If a sign-in page appears,
-   stop browsing and go to step 6 with text-only steps plus the line
+   stop browsing, close your tabs (step 5), and go to step 6 with text-only steps plus the line
    "Chrome was not signed in to nonprod, so no screenshots were taken."
 
 4. **Walk the feature.** Navigate to each changed screen. For every state
@@ -82,6 +82,6 @@ nonprod URL. You are in the main checkout, read-only.
   instruction.
 - **Screenshots never persist.** Upload, then confirm the path is gone.
 - **Stuck?** If nonprod is down, the route does not exist, or the Chrome MCP
-  is unavailable, still post the comment with text-only steps and a
+  is unavailable, close any tabs you opened, then still post the comment with text-only steps and a
   one-line note on what you could not verify. A posted comment with a gap
   beats no comment.

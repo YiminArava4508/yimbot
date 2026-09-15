@@ -7,8 +7,8 @@ test("QA_MARKER is the documented marker", () => {
   assert.equal(QA_MARKER, "<!-- yimbot:qa -->");
 });
 
-test("qaSessionName lowercases the identifier and appends -qa", () => {
-  assert.equal(qaSessionName("ENG-90"), "eng-90-qa");
+test("qaSessionName lowercases the identifier behind a qa- prefix", () => {
+  assert.equal(qaSessionName("ENG-90"), "qa-eng-90");
 });
 
 test("qaRepoSlugEnvSuffix uppercases and replaces non-alphanumerics", () => {
@@ -159,7 +159,7 @@ test("the marker appearing posts the unit and kills the session", async () => {
   const d = deps({ listMergedPRs: async () => [], hasMarker: async (id) => id === "u90" });
   await qaOnce(state, d);
   assert.equal(state.units.get("ENG-90")!.phase, "posted");
-  assert.deepEqual(d.killed, ["eng-90-qa"]);
+  assert.deepEqual(d.killed, ["qa-eng-90"]);
   assert.deepEqual(d.emitted, ["qa_posted:ENG-90"]);
 });
 
@@ -182,7 +182,7 @@ test("a session past the timeout is killed and failed", async () => {
   const d = deps({ listMergedPRs: async () => [], now: () => 46 * 60_000 });
   await qaOnce(state, d);
   assert.equal(state.units.get("ENG-90")!.phase, "failed");
-  assert.deepEqual(d.killed, ["eng-90-qa"]);
+  assert.deepEqual(d.killed, ["qa-eng-90"]);
 });
 
 test("a new PR on a posted unit restarts it from waiting-children", async () => {

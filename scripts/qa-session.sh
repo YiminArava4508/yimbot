@@ -7,8 +7,10 @@
 #   e.g. qa-session.sh ENG-90 https://np.example "ENG-101,ENG-102" "acme/app#12,#7"
 set -uo pipefail
 
+# Prefixed rather than suffixed so the name never starts with the ticket
+# identifier, which the watcher's session matcher would adopt as the dev session.
 qa_session_name() {
-  printf '%s-qa' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  printf 'qa-%s' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 }
 
 # True when none of the given arguments contain a character that could break

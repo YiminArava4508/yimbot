@@ -12,7 +12,7 @@ assert_defined qa_seed_prompt
 assert_defined qa_session_name
 assert_defined qa_args_safe
 
-assert_eq "$(qa_session_name ENG-90)" "eng-90-qa" "session name lowercases and appends -qa"
+assert_eq "$(qa_session_name ENG-90)" "qa-eng-90" "session name lowercases behind a qa- prefix"
 
 qa_args_safe ENG-90 https://np.example "ENG-1,ENG-2" "acme/app#1,#2"
 assert_eq "$?" "0" "qa_args_safe allows plain arguments"

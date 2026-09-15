@@ -64,7 +64,7 @@ import {
   type PrReviewDeps,
   reviewOnce,
 } from "./pr-review.ts";
-import { loadQaState, saveQaState } from "./qa-state.ts";
+import { freshQaState, loadQaState, saveQaState } from "./qa-state.ts";
 import { qaOnce, type QaDeps } from "./qa.ts";
 import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
@@ -1468,7 +1468,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   const qaLog = (msg: string) => console.log(`[qa] ${msg}`);
-  const qaState = loadQaState();
+  const qaState = config.qa ? loadQaState() : freshQaState();
   const qaDeps: QaDeps | null = config.qa && {
     ...config.qa,
     hasSession: tmuxHasSession,

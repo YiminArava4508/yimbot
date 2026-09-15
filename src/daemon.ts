@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { clearedStateNames } from "./blocked.ts";
-import { pullCodebase } from "./codebase-sync.ts";
+import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
@@ -15,6 +15,7 @@ import {
   blockedInfo,
   checksInfo,
   compareStatus,
+  defaultBranch,
   ghRunner,
   humanChangesRequested,
   listMyClosedUnmergedPRs,
@@ -360,8 +361,25 @@ export async function startDaemon(): Promise<() => void> {
     throw new Error("QA_SESSION_TIMEOUT_MINUTES must be a positive number");
   }
   const qaPrimary = qaConfigFor(process.env);
-  const deployBranch = envOr("DEFAULT_BRANCH", "main");
+  const primaryBranch = await resolveDefaultBranch(codebasePath);
   const ghFor = (repo?: string) => extraRunners.find((r) => r.repo === repo)?.run ?? gh;
+  // The deploy workflow runs on each repo's own default branch, which is not
+  // always the primary repo's. Resolved once per repo; a failed lookup falls
+  // back to the primary branch rather than parking the unit in awaiting-deploy.
+  const branchCache = new Map<string, string>();
+  const branchFor = async (repo?: string) => {
+    if (!repo) return primaryBranch;
+    const cached = branchCache.get(repo);
+    if (cached) return cached;
+    try {
+      const branch = await defaultBranch(ghFor(repo), repo);
+      if (branch) branchCache.set(repo, branch);
+      return branch || primaryBranch;
+    } catch (err) {
+      console.log(`[qa] default branch of ${repo} failed, using ${primaryBranch}: ${err}`);
+      return primaryBranch;
+    }
+  };
   const slugCache = new Map<string, { owner: string; name: string }>();
   const slugFor = async (repo?: string) => {
     if (repo) {
@@ -383,13 +401,14 @@ export async function startDaemon(): Promise<() => void> {
           clearedStates,
           configFor: (repo?: string) => qaConfigFor(process.env, repo),
           mergeCommit: (pr: number, repo?: string) => prMergeCommit(ghFor(repo), pr),
-          deployedHeadShas: (workflow: string, repo?: string) =>
-            listSuccessfulRunHeadShas(ghFor(repo), workflow, deployBranch),
+          deployedHeadShas: async (workflow: string, repo?: string) =>
+            listSuccessfulRunHeadShas(ghFor(repo), workflow, await branchFor(repo)),
           isAncestorOrEqual: async (base: string, head: string, repo?: string) => {
             try {
               const status = await compareStatus(ghFor(repo), await slugFor(repo), base, head);
               return status === "identical" || status === "ahead";
-            } catch {
+            } catch (err) {
+              console.log(`[qa] compare ${base.slice(0, 8)}...${head.slice(0, 8)} failed: ${err}`);
               return false;
             }
           },

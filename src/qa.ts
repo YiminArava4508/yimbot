@@ -25,7 +25,7 @@ export function qaConfigFor(env: NodeJS.ProcessEnv, repo?: string): QaRepoConfig
 }
 
 export function qaSessionName(identifier: string): string {
-  return `${identifier.toLowerCase()}-qa`;
+  return `qa-${identifier.toLowerCase()}`;
 }
 
 export type QaFamily = { id: string; parent: string | null; children: { identifier: string; state: string }[] };

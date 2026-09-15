@@ -221,7 +221,7 @@ flowchart TD
 - **Write how to test (amber):** every heartbeat, once one of your PRs merges,
   yimbot finds the ticket's parent (or the ticket itself) and waits until every
   child sits in a landed state and the nonprod deploy workflow has a successful
-  run at or past the last merge commit. It then opens a `eng-<n>-qa` session in
+  run at or past the last merge commit. It then opens a `qa-eng-<n>` session in
   the main checkout that walks the feature in your Chrome through the Chrome
   MCP, uploads screenshots to Linear (the local files are deleted right after),
   and upserts one `How to test` comment on the parent. The comment appearing is

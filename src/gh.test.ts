@@ -6,6 +6,7 @@ import {
   blockedInfo,
   checksInfo,
   compareStatus,
+  defaultBranch,
   type GhRunner,
   ghRunner,
   listMyClosedUnmergedPRs,
@@ -665,4 +666,16 @@ test("compareStatus calls the compare API and trims the status", async () => {
   };
   assert.equal(await compareStatus(run, { owner: "acme", name: "app" }, "base1", "head1"), "ahead");
   assert.deepEqual(seen[0], ["api", "repos/acme/app/compare/base1...head1", "--jq", ".status"]);
+});
+
+test("defaultBranch asks gh for the named repo's default branch and trims it", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return "master\n";
+  };
+  assert.equal(await defaultBranch(run, "acme/app"), "master");
+  assert.deepEqual(seen[0], [
+    "repo", "view", "acme/app", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name",
+  ]);
 });

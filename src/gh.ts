@@ -449,6 +449,13 @@ export async function compareStatus(run: GhRunner, slug: RepoSlug, base: string,
   return (await run(["api", `repos/${slug.owner}/${slug.name}/compare/${base}...${head}`, "--jq", ".status"])).trim();
 }
 
+// The default branch of one repo, by "owner/name" slug. `repo view` resolves the
+// cwd's origin rather than GH_REPO, so the slug is passed explicitly and this
+// works for an EXTRA_REPOS runner too.
+export async function defaultBranch(run: GhRunner, slug: string): Promise<string> {
+  return (await run(["repo", "view", slug, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"])).trim();
+}
+
 export type PrReviewMeta = {
   title: string;
   body: string;

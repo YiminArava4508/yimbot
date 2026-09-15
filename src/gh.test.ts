@@ -5,11 +5,13 @@ import {
   applyReadyLabel,
   blockedInfo,
   checksInfo,
+  compareStatus,
   type GhRunner,
   ghRunner,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
+  listSuccessfulRunHeadShas,
   markPrReadyForReview,
   mergeableInfo,
   parseBlockedInfo,
@@ -20,11 +22,14 @@ import {
   parseMergeableInfo,
   parseClosedUnmergedPRs,
   parseMergedPRs,
+  parseMergeCommit,
   parseOpenPRs,
+  parseRunHeadShas,
   prDiff,
   prIsDraft,
   prLabels,
   parsePrState,
+  prMergeCommit,
   prState,
   parsePrReviewMeta,
   prReviewMeta,
@@ -617,4 +622,47 @@ test("prState asks for both fields in a single call", async () => {
   const { run, calls } = capturingRunner([JSON.stringify({ labels: [], isDraft: false })]);
   await prState(run, 4706);
   assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels,isDraft"]);
+});
+
+test("parseRunHeadShas lists head shas in gh order", () => {
+  assert.deepEqual(parseRunHeadShas('[{"headSha":"aaa"},{"headSha":"bbb"}]'), ["aaa", "bbb"]);
+  assert.deepEqual(parseRunHeadShas("[]"), []);
+});
+
+test("listSuccessfulRunHeadShas asks gh for successful runs of one workflow on one branch", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return '[{"headSha":"abc"}]';
+  };
+  assert.deepEqual(await listSuccessfulRunHeadShas(run, "deploy-nonprod.yml", "main"), ["abc"]);
+  assert.deepEqual(seen[0], [
+    "run", "list", "--workflow", "deploy-nonprod.yml", "--branch", "main",
+    "--status", "success", "--json", "headSha", "--limit", "30",
+  ]);
+});
+
+test("parseMergeCommit reads the oid and throws when the PR has none", () => {
+  assert.equal(parseMergeCommit('{"mergeCommit":{"oid":"deadbeef"}}'), "deadbeef");
+  assert.throws(() => parseMergeCommit('{"mergeCommit":null}'), /no merge commit/);
+});
+
+test("prMergeCommit views the PR's merge commit", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return '{"mergeCommit":{"oid":"c0ffee"}}';
+  };
+  assert.equal(await prMergeCommit(run, 42), "c0ffee");
+  assert.deepEqual(seen[0], ["pr", "view", "42", "--json", "mergeCommit"]);
+});
+
+test("compareStatus calls the compare API and trims the status", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return "ahead\n";
+  };
+  assert.equal(await compareStatus(run, { owner: "acme", name: "app" }, "base1", "head1"), "ahead");
+  assert.deepEqual(seen[0], ["api", "repos/acme/app/compare/base1...head1", "--jq", ".status"]);
 });

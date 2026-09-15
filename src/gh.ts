@@ -416,6 +416,39 @@ export async function prDiff(run: GhRunner, prNumber: number): Promise<string> {
   return run(["pr", "diff", String(prNumber)]);
 }
 
+export function parseRunHeadShas(json: string): string[] {
+  return (JSON.parse(json) as { headSha: string }[]).map((r) => r.headSha);
+}
+
+// Head shas of the successful runs of one workflow on one branch, newest first.
+// 30 covers a day of busy deploys; the QA step only needs the most recent one
+// that is at or past a merge commit.
+export async function listSuccessfulRunHeadShas(run: GhRunner, workflow: string, branch: string): Promise<string[]> {
+  return parseRunHeadShas(
+    await run([
+      "run", "list", "--workflow", workflow, "--branch", branch,
+      "--status", "success", "--json", "headSha", "--limit", "30",
+    ]),
+  );
+}
+
+export function parseMergeCommit(json: string): string {
+  const oid = (JSON.parse(json) as { mergeCommit: { oid: string } | null }).mergeCommit?.oid;
+  if (!oid) throw new Error("no merge commit on PR");
+  return oid;
+}
+
+export async function prMergeCommit(run: GhRunner, prNumber: number): Promise<string> {
+  return parseMergeCommit(await run(["pr", "view", String(prNumber), "--json", "mergeCommit"]));
+}
+
+// GitHub's compare status for base...head: "identical", "ahead" (head is a
+// descendant of base), "behind" or "diverged". Works for extra repos too, where
+// the local checkout has no commits to walk.
+export async function compareStatus(run: GhRunner, slug: RepoSlug, base: string, head: string): Promise<string> {
+  return (await run(["api", `repos/${slug.owner}/${slug.name}/compare/${base}...${head}`, "--jq", ".status"])).trim();
+}
+
 export type PrReviewMeta = {
   title: string;
   body: string;

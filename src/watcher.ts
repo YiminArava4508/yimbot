@@ -64,6 +64,8 @@ import {
   type PrReviewDeps,
   reviewOnce,
 } from "./pr-review.ts";
+import { loadQaState, saveQaState } from "./qa-state.ts";
+import { qaOnce, type QaDeps } from "./qa.ts";
 import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
 
@@ -71,6 +73,7 @@ export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
 export const worktreesDir = join(homedir(), "Work/worktrees");
 export const refineScriptPath = join(homedir(), "refine-session.sh");
+export const qaScriptPath = join(homedir(), "qa-session.sh");
 
 // tmux user option + glyph marking a session's feature as ready for the user to
 // run local dev and test. Session-scoped, so it clears for free when the session
@@ -624,6 +627,10 @@ export type WatcherConfig = {
     maxInProgress: number;
     maxRounds: number;
   } | null;
+  // QA step: null disables it (no QA_DEPLOY_WORKFLOW/QA_NONPROD_URL, or gh
+  // unavailable). Everything gh- or Linear-backed lives here; the watcher adds
+  // tmux, spawn, events and the clock.
+  qa: Omit<QaDeps, "hasSession" | "kill" | "spawn" | "now" | "emit" | "log"> | null;
   // gh-backed hooks for the ready step; null disables it (AUTO_READY_LABEL off, or
   // gh unavailable). When set, each heartbeat adds the ready label (autonomous
   // mode only) to a non-draft open PR that has been clean on all three signals
@@ -788,6 +795,22 @@ export function spawnRefineSession(identifier: string): void {
   proc.once("error", (err) => console.error(`[refine] refine-session.sh for '${identifier}' failed: ${err}`));
   proc.once("exit", (code) => {
     if (code !== 0) console.error(`[refine] refine-session.sh for '${identifier}' exited ${code}`);
+  });
+}
+
+// Launch a QA run: qa-session.sh <parent> <nonprod-url> <children> <prs>.
+// Detached and fire-and-forget like the other spawners; a failure is logged
+// and qaOnce sees a missing session next tick and fails the unit.
+export function spawnQaSession(identifier: string, nonprodUrl: string, children: string[], prs: string[]): void {
+  const proc = spawn("bash", [qaScriptPath, identifier, nonprodUrl, children.join(","), prs.join(",")], {
+    detached: true,
+    stdio: "ignore",
+    env: detachedSessionEnv(process.env),
+  });
+  proc.unref();
+  proc.once("error", (err) => console.error(`[qa] qa-session.sh for '${identifier}' failed: ${err}`));
+  proc.once("exit", (code) => {
+    if (code !== 0) console.error(`[qa] qa-session.sh for '${identifier}' exited ${code}`);
   });
 }
 
@@ -1444,6 +1467,21 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: advanceLog,
   };
 
+  const qaLog = (msg: string) => console.log(`[qa] ${msg}`);
+  const qaState = loadQaState();
+  const qaDeps: QaDeps | null = config.qa && {
+    ...config.qa,
+    hasSession: tmuxHasSession,
+    kill: killTmuxSession,
+    spawn: (unit, children, nonprodUrl) => spawnQaSession(unit.identifier, nonprodUrl, children, unit.prs),
+    now: Date.now,
+    emit: (kind, identifier) => {
+      const { key, label } = deriveKey({ identifier });
+      emitStatus({ kind, key, label });
+    },
+    log: qaLog,
+  };
+
   // Ready step (gh-driven): each heartbeat, add the ready-to-merge label to clean
   // open PRs (autonomous mode only; never removed here, and at most once per PR
   // via the latch in readyState, so a removed label stays removed). Independent
@@ -1662,6 +1700,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       // which reattach reuses rather than creates.)
       if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
+      if (qaDeps) {
+        await qaOnce(qaState, qaDeps);
+        saveQaState(qaState);
+      }
       if (readyDeps) await readyOnce(readyState, readyDeps);
       // Refine runs right before claim so an estimate that lands this tick is
       // visible to the claim query on the next one, never mid-selection.

@@ -14,12 +14,15 @@ import {
   addLabel,
   blockedInfo,
   checksInfo,
+  compareStatus,
   ghRunner,
   humanChangesRequested,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
+  listSuccessfulRunHeadShas,
   mergeableInfo,
+  prMergeCommit,
   prState,
   repoSlug,
   type RepoSlug,
@@ -32,6 +35,7 @@ import {
   countAssignedInState,
   fetchMarkedCommentBody,
   fetchIssueByIdentifier,
+  fetchIssueFamily,
   fetchIssueState,
   fetchUsers,
   resolveContext,
@@ -43,6 +47,7 @@ import { setOpenPrKeys } from "./open-prs.ts";
 import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
 import { observeReach } from "./reach.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
+import { QA_MARKER, qaConfigFor } from "./qa.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
 
@@ -346,6 +351,60 @@ export async function startDaemon(): Promise<() => void> {
       : `[yimbot] advance step OFF${autoContinue ? " (gh unavailable)" : ""}`,
   );
 
+  // QA step: once every child of a parent ticket merged and the nonprod deploy
+  // workflow includes the last merge, spawn a session that posts "how to test"
+  // on the parent. Off unless the primary repo's workflow + url are set; gated
+  // on gh like the other post-merge steps.
+  const qaTimeoutMinutes = Number(envOr("QA_SESSION_TIMEOUT_MINUTES", "45"));
+  if (!Number.isFinite(qaTimeoutMinutes) || qaTimeoutMinutes <= 0) {
+    throw new Error("QA_SESSION_TIMEOUT_MINUTES must be a positive number");
+  }
+  const qaPrimary = qaConfigFor(process.env);
+  const deployBranch = envOr("DEFAULT_BRANCH", "main");
+  const ghFor = (repo?: string) => extraRunners.find((r) => r.repo === repo)?.run ?? gh;
+  const slugCache = new Map<string, { owner: string; name: string }>();
+  const slugFor = async (repo?: string) => {
+    if (repo) {
+      const [owner, name] = repo.split("/");
+      return { owner, name };
+    }
+    const cached = slugCache.get("");
+    if (cached) return cached;
+    const slug = await repoSlug(gh);
+    slugCache.set("", slug);
+    return slug;
+  };
+  const qa =
+    qaPrimary && prReview
+      ? {
+          listMergedPRs: async () => prLabelFilter(await listAllMergedPRs()),
+          fetchFamily: (identifier: string) => fetchIssueFamily(apiKey, identifier),
+          fetchState: async (identifier: string) => (await fetchIssueState(apiKey, identifier)).name,
+          clearedStates,
+          configFor: (repo?: string) => qaConfigFor(process.env, repo),
+          mergeCommit: (pr: number, repo?: string) => prMergeCommit(ghFor(repo), pr),
+          deployedHeadShas: (workflow: string, repo?: string) =>
+            listSuccessfulRunHeadShas(ghFor(repo), workflow, deployBranch),
+          isAncestorOrEqual: async (base: string, head: string, repo?: string) => {
+            try {
+              const status = await compareStatus(ghFor(repo), await slugFor(repo), base, head);
+              return status === "identical" || status === "ahead";
+            } catch {
+              return false;
+            }
+          },
+          hasMarker: async (issueId: string) => (await fetchMarkedCommentBody(apiKey, issueId, QA_MARKER)) !== "",
+          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
+          maxInProgress,
+          sessionTimeoutMs: qaTimeoutMinutes * 60_000,
+        }
+      : null;
+  console.log(
+    qa
+      ? `[yimbot] qa step ON: how-to-test comments on parents after nonprod deploy (${qaPrimary!.workflow})`
+      : `[yimbot] qa step OFF${qaPrimary && !prReview ? " (gh unavailable)" : ""}`,
+  );
+
   // Ready step config. AUTO_READY_LABEL is on unless explicitly disabled with a
   // recognized off-value. Gated on the same gh-availability signal as
   // review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
@@ -428,6 +487,7 @@ export async function startDaemon(): Promise<() => void> {
     prReview,
     cleanup,
     advance,
+    qa,
     ready,
     blocked,
     dependencyScan,

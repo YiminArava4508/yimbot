@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, parentRows, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -543,6 +543,41 @@ test("partitionRows splits on the row's section, preserving order", () => {
   assert.deepEqual(tasks.map((r) => r.key), ["ENG-2"]);
 });
 
+test("partitionRows lifts split parents out of tasks into their own pane", () => {
+  const a = row({ key: "ENG-1", status: "tracker ticket" });
+  const b = row({ key: "ENG-2", status: "working" });
+  const c = row({ key: "ENG-3", status: "waiting on slices" });
+  const d = row({ key: "ENG-4", status: "needs decision" });
+  const { tasks, parents, review, merge } = partitionRows([a, b, c, d]);
+  assert.deepEqual(parents.map((r) => r.key), ["ENG-1", "ENG-3"]);
+  assert.deepEqual(tasks.map((r) => r.key), ["ENG-2", "ENG-4"]);
+  assert.deepEqual(review, []);
+  assert.deepEqual(merge, []);
+});
+
+test("parentRows renders one compact line per parent: the ticket, then its title in grey", () => {
+  const a = row({ key: "ENG-1", label: "ENG-1", status: "tracker ticket", title: "Split the thing" });
+  const b = row({ key: "ENG-2", label: "ENG-2", status: "waiting on slices" });
+  const rows = parentRows([a, b]);
+  assert.deepEqual(rows[0], ["PARENTS"]);
+  assert.equal(rows[1][0], "ENG-1 {grey-fg}Split the thing{/grey-fg}");
+  assert.equal(rows[2][0], "ENG-2");
+});
+
+test("parentRows clips a long title to the box's interior", () => {
+  const a = row({ key: "ENG-1", label: "ENG-1", status: "tracker ticket", title: "x".repeat(60) });
+  const cell = parentRows([a])[1][0];
+  assert.ok(cellWidth(cell) <= QUEUE_PANE_WIDTH - 2, `cell is ${cellWidth(cell)} wide`);
+  assert.ok(cell.includes("…"));
+});
+
+test("partitionRows puts a parent in its pane over a section its pre-split PR left behind", () => {
+  const a = row({ key: "ENG-1", status: "waiting on slices", section: "merge", pr: 7 });
+  const { parents, merge } = partitionRows([a]);
+  assert.deepEqual(parents.map((r) => r.key), ["ENG-1"]);
+  assert.deepEqual(merge, []);
+});
+
 test("partitionRows ignores status: a queued PR being fixed stays in the merge pane", () => {
   const a = row({ key: "ENG-1", section: "merge", status: "fixing CI", pr: 13 });
   const b = row({ key: "ENG-2", section: "review", status: "addressing review", pr: 14 });
@@ -594,10 +629,44 @@ test("boardLayout reserves an equal third of the body for every pane", () => {
   assert.deepEqual(l.tasks, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 15 });
 });
 
-test("boardLayout keeps every pane at least one visible row on a tiny screen", () => {
-  const l = boardLayout(10, 200);
-  assert.equal(l.merge.height, 4);
-  assert.equal(l.review.height, 4);
+test("boardLayout keeps the parents box out of the way while it has no rows", () => {
+  const l = boardLayout(24, 200, 0);
+  assert.equal(l.parents, null);
+  assert.equal(l.queue!.bottom, 1);
+  assert.deepEqual(boardLayout(24, 200), l);
+});
+
+test("boardLayout stacks the parents box under the queue, at the queue's width", () => {
+  const l = boardLayout(30, 200, 2);
+  // 2 rows + header + 2 border rows.
+  assert.deepEqual(l.parents, { left: 0, width: QUEUE_PANE_WIDTH, bottom: 1, height: 5 });
+  assert.equal(l.queue!.bottom, 6);
+  // The work panes keep their full thirds: body is 28, a third is 9.
+  assert.equal(l.merge.bottom, 1);
+  assert.equal(l.merge.height, 9);
+  assert.equal(l.review.bottom, 10);
+  assert.equal(l.tasks.bottom, 19);
+});
+
+test("boardLayout caps the parents box at half the body so the queue keeps the rest", () => {
+  const l = boardLayout(42, 200, 30);
+  // Body is 40 rows, half is 20.
+  assert.equal(l.parents!.height, 20);
+  assert.equal(l.queue!.bottom, 21);
+});
+
+test("boardLayout drops the parents box before it squeezes the queue out", () => {
+  // Body is 7: the queue needs 4, leaving 3, short of the 4 a one-row box needs.
+  assert.equal(boardLayout(9, 200, 1).parents, null);
+  assert.equal(boardLayout(9, 200, 1).queue!.bottom, 1);
+  // Body is 8: exactly room for both at their floors.
+  assert.equal(boardLayout(10, 200, 1).parents!.height, 4);
+});
+
+test("boardLayout drops the parents box with the queue on a narrow screen", () => {
+  const l = boardLayout(40, 50, 3);
+  assert.equal(l.queue, null);
+  assert.equal(l.parents, null);
 });
 
 test("boardLayout reserves the left edge for the queue pane", () => {
@@ -629,33 +698,38 @@ test("boardLayout keeps the queue pane spanning the full board height", () => {
 });
 
 test("movePane moves up and down the stack, skipping empty panes", () => {
-  const all: PaneCounts = { tasks: 2, review: 1, merge: 1 };
+  const all: PaneCounts = { tasks: 2, review: 1, merge: 1, parents: 0 };
   assert.equal(movePane("tasks", "down", all), "review");
   assert.equal(movePane("review", "down", all), "merge");
   assert.equal(movePane("merge", "up", all), "review");
   assert.equal(movePane("review", "up", all), "tasks");
+  assert.equal(movePane("merge", "down", { ...all, parents: 1 }), "parents");
+  assert.equal(movePane("parents", "up", { ...all, parents: 1 }), "merge");
   // Edges stay put.
   assert.equal(movePane("tasks", "up", all), "tasks");
   assert.equal(movePane("merge", "down", all), "merge");
   // Empty panes are skipped over, not landed on.
-  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 1 }), "merge");
-  assert.equal(movePane("merge", "up", { tasks: 2, review: 0, merge: 1 }), "tasks");
-  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 0 }), "tasks");
+  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 1, parents: 0 }), "merge");
+  assert.equal(movePane("merge", "up", { tasks: 2, review: 0, merge: 1, parents: 0 }), "tasks");
+  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 0, parents: 0 }), "tasks");
 });
 
 test("nextPane cycles tasks, review, merge and skips empty panes", () => {
-  const all: PaneCounts = { tasks: 1, review: 1, merge: 1 };
+  const all: PaneCounts = { tasks: 1, review: 1, merge: 1, parents: 0 };
   assert.equal(nextPane("tasks", all), "review");
   assert.equal(nextPane("review", all), "merge");
   assert.equal(nextPane("merge", all), "tasks");
-  assert.equal(nextPane("tasks", { tasks: 1, review: 0, merge: 1 }), "merge");
-  assert.equal(nextPane("tasks", { tasks: 1, review: 0, merge: 0 }), "tasks");
+  assert.equal(nextPane("merge", { ...all, parents: 1 }), "parents");
+  assert.equal(nextPane("parents", { ...all, parents: 1 }), "tasks");
+  assert.equal(nextPane("tasks", { tasks: 1, review: 0, merge: 1, parents: 0 }), "merge");
+  assert.equal(nextPane("tasks", { tasks: 1, review: 0, merge: 0, parents: 0 }), "tasks");
 });
 
 test("paneBorderColor gives each pane its own outline and the focus hue to the focused one", () => {
   assert.equal(paneBorderColor("tasks", false), "grey");
   assert.equal(paneBorderColor("review", false), "yellow");
   assert.equal(paneBorderColor("merge", false), "green");
+  assert.equal(paneBorderColor("parents", false), "grey");
   assert.equal(paneBorderColor("review", true), FOCUS_BORDER);
 });
 
@@ -701,12 +775,15 @@ test("selectedBoardRow reads from the focused pane's own selection", () => {
   const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
   const b = row({ key: "ENG-2", status: "working" });
   const c = row({ key: "ENG-3", status: "ready to merge", pr: 13 });
+  const d = row({ key: "ENG-4", status: "tracker ticket" });
   const panes = {
     tasks: { rows: [b], selected: 1 },
     review: { entries: [{ row: a, reason: "" }], selected: 1 },
     merge: { rows: [c], selected: 1 },
+    parents: { rows: [d], selected: 1 },
   };
   assert.equal(selectedBoardRow("review", panes), a);
+  assert.equal(selectedBoardRow("parents", panes), d);
   assert.equal(selectedBoardRow("tasks", panes), b);
   assert.equal(selectedBoardRow("merge", panes), c);
   assert.equal(selectedBoardRow("review", { ...panes, review: { entries: [], selected: 1 } }), undefined);
@@ -716,12 +793,12 @@ test("selectedBoardRow reads from the focused pane's own selection", () => {
 
 
 test("resolvePane forces a pane with rows when the current one is empty", () => {
-  assert.equal(resolvePane("tasks", { tasks: 0, review: 2, merge: 0 }), "review");
-  assert.equal(resolvePane("review", { tasks: 3, review: 0, merge: 0 }), "tasks");
-  assert.equal(resolvePane("merge", { tasks: 0, review: 0, merge: 1 }), "merge");
-  assert.equal(resolvePane("review", { tasks: 2, review: 2, merge: 0 }), "review");
-  assert.equal(resolvePane("tasks", { tasks: 0, review: 0, merge: 2 }), "merge");
-  assert.equal(resolvePane("review", { tasks: 0, review: 0, merge: 0 }), "tasks");
+  assert.equal(resolvePane("tasks", { tasks: 0, review: 2, merge: 0, parents: 0 }), "review");
+  assert.equal(resolvePane("review", { tasks: 3, review: 0, merge: 0, parents: 0 }), "tasks");
+  assert.equal(resolvePane("merge", { tasks: 0, review: 0, merge: 1, parents: 0 }), "merge");
+  assert.equal(resolvePane("review", { tasks: 2, review: 2, merge: 0, parents: 0 }), "review");
+  assert.equal(resolvePane("tasks", { tasks: 0, review: 0, merge: 2, parents: 0 }), "merge");
+  assert.equal(resolvePane("review", { tasks: 0, review: 0, merge: 0, parents: 0 }), "tasks");
 });
 
 test("bindPaneFocusSync tracks blessed focus, so a mouse click that moves focus moves the pane", () => {
@@ -730,8 +807,9 @@ test("bindPaneFocusSync tracks blessed focus, so a mouse click that moves focus 
   const tasks = blessed.listtable({ parent: screen, top: 5, height: 5, keys: true, mouse: true });
   const review = blessed.listtable({ parent: screen, top: 0, height: 5, keys: true, mouse: true });
   const merge = blessed.listtable({ parent: screen, top: 10, height: 5, keys: true, mouse: true });
+  const parents = blessed.listtable({ parent: screen, top: 15, height: 5, keys: true, mouse: true });
   let pane = "tasks";
-  bindPaneFocusSync({ tasks, review, merge }, (p) => { pane = p; });
+  bindPaneFocusSync({ tasks, review, merge, parents }, (p) => { pane = p; });
   review.focus(); // what neo-blessed list.js does on item mousedown
   assert.equal(pane, "review");
   merge.focus();
@@ -747,8 +825,9 @@ test("hidePanesKeepingFocus survives blessed rewinding focus onto a sibling pane
   const tasks = blessed.listtable({ parent: screen, top: 5, height: 5, keys: true, mouse: true });
   const review = blessed.listtable({ parent: screen, top: 0, height: 5, keys: true, mouse: true });
   const merge = blessed.listtable({ parent: screen, top: 10, height: 5, keys: true, mouse: true });
-  const widgets = { tasks, review, merge };
-  let pane: "tasks" | "review" | "merge" = "tasks";
+  const parents = blessed.listtable({ parent: screen, top: 15, height: 5, keys: true, mouse: true });
+  const widgets = { tasks, review, merge, parents };
+  let pane: Pane = "tasks";
   bindPaneFocusSync(widgets, (p) => { pane = p; });
   // Operator visited merge, then came back to tasks: blessed's focus history
   // now holds merge behind tasks, so hiding tasks rewinds focus onto merge.
@@ -881,7 +960,7 @@ test("statusContent says nothing about reachability while every service answers"
 
 test("applyPaneFocusStyle highlights the focused pane's row and nobody else's", () => {
   const pane = () => ({ style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } });
-  const widgets = { tasks: pane(), review: pane(), merge: pane() };
+  const widgets = { tasks: pane(), review: pane(), merge: pane(), parents: pane() };
   applyPaneFocusStyle(widgets, "review");
   assert.equal(widgets.review.style.selected.inverse, true);
   assert.equal(widgets.tasks.style.selected.inverse, false);

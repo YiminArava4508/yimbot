@@ -144,10 +144,6 @@ export function reviewHeader(pr: number, title: string, viewedCount: number, tot
 
 export type ReviewPane = "plan" | "diff" | "claude";
 
-export function nextReviewPane(cur: ReviewPane): ReviewPane {
-  return cur === "plan" ? "diff" : "plan";
-}
-
 export function claudePaneLabel(selected: string | null, contextCount: number): string {
   if (selected === null) return " claude ";
   const ctx = contextCount > 0 ? ` (+${contextCount} in context)` : "";
@@ -161,6 +157,7 @@ export function reviewFooterHint(s: {
   focused: ReviewPane;
   contextCount: number;
   hasSession: boolean;
+  hasClaude: boolean;
 }): string {
   if (!s.loaded) return "loading…   q back";
   if (s.total === 0) return "no changes in this PR   q back";
@@ -169,7 +166,8 @@ export function reviewFooterHint(s: {
   if (s.allViewed) done = "   {green-fg}r ready to merge{/green-fg}";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   const sess = s.hasSession ? "   o session" : "";
-  return `j/k move   space viewed   c context${clear}   tab pane   a claude${done}${sess}   q back`;
+  const ask = s.hasClaude ? "   a claude" : "";
+  return `j/k move   space viewed   c context${clear}   tab pane${ask}${done}${sess}   q back`;
 }
 
 // Same rule as the board's paneBorderColor: the focused pane takes the focus
@@ -524,6 +522,7 @@ export function openReview(
         focused,
         contextCount: contextFiles.size,
         hasSession: ticketSession !== null,
+        hasClaude: hasClaude(),
       });
     }
     footer.setContent(hint);
@@ -622,6 +621,7 @@ export function openReview(
   }
 
   const focusPane = (p: ReviewPane) => {
+    if (p === "claude" && !hasClaude()) return;
     focused = p;
     if (p === "plan") plan.focus();
     else if (p === "diff") diff.focus();
@@ -759,12 +759,11 @@ export function openReview(
     chart.focus();
   });
 
-  // Tab only toggles plan and diff; a is the one way into the claude pane.
-  const focusClaude = () => {
-    if (hasClaude()) focusPane("claude");
-  };
+  // Tab skips the claude pane so typing never lands in the pty by accident.
+  const plainA = (key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) =>
+    key.name === "a" && !key.shift && !key.ctrl && !key.meta;
 
-  plan.on("keypress", (_ch: string, key: { name: string; full?: string; shift?: boolean; ctrl?: boolean }) => {
+  plan.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) => {
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
     else if (key.name === "g" && key.shift) select(files().length - 1);
@@ -773,17 +772,17 @@ export function openReview(
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
-    else if (key.name === "tab") focusPane(nextReviewPane("plan"));
-    else if (key.name === "a" && !key.ctrl) focusClaude();
+    else if (key.name === "tab") focusPane("diff");
+    else if (plainA(key)) focusPane("claude");
     else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "z" && !key.ctrl) setWide(true);
     else if (key.name === "o" && !key.shift) openTicketSession();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
-  diff.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
-    if (key.name === "tab") focusPane(nextReviewPane("diff"));
-    else if (key.name === "a" && !key.ctrl) focusClaude();
+  diff.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) => {
+    if (key.name === "tab") focusPane("plan");
+    else if (plainA(key)) focusPane("claude");
     else if (key.name === "space") toggleViewed();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
@@ -831,9 +830,7 @@ export function openReview(
     if (f) select(files().indexOf(f));
   });
   diff.on("click", () => focusPane("diff"));
-  claude.on("click", () => {
-    if (hasClaude()) focusPane("claude");
-  });
+  claude.on("click", () => focusPane("claude"));
 
   // paint() is where the pty/term get re-fit to the pane, and its other
   // callers only run on plan/diff activity; without this a terminal resize

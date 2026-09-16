@@ -40,6 +40,21 @@ export function placeholderGroups(paths: string[]): ReviewGroups {
   return { summary: "", groups: [{ title: "organizing review…", context: "", files: paths }], notes: {} };
 }
 
+// The file at an absolute planLines index, or null on a group header or out of
+// range. Mirrors planLines' one-header-then-files line order.
+export function fileAtPlanLine(groups: ReviewGroup[], line: number): string | null {
+  let i = 0;
+  for (const g of groups) {
+    if (line === i) return null;
+    i++;
+    for (const f of g.files) {
+      if (line === i) return f;
+      i++;
+    }
+  }
+  return null;
+}
+
 export function planLines(
   groups: ReviewGroup[],
   viewed: Set<string>,
@@ -174,6 +189,7 @@ const paneStyle = () => ({ border: { fg: "grey" }, label: { fg: "grey" } });
 // so the layout test exercises these exact objects. keys+vi on the diff pane
 // gives blessed's own j/k scrolling when it is focused; the plan pane's keys
 // are handled by openReview so headers can be skipped during selection.
+// mouse on the plan and diff panes adds wheel scrolling without needing tab focus.
 export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "claude" | "footer", Record<string, unknown>> {
   return {
     header: { top: 0, left: 0, width: "100%", height: 1, wrap: false, tags: true },
@@ -184,12 +200,12 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
       border: { type: "line" }, label: " guide ", style: paneStyle(),
     },
     plan: {
-      top: 6, left: 0, width: "25%", bottom: 1, tags: true,
+      top: 6, left: 0, width: "25%", bottom: 1, tags: true, mouse: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " review plan ", style: paneStyle(),
     },
     diff: {
-      top: 6, left: "25%", width: "45%", bottom: 1, tags: true, keys: true, vi: true,
+      top: 6, left: "25%", width: "45%", bottom: 1, tags: true, keys: true, vi: true, mouse: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " diff ", style: paneStyle(),
       scrollbar: { ch: " ", style: { inverse: true } },
@@ -299,6 +315,10 @@ export function openReview(
   let userSelected = false;
   let focused: ReviewPane = "plan";
   let diffLoaded = false;
+  // Last plan line scrolled to: paint() re-runs on async loads (meta, diff,
+  // grouping), and an unconditional scrollTo there would snap the plan back
+  // mid-wheel-scroll; only an actual selection move re-scrolls.
+  let lastPlanScroll = -1;
   let usedFallback = false;
   let readying = false;
   // Guards late async resolutions (grouping, markReady) after close, same as
@@ -385,7 +405,10 @@ export function openReview(
     header.setContent(reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length));
     const { lines, selectedLine } = planLines(g.groups, viewed, contextFiles, selectedPath);
     plan.setContent(lines.join("\n"));
-    if (selectedLine >= 0) plan.scrollTo(selectedLine);
+    if (selectedLine >= 0 && selectedLine !== lastPlanScroll) {
+      plan.scrollTo(selectedLine);
+      lastPlanScroll = selectedLine;
+    }
     const fd = fileDiffs.find((f) => f.path === selectedPath) ?? null;
     const gl = guideLines({
       summary: g.summary,
@@ -734,7 +757,14 @@ export function openReview(
     session.pty.write(key.sequence ?? ch ?? "");
   });
 
-  plan.on("click", () => focusPane("plan"));
+  // A click on a plan row selects that file as well as focusing the pane, so
+  // space marks the file the operator is looking at.
+  plan.on("click", (data: { y: number }) => {
+    focusPane("plan");
+    const line = data.y - plan.atop - plan.itop + plan.childBase;
+    const f = fileAtPlanLine(currentGroups().groups, line);
+    if (f) select(files().indexOf(f));
+  });
   diff.on("click", () => focusPane("diff"));
   claude.on("click", () => {
     if (hasClaude()) focusPane("claude");

@@ -10,6 +10,7 @@ import { DIM_TAG, FOCUS_BORDER } from "./arch-layout.ts";
 import {
   claudePaneLabel,
   diffPaneLines,
+  fileAtPlanLine,
   flattenFiles,
   flowFooterHint,
   flowLayout,
@@ -82,6 +83,16 @@ test("planLines marks context files with a magenta +, combined with the viewed c
 
 test("planLines returns selectedLine -1 when nothing is selected", () => {
   assert.equal(planLines(GROUPS, new Set(), new Set(), null).selectedLine, -1);
+});
+
+test("fileAtPlanLine maps plan lines to files and headers/out-of-range to null", () => {
+  assert.equal(fileAtPlanLine(GROUPS, 0), null);
+  assert.equal(fileAtPlanLine(GROUPS, 1), "src/a.ts");
+  assert.equal(fileAtPlanLine(GROUPS, 2), "src/b.ts");
+  assert.equal(fileAtPlanLine(GROUPS, 3), null);
+  assert.equal(fileAtPlanLine(GROUPS, 4), "src/a.test.ts");
+  assert.equal(fileAtPlanLine(GROUPS, 5), null);
+  assert.equal(fileAtPlanLine(GROUPS, -1), null);
 });
 
 test("diffPaneLines renders just the diff, guidance lives in the guide band", () => {
@@ -240,6 +251,14 @@ test("reviewLayout pins the panes: guide band on top, plan/diff/claude as thirds
   assert.equal(l.diff.width, "45%");
   assert.equal(l.header.height, 1);
   assert.equal(l.footer.bottom, 0);
+});
+
+test("reviewLayout makes the plan and diff panes wheel-scrollable", () => {
+  const l = reviewLayout();
+  assert.equal(l.plan.mouse, true);
+  assert.equal(l.plan.scrollable, true);
+  assert.equal(l.diff.mouse, true);
+  assert.equal(l.diff.scrollable, true);
 });
 
 test("reviewLayout gives the panes resting grey borders and labels like the board", () => {
@@ -694,6 +713,22 @@ test("openReview: space in the diff pane marks the file viewed and saves", async
   assert.deepEqual(deps.saved[0], ["sha1", new Set(["src/b.ts"])]);
   const plan = screen.children.find((c: any) => c.options.label === " review plan ");
   assert.ok(plan.getContent().includes("✓"));
+  screen.destroy();
+});
+
+test("openReview: clicking a plan row selects that file so space marks the right one", async () => {
+  const screen = makeScreen();
+  const deps = testDeps();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  const plan = screen.children.find((c: any) => c.options.label === " review plan ");
+  // AI order: header line, src/b.ts, src/a.ts; click the src/a.ts row.
+  plan.emit("click", { y: plan.atop + plan.itop + 2 });
+  press(screen, "space");
+  await flush();
+  assert.equal(deps.saved.length, 1);
+  assert.deepEqual(deps.saved[0], ["sha1", new Set(["src/a.ts"])]);
   screen.destroy();
 });
 

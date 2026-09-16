@@ -128,6 +128,7 @@ test("statusFor maps kinds; only merged is terminal", () => {
   assert.deepEqual(statusFor("review_unresolved"), { status: "unresolved threads", terminal: false });
   assert.deepEqual(statusFor("ready_to_merge"), { status: "ready to merge", terminal: false });
   assert.deepEqual(statusFor("draft_pr"), { status: "draft pr", terminal: false });
+  assert.deepEqual(statusFor("ready_unqueued"), { status: "ready: r to queue", terminal: false });
   assert.deepEqual(statusFor("ready_regressed"), { status: "working", terminal: false });
   assert.deepEqual(statusFor("awaiting_slices"), { status: "waiting on slices", terminal: false });
   assert.deepEqual(statusFor("tracking"), { status: "tracker ticket", terminal: false });

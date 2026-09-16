@@ -15,6 +15,7 @@ export type EventKind =
   | "review_unresolved"
   | "ready_to_merge"
   | "draft_pr"
+  | "ready_unqueued"
   | "ready_regressed"
   | "awaiting_slices"
   | "tracking"
@@ -154,6 +155,7 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   review_unresolved: { status: "unresolved threads", terminal: false },
   ready_to_merge: { status: "ready to merge", terminal: false },
   draft_pr: { status: "draft pr", terminal: false },
+  ready_unqueued: { status: "ready: r to queue", terminal: false },
   ready_regressed: { status: "working", terminal: false },
   awaiting_slices: { status: "waiting on slices", terminal: false },
   tracking: { status: "tracker ticket", terminal: false },

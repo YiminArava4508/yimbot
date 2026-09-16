@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
-import { boardReadyToMerge, boardSection, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
+import { boardReadyToMerge, boardSection, boardReadyKind, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 
 const LABEL = "ready-to-merge";
 
@@ -567,6 +567,21 @@ test("boardSection: a labeled non-draft belongs to the merge pane", () => {
 
 test("boardSection: everything else belongs to the tasks pane", () => {
   assert.equal(boardSection(false, false), "tasks");
+});
+
+test("boardReadyKind: a draft says draft pr whatever the label or mode", () => {
+  assert.equal(boardReadyKind(true, false, "supervised"), "draft_pr");
+  assert.equal(boardReadyKind(true, true, "autonomous"), "draft_pr");
+});
+
+test("boardReadyKind: a labeled PR is ready to merge in both modes", () => {
+  assert.equal(boardReadyKind(false, true, "supervised"), "ready_to_merge");
+  assert.equal(boardReadyKind(false, true, "autonomous"), "ready_to_merge");
+});
+
+test("boardReadyKind: an unlabeled ready PR prompts the human only in supervised mode", () => {
+  assert.equal(boardReadyKind(false, false, "supervised"), "ready_unqueued");
+  assert.equal(boardReadyKind(false, false, "autonomous"), "ready_to_merge");
 });
 
 test("readyOnce reports each open PR's section", async () => {

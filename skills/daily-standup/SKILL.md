@@ -24,7 +24,7 @@ board still lists them; drop silently, the message stays clean.
 
    ```bash
    jq -s '[.[] | select(.kind | IN("task_started","review_started","ci_fix_started",
-     "conflict_fix_started","blocked_fix_started","ready_to_merge","draft_pr",
+     "conflict_fix_started","blocked_fix_started","ready_to_merge","ready_unqueued","draft_pr",
      "ready_regressed","merged","refined","needs_decision","review_findings"))]
      | group_by(.key) | map(last)
      | map(select(.kind | IN("merged","refined") | not))' events.jsonl
@@ -95,7 +95,7 @@ branches, or merge queues in the message.
 | Board status (after the live-PR check) | Say |
 |---|---|
 | merged (verified `state: MERGED`) | shipped |
-| ready to merge / in merge queue | landing today |
+| ready to merge / ready: r to queue / in merge queue | landing today |
 | addressing review / review findings | in review, addressing feedback |
 | fixing CI / resolving conflict / blocked_fix | in final review, fixing test failures |
 | draft pr | in final review |

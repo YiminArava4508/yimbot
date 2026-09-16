@@ -1,4 +1,4 @@
-import type { Section } from "./events.ts";
+import type { EventKind, Section } from "./events.ts";
 import type { ChecksInfo, MergeableInfo, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import type { Mode } from "./mode.ts";
 
@@ -105,6 +105,16 @@ export function freshReadyState(): ReadyState {
 // last fix status that touched the row.
 export function boardReadyToMerge(verdict: ReadyVerdict, hasLabel: boolean): boolean {
   return verdict === "ready" || (verdict === "hold" && hasLabel);
+}
+
+// The status a PR that passed boardReadyToMerge should show. A draft cannot
+// merge whatever its labels say. An unlabeled ready PR in supervised mode is
+// waiting on a human to queue it, so the row says so instead of reading like a
+// queued one; autonomous labels it itself after the soak, so no prompt there.
+export function boardReadyKind(isDraft: boolean, hasLabel: boolean, mode: Mode): EventKind {
+  if (isDraft) return "draft_pr";
+  if (!hasLabel && mode === "supervised") return "ready_unqueued";
+  return "ready_to_merge";
 }
 
 // Which pane a PR's row belongs in. Deliberately not derived from the verdict:

@@ -53,7 +53,7 @@ import {
   type TicketState,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
-import { boardReadyToMerge, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
+import { boardReadyKind, boardReadyToMerge, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 import {
   blockedSessionName,
   ciSessionName,
@@ -1523,7 +1523,9 @@ export function startWatcher(config: WatcherConfig): () => void {
   // regresses is still fixed and simply keeps its label while the fixers work.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
   const isReadyClaim = (status: string | undefined) =>
-    status === statusFor("ready_to_merge")?.status || status === statusFor("draft_pr")?.status;
+    status === statusFor("ready_to_merge")?.status ||
+    status === statusFor("ready_unqueued")?.status ||
+    status === statusFor("draft_pr")?.status;
   const readyState = freshReadyState();
   // Rebuilt from scratch by listOpenPRs each tick, before addLabel runs (see
   // readyOnce), so the wraps below can key events by branch like every
@@ -1575,7 +1577,7 @@ export function startWatcher(config: WatcherConfig): () => void {
         }
         return;
       }
-      emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n, repo: k.repo });
+      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode()), key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     // Where the row sits, reported separately from its status so a queued PR
     // stays in the merge pane while its status walks through a CI fix or a

@@ -7,6 +7,7 @@ import { tempDir } from "./test-temp.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { filterByLabel, parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
+import type { QaPhase, QaUnit } from "./qa-state.ts";
 import {
   bindReturnKey,
   buildSessionName,
@@ -27,6 +28,7 @@ import {
   hasSessionForWorktree,
   isLaunchMarkerActive,
   liveQaKeys,
+  QA_SESSION_RE,
   liveRefineKeys,
   manuallyLiveKeys,
   qaScriptPath,
@@ -628,8 +630,36 @@ test("liveRefineKeys maps refine sessions to board keys", () => {
 });
 
 test("liveQaKeys maps qa sessions to board keys", () => {
-  const keys = liveQaKeys(["qa-eng-90", "eng-12-some-ticket", "refine-sc-4", "qa-sc-7"]);
+  const keys = liveQaKeys(["qa-eng-90", "eng-12-some-ticket", "refine-sc-4", "qa-sc-7", "qa-123-title"], []);
   assert.deepEqual(keys, new Set(["ENG-90", "SC-7"]));
+});
+
+test("liveQaKeys keeps pre-session units and drops terminal ones", () => {
+  const unit = (identifier: string, phase: QaPhase): QaUnit => ({
+    identifier,
+    id: `id-${identifier}`,
+    phase,
+    lastPr: 1,
+    prs: [],
+  });
+  const keys = liveQaKeys(
+    [],
+    [
+      unit("ENG-90", "awaiting-deploy"),
+      unit("ENG-91", "waiting-children"),
+      unit("ENG-92", "in-session"),
+      unit("ENG-93", "posted"),
+      unit("ENG-94", "failed"),
+    ],
+  );
+  assert.deepEqual(keys, new Set(["ENG-90", "ENG-91", "ENG-92"]));
+});
+
+test("QA_SESSION_RE matches only qa session names", () => {
+  assert.equal(QA_SESSION_RE.test("qa-eng-90"), true);
+  assert.equal(QA_SESSION_RE.test("qa-123-title"), false);
+  assert.equal(QA_SESSION_RE.test("refine-eng-90"), false);
+  assert.equal(QA_SESSION_RE.test("eng-90-qa"), false);
 });
 
 test("qaSessionArgs builds the qa-session.sh argv", () => {

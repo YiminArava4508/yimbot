@@ -64,7 +64,7 @@ import {
   type PrReviewDeps,
   reviewOnce,
 } from "./pr-review.ts";
-import { freshQaState, loadQaState, saveQaState } from "./qa-state.ts";
+import { freshQaState, loadQaState, type QaPhase, type QaUnit, saveQaState } from "./qa-state.ts";
 import { qaOnce, type QaDeps } from "./qa.ts";
 import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
@@ -1101,14 +1101,25 @@ export function liveRefineKeys(sessions: string[]): Set<string> {
   return keys;
 }
 
-// Board keys of live QA sessions. Same story as refine: a QA unit is a parent
-// ticket with no worktree and no PR of its own, so without this its rows are
-// filtered off the board.
-export function liveQaKeys(sessions: string[]): Set<string> {
+// A QA session name, strictly. A Linear team keyed `QA` gives dev sessions like
+// `qa-123-title`, which a `qa-` prefix test would mistake for QA work.
+export const QA_SESSION_RE = /^qa-[a-z]+-\d+$/;
+
+const LIVE_QA_PHASES: ReadonlySet<QaPhase> = new Set(["waiting-children", "awaiting-deploy", "in-session"]);
+
+// Board keys of QA units still in flight. Same story as refine: a QA unit is a
+// parent ticket with no worktree and no PR of its own, so without this its rows
+// are filtered off the board. Sessions alone are not enough, since a unit waiting
+// on children or on a deploy has no session yet.
+export function liveQaKeys(sessions: string[], units: Iterable<QaUnit>): Set<string> {
   const keys = new Set<string>();
   for (const s of sessions) {
-    if (!s.startsWith("qa-")) continue;
+    if (!QA_SESSION_RE.test(s)) continue;
     keys.add(deriveKey({ identifier: s.slice("qa-".length) }).key);
+  }
+  for (const u of units) {
+    if (!LIVE_QA_PHASES.has(u.phase)) continue;
+    keys.add(deriveKey({ identifier: u.identifier }).key);
   }
   return keys;
 }
@@ -1419,8 +1430,9 @@ export function startWatcher(config: WatcherConfig): () => void {
     // follow-up or stacked PR shares its row key, so a key is only marked merged
     // once no open PR maps to it.
     reconcileMerged: (merged, open) => {
+      const events = readEvents();
       const active = new Set(
-        reduceRows(readEvents(), Date.now())
+        reduceRows(events, Date.now())
           .filter((r) => !r.terminal)
           .map((r) => r.key),
       );
@@ -1429,7 +1441,7 @@ export function startWatcher(config: WatcherConfig): () => void {
         // A unit that is its own ticket has a merged PR the whole time QA runs,
         // so without this the row flips between `merged` and its qa status every
         // tick. The QA step owns the row until it posts or fails.
-        if (currentStatus(k.key)?.startsWith("qa")) continue;
+        if (currentStatus(k.key, events)?.startsWith("qa")) continue;
         emitStatus({ kind: "merged", key: k.key, label: k.label });
       }
     },
@@ -1495,7 +1507,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     hasSession: tmuxHasSession,
     kill: killTmuxSession,
     spawn: (unit, children, nonprodUrl) => spawnQaSession(unit.identifier, nonprodUrl, children, unit.prs),
-    liveQaSessions: () => listTmuxSessions().filter((n) => n.startsWith("qa-")).length,
+    liveQaSessions: () => listTmuxSessions().filter((n) => QA_SESSION_RE.test(n)).length,
     now: Date.now,
     emit: (kind, identifier) => {
       const { key, label } = deriveKey({ identifier });

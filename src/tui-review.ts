@@ -144,10 +144,8 @@ export function reviewHeader(pr: number, title: string, viewedCount: number, tot
 
 export type ReviewPane = "plan" | "diff" | "claude";
 
-export function nextReviewPane(cur: ReviewPane, hasClaude: boolean): ReviewPane {
-  if (cur === "plan") return "diff";
-  if (cur === "diff" && hasClaude) return "claude";
-  return "plan";
+export function nextReviewPane(cur: ReviewPane): ReviewPane {
+  return cur === "plan" ? "diff" : "plan";
 }
 
 export function claudePaneLabel(selected: string | null, contextCount: number): string {
@@ -171,8 +169,7 @@ export function reviewFooterHint(s: {
   if (s.allViewed) done = "   {green-fg}r ready to merge{/green-fg}";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   const sess = s.hasSession ? "   o session" : "";
-  if (s.focused === "diff") return `j/k scroll   space viewed   c context${clear}   tab claude   1/2/3 pane${done}${sess}   q back`;
-  return `j/k file   space viewed   c context${clear}   g/G first/last   tab diff   1/2/3 pane${done}${sess}   q back`;
+  return `j/k move   space viewed   c context${clear}   tab pane   a claude${done}${sess}   q back`;
 }
 
 // Same rule as the board's paneBorderColor: the focused pane takes the focus
@@ -762,19 +759,12 @@ export function openReview(
     chart.focus();
   });
 
-  // Direct pane jumps; matched on ch because blessed leaves key.name unset
-  // for digit keys. The claude pane never sees these: its keypress forwards
-  // everything to the pty.
-  const jumpPane = (ch: string): boolean => {
-    if (ch === "1") focusPane("plan");
-    else if (ch === "2") focusPane("diff");
-    else if (ch === "3" && hasClaude()) focusPane("claude");
-    else return false;
-    return true;
+  // Tab only toggles plan and diff; a is the one way into the claude pane.
+  const focusClaude = () => {
+    if (hasClaude()) focusPane("claude");
   };
 
-  plan.on("keypress", (ch: string, key: { name: string; full?: string; shift?: boolean; ctrl?: boolean }) => {
-    if (jumpPane(ch)) return;
+  plan.on("keypress", (_ch: string, key: { name: string; full?: string; shift?: boolean; ctrl?: boolean }) => {
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
     else if (key.name === "g" && key.shift) select(files().length - 1);
@@ -783,16 +773,17 @@ export function openReview(
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
-    else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
+    else if (key.name === "tab") focusPane(nextReviewPane("plan"));
+    else if (key.name === "a" && !key.ctrl) focusClaude();
     else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "z" && !key.ctrl) setWide(true);
     else if (key.name === "o" && !key.shift) openTicketSession();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
-  diff.on("keypress", (ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
-    if (jumpPane(ch)) return;
-    if (key.name === "tab") focusPane(nextReviewPane("diff", hasClaude()));
+  diff.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
+    if (key.name === "tab") focusPane(nextReviewPane("diff"));
+    else if (key.name === "a" && !key.ctrl) focusClaude();
     else if (key.name === "space") toggleViewed();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();

@@ -320,9 +320,7 @@ tasks. So a queued PR whose CI breaks stays in ready-to-merge and its status
 reads **CI failing**, then **fixing CI** once the fix window opens. The row
 moves only when the label comes off (which is what Aviator does when it blocks
 a PR). All three panes share one set of columns, in
-one order, on one grid, so a row reads the same wherever it sits; the `WHY`
-column carries the ready-to-review pane's ordering rationale and is blank in the
-other two.
+one order, on one grid, so a row reads the same wherever it sits.
 
 Press `s` for the settings screen: every value `pnpm onboard` asks about, shown
 with the team, the assignee the API key resolves to, the three workflow states,

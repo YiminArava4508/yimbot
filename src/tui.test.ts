@@ -22,7 +22,7 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
 
 test("every pane shares one header, in one order", () => {
   assert.deepEqual(BOARD_HEADER, [
-    "TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON", "WHY",
+    "TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON",
   ]);
   assert.deepEqual(boardTable([])[0], BOARD_HEADER);
 });
@@ -82,11 +82,10 @@ test("boardTable dims a terminal row's status", () => {
   assert.equal(body[2], "{grey-fg}merged{/grey-fg}");
 });
 
-test("boardTable puts the review pane's ordering rationale in WHY, blank elsewhere", () => {
-  const [, why] = boardTable([{ row: row({ pr: 11 }), why: "base of the stack" }], 0);
-  assert.equal(why[9], "base of the stack");
-  const [, plain] = boardTable([{ row: row({}) }], 0);
-  assert.equal(plain[9], "");
+test("boardTable has no column past REASON", () => {
+  const [, body] = boardTable([{ row: row({ pr: 11 }) }], 0);
+  assert.equal(body.length, BOARD_HEADER.length);
+  assert.equal(body.at(-1), "");
 });
 
 test("fmtDuration formats seconds, minutes, and hours", () => {
@@ -820,7 +819,7 @@ test("the three panes render their columns on identical offsets", () => {
   const panes = [make(0), make(6), make(12)];
   const data = alignTables([
     boardTable([{ row: row({ label: "ENG-1", status: "resolving conflict", title: "a much longer branch title" }) }], 0),
-    boardTable([{ row: row({ label: "SC-22", pr: 4712, status: "draft pr" }), why: "base of the stack" }], 0),
+    boardTable([{ row: row({ label: "SC-22", pr: 4712, status: "draft pr" }) }], 0),
     boardTable([], 0),
   ]);
   panes.forEach((p, i) => p.setData(data[i]));

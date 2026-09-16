@@ -130,23 +130,34 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
   return [...ordered, ...unranked];
 }
 
-// The board's geometry: four full-width bordered panes stacked top to
-// bottom -- tasks, ready to review, ready to merge, parent tickets. The parents
-// pane sits at the foot and takes only what its rows need (header + 2 border
-// rows), capped at a quarter of the body and gone entirely while empty: those
-// rows are context, and the space is the work panes'. The three work panes
-// each keep an equal third of what remains (tasks takes the remainder) whether
-// or not they have rows, so they never jump around as PRs move between them.
-// The floor of 4 keeps one data row visible on a tiny screen.
+// The board's geometry: three full-width bordered panes stacked top to
+// bottom -- tasks, ready to review, ready to merge. Each keeps an equal third
+// of the body (tasks takes the remainder) whether or not it has rows, so the
+// panes never jump around as PRs move between them. The floor of 4 keeps one
+// data row visible (header + 2 border rows) on a tiny screen.
 //
 // Below this the board's nine columns no longer fit beside the queue, so the
 // queue gives way rather than squeezing the rows it exists to annotate. The
 // queue holds the left edge and the board panes inset past it.
+//
+// The parent tickets box shares the queue's column, stacked under it at the
+// queue's width. It takes only what its rows need, capped at half the body so
+// the queue keeps the rest, and is gone entirely while empty or whenever the
+// queue is: those rows are context, and the board's width is the work's.
 const QUEUE_MIN_SCREEN_WIDTH = 80;
 
 // Header row plus the two border rows; a pane needs one more to show a row.
 const PANE_CHROME_ROWS = 3;
 const PANE_MIN_HEIGHT = PANE_CHROME_ROWS + 1;
+
+export type ParentsBox = { left: number; width: number; bottom: number; height: number };
+
+function parentsBoxHeight(body: number, parentRows: number): number {
+  if (parentRows === 0) return 0;
+  const cap = Math.min(Math.floor(body / 2), body - PANE_MIN_HEIGHT);
+  if (cap < PANE_MIN_HEIGHT) return 0;
+  return Math.min(parentRows + PANE_CHROME_ROWS, cap);
+}
 
 export function boardLayout(
   screenHeight: number,
@@ -156,27 +167,23 @@ export function boardLayout(
   tasks: { top: number; left: number; right: number; bottom: number };
   review: { left: number; right: number; bottom: number; height: number };
   merge: { left: number; right: number; bottom: number; height: number };
-  parents: { left: number; right: number; bottom: number; height: number };
+  parents: ParentsBox | null;
   queue: { top: number; left: number; width: number; bottom: number } | null;
 } {
   const footerRows = 1;
   const titleRows = 1;
   const body = screenHeight - titleRows - footerRows;
-  // Never below what the three work panes need at their floor, so a short
-  // terminal squeezes the parents pane away before it squeezes the work.
-  const parentsCap = Math.min(Math.floor(body / 4), body - 3 * PANE_MIN_HEIGHT);
-  const parentsFit = parentRows > 0 && parentsCap >= PANE_MIN_HEIGHT;
-  const parentsHeight = parentsFit ? Math.min(parentRows + PANE_CHROME_ROWS, parentsCap) : 0;
-  const third = Math.max(PANE_MIN_HEIGHT, Math.floor((body - parentsHeight) / 3));
+  const third = Math.max(PANE_MIN_HEIGHT, Math.floor(body / 3));
   const showQueue = screenWidth >= QUEUE_MIN_SCREEN_WIDTH;
   const inset = showQueue ? QUEUE_PANE_WIDTH : 0;
-  const mergeBottom = footerRows + parentsHeight;
+  const parentsHeight = showQueue ? parentsBoxHeight(body, parentRows) : 0;
   return {
-    tasks: { top: titleRows, left: inset, right: 0, bottom: mergeBottom + 2 * third },
-    review: { left: inset, right: 0, bottom: mergeBottom + third, height: third },
-    merge: { left: inset, right: 0, bottom: mergeBottom, height: third },
-    parents: { left: inset, right: 0, bottom: footerRows, height: parentsHeight },
-    queue: showQueue ? { top: titleRows, left: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows } : null,
+    tasks: { top: titleRows, left: inset, right: 0, bottom: footerRows + 2 * third },
+    review: { left: inset, right: 0, bottom: footerRows + third, height: third },
+    merge: { left: inset, right: 0, bottom: footerRows, height: third },
+    parents:
+      parentsHeight > 0 ? { left: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows, height: parentsHeight } : null,
+    queue: showQueue ? { top: titleRows, left: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows + parentsHeight } : null,
   };
 }
 
@@ -458,6 +465,31 @@ export function boardTable(
   return [BOARD_HEADER, ...body];
 }
 
+// The parent tickets box is the queue's width, far too narrow for the board's
+// nine columns, so each parent gets one line: the ticket, then whatever of the
+// title fits in grey. The status is implied by the box.
+export function parentRows(rows: BoardRow[]): string[][] {
+  const room = QUEUE_PANE_WIDTH - 2;
+  const body = rows.map((r) => {
+    const label = fitCell(r.label, room);
+    const titleRoom = room - cellWidth(label) - 1;
+    const title = r.title ? fitCell(r.title, titleRoom) : "";
+    return [title ? `${label} {grey-fg}${title}{/grey-fg}` : label];
+  });
+  return [["PARENTS"], ...body];
+}
+
+function fitCell(text: string, room: number): string {
+  if (room <= 0) return "";
+  if (cellWidth(text) <= room) return text;
+  let out = "";
+  for (const ch of text) {
+    if (cellWidth(out + ch) > room - 1) break;
+    out += ch;
+  }
+  return `${out}…`;
+}
+
 // A cell's on-screen width, measured through blessed's own helpers rather than
 // reimplemented: Element.strWidth strips tags and then, under fullUnicode,
 // counts display columns (a CJK title is two per character, a combining mark
@@ -631,7 +663,7 @@ export function runTui(opts: {
   const tasksPane = makePane("tasks", { top: 1, left: 0, right: 0, bottom: 1 });
   const reviewPane = makePane("review", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
   const mergePane = makePane("merge", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
-  const parentsPane = makePane("parents", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
+  const parentsPane = makePane("parents", { left: 0, width: QUEUE_PANE_WIDTH, bottom: 1, height: 4, hidden: true });
   const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane, parents: parentsPane };
   tasksPane.focus();
 
@@ -682,7 +714,13 @@ export function runTui(opts: {
       opts.liveKeys(),
       opts.openPrKeys(),
     );
-    const { review, merge, tasks, parents } = partitionRows(currentRows);
+    const split = partitionRows(currentRows);
+    const layout = boardLayout(Number(screen.rows) || 24, Number(screen.cols) || 80, split.parents.length);
+    // No room for the box (narrow screen, short screen): the parents go back
+    // to the tasks pane rather than off the board.
+    const parents = layout.parents ? split.parents : [];
+    const tasks = layout.parents ? split.tasks : [...split.tasks, ...split.parents];
+    const { review, merge } = split;
     const withPr = review.filter((r): r is BoardRow & { pr: number } => r.pr != null);
     orderFetcher.ensure(
       withPr.map((r) => r.pr),
@@ -693,12 +731,10 @@ export function runTui(opts: {
     currentMerge = merge;
     currentParents = parents;
     const now = Date.now();
-    const layout = boardLayout(Number(screen.rows) || 24, Number(screen.cols) || 80, parents.length);
-    const [tasksData, reviewData, mergeData, parentsData] = alignTables([
+    const [tasksData, reviewData, mergeData] = alignTables([
       boardTable(tasks.map((row) => ({ row })), now),
       boardTable(currentReview.map((e) => ({ row: e.row })), now),
       boardTable(merge.map((row) => ({ row })), now),
-      boardTable(parents.map((row) => ({ row })), now),
     ]);
     tasksPane.bottom = layout.tasks.bottom;
     tasksPane.setLabel(` tasks (${tasks.length}) `);
@@ -711,17 +747,18 @@ export function runTui(opts: {
     mergePane.bottom = layout.merge.bottom;
     mergePane.setLabel(` ready to merge (${merge.length}) `);
     mergePane.setData(mergeData);
-    parentsPane.height = layout.parents.height;
-    parentsPane.bottom = layout.parents.bottom;
-    parentsPane.setLabel(` parent tickets (${parents.length}) `);
-    parentsPane.setData(parentsData);
+    if (layout.parents) {
+      parentsPane.height = layout.parents.height;
+      parentsPane.setLabel(` parent tickets (${parents.length}) `);
+      parentsPane.setData(parentRows(parents));
+    }
     tasksPane.left = layout.tasks.left;
     reviewPane.left = layout.review.left;
     mergePane.left = layout.merge.left;
-    parentsPane.left = layout.parents.left;
     // Skip the read while an overlay hides the pane: it reaps tickets, so
     // polling it here would write state nobody can see.
     if (layout.queue && !isOverlayOpen()) {
+      queuePane.bottom = layout.queue.bottom;
       queuePane.setData(queueRows(readQueueState()));
       queuePane.show();
     } else {
@@ -729,14 +766,14 @@ export function runTui(opts: {
     }
     // While an overlay is open every pane stays hidden (the overlay owns
     // the screen); the close callback re-renders, which shows them again.
-    // The parents pane has no reserved space, so empty means hidden. Hiding
+    // The parents box has no reserved space, so no rows means hidden. Hiding
     // it while focused makes blessed rewind focus onto a history pane, which
     // the focus sync would record; keep the operator's pane so resolvePane
     // below picks the fallback deterministically instead.
     if (!isOverlayOpen()) {
       reviewPane.show();
       mergePane.show();
-      if (parents.length > 0) {
+      if (layout.parents) {
         parentsPane.show();
       } else {
         const keep = focusedPane;

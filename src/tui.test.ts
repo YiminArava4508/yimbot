@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, parentRows, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -555,6 +555,22 @@ test("partitionRows lifts split parents out of tasks into their own pane", () =>
   assert.deepEqual(merge, []);
 });
 
+test("parentRows renders one compact line per parent: the ticket, then its title in grey", () => {
+  const a = row({ key: "ENG-1", label: "ENG-1", status: "tracker ticket", title: "Split the thing" });
+  const b = row({ key: "ENG-2", label: "ENG-2", status: "waiting on slices" });
+  const rows = parentRows([a, b]);
+  assert.deepEqual(rows[0], ["PARENTS"]);
+  assert.equal(rows[1][0], "ENG-1 {grey-fg}Split the thing{/grey-fg}");
+  assert.equal(rows[2][0], "ENG-2");
+});
+
+test("parentRows clips a long title to the box's interior", () => {
+  const a = row({ key: "ENG-1", label: "ENG-1", status: "tracker ticket", title: "x".repeat(60) });
+  const cell = parentRows([a])[1][0];
+  assert.ok(cellWidth(cell) <= QUEUE_PANE_WIDTH - 2, `cell is ${cellWidth(cell)} wide`);
+  assert.ok(cell.includes("…"));
+});
+
 test("partitionRows puts a parent in its pane over a section its pre-split PR left behind", () => {
   const a = row({ key: "ENG-1", status: "waiting on slices", section: "merge", pr: 7 });
   const { parents, merge } = partitionRows([a]);
@@ -613,51 +629,44 @@ test("boardLayout reserves an equal third of the body for every pane", () => {
   assert.deepEqual(l.tasks, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 15 });
 });
 
-test("boardLayout gives the parents pane no room while it has no rows", () => {
+test("boardLayout keeps the parents box out of the way while it has no rows", () => {
   const l = boardLayout(24, 200, 0);
-  assert.equal(l.parents.height, 0);
-  assert.equal(l.merge.bottom, 1);
+  assert.equal(l.parents, null);
+  assert.equal(l.queue!.bottom, 1);
   assert.deepEqual(boardLayout(24, 200), l);
 });
 
-test("boardLayout sizes the parents pane to its rows and lifts the other panes above it", () => {
+test("boardLayout stacks the parents box under the queue, at the queue's width", () => {
   const l = boardLayout(30, 200, 2);
   // 2 rows + header + 2 border rows.
-  assert.equal(l.parents.height, 5);
-  assert.equal(l.parents.bottom, 1);
-  assert.equal(l.parents.left, QUEUE_PANE_WIDTH);
-  // Body is 28 rows, 23 remain above the parents pane, a third is 7.
-  assert.equal(l.merge.bottom, 6);
-  assert.equal(l.merge.height, 7);
-  assert.equal(l.review.bottom, 13);
-  assert.equal(l.tasks.bottom, 20);
+  assert.deepEqual(l.parents, { left: 0, width: QUEUE_PANE_WIDTH, bottom: 1, height: 5 });
+  assert.equal(l.queue!.bottom, 6);
+  // The work panes keep their full thirds: body is 28, a third is 9.
+  assert.equal(l.merge.bottom, 1);
+  assert.equal(l.merge.height, 9);
+  assert.equal(l.review.bottom, 10);
+  assert.equal(l.tasks.bottom, 19);
 });
 
-test("boardLayout caps the parents pane at a quarter of the body", () => {
+test("boardLayout caps the parents box at half the body so the queue keeps the rest", () => {
   const l = boardLayout(42, 200, 30);
-  // Body is 40 rows, a quarter is 10.
-  assert.equal(l.parents.height, 10);
-  assert.equal(l.merge.bottom, 11);
+  // Body is 40 rows, half is 20.
+  assert.equal(l.parents!.height, 20);
+  assert.equal(l.queue!.bottom, 21);
 });
 
-test("boardLayout keeps every pane at least one visible row on a tiny screen", () => {
-  const l = boardLayout(10, 200);
-  assert.equal(l.merge.height, 4);
-  assert.equal(l.review.height, 4);
+test("boardLayout drops the parents box before it squeezes the queue out", () => {
+  // Body is 7: the queue needs 4, leaving 3, short of the 4 a one-row box needs.
+  assert.equal(boardLayout(9, 200, 1).parents, null);
+  assert.equal(boardLayout(9, 200, 1).queue!.bottom, 1);
+  // Body is 8: exactly room for both at their floors.
+  assert.equal(boardLayout(10, 200, 1).parents!.height, 4);
 });
 
-test("boardLayout squeezes the parents pane away before the work panes on a short terminal", () => {
-  const tasksHeight = (l: ReturnType<typeof boardLayout>) => 24 - l.tasks.top - l.tasks.bottom;
-  // Body is 12: the three work panes need every row, parents gets none.
-  const tight = boardLayout(14, 200, 1);
-  assert.equal(tight.parents.height, 0);
-  assert.equal(14 - tight.tasks.top - tight.tasks.bottom, 4);
-  // Body is 22: 10 spare over the floors, but the quarter cap wins first.
-  const roomy = boardLayout(24, 200, 9);
-  assert.equal(roomy.parents.height, 5);
-  assert.ok(tasksHeight(roomy) >= 4);
-  // Body is 14: 2 spare, so a one-row parents pane (needs 4) still gets nothing.
-  assert.equal(boardLayout(16, 200, 1).parents.height, 0);
+test("boardLayout drops the parents box with the queue on a narrow screen", () => {
+  const l = boardLayout(40, 50, 3);
+  assert.equal(l.queue, null);
+  assert.equal(l.parents, null);
 });
 
 test("boardLayout reserves the left edge for the queue pane", () => {

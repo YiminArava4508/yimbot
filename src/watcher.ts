@@ -34,6 +34,7 @@ import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedIn
 import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
+import { clearDeadRaises, type StaleRaiseDeps } from "./stale-raise.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
@@ -1145,6 +1146,21 @@ export function resolveSessionForKey(
   return identifier ? findExistingSession(identifier, sessions, []) : null;
 }
 
+// Every pane id the tmux server currently has, or null when no server is
+// reachable. One spawn answers both "is tmux up" and "does pane %N exist" for
+// the stale-raise step.
+export function listTmuxPaneIds(): Set<string> | null {
+  try {
+    const out = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return new Set(out.split("\n").map((s) => s.trim()).filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
 // Deliver the autonomous-mode nudge into a pane: Escape first (declines a
 // pending permission dialog; a no-op at an idle prompt), then the prompt text,
 // then Enter. Returns false without typing anything when the pane is gone or
@@ -1712,12 +1728,24 @@ export function startWatcher(config: WatcherConfig): () => void {
     maxNudges: 3,
   };
 
+  // Stale-raise step: drop a hook-raised reason whose Claude pane is gone
+  // (reaped or killed), so a dead session cannot hold a row flagged forever.
+  // Runs before the nudge so the nudge never chases a pane this step just wrote
+  // off.
+  const staleRaiseDeps: StaleRaiseDeps = {
+    events: readEvents,
+    livePanes: listTmuxPaneIds,
+    clear: (key, label, reason) => emitEvent({ kind: "unflagged", key, label, reason }),
+    log: (msg) => console.log(`[stale] ${msg}`),
+  };
+
   let running = false;
   const heartbeat = async () => {
     if (running) return;
     running = true;
     attentionSnapshot = null;
     try {
+      clearDeadRaises(staleRaiseDeps);
       nudgeOnce(nudgeState, nudgeDeps);
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);

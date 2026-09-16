@@ -51,8 +51,9 @@ export type YimbotEvent = {
   // changes-requested, human-comment, stuck, decision, findings, or manual.
   // Absent on events from older builds; the fold defaults those by kind.
   reason?: string;
-  // The tmux pane the emitting hook ran in, so the autonomous-mode nudge can
-  // target the exact stuck Claude. Only needs_input events carry it.
+  // The tmux pane the emitting hook ran in. Every hook-emitted event carries
+  // it; the autonomous-mode nudge uses it to target the exact stuck Claude, and
+  // the stale-raise step to notice that Claude is gone.
   pane?: string;
 };
 
@@ -256,7 +257,9 @@ function parseLine(line: string): YimbotEvent | null {
 // tasks pane until the next heartbeat re-reported it. Returns null for
 // everything else.
 function standingKind(e: YimbotEvent): string | null {
-  if (e.kind === "unflagged" || e.kind === "input_received") return "clear";
+  // A reason-scoped unflag (stale-raise.ts) is not an acknowledgment and
+  // carries no clearedAt, so it must not stand in for the key's real clear.
+  if ((e.kind === "unflagged" && !e.reason) || e.kind === "input_received") return "clear";
   return sectionFor(e.kind) !== undefined ? "section" : null;
 }
 
@@ -361,27 +364,46 @@ function reasonFor(e: YimbotEvent): string {
   return e.reason ?? (e.kind === "needs_input" ? "input" : "manual");
 }
 
-export type Attention = { reasons: Set<string>; clearedAt: number | null };
+// panes maps each pending reason to the tmux panes that raised it via a session
+// hook (a ticket session and a pr-N-fix window on the same branch share a key).
+// Daemon-side raises carry no pane and have no entry.
+export type Attention = { reasons: Set<string>; panes: Map<string, Set<string>>; clearedAt: number | null };
 
 // Fold each key's attention timeline into its set of raise reasons (in raise
 // order) plus the timestamp of its last clear. Walking events in time order, a
 // needs-input or flagged event adds its reason, and an input-received or manual
 // unflag clears the whole set while recording when: human engagement
 // acknowledges every pending reason at once, and only a signal NEWER than that
-// acknowledgment may re-raise (see emitFlagged). Status events never clear
+// acknowledgment may re-raise (see emitFlagged). An unflag that names a reason
+// drops just that reason (the raiser's session died, see stale-raise.ts) and is
+// not an acknowledgment, so clearedAt stays. Status events never clear
 // anything: the flag strictly means a human must look, so an automated
 // transition (a conflict fix or CI fix spawning) must not swallow a pending ask.
 export function foldAttention(events: YimbotEvent[]): Map<string, Attention> {
   const att = new Map<string, Attention>();
+  const entry = (key: string): Attention => {
+    let a = att.get(key);
+    if (!a) att.set(key, (a = { reasons: new Set(), panes: new Map(), clearedAt: null }));
+    return a;
+  };
   for (const e of events) {
     if (e.kind === "needs_input" || e.kind === "flagged") {
-      let a = att.get(e.key);
-      if (!a) att.set(e.key, (a = { reasons: new Set(), clearedAt: null }));
-      a.reasons.add(reasonFor(e));
+      const a = entry(e.key);
+      const reason = reasonFor(e);
+      a.reasons.add(reason);
+      if (e.pane) {
+        let panes = a.panes.get(reason);
+        if (!panes) a.panes.set(reason, (panes = new Set()));
+        panes.add(e.pane);
+      }
+    } else if (e.kind === "unflagged" && e.reason) {
+      const a = entry(e.key);
+      a.reasons.delete(e.reason);
+      a.panes.delete(e.reason);
     } else if (e.kind === "input_received" || e.kind === "unflagged") {
-      let a = att.get(e.key);
-      if (!a) att.set(e.key, (a = { reasons: new Set(), clearedAt: null }));
+      const a = entry(e.key);
       a.reasons.clear();
+      a.panes.clear();
       a.clearedAt = e.ts;
     }
   }

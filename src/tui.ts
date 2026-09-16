@@ -260,6 +260,26 @@ export function bindPaneFocusSync(
   }
 }
 
+// The setter for that sync. A click reaches blessed first: list.js focuses the
+// clicked list and repaints, but the pane highlight and footer are only fitted
+// by render(), so without this the board waits for the refresh timer to catch
+// up. The repaint is deferred past blessed's own click handler and dropped if
+// the focus moved on before the tick (hidePanesKeepingFocus's rewind).
+export function onPaneFocusChange(
+  get: () => Pane,
+  set: (pane: Pane) => void,
+  render: () => void,
+  defer: (fn: () => void) => void = (fn) => setImmediate(fn),
+): (pane: Pane) => void {
+  return (pane) => {
+    if (pane === get()) return;
+    set(pane);
+    defer(() => {
+      if (get() === pane) render();
+    });
+  };
+}
+
 // Hiding the focused pane makes blessed rewind focus onto the last visible
 // pane in its history (screen.js rewindFocus), which the sync above would
 // record as a pane switch; the overlay's close then puts the highlight and the
@@ -814,9 +834,16 @@ export function runTui(opts: {
     focusedWidget().focus();
     render();
   };
-  bindPaneFocusSync(paneWidgets, (p) => {
-    focusedPane = p;
-  });
+  bindPaneFocusSync(
+    paneWidgets,
+    onPaneFocusChange(
+      () => focusedPane,
+      (p) => {
+        focusedPane = p;
+      },
+      render,
+    ),
+  );
 
   const onEvent = (_ev: YimbotEvent) => render();
   bus.on("event", onEvent);

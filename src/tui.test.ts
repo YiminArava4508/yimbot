@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, parentRows, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, parentRows, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -817,6 +817,32 @@ test("bindPaneFocusSync tracks blessed focus, so a mouse click that moves focus 
   tasks.focus();
   assert.equal(pane, "tasks");
   screen.destroy();
+});
+
+test("onPaneFocusChange repaints once the mouse moves focus to another pane", () => {
+  let pane: Pane = "tasks";
+  const deferred: Array<() => void> = [];
+  let renders = 0;
+  const onFocus = onPaneFocusChange(
+    () => pane,
+    (p) => { pane = p; },
+    () => { renders++; },
+    (fn) => { deferred.push(fn); },
+  );
+  // Keyboard path: focusedPane is already set before focus() fires the sync.
+  onFocus("tasks");
+  assert.equal(deferred.length, 0);
+  // Mouse path: blessed focused the review list on its own.
+  onFocus("review");
+  assert.equal(pane, "review");
+  assert.equal(renders, 0);
+  deferred.shift()!();
+  assert.equal(renders, 1);
+  // A focus rewind that hidePanesKeepingFocus puts back before the tick: no repaint.
+  onFocus("merge");
+  pane = "review";
+  deferred.shift()!();
+  assert.equal(renders, 1);
 });
 
 test("hidePanesKeepingFocus survives blessed rewinding focus onto a sibling pane", () => {

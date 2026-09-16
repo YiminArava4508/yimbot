@@ -9,6 +9,7 @@ import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
+import { researchWords, ticketType } from "./ticket-type.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { configFromEnv } from "./settings-model.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
@@ -461,12 +462,21 @@ function codebaseRepoName(): string {
   return basename(configFromEnv(process.env).codebasePath);
 }
 
+// The TITLE cell: a research item gets a chip ahead of its title, so the type
+// reads at a glance without the board spending a column on a rare marker.
+export function titleCell(row: Pick<BoardRow, "title">, words: string[] = researchWords()): string {
+  const title = row.title ?? "";
+  const type = ticketType(row.title, words);
+  return type ? `{magenta-fg}[${type}]{/magenta-fg} ${title}` : title;
+}
+
 export type BoardEntry = { row: BoardRow };
 
 export function boardTable(
   entries: BoardEntry[],
   now: number = Date.now(),
   codebaseName: string = codebaseRepoName(),
+  words: string[] = researchWords(),
 ): string[][] {
   const body = entries.map(({ row: r }) => {
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
@@ -477,7 +487,7 @@ export function boardTable(
       r.label,
       r.pr != null ? `#${r.pr}` : "",
       repoDisplayName(r, codebaseName),
-      r.title ?? "",
+      titleCell(r, words),
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
       r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
     ];

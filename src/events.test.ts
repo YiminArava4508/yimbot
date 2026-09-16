@@ -369,6 +369,62 @@ test("foldAttention records the last clear timestamp per key", () => {
   });
 });
 
+test("foldAttention remembers the raising pane per reason", () => {
+  withTmpLog(() => {
+    emitEvent({ kind: "needs_input", key: "ENG-1", label: "ENG-1", ts: 100, pane: "%3" });
+    emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "decision", ts: 110, pane: "%4" });
+    emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 120 });
+    emitEvent({ kind: "needs_input", key: "ENG-1", label: "ENG-1", ts: 130, pane: "%5" });
+    const a = foldAttention(readEvents()).get("ENG-1");
+    assert.deepEqual([...(a?.panes.get("input") ?? [])], ["%3", "%5"]);
+    assert.deepEqual([...(a?.panes.get("decision") ?? [])], ["%4"]);
+    assert.equal(a?.panes.has("human-comment"), false);
+  });
+});
+
+test("trimming keeps the reason-less clear when a reason-scoped unflag lands later", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 100 });
+      emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 200 });
+      emitEvent({ kind: "needs_input", key: "ENG-1", label: "ENG-1", ts: 300, pane: "%3" });
+      emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", reason: "input", ts: 400 });
+      emitEvent({ kind: "task_started", key: "A", label: "A", ts: 500 });
+      emitEvent({ kind: "task_started", key: "B", label: "B", ts: 600 });
+      assert.equal(foldAttention(readEvents(path)).get("ENG-1")?.clearedAt, 200);
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("foldAttention: an unflagged with a reason clears only that reason and keeps clearedAt", () => {
+  withTmpLog(() => {
+    emitEvent({ kind: "needs_input", key: "ENG-1", label: "ENG-1", ts: 100, pane: "%3" });
+    emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 110 });
+    emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", reason: "input", ts: 200 });
+    const a = foldAttention(readEvents()).get("ENG-1");
+    assert.deepEqual([...(a?.reasons ?? [])], ["human-comment"]);
+    assert.equal(a?.panes.has("input"), false);
+    assert.equal(a?.clearedAt, null);
+  });
+});
+
+test("foldAttention: a reason-less unflagged still clears every reason and pane", () => {
+  withTmpLog(() => {
+    emitEvent({ kind: "needs_input", key: "ENG-1", label: "ENG-1", ts: 100, pane: "%3" });
+    emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 110 });
+    emitEvent({ kind: "unflagged", key: "ENG-1", label: "ENG-1", ts: 200 });
+    const a = foldAttention(readEvents()).get("ENG-1");
+    assert.equal(a?.reasons.size, 0);
+    assert.equal(a?.panes.size, 0);
+    assert.equal(a?.clearedAt, 200);
+  });
+});
+
 test("emitFlagged with a signal at or before the last clear stays down", () => {
   withTmpLog((path) => {
     emitEvent({ kind: "flagged", key: "ENG-1", label: "ENG-1", reason: "human-comment", ts: 100 });

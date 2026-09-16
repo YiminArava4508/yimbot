@@ -194,21 +194,19 @@ test("reviewFooterHint uses the same key the board does, not a second one to lea
   assert.doesNotMatch(reviewFooterHint(base), /(^|\s)y\s/);
 });
 
-test("reviewFooterHint lists the 1/2/3 pane jumps on plan and diff", () => {
+test("reviewFooterHint shows one generic hint on plan and diff", () => {
   const base = { total: 3, loaded: true, allViewed: false, focused: "plan" as const, contextCount: 0, hasSession: false };
-  assert.ok(reviewFooterHint(base).includes("1/2/3 pane"));
-  assert.ok(reviewFooterHint({ ...base, focused: "diff" }).includes("1/2/3 pane"));
-  assert.ok(!reviewFooterHint({ ...base, focused: "claude" }).includes("1/2/3 pane"));
-});
-
-test("reviewFooterHint describes scrolling and the claude tab when the diff pane is focused", () => {
-  const base = { total: 3, loaded: true, allViewed: false, focused: "diff" as const, contextCount: 0, hasSession: false };
   const hint = reviewFooterHint(base);
-  assert.ok(hint.includes("j/k scroll"));
+  assert.equal(reviewFooterHint({ ...base, focused: "diff" }), hint, "plan and diff must share the same hint");
+  assert.ok(hint.includes("j/k move"));
   assert.ok(hint.includes("space viewed"));
-  assert.ok(hint.includes("tab claude"));
-  assert.ok(!hint.includes("g/G first/last"));
-  assert.ok(reviewFooterHint({ ...base, allViewed: true }).includes("r ready to merge"));
+  assert.ok(hint.includes("tab pane"));
+  assert.ok(hint.includes("a claude"));
+  assert.ok(!hint.includes("1/2/3"));
+  assert.ok(!hint.includes("g/G"));
+  assert.ok(!hint.includes("j/k file"));
+  assert.ok(!hint.includes("j/k scroll"));
+  assert.ok(!reviewFooterHint({ ...base, focused: "claude" }).includes("a claude"));
 });
 
 test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {
@@ -286,11 +284,10 @@ test("reviewLayout adds the claude pane as the right third", () => {
   assert.equal(l.claude.label, " claude ");
 });
 
-test("nextReviewPane cycles plan, diff, claude and skips claude when absent", () => {
-  assert.equal(nextReviewPane("plan", true), "diff");
-  assert.equal(nextReviewPane("diff", true), "claude");
-  assert.equal(nextReviewPane("claude", true), "plan");
-  assert.equal(nextReviewPane("diff", false), "plan");
+test("nextReviewPane toggles plan and diff only", () => {
+  assert.equal(nextReviewPane("plan"), "diff");
+  assert.equal(nextReviewPane("diff"), "plan");
+  assert.equal(nextReviewPane("claude"), "plan");
 });
 
 test("claudePaneLabel shows the current file and context count", () => {
@@ -567,7 +564,7 @@ test("openReview highlights the focused pane's border, tab moves it", async () =
   screen.destroy();
 });
 
-test("openReview jumps focus with 1/2/3 from plan and diff; 3 needs a claude session", async () => {
+test("openReview: a focuses claude from plan and diff; tab never reaches it", async () => {
   const screen = makeScreen();
   const fake = fakeClaudeSession();
   openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
@@ -576,25 +573,34 @@ test("openReview jumps focus with 1/2/3 from plan and diff; 3 needs a claude ses
   const plan = paneByLabel(screen, " review plan ");
   const diff = paneByLabel(screen, " diff ");
   const claude = paneByLabel(screen, " claude ");
-  press(screen, "2");
-  assert.equal(diff.style.border.fg, FOCUS_BORDER);
-  press(screen, "1");
-  assert.equal(plan.style.border.fg, FOCUS_BORDER);
-  press(screen, "3");
-  assert.equal(claude.style.border.fg, FOCUS_BORDER);
+  press(screen, "tab");
+  press(screen, "tab");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER, "two tabs must land back on plan, not on claude");
+  assert.equal(claude.style.border.fg, "grey");
+  press(screen, "a");
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "a from plan must focus claude");
   pressUnfocus(screen);
-  assert.deepEqual(fake.writes, [], "jump keys must not reach the pty");
+  press(screen, "tab");
+  assert.equal(diff.style.border.fg, FOCUS_BORDER);
+  press(screen, "a");
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "a from diff must focus claude");
+  pressUnfocus(screen);
+  assert.deepEqual(fake.writes, [], "the jump key must not reach the pty");
   screen.destroy();
 });
 
-test("openReview ignores 3 when no claude session exists", async () => {
+test("openReview ignores a and the old digit jumps when no claude session exists", async () => {
   const screen = makeScreen();
   openReview(screen, testDeps(), () => {});
   await flush();
   await flush();
   const plan = paneByLabel(screen, " review plan ");
-  press(screen, "3");
+  const diff = paneByLabel(screen, " diff ");
+  press(screen, "a");
   assert.equal(plan.style.border.fg, FOCUS_BORDER);
+  press(screen, "2");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER, "digit jumps are gone");
+  assert.equal(diff.style.border.fg, "grey");
   screen.destroy();
 });
 
@@ -806,11 +812,10 @@ test("openReview forwards keystrokes (C-c included) to the claude pty; the unfoc
   openReview(screen, deps, () => {});
   await flush();
   await flush();
-  press(screen, "tab");
-  press(screen, "tab");
+  press(screen, "a");
   const claude = paneByLabel(screen, " claude ");
   const plan = paneByLabel(screen, " review plan ");
-  assert.equal(claude.style.border.fg, FOCUS_BORDER, "two tabs must land focus on the claude pane");
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "a must land focus on the claude pane");
   const INTR = String.fromCharCode(3);
   pressSeq(screen, "x", "x");
   pressSeq(screen, "", INTR, "C-c");
@@ -819,8 +824,7 @@ test("openReview forwards keystrokes (C-c included) to the claude pty; the unfoc
   assert.deepEqual(fake.writes, ["x", INTR], "the unfocus chord must not be forwarded");
   assert.equal(plan.style.border.fg, FOCUS_BORDER);
   assert.equal(claude.style.border.fg, "grey");
-  press(screen, "tab");
-  press(screen, "tab");
+  press(screen, "a");
   pressSeq(screen, "", String.fromCharCode(17), "C-q");
   assert.deepEqual(fake.writes, ["x", INTR], "C-q must unfocus without forwarding");
   assert.equal(plan.style.border.fg, FOCUS_BORDER);
@@ -843,23 +847,20 @@ test("openReview writes context lazily: once per signature, again after a contex
   openReview(screen, deps, () => {});
   await flush();
   await flush();
-  press(screen, "tab");
-  press(screen, "tab");
+  press(screen, "a");
   pressSeq(screen, "x", "x");
   pressSeq(screen, "y", "y");
   assert.equal(written.length, 1, "an unchanged signature must write exactly once");
   assert.ok(written[0].includes("src/b.ts"), "the context must cover the selected file");
   pressUnfocus(screen);
   press(screen, "c");
-  press(screen, "tab");
-  press(screen, "tab");
+  press(screen, "a");
   pressSeq(screen, "z", "z");
   assert.equal(written.length, 2, "a context toggle must dirty the signature");
   writeOk = false;
   pressUnfocus(screen);
   press(screen, "j");
-  press(screen, "tab");
-  press(screen, "tab");
+  press(screen, "a");
   pressSeq(screen, "a", "a");
   pressSeq(screen, "b", "b");
   assert.equal(written.length, 4, "a failed write must not mark the signature clean; each keystroke retries");
@@ -915,8 +916,7 @@ test("openReview: a dead claude pty shows a notice, hands focus to plan, and sto
   openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
   await flush();
   await flush();
-  press(screen, "tab");
-  press(screen, "tab");
+  press(screen, "a");
   const claude = paneByLabel(screen, " claude ");
   const plan = paneByLabel(screen, " review plan ");
   const diff = paneByLabel(screen, " diff ");
@@ -927,9 +927,8 @@ test("openReview: a dead claude pty shows a notice, hands focus to plan, and sto
   assert.equal(plan.style.border.fg, FOCUS_BORDER, "focus must return to plan when claude dies focused");
   claude.emit("keypress", "x", { name: "x", full: "x", sequence: "x" });
   assert.deepEqual(fake.writes, [], "keys must not be forwarded to the dead pty");
-  press(screen, "tab");
-  press(screen, "tab");
-  assert.equal(plan.style.border.fg, FOCUS_BORDER, "tab must cycle plan-diff only once claude is dead");
+  press(screen, "a");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER, "a must not focus a dead claude pane");
   assert.equal(diff.style.border.fg, "grey");
   assert.equal(claude.style.border.fg, "grey");
   screen.destroy();
@@ -1297,6 +1296,19 @@ test("q from the flow backs out to the diff, and a second q leaves the review", 
 
 const pressCtrl = (screen: any, name: string) =>
   screen.focused.emit("keypress", "", { name, full: `C-${name}`, ctrl: true });
+
+test("ctrl-a is left alone so it never jumps into the claude pane", async () => {
+  const screen = makeScreen();
+  const fake = fakeClaudeSession();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await settle();
+  const plan = paneByLabel(screen, " review plan ");
+  const claude = paneByLabel(screen, " claude ");
+  pressCtrl(screen, "a");
+  assert.equal(plan.style.border.fg, FOCUS_BORDER);
+  assert.equal(claude.style.border.fg, "grey");
+  screen.destroy();
+});
 
 test("ctrl-f pages the diff instead of swapping in the chart", async () => {
   const screen = makeScreen();

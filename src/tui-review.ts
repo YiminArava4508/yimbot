@@ -5,7 +5,7 @@
 import blessed from "neo-blessed";
 import { attachClaudeOutput, claudeKeyAction } from "./claude-pane.ts";
 import type { ClaudeSession } from "./claude-sessions.ts";
-import { escapeTags, parseUnifiedDiff, renderFileDiff, type FileDiff } from "./review-diff.ts";
+import { escapeTags, parseUnifiedDiff, renderFileDiff, renderSideBySide, type FileDiff } from "./review-diff.ts";
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
@@ -242,6 +242,36 @@ export function flowFooterHint(s: { stale: number; selected: string | null; hasM
   return `j/k node${jump}${regen}   q/f diff`;
 }
 
+export const WIDE_LABEL = " diff · side by side ";
+
+// Fullscreen side-by-side diff: the plan is hidden, so n/p carry the file
+// movement the plan pane's j/k normally does, and j/k stay on scrolling.
+export function wideLayout(): Record<"wide", Record<string, unknown>> {
+  return {
+    wide: {
+      top: 1, left: 0, width: "100%", bottom: 1, tags: true, wrap: false, hidden: true,
+      keys: true, vi: true, mouse: true, scrollable: true, alwaysScroll: true,
+      border: { type: "line" }, label: WIDE_LABEL, style: paneStyle(),
+      scrollbar: { ch: " ", style: { inverse: true } },
+    },
+  };
+}
+
+export function wideFooterHint(s: {
+  total: number;
+  loaded: boolean;
+  allViewed: boolean;
+  contextCount: number;
+  hasSession: boolean;
+}): string {
+  if (!s.loaded) return "loading…   z/q back";
+  if (s.total === 0) return "no changes in this PR   z/q back";
+  const done = s.allViewed ? "   {green-fg}r ready to merge{/green-fg}" : "";
+  const clear = s.contextCount > 0 ? "   C clear context" : "";
+  const sess = s.hasSession ? "   o session" : "";
+  return `j/k scroll   n/p file   space viewed   c context${clear}${done}${sess}   z/q back`;
+}
+
 const NO_ARCH_MAP = "{red-fg}no map in this repo   G build{/red-fg}";
 
 export type ReviewDeps = {
@@ -301,6 +331,7 @@ export function openReview(
   const claude: any = blessed.box({ parent: s, ...layout.claude });
   const footer: any = blessed.text({ parent: s, ...layout.footer });
   const chart: any = blessed.box({ parent: s, ...flowLayout().chart });
+  const wide: any = blessed.box({ parent: s, ...wideLayout().wide });
   plan.focus();
 
   let meta: { title: string; body: string; headSha: string } | null = null;
@@ -326,7 +357,8 @@ export function openReview(
   let closed = false;
   let contextFiles = new Set<string>();
   let lastCtxSig: string | null = null;
-  let flowOpen = false;
+  // Which full-body view covers the columns; only one can at a time.
+  let overlay: "none" | "flow" | "wide" = "none";
   let archMap: ArchMap | null = null;
   let annotation: ArchAnnotation | null = null;
   let selectedNode: string | null = null;
@@ -435,11 +467,17 @@ export function openReview(
     // While the flow chart covers the columns the claude box sits hidden with
     // whatever stale dimensions it last had; re-fitting the pty to them would
     // resize it against a box nobody sees.
-    if (claudeOut && !flowOpen) {
+    if (overlay === "wide") {
+      // Border on both sides plus the column blessed reserves for the scrollbar.
+      wide.setContent(fd ? renderSideBySide(fd, Math.max(20, wide.width - 3)).join("\n") : diffPaneLines(fd).join("\n"));
+      wide.style.border.fg = reviewPaneBorderColor(true);
+      wide.style.label.fg = reviewPaneBorderColor(true);
+    }
+    if (claudeOut && overlay === "none") {
       claudeOut.resize(Math.max(2, claude.width - 2), Math.max(2, claude.height - 2));
       claudeOut.repaint();
     }
-    if (flowOpen) {
+    if (overlay === "flow") {
       const { map: m, unmapped } = renderState();
       if (m) {
         const view = flowView({
@@ -465,7 +503,16 @@ export function openReview(
       chart.style.label.fg = reviewPaneBorderColor(true);
     }
     let hint = footerOverride;
-    if (hint === undefined && flowOpen) {
+    if (hint === undefined && overlay === "wide") {
+      hint = wideFooterHint({
+        total: fs.length,
+        loaded: diffLoaded,
+        allViewed: allViewed(),
+        contextCount: contextFiles.size,
+        hasSession: ticketSession !== null,
+      });
+    }
+    if (hint === undefined && overlay === "flow") {
       hint = flowFooterHint({
         stale: renderState().unmapped.length,
         selected: selectedNode,
@@ -500,6 +547,7 @@ export function openReview(
     claude.detach();
     footer.detach();
     chart.detach();
+    wide.detach();
     s.render();
     onClose(notice, isError);
   }
@@ -511,6 +559,7 @@ export function openReview(
     selectedPath = fs[clamped];
     userSelected = true;
     diff.scrollTo(0);
+    wide.scrollTo(0);
     paint();
   }
 
@@ -583,13 +632,25 @@ export function openReview(
     paint();
   };
 
-  const setFlow = (open: boolean): void => {
-    flowOpen = open;
-    for (const w of [guide, plan, diff, claude]) w.hidden = open;
-    chart.hidden = !open;
-    if (open) chart.focus();
+  // The flow chart gives focus back to whichever pane had it; wide mode
+  // always returns to the diff pane, since that is what the operator was
+  // reading and where their scroll position lives.
+  const showOverlay = (next: typeof overlay): void => {
+    overlay = next;
+    for (const w of [guide, plan, diff, claude]) w.hidden = next !== "none";
+    chart.hidden = next !== "flow";
+    wide.hidden = next !== "wide";
+    if (next === "flow") chart.focus();
+    else if (next === "wide") wide.focus();
     else focusPane(focused);
     paint();
+  };
+
+  const setFlow = (open: boolean): void => showOverlay(open ? "flow" : "none");
+
+  const setWide = (open: boolean): void => {
+    if (!open) focused = "diff";
+    showOverlay(open ? "wide" : "none");
   };
 
   // Opens even with no map: the empty chart says so and G builds one, which
@@ -697,7 +758,7 @@ export function openReview(
   });
 
   chart.on("click", () => {
-    if (!flowOpen) return;
+    if (overlay !== "flow") return;
     chart.focus();
   });
 
@@ -724,6 +785,7 @@ export function openReview(
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "tab") focusPane(nextReviewPane("plan", hasClaude()));
     else if (key.name === "f" && !key.ctrl) openFlow();
+    else if (key.name === "z" && !key.ctrl) setWide(true);
     else if (key.name === "o" && !key.shift) openTicketSession();
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
@@ -736,8 +798,20 @@ export function openReview(
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
     else if (key.name === "f" && !key.ctrl) openFlow();
+    else if (key.name === "z" && !key.ctrl) setWide(true);
     else if (key.name === "o" && !key.shift) openTicketSession();
     else if (key.name === "q" || key.name === "escape") close(null, false);
+  });
+
+  wide.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean }) => {
+    if (key.name === "n") select(selectedIndex() + 1);
+    else if (key.name === "p") select(selectedIndex() - 1);
+    else if (key.name === "space") toggleViewed();
+    else if (key.name === "r") queueToMerge();
+    else if (key.name === "c" && key.shift) clearContext();
+    else if (key.name === "c") toggleContextSelected();
+    else if (key.name === "o" && !key.shift) openTicketSession();
+    else if ((key.name === "z" && !key.ctrl) || key.name === "q" || key.name === "escape") setWide(false);
   });
 
   claude.on("keypress", (ch: string, key: { sequence?: string }) => {

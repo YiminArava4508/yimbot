@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { observeReach } from "./reach.ts";
 
 const execFileAsync = promisify(execFile);
 
-export type OpenPR = { number: number; headRefName: string; isDraft: boolean };
+// `repo` is the owner/name slug when the PR lives in one of EXTRA_REPOS;
+// absent for the codebase repo, which is what every other reader assumes.
+export type OpenPR = { number: number; headRefName: string; isDraft: boolean; repo?: string };
 export type RepoSlug = { owner: string; name: string };
 
 // Injectable `gh` invoker: takes CLI args, resolves to stdout. The default shells
@@ -11,37 +14,63 @@ export type RepoSlug = { owner: string; name: string };
 // Async so the network round-trip never blocks the heartbeat's event loop.
 export type GhRunner = (args: string[]) => Promise<string>;
 
-export function ghRunner(cwd: string): GhRunner {
+type ExecGh = (
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; encoding: "utf8"; maxBuffer: number; env?: NodeJS.ProcessEnv },
+) => Promise<{ stdout: string }>;
+
+// `repo` (owner/name) points gh at one of EXTRA_REPOS through GH_REPO, which
+// the pr and label subcommands honour; `repo view` does not (it reads the cwd's
+// origin, so repoSlug is only ever asked of the codebase runner) and `api
+// graphql` takes the slug as query variables instead. The cwd stays the
+// codebase checkout either way.
+export function ghRunner(cwd: string, repo?: string, exec: ExecGh = execFileAsync): GhRunner {
+  const env = repo ? { ...process.env, GH_REPO: repo } : undefined;
   return async (args) => {
-    const { stdout } = await execFileAsync("gh", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+    // Wrapped so the board can warn when GitHub stops answering. gh folds its
+    // stderr into the rejection, so a transport failure ("no route to host",
+    // "could not resolve host") is visible there; a 404 or a rejected flag is
+    // not a reachability problem.
+    const { stdout } = await observeReach("github", () =>
+      exec("gh", args, { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024, env }),
+    );
     return stdout;
   };
 }
 
-export function parseOpenPRs(json: string): OpenPR[] {
+export function parseOpenPRs(json: string, repo?: string): OpenPR[] {
   const rows = JSON.parse(json) as OpenPR[];
-  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName, isDraft: r.isDraft }));
+  return rows.map((r) => ({
+    number: r.number,
+    headRefName: r.headRefName,
+    isDraft: r.isDraft,
+    ...(repo ? { repo } : {}),
+  }));
 }
 
 // The viewer's open PRs in the runner's repo (drafts included; callers filter).
-export async function listMyOpenPRs(run: GhRunner): Promise<OpenPR[]> {
+// `repo` tags each row when the runner points at an extra repo.
+export async function listMyOpenPRs(run: GhRunner, repo?: string): Promise<OpenPR[]> {
   return parseOpenPRs(
     await run(["pr", "list", "--author", "@me", "--state", "open", "--json", "number,headRefName,isDraft", "--limit", "100"]),
+    repo,
   );
 }
 
-export type MergedPR = { number: number; headRefName: string };
+export type MergedPR = { number: number; headRefName: string; repo?: string };
 
-export function parseMergedPRs(json: string): MergedPR[] {
+export function parseMergedPRs(json: string, repo?: string): MergedPR[] {
   const rows = JSON.parse(json) as MergedPR[];
-  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName }));
+  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName, ...(repo ? { repo } : {}) }));
 }
 
 // The viewer's merged PRs in the runner's repo. Bounded to the 100 most recent:
 // a worktree whose PR merged more than 100 merges ago is not a realistic case.
-export async function listMyMergedPRs(run: GhRunner): Promise<MergedPR[]> {
+export async function listMyMergedPRs(run: GhRunner, repo?: string): Promise<MergedPR[]> {
   return parseMergedPRs(
     await run(["pr", "list", "--author", "@me", "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
+    repo,
   );
 }
 
@@ -181,7 +210,7 @@ type RollupNode = {
 // carry no timestamps but the API already returns one row per context, so they key
 // by context and never collide. A freshly queued rerun reports no timestamps at
 // all; rank it as newest (not oldest) so it wins over the prior completed run and
-// the rollup reads pending, preserving the "pending takes precedence" contract.
+// the rollup reads pending instead of green.
 function latestPerCheck(nodes: RollupNode[]): RollupNode[] {
   const rank = (n: RollupNode) => n.startedAt ?? n.completedAt ?? "￿";
   const latest = new Map<string, RollupNode>();
@@ -195,8 +224,11 @@ function latestPerCheck(nodes: RollupNode[]): RollupNode[] {
 }
 
 // CI summary for a PR from `gh pr view --json headRefOid,statusCheckRollup`.
-// `pending` takes precedence over `failing`: while any check is still running we
-// wait rather than act on a half-finished run. A rollup node is a CheckRun
+// `failing` takes precedence over `pending`: a check that concluded red on this
+// head will not turn green without a new push (a rerun shows up as a newer node,
+// see latestPerCheck), so waiting for the rest of the run only delays the CI fix
+// and lets a labeled PR read as "ready to merge" for as long as the slowest job
+// takes. `pending` means every check so far is green or still running. A rollup node is a CheckRun
 // (status + conclusion) or a StatusContext (state); classify off whichever fields
 // are present so a missing __typename never misreads a node. `ignore` drops
 // matching checks (by CheckRun name or StatusContext context) before classifying,
@@ -216,7 +248,7 @@ export function parseChecksInfo(json: string, ignore?: (name: string) => boolean
       failing = true;
     }
   }
-  const state: CiState = nodes.length === 0 ? "none" : pending ? "pending" : failing ? "failing" : "passing";
+  const state: CiState = nodes.length === 0 ? "none" : failing ? "failing" : pending ? "pending" : "passing";
   return { state, headSha: data.headRefOid };
 }
 
@@ -305,6 +337,19 @@ export async function prLabels(run: GhRunner, prNumber: number): Promise<string[
   return parseLabels(await run(["pr", "view", String(prNumber), "--json", "labels"]));
 }
 
+export type PrState = { labels: string[]; isDraft: boolean };
+
+// Labels and the draft flag together, from one `gh pr view`. The ready step
+// needs both live: the open-PR listing it walks is a snapshot taken at tick
+// start, and an operator queueing a PR mid-tick promotes it out of draft.
+export function parsePrState(json: string): PrState {
+  return { labels: parseLabels(json), isDraft: parseIsDraft(json) };
+}
+
+export async function prState(run: GhRunner, prNumber: number): Promise<PrState> {
+  return parsePrState(await run(["pr", "view", String(prNumber), "--json", "labels,isDraft"]));
+}
+
 // Add / remove a single label on a PR. The gh stdout is discarded; a non-zero
 // exit rejects (e.g. --add-label with a label that doesn't exist in the repo),
 // which the caller catches and logs.
@@ -365,16 +410,55 @@ export async function viewerLogin(run: GhRunner): Promise<string> {
   return parseViewerLogin(await run(["api", "graphql", "-f", "query=query{viewer{login}}"]));
 }
 
-// The PR's raw unified diff, for the guided review view. Returned verbatim;
+// The PR's raw unified diff, for the review view. Returned verbatim;
 // src/review-diff.ts owns the parsing.
 export async function prDiff(run: GhRunner, prNumber: number): Promise<string> {
   return run(["pr", "diff", String(prNumber)]);
 }
 
+export function parseRunHeadShas(json: string): string[] {
+  return (JSON.parse(json) as { headSha: string }[]).map((r) => r.headSha);
+}
+
+// Head shas of the successful runs of one workflow on one branch, newest first.
+// 30 covers a day of busy deploys; the QA step only needs the most recent one
+// that is at or past a merge commit.
+export async function listSuccessfulRunHeadShas(run: GhRunner, workflow: string, branch: string): Promise<string[]> {
+  return parseRunHeadShas(
+    await run([
+      "run", "list", "--workflow", workflow, "--branch", branch,
+      "--status", "success", "--json", "headSha", "--limit", "30",
+    ]),
+  );
+}
+
+export function parseMergeCommit(json: string): string {
+  const oid = (JSON.parse(json) as { mergeCommit: { oid: string } | null }).mergeCommit?.oid;
+  if (!oid) throw new Error("no merge commit on PR");
+  return oid;
+}
+
+export async function prMergeCommit(run: GhRunner, prNumber: number): Promise<string> {
+  return parseMergeCommit(await run(["pr", "view", String(prNumber), "--json", "mergeCommit"]));
+}
+
+// GitHub's compare status for base...head: "identical", "ahead" (head is a
+// descendant of base), "behind" or "diverged". Works for extra repos too, where
+// the local checkout has no commits to walk.
+export async function compareStatus(run: GhRunner, slug: RepoSlug, base: string, head: string): Promise<string> {
+  return (await run(["api", `repos/${slug.owner}/${slug.name}/compare/${base}...${head}`, "--jq", ".status"])).trim();
+}
+
+// The default branch of one repo, by "owner/name" slug. `repo view` resolves the
+// cwd's origin rather than GH_REPO, so the slug is passed explicitly and this
+// works for an EXTRA_REPOS runner too.
+export async function defaultBranch(run: GhRunner, slug: string): Promise<string> {
+  return (await run(["repo", "view", slug, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"])).trim();
+}
+
 export type PrReviewMeta = {
   title: string;
   body: string;
-  isDraft: boolean;
   headSha: string;
   additions: number;
   deletions: number;
@@ -387,7 +471,6 @@ export function parsePrReviewMeta(json: string): PrReviewMeta {
   const d = JSON.parse(json) as {
     title: string;
     body?: string;
-    isDraft: boolean;
     headRefOid: string;
     additions: number;
     deletions: number;
@@ -395,7 +478,6 @@ export function parsePrReviewMeta(json: string): PrReviewMeta {
   return {
     title: d.title,
     body: d.body ?? "",
-    isDraft: d.isDraft,
     headSha: d.headRefOid,
     additions: d.additions,
     deletions: d.deletions,
@@ -403,10 +485,10 @@ export function parsePrReviewMeta(json: string): PrReviewMeta {
 }
 
 // One pr view for everything the review overlay and the review-order prompt
-// need: title/body feed the grouping and ordering prompts, isDraft gates the
-// ready action, headSha keys viewed marks, the diffstat feeds the ordering.
+// need: title/body feed the grouping and ordering prompts, headSha keys viewed
+// marks, the diffstat feeds the ordering.
 export async function prReviewMeta(run: GhRunner, prNumber: number): Promise<PrReviewMeta> {
   return parsePrReviewMeta(
-    await run(["pr", "view", String(prNumber), "--json", "title,body,isDraft,headRefOid,additions,deletions"]),
+    await run(["pr", "view", String(prNumber), "--json", "title,body,headRefOid,additions,deletions"]),
   );
 }

@@ -72,7 +72,6 @@ export const PREREQUISITES: Prerequisite[] = [
   { key: "claude-auth", label: "Claude Code authenticated", severity: "required" },
   { key: "gh-scopes", label: "gh token scopes (repo, workflow)", severity: "recommended" },
   { key: "git-identity", label: "git identity (user.name, user.email)", severity: "recommended" },
-  { key: "linear-server", label: "Linear MCP server (linear-server)", severity: "recommended" },
   { key: "shortcut", label: "Shortcut MCP server (shortcut)", severity: "recommended" },
   { key: "tmux-status", label: "tmux @feature_status in status line", severity: "recommended" },
 ];
@@ -204,8 +203,6 @@ export function isSatisfied(pr: Prerequisite): boolean {
       return pluginInstalled("superpowers");
     case "claude-auth":
       return claudeAuthenticated();
-    case "linear-server":
-      return mcpServers().includes("linear-server");
     case "shortcut":
       return mcpServers().includes("shortcut");
     case "git-identity":
@@ -271,8 +268,6 @@ export function installHint(key: string, pm: PackageManager | null): string {
       return "Install the superpowers plugin in Claude Code (run /plugin, then add superpowers)";
     case "claude-auth":
       return "Authenticate Claude Code: run `claude` and log in, or set ANTHROPIC_API_KEY";
-    case "linear-server":
-      return "Register the Linear MCP under the name 'linear-server' (claude mcp add linear-server ...)";
     case "shortcut":
       return "Register the Shortcut MCP under the name 'shortcut' (claude mcp add shortcut -- npx -y @shortcut/mcp@latest)";
     case "tmux-status":
@@ -328,6 +323,11 @@ export const hostLinks: HostLink[] = [
     label: "refine session launcher (~/refine-session.sh)",
   },
   {
+    source: join(repoRoot, "scripts/qa-session.sh"),
+    target: join(homedir(), "qa-session.sh"),
+    label: "QA session launcher (~/qa-session.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/relate-tickets.sh"),
     target: join(homedir(), "relate-tickets.sh"),
     label: "blocks-relation writer (~/relate-tickets.sh)",
@@ -338,9 +338,34 @@ export const hostLinks: HostLink[] = [
     label: "estimate setter (~/estimate-ticket.sh)",
   },
   {
+    source: join(repoRoot, "scripts/get-ticket.sh"),
+    target: join(homedir(), "get-ticket.sh"),
+    label: "ticket reader (~/get-ticket.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/comment-ticket.sh"),
+    target: join(homedir(), "comment-ticket.sh"),
+    label: "ticket commenter (~/comment-ticket.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/attach-ticket.sh"),
+    target: join(homedir(), "attach-ticket.sh"),
+    label: "ticket file attacher (~/attach-ticket.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/move-ticket.sh"),
+    target: join(homedir(), "move-ticket.sh"),
+    label: "ticket state mover (~/move-ticket.sh)",
+  },
+  {
     source: join(repoRoot, "skills/refine-ticket"),
     target: join(homedir(), ".claude/skills/refine-ticket"),
     label: "refine-ticket skill (~/.claude/skills/refine-ticket)",
+  },
+  {
+    source: join(repoRoot, "skills/qa-instructions"),
+    target: join(homedir(), ".claude/skills/qa-instructions"),
+    label: "qa-instructions skill (~/.claude/skills/qa-instructions)",
   },
   {
     source: join(repoRoot, "skills/pickup-ticket"),
@@ -386,6 +411,16 @@ export const hostLinks: HostLink[] = [
     source: join(repoRoot, "settings/session-settings.json"),
     target: join(homedir(), ".config/yimbot/session-settings.json"),
     label: "session deny-list (~/.config/yimbot/session-settings.json)",
+  },
+  {
+    source: join(repoRoot, "scripts/heavy-queue.sh"),
+    target: join(homedir(), ".config/yimbot/heavy-queue.sh"),
+    label: "heavy job queue (~/.config/yimbot/heavy-queue.sh)",
+  },
+  {
+    source: join(repoRoot, "settings/heavy-jobs.conf"),
+    target: join(homedir(), ".config/yimbot/heavy-jobs.conf"),
+    label: "heavy job patterns (~/.config/yimbot/heavy-jobs.conf)",
   },
 ];
 
@@ -867,9 +902,19 @@ export async function runSetup(): Promise<YimbotConfig> {
       role: "sets estimates during refine (required for refine)",
     },
     {
+      path: join(homedir(), "attach-ticket.sh"),
+      label: "~/attach-ticket.sh",
+      role: "uploads screenshots during QA sessions (required for the QA step)",
+    },
+    {
       path: join(homedir(), ".claude/skills/refine-ticket"),
       label: "~/.claude/skills/refine-ticket",
       role: "refine session flow (required for refine)",
+    },
+    {
+      path: join(homedir(), ".claude/skills/qa-instructions"),
+      label: "~/.claude/skills/qa-instructions",
+      role: "QA session flow (required for the QA step)",
     },
     {
       path: join(homedir(), ".claude/skills/pickup-ticket"),
@@ -910,6 +955,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), ".config/yimbot/session-settings.json"),
       label: "~/.config/yimbot/session-settings.json",
       role: "deny-list safety net for spawned sessions (recommended)",
+    },
+    {
+      path: join(homedir(), ".config/yimbot/heavy-queue.sh"),
+      label: "~/.config/yimbot/heavy-queue.sh",
+      role: "serializes CPU-heavy jobs across sessions (recommended; needs jq and flock on PATH)",
     },
   ];
   p.note(

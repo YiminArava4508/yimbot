@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   type AC,
   AC_COMMENT_MARKER,
@@ -9,7 +9,7 @@ import {
   parseAcceptanceCriteria,
   renderAcComment,
 } from "./acceptance.ts";
-import { isBlocked, mergedIdentifierSet } from "./blocked.ts";
+import { mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
 import { filterByLabel, type LabelFilter } from "./labels.ts";
 import {
@@ -28,8 +28,10 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { branchesFullyMerged, deriveKey, emitEvent, emitFlagged, emitStatus, foldAttention, readEvents, reduceRows, titleFromBranch } from "./events.ts";
-import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, UnresolvedInfo } from "./gh.ts";
+import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
+import { loadFixSeenAt, saveFixSeenAt } from "./fix-timers.ts";
+import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
+import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import {
@@ -48,9 +50,10 @@ import {
   type LinearIssue,
   moveIssueToState,
   upsertMarkedComment,
+  type TicketState,
 } from "./linear-api.ts";
 import { advanceOnce, type AdvanceDeps, freshAdvanceState } from "./pr-advance.ts";
-import { boardReadyToMerge, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
+import { boardReadyKind, boardReadyToMerge, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 import {
   blockedSessionName,
   ciSessionName,
@@ -61,6 +64,8 @@ import {
   type PrReviewDeps,
   reviewOnce,
 } from "./pr-review.ts";
+import { freshQaState, loadQaState, type QaPhase, type QaUnit, saveQaState } from "./qa-state.ts";
+import { qaOnce, type QaDeps } from "./qa.ts";
 import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
 
@@ -68,6 +73,7 @@ export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
 export const worktreesDir = join(homedir(), "Work/worktrees");
 export const refineScriptPath = join(homedir(), "refine-session.sh");
+export const qaScriptPath = join(homedir(), "qa-session.sh");
 
 // tmux user option + glyph marking a session's feature as ready for the user to
 // run local dev and test. Session-scoped, so it clears for free when the session
@@ -199,10 +205,44 @@ export async function pollOnce(state: WatchState, deps: WatcherDeps): Promise<vo
 // Not a startup baseline: unlike the review-icon poll, the deploy step must be
 // restart-safe (see deployOnce), so it reconciles against live sessions instead
 // of assuming everything present at startup is handled.
-export type DeployState = { launched: Set<string> };
+export type DeployState = {
+  launched: Set<string>;
+  // Failed launches per issue, so the retry below is bounded. See releaseLaunch.
+  attempts: Map<string, number>;
+};
 
 export function freshDeployState(): DeployState {
-  return { launched: new Set() };
+  return { launched: new Set(), attempts: new Map() };
+}
+
+// How many times a launch may fail before the deploy step stops retrying it.
+export const MAX_LAUNCH_ATTEMPTS = 3;
+
+// Un-latch an issue whose new-session.sh exited non-zero, so the next heartbeat
+// retries it. deployOnce latches on spawn rather than on exit (the script runs
+// for minutes; awaiting it would stall the heartbeat), which without this leaves
+// a ticket whose script died latched for the whole process lifetime -- exactly
+// how ENG-2099 ended up with an open PR and no worktree.
+//
+// Bounded, because the two failure shapes differ. Died AFTER creating the
+// worktree: the next tick's findExistingSession adopts it and no retry happens
+// anyway. Died BEFORE: the cause is usually persistent (a missing seed skill, a
+// git worktree add that cannot work), and an unbounded retry would relaunch
+// every heartbeat forever. So give up at the cap, once, loudly.
+export function releaseLaunch(
+  state: DeployState,
+  issueId: string,
+  identifier: string,
+  log: (msg: string) => void,
+): void {
+  const attempts = (state.attempts.get(issueId) ?? 0) + 1;
+  if (attempts > MAX_LAUNCH_ATTEMPTS) return; // already given up; stay quiet
+  state.attempts.set(issueId, attempts);
+  if (attempts >= MAX_LAUNCH_ATTEMPTS) {
+    log(`giving up on ${identifier} after ${attempts} failed launches; create its worktree by hand`);
+    return;
+  }
+  state.launched.delete(issueId);
 }
 
 export type DeployDeps = {
@@ -285,6 +325,8 @@ export type ClaimDeps = {
   // Merged ticket identifiers for the blocked-by filter. Absent when gh is
   // unavailable, in which case the filter is skipped.
   fetchMergedIdentifiers?: () => Promise<Set<string>>;
+  // State names that count as a blocker's work having landed (clearedStateNames).
+  clearedStates: Set<string>;
   // Move the chosen ticket into the watched "In Progress" state, so the
   // deploy step picks it up on the next poll.
   moveToInProgress: (issue: CycleTodoIssue) => Promise<void>;
@@ -434,15 +476,15 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
       return;
     }
     for (const t of inSlice) {
-      if (isBlocked(t.blockedBy, merged)) {
-        deps.log(`deferring ${t.identifier}: blocked by ${t.blockedBy.join(", ")} (unmerged)`);
-      }
+      const holdouts = unsatisfiedBlockers(t.blockedBy, merged, deps.clearedStates);
+      if (holdouts) deps.log(`deferring ${t.identifier}: blocked by ${holdouts}`);
     }
   }
 
   const next = selectNextClaim(inSlice, {
     riskLabels: deps.riskLabels,
     merged,
+    clearedStates: deps.clearedStates,
     labelFilter: deps.labelFilter,
     requireEstimate,
     maxEstimate: deps.maxEstimate,
@@ -470,6 +512,8 @@ export type ReconcileDeps = {
   fetchInProgress: () => Promise<IssueWithBlockers[]>;
   // Merged ticket identifiers, for the blocked check.
   fetchMergedIdentifiers: () => Promise<Set<string>>;
+  // State names that count as a blocker's work having landed (clearedStateNames).
+  clearedStates: Set<string>;
   // Move a blocked issue back to Todo.
   moveToTodo: (issueId: string) => Promise<void>;
   // Drop an issue id from the deploy latch so it relaunches once unblocked.
@@ -503,12 +547,12 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
   }
 
   for (const issue of issues) {
-    if (!isBlocked(issue.blockedBy, merged)) continue;
-    const unmerged = issue.blockedBy.filter((id) => !merged.has(id.toUpperCase())).join(", ");
+    const holdouts = unsatisfiedBlockers(issue.blockedBy, merged, deps.clearedStates);
+    if (!holdouts) continue;
     try {
       await deps.moveToTodo(issue.id);
       deps.unlatchDeploy(issue.id);
-      deps.log(`moved ${issue.identifier} back to Todo: blocked by ${unmerged} (unmerged)`);
+      deps.log(`moved ${issue.identifier} back to Todo: blocked by ${holdouts}`);
     } catch (err) {
       deps.log(`failed to move ${issue.identifier} back: ${err}`);
     }
@@ -540,6 +584,10 @@ export type WatcherConfig = {
   // stale, regardless of PR state (backstop for bailed/crashed/stuck sessions and
   // for comment fixes, which have no crisp PR-state objective).
   reapStaleMs: number;
+  // Linear state names that mean a blocker's work has landed: the merge state
+  // and the post-merge review state. Completed and canceled states always count,
+  // so they are not listed here.
+  clearedStates: Set<string>;
   claim: ClaimConfig;
   // Refine step: unestimated Backlog/Todo tickets get a sizing session before
   // the claim step may touch them; null disables the step (AUTO_REFINE off).
@@ -548,7 +596,12 @@ export type WatcherConfig = {
   refine: { autoRefineDefault: boolean; maxRefining: number; labelFilter: LabelFilter; assigneeIds: string[] };
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
-  prReview: Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> | null;
+  // listOpenPRs spans every repo (EXTRA_REPOS included) for the board and the
+  // ready step; listFixableOpenPRs is the codebase repo's only, since a fix
+  // session's worktree is cut from codebasePath.
+  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> & {
+    listFixableOpenPRs: () => Promise<OpenPR[]>;
+  }) | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
   // of every merged PR whose branch has a worktree under worktreesDir.
@@ -558,7 +611,8 @@ export type WatcherConfig = {
     listClosedUnmergedPRs: () => Promise<MergedPR[]>;
     listOpenPRs: () => Promise<OpenPR[]>;
     // Linear state type of an issue by identifier, for the no-PR (spike) reap.
-    issueStateType: (identifier: string) => Promise<string | null>;
+    issueState: (identifier: string) => Promise<TicketState | null>;
+    clearedStates: Set<string>;
   } | null;
   // gh-backed hooks for the advance step; null disables it (AUTO_CONTINUE off, or
   // gh unavailable). When set, each heartbeat judges merged PRs' issues against
@@ -573,6 +627,10 @@ export type WatcherConfig = {
     maxInProgress: number;
     maxRounds: number;
   } | null;
+  // QA step: null disables it (no QA_DEPLOY_WORKFLOW/QA_NONPROD_URL, or gh
+  // unavailable). Everything gh- or Linear-backed lives here; the watcher adds
+  // tmux, spawn, events and the clock.
+  qa: Omit<QaDeps, "hasSession" | "kill" | "spawn" | "liveQaSessions" | "now" | "emit" | "log"> | null;
   // gh-backed hooks for the ready step; null disables it (AUTO_READY_LABEL off, or
   // gh unavailable). When set, each heartbeat adds the ready label (autonomous
   // mode only) to a non-draft open PR that has been clean on all three signals
@@ -584,7 +642,7 @@ export type WatcherConfig = {
     unresolvedInfo: (n: number) => Promise<UnresolvedInfo>;
     mergeableInfo: (n: number) => Promise<MergeableInfo>;
     checksInfo: (n: number) => Promise<ChecksInfo>;
-    prLabels: (n: number) => Promise<string[]>;
+    prState: (n: number) => Promise<PrState>;
     addLabel: (n: number, label: string) => Promise<void>;
     label: string;
     blockedLabel: string;
@@ -602,20 +660,67 @@ export type WatcherConfig = {
   } | null;
 };
 
-export function launchSession(name: string): Promise<void> {
-  const proc = spawn("bash", [sessionScriptPath, name], { detached: true, stdio: "ignore" });
+// Env for a daemon-spawned session launch: SESSION_DETACH tells new-session.sh to
+// leave the new session in the background rather than switching the client onto it.
+// The daemon inherits the board's TMUX, so without this every ticket or PR fix
+// launch would pull the user off whatever they were doing.
+export function detachedSessionEnv(
+  base: NodeJS.ProcessEnv,
+  extra: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  return { ...base, ...extra, SESSION_DETACH: "1" };
+}
+
+// How much of a failed new-session.sh's output to keep. The `die` line and the
+// git/tmux error under it are at the end, so a tail is what matters; bounded so
+// a chatty setup hook cannot pin megabytes per launch.
+export const LAUNCH_LOG_TAIL = 4000;
+
+// The last `limit` chars of a growing stream. Keeps the tail and drops the head,
+// because that is the end a script failure is written at.
+export function tailBuffer(limit: number): { push: (chunk: string) => void; text: () => string } {
+  let buf = "";
+  return {
+    push: (chunk) => {
+      buf = (buf + chunk).slice(-limit);
+    },
+    text: () => buf,
+  };
+}
+
+export function launchSession(name: string, onFail?: (code: number | null) => void): Promise<void> {
+  // Piped rather than ignored: a non-zero exit used to report only its code, so
+  // why the script died (a missing seed skill, a git worktree add that failed)
+  // was unrecoverable from daemon.log. Both streams feed one tail because the
+  // script interleaves its own log lines with git's and tmux's.
+  const proc = spawn("bash", [sessionScriptPath, name], {
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: detachedSessionEnv(process.env),
+  });
   proc.unref();
+  const tail = tailBuffer(LAUNCH_LOG_TAIL);
+  for (const stream of [proc.stdout, proc.stderr]) {
+    stream?.setEncoding("utf8");
+    stream?.on("data", (chunk: string) => tail.push(chunk));
+    stream?.on("error", () => {}); // a torn pipe must not raise on the daemon
+  }
   // spawn() reports failures like ENOENT asynchronously via 'error'; wait for
   // the 'spawn' event so callers can treat a failed launch as an error and retry.
   const result = new Promise<void>((resolve, reject) => {
     proc.once("spawn", () => resolve());
     proc.once("error", (err) => reject(err));
   });
-  // Diagnostic only: the session script runs detached, so a non-zero exit
-  // (e.g. tmux/worktree setup failing inside the script) would otherwise be
-  // invisible — this does not affect the seen/retry semantics above.
+  // The script runs detached, so its exit lands long after the promise above
+  // resolved: `onFail` is how the deploy step's latch learns the launch it
+  // already counted as started did not finish. See releaseLaunch.
   proc.once("exit", (code) => {
-    if (code !== 0) console.error(`[watcher] new-session.sh for '${name}' exited ${code}`);
+    if (code === 0) return;
+    const out = tail.text().trimEnd();
+    console.error(
+      `[watcher] new-session.sh for '${name}' exited ${code}` + (out ? `\n${out}` : " (no output)"),
+    );
+    onFail?.(code);
   });
   return result;
 }
@@ -631,7 +736,7 @@ export function reattachSession(branch: string): void {
   const proc = spawn("bash", [sessionScriptPath, branch], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, SESSION_RESUME: "1" },
+    env: detachedSessionEnv(process.env, { SESSION_RESUME: "1" }),
   });
   proc.unref();
   proc.once("error", (err) => console.error(`[reattach] new-session.sh for '${branch}' failed: ${err}`));
@@ -646,7 +751,11 @@ export function reattachSession(branch: string): void {
 // pr-<n>-fix session. Detached and fire-and-forget — a spawn failure is logged,
 // and the next heartbeat retries (nothing was created, so the guard won't block).
 export function spawnFixSession(name: string, branch: string): void {
-  const proc = spawn("bash", [sessionScriptPath, name, branch], { detached: true, stdio: "ignore" });
+  const proc = spawn("bash", [sessionScriptPath, name, branch], {
+    detached: true,
+    stdio: "ignore",
+    env: detachedSessionEnv(process.env),
+  });
   proc.unref();
   proc.once("error", (err) => console.error(`[review] new-session.sh for '${name}' failed: ${err}`));
   proc.once("exit", (code) => {
@@ -665,7 +774,11 @@ export function continuationSessionName(issueNumber: string, round: number): str
 // pickup-ticket skill scoped by the issue's open ACs.
 export function spawnContinuationSession(issueNumber: string, round: number): void {
   const name = continuationSessionName(issueNumber, round);
-  const proc = spawn("bash", [sessionScriptPath, name], { detached: true, stdio: "ignore" });
+  const proc = spawn("bash", [sessionScriptPath, name], {
+    detached: true,
+    stdio: "ignore",
+    env: detachedSessionEnv(process.env),
+  });
   proc.unref();
   proc.once("error", (err) => console.error(`[advance] new-session.sh for '${name}' failed: ${err}`));
   proc.once("exit", (code) => {
@@ -682,6 +795,26 @@ export function spawnRefineSession(identifier: string): void {
   proc.once("error", (err) => console.error(`[refine] refine-session.sh for '${identifier}' failed: ${err}`));
   proc.once("exit", (code) => {
     if (code !== 0) console.error(`[refine] refine-session.sh for '${identifier}' exited ${code}`);
+  });
+}
+
+export function qaSessionArgs(identifier: string, nonprodUrl: string, children: string[], prs: string[]): string[] {
+  return [qaScriptPath, identifier, nonprodUrl, children.join(","), prs.join(",")];
+}
+
+// Launch a QA run: qa-session.sh <parent> <nonprod-url> <children> <prs>.
+// Detached and fire-and-forget like the other spawners; a failure is logged
+// and qaOnce sees a missing session next tick and fails the unit.
+export function spawnQaSession(identifier: string, nonprodUrl: string, children: string[], prs: string[]): void {
+  const proc = spawn("bash", qaSessionArgs(identifier, nonprodUrl, children, prs), {
+    detached: true,
+    stdio: "ignore",
+    env: detachedSessionEnv(process.env),
+  });
+  proc.unref();
+  proc.once("error", (err) => console.error(`[qa] qa-session.sh for '${identifier}' failed: ${err}`));
+  proc.once("exit", (code) => {
+    if (code !== 0) console.error(`[qa] qa-session.sh for '${identifier}' exited ${code}`);
   });
 }
 
@@ -864,9 +997,35 @@ export function worktreeKeysUnder(worktrees: Worktree[], dir: string): Set<strin
   const keys = new Set<string>();
   for (const w of worktrees) {
     if (!w.path.startsWith(prefix)) continue;
-    keys.add(deriveKey({ branch: w.branch }).key);
+    keys.add(worktreeKey(w));
   }
   return keys;
+}
+
+// The board key a branch or dir name yields, or null when it names no ticket:
+// deriveKey echoes the name back unchanged when it finds no ticket slug in it.
+function ticketKey(name: string): string | null {
+  const key = deriveKey({ branch: name }).key;
+  return key === name ? null : key;
+}
+
+// A worktree's board key. Normally its branch carries the ticket slug, but a
+// reroot or rebase can park a worktree on an off-ticket branch (tmp-*, a fixup
+// branch) mid-flight, and new-session.sh's dir still names the ticket. Falling
+// back to the dir keeps the row on the board and its session jump working
+// through any such detour. A dir naming no ticket either (a hand-made worktree)
+// leaves the branch key alone, so those rows keep matching their PR events.
+function worktreeKey(w: Worktree): string {
+  return ticketKey(w.branch) ?? ticketKey(basename(w.path)) ?? w.branch;
+}
+
+// The ticket identifier backing a worktree, from its branch or, when the branch
+// is off-ticket, its dir. Null when neither names one.
+function worktreeIdentifier(w: Worktree): string | null {
+  const m =
+    WORKTREE_IDENTIFIER_RE.exec(w.branch.toLowerCase()) ??
+    WORKTREE_IDENTIFIER_RE.exec(basename(w.path).toLowerCase());
+  return m ? m[0] : null;
 }
 
 export function liveWorktreeKeys(codebasePath: string, dir: string = worktreesDir): Set<string> {
@@ -885,6 +1044,52 @@ export function manuallyLiveKeys(worktrees: Worktree[], sessions: string[], dir:
   return keys;
 }
 
+export type SplitParentReportDeps = {
+  currentStatus: (key: string) => string | undefined;
+  emitStatus: (ev: Omit<YimbotEvent, "ts">) => void;
+};
+
+// A split's slices are their own tickets with their own rows, so none of them
+// can say what the split as a whole is doing. The tracking ticket's row does:
+// "waiting on slices" while any slice PR is open, "tracker ticket" otherwise,
+// since a split parent has no work of its own to be "working" on. Never over a
+// hold status -- that row already owes a human an answer, and this would bury
+// it. The tracker status also never replaces anything but the "working" a
+// fresh session starts with or a wait that ended, so no unrelated row is
+// disturbed.
+export function reportSplitParentRows(
+  rows: { awaiting: string[]; tracking: string[] },
+  deps: SplitParentReportDeps,
+): void {
+  const replaceable = new Set([WORKING_STATUS, AWAITING_SLICES_STATUS]);
+  const report = (branches: string[], kind: "awaiting_slices" | "tracking", replaces: (s: string) => boolean) => {
+    for (const branch of branches) {
+      const { key, label } = deriveKey({ branch });
+      const current = deps.currentStatus(key);
+      if (isHoldStatus(current)) continue;
+      if (current !== undefined && !replaces(current)) continue;
+      deps.emitStatus({ kind, key, label, title: titleFromBranch(branch) });
+    }
+  };
+  report(rows.awaiting, "awaiting_slices", () => true);
+  report(rows.tracking, "tracking", (s) => replaceable.has(s));
+}
+
+// Board keys of split-slice worktrees under `dir`: those carrying a
+// parent-session marker, which cleanup holds until the whole group resolves.
+// The board shows their merged rows as waiting on the group rather than as
+// manual work or history.
+export function splitSliceKeys(
+  worktrees: Worktree[],
+  readParent: (worktreePath: string) => string | null = readParentSession,
+  dir: string = worktreesDir,
+): Set<string> {
+  return worktreeKeysUnder(
+    worktrees.filter((w) => readParent(w.path) !== null),
+    dir,
+  );
+}
+
 // Board keys of live refine sessions. Refine rows have no worktree, so the
 // board's live-key filter unions these in to keep them visible while refining.
 export function liveRefineKeys(sessions: string[]): Set<string> {
@@ -896,24 +1101,48 @@ export function liveRefineKeys(sessions: string[]): Set<string> {
   return keys;
 }
 
+// A QA session name, strictly. A Linear team keyed `QA` gives dev sessions like
+// `qa-123-title`, which a `qa-` prefix test would mistake for QA work.
+export const QA_SESSION_RE = /^qa-[a-z]+-\d+$/;
+
+const LIVE_QA_PHASES: ReadonlySet<QaPhase> = new Set(["waiting-children", "awaiting-deploy", "in-session"]);
+
+// Board keys of QA units still in flight. Same story as refine: a QA unit is a
+// parent ticket with no worktree and no PR of its own, so without this its rows
+// are filtered off the board. Sessions alone are not enough, since a unit waiting
+// on children or on a deploy has no session yet.
+export function liveQaKeys(sessions: string[], units: Iterable<QaUnit>): Set<string> {
+  const keys = new Set<string>();
+  for (const s of sessions) {
+    if (!QA_SESSION_RE.test(s)) continue;
+    keys.add(deriveKey({ identifier: s.slice("qa-".length) }).key);
+  }
+  for (const u of units) {
+    if (!LIVE_QA_PHASES.has(u.phase)) continue;
+    keys.add(deriveKey({ identifier: u.identifier }).key);
+  }
+  return keys;
+}
+
 // The live tmux session backing a board row's key, so the TUI can jump to it.
-// Finds the worktree whose branch maps to `key` (the same deriveKey the board
-// uses), then the session for that branch: exact name first, else the identifier
-// prefix so a title edit since launch still resolves. Null when no worktree backs
-// the key (e.g. a merged/PR-only row) or no session is live.
+// Finds the worktree whose key matches (worktreeKey, the same mapping the board
+// uses), then the session for it: the exact branch name first, else the ticket
+// identifier prefix so a title edit since launch still resolves. Null when no
+// worktree backs the key (e.g. a merged/PR-only row) or no session is live.
 export function resolveSessionForKey(
   key: string,
   worktrees: Worktree[],
   sessions: string[],
 ): string | null {
-  const wt = worktrees.find((w) => deriveKey({ branch: w.branch }).key === key);
+  const ticket = ticketKeyOf(key);
+  const wt = worktrees.find((w) => worktreeKey(w) === ticket);
   if (!wt) {
-    const refine = `refine-${key.toLowerCase()}`;
+    const refine = `refine-${ticket.toLowerCase()}`;
     return sessions.includes(refine) ? refine : null;
   }
   if (sessions.includes(wt.branch)) return wt.branch;
-  const m = WORKTREE_IDENTIFIER_RE.exec(wt.branch.toLowerCase());
-  return m ? findExistingSession(m[0], sessions, []) : null;
+  const identifier = worktreeIdentifier(wt);
+  return identifier ? findExistingSession(identifier, sessions, []) : null;
 }
 
 // Deliver the autonomous-mode nudge into a pane: Escape first (declines a
@@ -1094,10 +1323,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.progressContext)),
     listSessions: listTmuxSessions,
     listWorktrees: listWorktreeDirs,
-    launch: (name) => {
+    launch: (name, issue) => {
       const { key, label } = deriveKey({ branch: name });
       emitEvent({ kind: "task_started", key, label, title: titleFromBranch(name) });
-      return launchSession(name);
+      return launchSession(name, () => releaseLaunch(deployState, issue.id, issue.identifier, log));
     },
     log,
   };
@@ -1121,11 +1350,14 @@ export function startWatcher(config: WatcherConfig): () => void {
   };
 
   // Review step (gh-driven): each heartbeat, address comments on open PRs.
+  // The stale-reap timers come back from disk so a restart mid-fix does not
+  // restart a stuck fixer's 90-minute clock.
   const reviewState = freshReviewState();
+  reviewState.fixSeenAt = loadFixSeenAt();
   // Per-tick memo for flagState below; reset at the top of every heartbeat.
   let attentionSnapshot: ReturnType<typeof foldAttention> | null = null;
   const prReviewDeps: PrReviewDeps | null = config.prReview && {
-    listOpenPRs: config.prReview.listOpenPRs,
+    listOpenPRs: config.prReview.listFixableOpenPRs,
     unresolvedInfo: config.prReview.unresolvedInfo,
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
@@ -1149,6 +1381,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     reapFix,
     now: Date.now,
     reapStaleMs: config.reapStaleMs,
+    pendingSpawnMaxMs: 2 * config.heartbeatIntervalMinutes * 60 * 1000,
     spawnFix: (name, branch, prNumber) => {
       const { key, label } = deriveKey({ branch });
       emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch), pr: prNumber });
@@ -1181,7 +1414,8 @@ export function startWatcher(config: WatcherConfig): () => void {
     listMergedPRs: cleanup.listMergedPRs,
     listClosedUnmergedPRs: cleanup.listClosedUnmergedPRs,
     listOpenPRs: cleanup.listOpenPRs,
-    issueStateType: cleanup.issueStateType,
+    issueState: cleanup.issueState,
+    clearedStates: cleanup.clearedStates,
     hasNoUnpushedWork: worktreeFullyPushed,
     worktreesDir,
     teardown: (branch) => {
@@ -1192,19 +1426,28 @@ export function startWatcher(config: WatcherConfig): () => void {
     // Every tick, transition any board row still shown as active to merged once its
     // PR has merged, even with no worktree left for teardown to emit against (the
     // worktree was reaped, or cleaned up out of band). Scoped to keys already on the
-    // board so a backlog of old merges never spawns fresh rows. Split slices share
-    // their ticket's key, so a key is only marked merged once no open PR maps to it.
-    reconcileMerged: (mergedBranches, openBranches) => {
+    // board so a backlog of old merges never spawns fresh rows. A ticket's
+    // follow-up or stacked PR shares its row key, so a key is only marked merged
+    // once no open PR maps to it.
+    reconcileMerged: (merged, open) => {
+      const events = readEvents();
       const active = new Set(
-        reduceRows(readEvents(), Date.now())
+        reduceRows(events, Date.now())
           .filter((r) => !r.terminal)
           .map((r) => r.key),
       );
-      for (const branch of branchesFullyMerged(mergedBranches, openBranches)) {
-        const { key, label } = deriveKey({ branch });
-        if (active.has(key)) emitStatus({ kind: "merged", key, label, title: titleFromBranch(branch) });
+      for (const k of mergedRowKeys(merged, open)) {
+        if (!active.has(k.key)) continue;
+        // A unit that is its own ticket has a merged PR the whole time QA runs,
+        // so without this the row flips between `merged` and its qa status every
+        // tick. The QA step owns the row until it posts or fails.
+        if (currentStatus(k.key, events)?.startsWith("qa")) continue;
+        emitStatus({ kind: "merged", key: k.key, label: k.label });
       }
     },
+    rowKeyOf: (branch) => deriveKey({ branch }).key,
+    reportHeldMerged: (branches) => setHeldMergedKeys(new Set(branches.map((b) => deriveKey({ branch: b }).key))),
+    reportSplitParents: (rows) => reportSplitParentRows(rows, { currentStatus, emitStatus }),
     listSessions: listTmuxSessions,
     killSession: killTmuxSession,
     readParentSession,
@@ -1257,24 +1500,56 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: advanceLog,
   };
 
+  const qaLog = (msg: string) => console.log(`[qa] ${msg}`);
+  const qaState = config.qa ? loadQaState() : freshQaState();
+  const qaDeps: QaDeps | null = config.qa && {
+    ...config.qa,
+    hasSession: tmuxHasSession,
+    kill: killTmuxSession,
+    spawn: (unit, children, nonprodUrl) => spawnQaSession(unit.identifier, nonprodUrl, children, unit.prs),
+    liveQaSessions: () => listTmuxSessions().filter((n) => QA_SESSION_RE.test(n)).length,
+    now: Date.now,
+    emit: (kind, identifier) => {
+      const { key, label } = deriveKey({ identifier });
+      emitStatus({ kind, key, label });
+    },
+    log: qaLog,
+  };
+
   // Ready step (gh-driven): each heartbeat, add the ready-to-merge label to clean
   // open PRs (autonomous mode only; never removed here, and at most once per PR
   // via the latch in readyState, so a removed label stays removed). Independent
   // of the fixers, which keep running on every open PR, so a labeled PR that
   // regresses is still fixed and simply keeps its label while the fixers work.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
+  const isReadyClaim = (status: string | undefined) =>
+    status === statusFor("ready_to_merge")?.status ||
+    status === statusFor("ready_unqueued")?.status ||
+    status === statusFor("draft_pr")?.status;
   const readyState = freshReadyState();
   // Rebuilt from scratch by listOpenPRs each tick, before addLabel runs (see
   // readyOnce), so the wraps below can key events by branch like every
   // other step instead of by PR number, letting them unify with the ticket's
   // row. Cleared each tick so closed/merged PRs do not accumulate forever.
   const prBranchByNumber = new Map<number, string>();
+  // The PR's EXTRA_REPOS slug, so the row's TUI actions address the right repo.
+  const prRepoByNumber = new Map<number, string>();
+  const keyForPr = (n: number) => {
+    const branch = prBranchByNumber.get(n);
+    const repo = prRepoByNumber.get(n);
+    const k = branch ? prRowKey({ branch, pr: n, repo }) : deriveKey({ pr: n });
+    return { ...k, repo };
+  };
   const readyDeps: PrReadyDeps | null = config.ready && {
     ...config.ready,
     listOpenPRs: async () => {
       const prs = await config.ready!.listOpenPRs();
       prBranchByNumber.clear();
-      for (const pr of prs) prBranchByNumber.set(pr.number, pr.headRefName);
+      prRepoByNumber.clear();
+      for (const pr of prs) {
+        prBranchByNumber.set(pr.number, pr.headRefName);
+        if (pr.repo) prRepoByNumber.set(pr.number, pr.repo);
+      }
       return prs;
     },
     // Board emission is owned by onVerdict below (fires whether or not a label
@@ -1283,11 +1558,41 @@ export function startWatcher(config: WatcherConfig): () => void {
     // stale fix status. The label writers stay pure GitHub side effects. A ready
     // draft says "draft pr" instead: it cannot merge until a human marks it
     // ready for review.
-    onVerdict: (n: number, verdict, hasLabel, isDraft) => {
-      if (!boardReadyToMerge(verdict, hasLabel)) return;
-      const branch = prBranchByNumber.get(n);
-      const k = branch ? deriveKey({ branch }) : deriveKey({ pr: n });
-      emitStatus({ kind: isDraft ? "draft_pr" : "ready_to_merge", key: k.key, label: k.label, pr: n });
+    onVerdict: (n: number, verdict, hasLabel, isDraft, reason) => {
+      const k = keyForPr(n);
+      if (!boardReadyToMerge(verdict, hasLabel)) {
+        const status = currentStatus(k.key);
+        // An extra-repo PR's row exists only through its own events (no
+        // session ever emitted task_started for it), so a PR that is not yet
+        // ready still needs a row to sit in the review pane.
+        if (k.repo && status === undefined) {
+          emitStatus({ kind: "task_started", key: k.key, label: k.label, pr: n, repo: k.repo });
+        }
+        // A row still claiming readiness after a hard failure names the failure.
+        // Only a readiness claim is replaced: a fixer's own status ("fixing CI",
+        // "addressing review") is already the truth and is left alone.
+        if (verdict === "regressed" && reason && isReadyClaim(status)) {
+          const kind = reason === "ci" ? "ci_failing" : "review_unresolved";
+          emitStatus({ kind, key: k.key, label: k.label, pr: n, repo: k.repo });
+        }
+        return;
+      }
+      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode()), key: k.key, label: k.label, pr: n, repo: k.repo });
+    },
+    // Where the row sits, reported separately from its status so a queued PR
+    // stays in the merge pane while its status walks through a CI fix or a
+    // review round. Deduped by emitSection, so this is a no-op most heartbeats.
+    onSection: (n: number, section) => {
+      const k = keyForPr(n);
+      emitSection({ kind: sectionKind(section), key: k.key, label: k.label, pr: n, repo: k.repo });
+    },
+    // A queue-blocked PR stops reading as ready-to-merge. Left alone once the
+    // blocked fixer has claimed the row ("unblocking"), so this never stomps a
+    // fix in flight; the label coming off hands the row back to onVerdict.
+    onBlocked: (n: number) => {
+      const k = keyForPr(n);
+      if (currentStatus(k.key) === statusFor("blocked_fix_started")?.status) return;
+      emitStatus({ kind: "merge_blocked", key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,
@@ -1351,6 +1656,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     fetchMergedIdentifiers,
+    clearedStates: config.clearedStates,
     moveToInProgress: async (issue) => {
       await moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId);
       const { key, label } = deriveKey({ identifier: issue.identifier });
@@ -1388,6 +1694,7 @@ export function startWatcher(config: WatcherConfig): () => void {
         await fetchInProgressIssuesWithBlockers(config.apiKey, config.progressContext),
       ),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
+    clearedStates: config.clearedStates,
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,
@@ -1415,7 +1722,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
-      if (prReviewDeps) await reviewOnce(reviewState, prReviewDeps);
+      if (prReviewDeps) {
+        await reviewOnce(reviewState, prReviewDeps);
+        saveFixSeenAt(reviewState.fixSeenAt);
+      }
       if (cleanupDeps) await cleanupOnce(cleanupDeps);
       // The reattach step MUST run after cleanup: cleanup tears down resolved
       // (merged/closed) worktrees, and reattach re-couples the rest. Running it
@@ -1426,6 +1736,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       // which reattach reuses rather than creates.)
       if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
+      if (qaDeps) {
+        await qaOnce(qaState, qaDeps);
+        saveQaState(qaState);
+      }
       if (readyDeps) await readyOnce(readyState, readyDeps);
       // Refine runs right before claim so an estimate that lands this tick is
       // visible to the claim query on the next one, never mid-selection.

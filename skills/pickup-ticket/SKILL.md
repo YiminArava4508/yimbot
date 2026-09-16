@@ -99,6 +99,11 @@ asking for a behavior change.
    - **If over the hard limit:** follow the split flow described in **PR
      Size Limits** below instead of opening a single PR. The ticket branch
      itself never gets a PR in a split; only its slice branches do.
+   - **If the change lands in another repo** (a terraform repo, say), branch
+     there under the same name as this worktree's branch and open the PR from
+     that checkout (`gh pr create` in that directory). The board links a PR to
+     this session by the ticket slug in its branch name, so a differently
+     named branch leaves the row without a PR.
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
      PR, or in a split the whole series, is open.
@@ -116,11 +121,14 @@ review, split, and local-server steps above do not apply.
 
 1. **Investigate** as cheaply as correctness allows. Any code you write is
    throwaway scaffolding: never open a PR for it.
-2. **Report findings on the ticket.** Post a comment (Linear or Shortcut MCP)
-   with: the question, what you tried, the answer or recommendation, and
-   suggested next steps (for example the follow-up ticket to write).
-3. **Move the ticket to the Review column.** The human reads the findings there
-   and moves it to Done. For Linear tickets (`eng-*` branches) the daemon then
+2. **Report findings on the ticket.** Post a comment with: the question, what
+   you tried, the answer or recommendation, and suggested next steps (for
+   example the follow-up ticket to write). Linear tickets (`eng-*`): write the
+   markdown to a file and run `~/comment-ticket.sh <TICKET> - < findings.md`.
+   Shortcut tickets (`sc-*`): use the Shortcut MCP.
+3. **Move the ticket to the Review column.** Linear: run
+   `~/move-ticket.sh <TICKET> "In Review"`. Shortcut: use the Shortcut MCP.
+   The human reads the findings there and moves it to Done. For Linear tickets (`eng-*` branches) the daemon then
    reaps this worktree and session once the ticket reaches Done or Canceled,
    but only if step 4 was honored. Shortcut tickets (`sc-*`) are not watched by
    the daemon: note in the findings summary that the session should be ended
@@ -218,6 +226,26 @@ the reuse audit above), and only then decide how to slice it into PRs.
      its own worktree + session, always via the script.
 - Repeat until the whole series is open, then move the ticket **and every
   slice subticket** to the Review column, once each.
+
+**If a slice did end up stacked on a sibling** (a PR based on another slice's
+branch rather than `main`), it gets no real CI: the CI workflow only triggers on
+PRs whose base matches, so the stack sits on `pr-size` alone. Reroot it onto
+`main`, but do the move **in place, on the ticket branch**:
+
+```bash
+git switch <ticket-branch>
+git branch backup/<ticket>-pre-reroot HEAD
+git rebase --onto main <sibling-branch>
+```
+
+Never build the rerooted history on a temp branch to move back afterwards. That
+is two steps, and if the second is denied or the session ends between them, the
+worktree is stranded on a branch carrying no ticket slug, which breaks the
+board's row and its session jump. If any git command in the sequence is denied,
+**stop and hand the remaining commands to the human** rather than improvising a
+workaround that leaves history half-moved. Only reroot when the slice's own
+commits do not use the sibling's code: check the diff first, build the affected
+modules after.
 
 Prefer to catch large scope at **plan time**: if the plan clearly exceeds
 ~500 LOC, anticipate the split from the start. Even so, implement the whole

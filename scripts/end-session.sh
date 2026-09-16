@@ -62,6 +62,22 @@ teardown_steps() {
                    || echo "remove_worktree delete_branch kill_session"
 }
 
+# Extract the worktree path git has checked branch $2 out into, from `git
+# worktree list --porcelain` output ($1). Empty (and returns 1) if no worktree
+# holds that branch. Used to recover when a worktree's dir name diverges from
+# its branch, so sanitize_worktree_dir cannot find it. Pure; unit-tested via
+# sourcing.
+worktree_path_for_branch() {
+  local porcelain=$1 target="refs/heads/$2" path=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path=${line#worktree } ;;
+      "branch $target") echo "$path"; return 0 ;;
+    esac
+  done <<< "$porcelain"
+  return 1
+}
+
 # When sourced (e.g. by a test) load the functions above and stop; only run
 # teardown when the script is executed directly.
 (return 0 2>/dev/null) && return 0
@@ -82,7 +98,19 @@ WORKTREE_DIR=$(sanitize_worktree_dir "$NAME")
 WORKTREE=$WORKTREES_DIR/$WORKTREE_DIR
 
 if [ ! -d "$WORKTREE" ]; then
-  die "'$NAME' has no worktree at $WORKTREE - is this a new-session.sh session?"
+  # The conventional dir is absent. A worktree's dir name and its checked-out
+  # branch can diverge (e.g. a branch checked out into another session's dir),
+  # so ask git which dir actually holds this branch before giving up. Without
+  # this, the daemon reconciles by branch but this script only ever looked by
+  # sanitized name, so a diverged worktree could never be torn down and the
+  # cleanup step looped every heartbeat.
+  RESOLVED=$(worktree_path_for_branch "$(git -C "$CODEBASE_PATH" worktree list --porcelain 2>/dev/null)" "$NAME")
+  if [ -n "$RESOLVED" ] && [ -d "$RESOLVED" ]; then
+    log "Worktree dir diverges from branch; resolved by branch to $RESOLVED"
+    WORKTREE=$RESOLVED
+  else
+    die "'$NAME' has no worktree at $WORKTREE - is this a new-session.sh session?"
+  fi
 fi
 
 log "Ending session '$NAME'"

@@ -4,23 +4,29 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
-import { pullCodebase } from "./codebase-sync.ts";
+import { clearedStateNames } from "./blocked.ts";
+import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
-import { pinEventsLog } from "./events.ts";
+import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
 import { envCsvSet, envOr } from "./env.ts";
 import {
   addLabel,
   blockedInfo,
   checksInfo,
+  compareStatus,
+  defaultBranch,
   ghRunner,
   humanChangesRequested,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
+  listSuccessfulRunHeadShas,
   mergeableInfo,
-  prLabels,
+  prMergeCommit,
+  prState,
   repoSlug,
+  type RepoSlug,
   unresolvedThreadInfo,
   viewerLogin,
 } from "./gh.ts";
@@ -30,14 +36,19 @@ import {
   countAssignedInState,
   fetchMarkedCommentBody,
   fetchIssueByIdentifier,
-  fetchIssueStateType,
+  fetchIssueFamily,
+  fetchIssueState,
   fetchUsers,
   resolveContext,
   upsertMarkedComment,
 } from "./linear-api.ts";
 import { readMode } from "./mode.ts";
+import { mergeOpenPRs, parseExtraRepos } from "./multi-repo.ts";
+import { setOpenPrKeys } from "./open-prs.ts";
 import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
+import { observeReach } from "./reach.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
+import { QA_MARKER, qaConfigFor } from "./qa.ts";
 import { ensureHostLinks } from "./setup.ts";
 import { sessionScriptPath, startWatcher } from "./watcher.ts";
 
@@ -168,6 +179,33 @@ export async function startDaemon(): Promise<() => void> {
   // from CODEBASE_PATH's origin; if gh is missing or that fails, the review step is
   // disabled (null) rather than crashing the daemon.
   const gh = ghRunner(codebasePath);
+  // Other repos a ticket's PR may land in (a terraform repo, say). Each gets its
+  // own runner pointed there via GH_REPO; the open/merged/closed lists below span
+  // all of them so an outside PR links to its ticket's row, reports a section
+  // and a ready verdict, and reaps the worktree when it merges. Fix sessions stay
+  // on the codebase repo (see the review step's listOpenPRs).
+  const extraRepos = parseExtraRepos(envOr("EXTRA_REPOS", ""));
+  const extraRunners = extraRepos.map((repo) => ({ repo, run: ghRunner(codebasePath, repo) }));
+  // Rebuilt by every open-PR list; a PR number nobody listed this tick is the
+  // codebase repo's, which is what every caller assumed before EXTRA_REPOS.
+  const repoByNumber = new Map<number, string>();
+  const runnerFor = (n: number) => extraRunners.find((r) => r.repo === repoByNumber.get(n))?.run ?? gh;
+  const listAllOpenPRs = async () => {
+    const [primary, ...extras] = await Promise.all([
+      listMyOpenPRs(gh),
+      ...extraRunners.map((r) => listMyOpenPRs(r.run, r.repo)),
+    ]);
+    const prs = mergeOpenPRs(primary, extras, (msg) => console.log(`[yimbot] ${msg}`));
+    repoByNumber.clear();
+    for (const pr of prs) if (pr.repo) repoByNumber.set(pr.number, pr.repo);
+    return prs;
+  };
+  const listAllMergedPRs = async () =>
+    (await Promise.all([listMyMergedPRs(gh), ...extraRunners.map((r) => listMyMergedPRs(r.run, r.repo))])).flat();
+  const listAllClosedUnmergedPRs = async () =>
+    (
+      await Promise.all([listMyClosedUnmergedPRs(gh), ...extraRunners.map((r) => listMyClosedUnmergedPRs(r.run))])
+    ).flat();
   // A ticket's labels don't change mid-flight, and reacting slowly to a relabel
   // is an explicit non-goal of the design, so this is decoupled from the
   // heartbeat rather than going stale (and re-fetched) every tick.
@@ -181,7 +219,11 @@ export async function startDaemon(): Promise<() => void> {
   });
   let prReview:
     | {
+        // Every repo's open PRs (the board, ready, and cleanup steps).
         listOpenPRs: () => ReturnType<typeof listMyOpenPRs>;
+        // The codebase repo's only: the review step's fixes spawn worktrees
+        // from codebasePath, where an extra repo's branch does not exist.
+        listFixableOpenPRs: () => ReturnType<typeof listMyOpenPRs>;
         unresolvedInfo: (n: number) => ReturnType<typeof unresolvedThreadInfo>;
         mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
         checksInfo: (n: number) => ReturnType<typeof checksInfo>;
@@ -192,16 +234,32 @@ export async function startDaemon(): Promise<() => void> {
   try {
     const slug = await repoSlug(gh);
     const viewer = await viewerLogin(gh);
-    prReview = {
-      listOpenPRs: async () => prLabelFilter(await listMyOpenPRs(gh)),
-      unresolvedInfo: (n) => unresolvedThreadInfo(gh, slug, n, viewer, trustedReviewers),
-      mergeableInfo: (n) => mergeableInfo(gh, n),
-      checksInfo: (n) => checksInfo(gh, n, ignoreChecks),
-      blockedInfo: (n) => blockedInfo(gh, n, blockedLabelName),
-      humanChangesRequested: (n) => humanChangesRequested(gh, n, trustedReviewers),
+    const slugFor = (n: number): RepoSlug => {
+      const repo = repoByNumber.get(n);
+      if (!repo) return slug;
+      const [owner, name] = repo.split("/");
+      return { owner, name };
     };
+    const listOpenPRs = async () => {
+      const prs = await prLabelFilter(await listAllOpenPRs());
+      // Only on success: a gh failure throws above and leaves the previous
+      // set cached, so the board does not blank its worktree-less rows for a
+      // heartbeat over one bad list.
+      setOpenPrKeys(new Set(prs.map((pr) => prRowKey({ branch: pr.headRefName, pr: pr.number, repo: pr.repo }).key)));
+      return prs;
+    };
+    prReview = {
+      listOpenPRs,
+      listFixableOpenPRs: async () => (await listOpenPRs()).filter((pr) => pr.repo === undefined),
+      unresolvedInfo: (n) => unresolvedThreadInfo(runnerFor(n), slugFor(n), n, viewer, trustedReviewers),
+      mergeableInfo: (n) => mergeableInfo(runnerFor(n), n),
+      checksInfo: (n) => checksInfo(runnerFor(n), n, ignoreChecks),
+      blockedInfo: (n) => blockedInfo(runnerFor(n), n, blockedLabelName),
+      humanChangesRequested: (n) => humanChangesRequested(runnerFor(n), n, trustedReviewers),
+    };
+    const extraNote = extraRepos.length ? `; also watching ${extraRepos.join(", ")}` : "";
     console.log(
-      `[yimbot] review step ON: addressing PR comments + conflicts + failing CI + queue blocks in ${slug.owner}/${slug.name} as ${viewer}`,
+      `[yimbot] review step ON: addressing PR comments + conflicts + failing CI + queue blocks in ${slug.owner}/${slug.name} as ${viewer}${extraNote}`,
     );
   } catch (err) {
     console.log(`[yimbot] review step OFF: gh unavailable or repo/viewer unresolved (${err})`);
@@ -214,14 +272,20 @@ export async function startDaemon(): Promise<() => void> {
   // suppress no duplicate work, only cost a Linear lookup per merged/closed PR,
   // and would leave a PR that changed slices mid-flight orphaned instead of
   // reaped.
+  // "Landed" for both the blocked-by rule and the cleanup gates: the merge state
+  // and the post-merge review state, which a team maps to "started" even though
+  // the work is finished. Declared here because cleanup needs it too.
+  const mergedStateName = envOr("MERGED_STATE_NAME", "Merged");
+  const clearedStates = clearedStateNames(mergedStateName, reviewStateName);
   const cleanup =
     autoCleanup && prReview
       ? {
           codebasePath,
-          listMergedPRs: () => listMyMergedPRs(gh),
-          listClosedUnmergedPRs: () => listMyClosedUnmergedPRs(gh),
-          listOpenPRs: () => listMyOpenPRs(gh),
-          issueStateType: (identifier: string) => fetchIssueStateType(apiKey, identifier),
+          listMergedPRs: listAllMergedPRs,
+          listClosedUnmergedPRs: listAllClosedUnmergedPRs,
+          listOpenPRs: listAllOpenPRs,
+          issueState: (identifier: string) => fetchIssueState(apiKey, identifier),
+          clearedStates,
         }
       : null;
   console.log(
@@ -237,14 +301,18 @@ export async function startDaemon(): Promise<() => void> {
   }
   const judgeModel = envOr("AC_JUDGE_MODEL", "");
   const execFileAsync = promisify(execFile);
+  // The second claude path (runHeadless is the other), wrapped the same way so
+  // the board's reachability warning sees every call the daemon makes.
   const judgeRun: JudgeRunner = async (prompt) => {
     const args = ["-p", prompt];
     if (judgeModel) args.push("--model", judgeModel);
-    const { stdout } = await execFileAsync("claude", args, {
-      cwd: codebasePath,
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 120_000,
-    });
+    const { stdout } = await observeReach("claude", () =>
+      execFileAsync("claude", args, {
+        cwd: codebasePath,
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 120_000,
+      }),
+    );
     return stdout;
   };
   // On unless explicitly disabled, matching AUTO_READY_LABEL. Reuses judgeRun,
@@ -265,7 +333,7 @@ export async function startDaemon(): Promise<() => void> {
   const advance =
     autoContinue && prReview
       ? {
-          listMergedPRs: async () => prLabelFilter(await listMyMergedPRs(gh)),
+          listMergedPRs: async () => prLabelFilter(await listAllMergedPRs()),
           fetchAcComment: (issueId: string) => fetchMarkedCommentBody(apiKey, issueId, AC_COMMENT_MARKER),
           fetchDescription: async (identifier: string) => {
             const d = await fetchIssueByIdentifier(apiKey, identifier);
@@ -284,6 +352,80 @@ export async function startDaemon(): Promise<() => void> {
       : `[yimbot] advance step OFF${autoContinue ? " (gh unavailable)" : ""}`,
   );
 
+  // QA step: once every child of a parent ticket merged and the nonprod deploy
+  // workflow includes the last merge, spawn a session that posts "how to test"
+  // on the parent. Off unless the primary repo's workflow + url are set; gated
+  // on gh like the other post-merge steps.
+  const qaPrimary = qaConfigFor(process.env);
+  // Everything the step needs, built only when it is on, so a disabled step
+  // neither aborts startup on a bad timeout nor resolves a default branch.
+  const buildQa = async () => {
+    const qaTimeoutMinutes = Number(envOr("QA_SESSION_TIMEOUT_MINUTES", "45"));
+    if (!Number.isFinite(qaTimeoutMinutes) || qaTimeoutMinutes <= 0) {
+      throw new Error("QA_SESSION_TIMEOUT_MINUTES must be a positive number");
+    }
+    const primaryBranch = await resolveDefaultBranch(codebasePath);
+    const ghFor = (repo?: string) => extraRunners.find((r) => r.repo === repo)?.run ?? gh;
+    // The deploy workflow runs on each repo's own default branch, which is not
+    // always the primary repo's. Resolved once per repo; a failed lookup falls
+    // back to the primary branch rather than parking the unit in awaiting-deploy.
+    const branchCache = new Map<string, string>();
+    const branchFor = async (repo?: string) => {
+      if (!repo) return primaryBranch;
+      const cached = branchCache.get(repo);
+      if (cached) return cached;
+      try {
+        const branch = await defaultBranch(ghFor(repo), repo);
+        if (branch) branchCache.set(repo, branch);
+        return branch || primaryBranch;
+      } catch (err) {
+        console.log(`[qa] default branch of ${repo} failed, using ${primaryBranch}: ${err}`);
+        return primaryBranch;
+      }
+    };
+    const slugCache = new Map<string, { owner: string; name: string }>();
+    const slugFor = async (repo?: string) => {
+      if (repo) {
+        const [owner, name] = repo.split("/");
+        return { owner, name };
+      }
+      const cached = slugCache.get("");
+      if (cached) return cached;
+      const slug = await repoSlug(gh);
+      slugCache.set("", slug);
+      return slug;
+    };
+    return {
+      listMergedPRs: async () => prLabelFilter(await listAllMergedPRs()),
+      fetchFamily: (identifier: string) => fetchIssueFamily(apiKey, identifier),
+      fetchState: async (identifier: string) => (await fetchIssueState(apiKey, identifier)).name,
+      clearedStates,
+      configFor: (repo?: string) => qaConfigFor(process.env, repo),
+      mergeCommit: (pr: number, repo?: string) => prMergeCommit(ghFor(repo), pr),
+      deployedHeadShas: async (workflow: string, repo?: string) =>
+        listSuccessfulRunHeadShas(ghFor(repo), workflow, await branchFor(repo)),
+      isAncestorOrEqual: async (base: string, head: string, repo?: string) => {
+        try {
+          const status = await compareStatus(ghFor(repo), await slugFor(repo), base, head);
+          return status === "identical" || status === "ahead";
+        } catch (err) {
+          console.log(`[qa] compare ${base.slice(0, 8)}...${head.slice(0, 8)} failed: ${err}`);
+          return false;
+        }
+      },
+      hasMarker: async (issueId: string) => (await fetchMarkedCommentBody(apiKey, issueId, QA_MARKER)) !== "",
+      activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
+      maxInProgress,
+      sessionTimeoutMs: qaTimeoutMinutes * 60_000,
+    };
+  };
+  const qa = qaPrimary && prReview ? await buildQa() : null;
+  console.log(
+    qa
+      ? `[yimbot] qa step ON: how-to-test comments on parents after nonprod deploy (${qaPrimary!.workflow})`
+      : `[yimbot] qa step OFF${qaPrimary && !prReview ? " (gh unavailable)" : ""}`,
+  );
+
   // Ready step config. AUTO_READY_LABEL is on unless explicitly disabled with a
   // recognized off-value. Gated on the same gh-availability signal as
   // review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
@@ -298,8 +440,8 @@ export async function startDaemon(): Promise<() => void> {
           unresolvedInfo: prReview.unresolvedInfo,
           mergeableInfo: prReview.mergeableInfo,
           checksInfo: prReview.checksInfo,
-          prLabels: (n: number) => prLabels(gh, n),
-          addLabel: (n: number, label: string) => addLabel(gh, n, label),
+          prState: (n: number) => prState(runnerFor(n), n),
+          addLabel: (n: number, label: string) => addLabel(runnerFor(n), n, label),
           label: readyLabelName,
           blockedLabel: blockedLabelName,
           soakMs: readySoakMs,
@@ -317,10 +459,13 @@ export async function startDaemon(): Promise<() => void> {
   // Deliberately unfiltered: this list answers "has my blocker merged?", and a
   // blocker can live on the other instance's slice of the board. Filtering it
   // would leave a ticket blocked forever behind a merged bot PR.
-  const blocked = prReview ? { listMergedPRs: () => listMyMergedPRs(gh) } : null;
+  const blocked = prReview ? { listMergedPRs: listAllMergedPRs } : null;
+  // A blocker stops blocking once it reaches the merge state: Done is too late,
+  // since that column means released. The review state counts too (it is past
+  // merge), as does any completed/canceled state, by type.
   console.log(
     blocked
-      ? "[yimbot] blocked-by handling ON: deferring + moving back tickets blocked by an unmerged PR"
+      ? `[yimbot] blocked-by handling ON: deferring + moving back tickets whose blocker is short of "${mergedStateName}"`
       : "[yimbot] blocked-by handling OFF (gh unavailable)",
   );
 
@@ -349,6 +494,7 @@ export async function startDaemon(): Promise<() => void> {
     reviewContext,
     heartbeatIntervalMinutes,
     reapStaleMs: reapStaleMinutes * 60 * 1000,
+    clearedStates,
     claim: {
       autoClaim,
       riskLabels,
@@ -362,6 +508,7 @@ export async function startDaemon(): Promise<() => void> {
     prReview,
     cleanup,
     advance,
+    qa,
     ready,
     blocked,
     dependencyScan,

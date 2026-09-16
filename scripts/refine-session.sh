@@ -31,7 +31,7 @@ WIN_ID=$(tmux new-session -d -s "$SESSION" -c "$CODEBASE_PATH" -P -F '#{window_i
 tmux rename-window -t "$WIN_ID" Claude
 
 ID_UPPER=$(printf '%s' "$TICKET" | tr '[:lower:]' '[:upper:]')
-PROMPT="Fetch Linear issue $ID_UPPER via the Linear MCP (mcp__linear-server__get_issue) and read its description and comments. Then invoke the refine-ticket skill and follow it exactly."
+PROMPT="Run ~/get-ticket.sh $ID_UPPER to read Linear issue $ID_UPPER (description and comments). Then invoke the refine-ticket skill and follow it exactly."
 CMD=$(build_claude_cmd)
 tmux send-keys -t "$WIN_ID" "$CMD \"$PROMPT\"" C-m
 echo "Created refine session '$SESSION' for $ID_UPPER"

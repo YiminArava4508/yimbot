@@ -1,13 +1,16 @@
 // index.ts
-import { createWriteStream, existsSync, readFileSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { format, promisify } from "node:util";
+import { format } from "node:util";
 import { execFile } from "node:child_process";
 import { envOr } from "./src/env.ts";
-import { emitEvent, emitStatus } from "./src/events.ts";
-import { applyReadyLabel, ghRunner, markPrReadyForReview, prDiff, prReviewMeta } from "./src/gh.ts";
+import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
+import { applyReadyLabel, ghRunner, prDiff, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
+import { heldMergedKeys } from "./src/held-merged.ts";
+import { openPrKeys } from "./src/open-prs.ts";
+import { loadQaState } from "./src/qa-state.ts";
 import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
@@ -16,16 +19,21 @@ import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
-import { readViewed, writeViewed } from "./src/review-state.ts";
+import { archMapPath, readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
+import { runHeadless } from "./src/headless.ts";
+import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
+import { contextFilePath } from "./src/review-context.ts";
 import {
   bindReturnKey,
   currentTmuxPane,
   listGitWorktrees,
   listTmuxSessions,
+  liveQaKeys,
   liveRefineKeys,
   liveWorktreeKeys,
   manuallyLiveKeys,
+  splitSliceKeys,
   resolveSessionForKey,
   switchToSession,
   unbindReturnKey,
@@ -107,54 +115,110 @@ if (process.stdout.isTTY) {
       return result;
     },
   };
-  const execFileAsync = promisify(execFile);
   // Same headless claude -p shape as the daemon's judgeRun; the given model env
   // overrides, falling back to the judge's model knob.
-  const runHeadless = (model: string) => async (prompt: string) => {
-    const args = ["-p", prompt];
-    if (model) args.push("--model", model);
-    const { stdout } = await execFileAsync("claude", args, {
-      cwd: currentCodebasePath(),
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: 120_000,
-    });
-    return stdout;
+  const headless = (model: string) => runHeadless(model, currentCodebasePath());
+  const claudeRegistry = makeSessionRegistry(spawnClaudePty);
+  // The claude session runs in the PR's worktree so it can read the actual
+  // branch; a PR-only row with no worktree falls back to the main checkout.
+  const worktreeForKey = (key: string): string => {
+    const wt = listGitWorktrees(currentCodebasePath()).find(
+      (w) => deriveKey({ branch: w.branch }).key === key,
+    );
+    return wt?.path ?? currentCodebasePath();
   };
-  const reviewDeps = (pr: number): ReviewDeps => {
-    const run = ghRunner(currentCodebasePath());
+  // Queue a PR the operator signed off on by hand: promote it if it is still a
+  // draft, label it, then move its row now rather than leaving it where it was
+  // until the next heartbeat re-reports the section. Shared by the board's r
+  // and the review overlay's y.
+  // `repo` is the row's EXTRA_REPOS slug when its PR lives outside the
+  // codebase repo; the runner then points gh there.
+  const queueToMerge = async (pr: number, key: string, label: string, repo?: string): Promise<void> => {
+    const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
+    await applyReadyLabel(ghRunner(currentCodebasePath(), repo), pr, readyLabel);
+    emitQueuedToMerge({ key, label, pr, repo });
+  };
+  const reviewDeps = (pr: number, key: string, label: string, repo?: string): ReviewDeps => {
+    const run = ghRunner(currentCodebasePath(), repo);
+    const cwd = worktreeForKey(key);
     return {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
-      runGrouping: (prompt) => runHeadless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
-      markReady: () => markPrReadyForReview(run, pr),
+      runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
+      queueToMerge: () => queueToMerge(pr, key, label, repo),
       loadViewed: (headSha) => readViewed(pr, headSha),
       saveViewed: (headSha, viewed) => writeViewed(pr, headSha, viewed),
+      loadGroups: (headSha) => readGroups(pr, headSha),
+      saveGroups: (headSha, groups) => writeGroups(pr, headSha, groups),
+      loadArchMap: () => {
+        try {
+          return readFileSync(archMapPath(currentCodebasePath()), "utf8");
+        } catch {
+          return null;
+        }
+      },
+      runAnnotation: (prompt) =>
+        headless(envOr("ARCH_ANNOTATE_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
+      loadFlow: (headSha) => readFlow(pr, headSha),
+      saveFlow: (headSha, flow) => writeFlow(pr, headSha, flow),
+      regenerateArchMap: () =>
+        new Promise<void>((resolve, reject) => {
+          execFile(
+            process.execPath,
+            ["--import", "tsx/esm", join(import.meta.dirname, "scripts/arch-map.ts")],
+            { env: { ...process.env, CODEBASE_PATH: currentCodebasePath() } },
+            (err) => (err ? reject(err) : resolve()),
+          );
+        }),
+      claudeSession: () => {
+        try {
+          return claudeRegistry.getOrSpawn(pr, cwd);
+        } catch (err) {
+          console.error(`[review] claude session for #${pr} failed:`, err);
+          return null;
+        }
+      },
+      sessionName: () =>
+        resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
+      openSession: (session) => switchToSession(session),
+      writeContext: (content) => {
+        try {
+          ensureContextScaffold(cwd);
+          writeFileSync(contextFilePath(cwd), content);
+          return true;
+        } catch (err) {
+          console.error(`[review] context write for #${pr} failed:`, err);
+          return false;
+        }
+      },
     };
   };
   runTui({
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
+      claudeRegistry.killAll();
       stop();
       process.exit(0);
     },
     liveKeys: () => {
       const keys = liveWorktreeKeys(currentCodebasePath());
-      for (const k of liveRefineKeys(listTmuxSessions())) keys.add(k);
+      const sessions = listTmuxSessions();
+      for (const k of liveRefineKeys(sessions)) keys.add(k);
+      for (const k of liveQaKeys(sessions, loadQaState().units.values())) keys.add(k);
       return keys;
     },
+    openPrKeys,
     manualLiveKeys: () => manuallyLiveKeys(listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
+    heldSliceKeys: () => splitSliceKeys(listGitWorktrees(currentCodebasePath())),
+    heldMergedKeys,
     onToggleFlag: (key, label, flagged) =>
       emitEvent(
         flagged
           ? { kind: "unflagged", key, label }
           : { kind: "flagged", key, label, reason: "manual" },
       ),
-    onAddReadyLabel: async (pr, key, label) => {
-      const readyLabel = envOr("READY_MERGE_LABEL", "ready-to-merge");
-      await applyReadyLabel(ghRunner(currentCodebasePath()), pr, readyLabel);
-      emitStatus({ kind: "ready_to_merge", key, label, pr });
-    },
+    onAddReadyLabel: queueToMerge,
     onOpenSession: (key) => {
       const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);
@@ -165,9 +229,9 @@ if (process.stdout.isTTY) {
     settings,
     reviewDeps,
     orderDeps: {
-      fetchMeta: (pr) => prReviewMeta(ghRunner(currentCodebasePath()), pr),
+      fetchMeta: (pr, repo) => prReviewMeta(ghRunner(currentCodebasePath(), repo), pr),
       run: (prompt) =>
-        runHeadless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
+        headless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
     },
   });
 } else {

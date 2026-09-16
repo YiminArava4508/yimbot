@@ -72,6 +72,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     now: () => 0,
     reapStaleMs: 90 * 60 * 1000,
+    pendingSpawnMaxMs: 6 * 60 * 1000,
     spawnFix: (name, branch, prNumber) => void spawned.push({ name, branch, prNumber }),
     spawnCiFix: (name, branch, prNumber) => void ciSpawned.push({ name, branch, prNumber }),
     spawnConflictFix: (name, branch, prNumber) => void conflictSpawned.push({ name, branch, prNumber }),
@@ -182,6 +183,32 @@ test("reviewOnce does not spawn a comment fix while a just-spawned CI fix is not
   await reviewOnce(state, d); // must NOT spawn the comment fix onto the shared worktree
   assert.equal(ciSpawned.length, 1);
   assert.equal(spawned.length, 0);
+});
+
+test("reviewOnce lets the CI fix through once the mid-spawn latch has aged out unseen", async () => {
+  // A conflict fixer that merges, pushes, and closes itself inside one heartbeat
+  // is never observed in flight, so nothing clears the latch. Once it is older
+  // than pendingSpawnMaxMs it has served its purpose and must stop blocking the
+  // CI fix on the new (red) head.
+  let now = 0;
+  let mergeable: MergeableInfo = merge("conflicting", "old");
+  const { deps: d, conflictSpawned, ciSpawned } = deps({
+    unresolvedInfo: async () => noComments,
+    mergeableInfo: async () => mergeable,
+    checksInfo: async () => ci("failing", "new"),
+    now: () => now,
+    pendingSpawnMaxMs: 6 * 60 * 1000,
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // tick 1: spawn conflict fix (latch = conflict)
+  mergeable = noConflict; // the fixer pushed its merge and closed itself, unseen
+  now = 3 * 60 * 1000;
+  await reviewOnce(state, d); // tick 2: latch still fresh → CI must wait
+  assert.equal(ciSpawned.length, 0);
+  now = 6 * 60 * 1000;
+  await reviewOnce(state, d); // tick 3: latch aged out → CI fix spawns
+  assert.equal(conflictSpawned.length, 1);
+  assert.deepEqual(ciSpawned.map((s) => s.name), ["pr-4706-ci"]);
 });
 
 test("reviewOnce skips CI when a fix is already in flight", async () => {
@@ -597,7 +624,12 @@ test("supervised: flags changes-requested even while a fix is in flight", async 
     inFlightFixKinds: () => ["fix"],
   });
   await reviewOnce(freshReviewState(), d);
-  assert.equal(flagRaised.length, 1);
+  // The harness default carries an unresolved human comment too, so both human
+  // signals report; emitFlagged dedupes them into the one flag downstream.
+  assert.deepEqual(
+    flagRaised.map((f) => f.reason),
+    ["changes-requested", "human-comment"],
+  );
 });
 
 test("supervised: raises on every tick the block persists (emitFlagged dedupes)", async () => {
@@ -784,4 +816,48 @@ test("reviewOnce keeps a running blocked fix from spawning other fix kinds", asy
   });
   await reviewOnce(freshReviewState(), d);
   assert.equal(spawned.length + ciSpawned.length + conflictSpawned.length + blockedSpawned.length, 0);
+});
+
+test("a new human comment flags the row even while a fixer is in flight", async () => {
+  const h = deps({
+    mode: () => "supervised",
+    inFlightFixKinds: () => ["fix"],
+    unresolvedInfo: async () => info(1, 5000, { humanTs: 5000 }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(
+    h.flagRaised.map((f) => f.reason),
+    ["human-comment"],
+  );
+  // The running fixer is still the review step's to reap, not to pre-empt.
+  assert.deepEqual(h.spawned, []);
+});
+
+test("an acknowledged human comment does not re-flag a PR with a fixer in flight", async () => {
+  const h = deps({
+    mode: () => "supervised",
+    inFlightFixKinds: () => ["fix"],
+    flagState: () => ({ flagged: false, clearedAt: 6000 }),
+    unresolvedInfo: async () => info(1, 5000, { humanTs: 5000 }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.flagRaised, []);
+});
+
+test("a failed thread read does not stop the in-flight fixer from being reaped", async () => {
+  const h = deps({
+    mode: () => "supervised",
+    inFlightFixKinds: () => ["fix"],
+    unresolvedInfo: async () => {
+      throw new Error("gh down");
+    },
+    now: () => 100 * 60 * 1000,
+  });
+  const state = freshReviewState();
+  state.fixSeenAt.set("4706:fix", 0);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(
+    h.reaped.map((r) => r.kind),
+    ["fix"],
+  );
 });

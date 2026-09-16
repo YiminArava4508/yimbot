@@ -1,34 +1,83 @@
 // src/review-groups.ts
-// The guided review's AI step: one headless prompt that organizes changed
+// The review's AI step: one headless prompt that organizes changed
 // files into ordered, contextualized groups. Paths and diffstats only, never
 // diff bodies: enough signal to group, small enough to stay one prompt.
 import type { FileDiff } from "./review-diff.ts";
 import { extractJsonObject } from "./json-extract.ts";
 
 export type ReviewGroup = { title: string; context: string; files: string[] };
-export type ReviewGroups = { summary: string; groups: ReviewGroup[] };
+// `notes` is what the guide band reads: path to one short phrase on what that
+// file's functions do. Keyed flat rather than per group because the lookup is by
+// the selected path, and a file the model skipped simply has no entry.
+export type ReviewGroups = { summary: string; groups: ReviewGroup[]; notes: Record<string, string> };
 export type GroupingRunner = (prompt: string) => Promise<string>;
 export type PrMeta = { number: number; title: string; body: string };
-export type FileStat = Pick<FileDiff, "path" | "additions" | "deletions">;
+export type FileStat = Pick<FileDiff, "path" | "additions" | "deletions" | "status"> & { hunks: string[] };
+
+const HUNK_CAP = 8;
+
+// Hunk-header contexts ("@@ ... @@ function foo(") are the cheapest symbol-level
+// signal git gives us: enough to tell which files touch the same code without
+// shipping diff bodies.
+export function fileStats(diffs: FileDiff[]): FileStat[] {
+  return diffs.map((d) => {
+    const hunks: string[] = [];
+    for (const l of d.lines) {
+      if (l.kind !== "hunk") continue;
+      const ctx = l.text.replace(/^@@[^@]*@@ ?/, "").trim();
+      if (ctx !== "" && !hunks.includes(ctx)) hunks.push(ctx);
+      if (hunks.length === HUNK_CAP) break;
+    }
+    return { path: d.path, additions: d.additions, deletions: d.deletions, status: d.status, hunks };
+  });
+}
+
+export function fileLine(f: FileStat): string {
+  const stat = f.status === "modified" ? "" : `${f.status}, `;
+  const head = `- ${f.path} (${stat}+${f.additions}/-${f.deletions})`;
+  if (f.hunks.length === 0) return head;
+  return `${head}\n  in: ${f.hunks.join("; ")}`;
+}
 
 export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
-  const list = files.map((f) => `- ${f.path} (+${f.additions}/-${f.deletions})`).join("\n");
+  const list = files.map(fileLine).join("\n");
   return [
-    `You are organizing a code review of PR #${pr.number}: ${pr.title}.`,
+    `You are a principal engineer planning a code review of PR #${pr.number}: ${pr.title}.`,
     "PR description:",
     pr.body || "(none)",
     "",
-    "Changed files:",
+    "Changed files (status when not modified, diffstat, and the enclosing symbols git saw change):",
     list,
     "",
-    "Group these files into a guided review plan: related files together, ordered so the",
-    "core change reads first and collateral (tests, wiring, fixtures, docs) after.",
-    "For each group write two or three sentences of context: what the group changes,",
-    "why, and what a reviewer should verify in it.",
+    "Build the review plan the way a senior reviewer reads a change:",
+    "- Find the heart of the PR first: the files where behavior or a contract actually",
+    "  changes. Every other file is collateral in service of that change.",
+    "- Group by concern, not by directory or file type: a group is one reviewable idea",
+    "  (a schema change plus its call sites, a bug fix plus the test that pins it).",
+    "  The symbol hints above tell you which files touch the same code.",
+    "- A test file belongs in the same group as the code it covers, never in a group",
+    "  of its own: the tests are how that group's behavior is pinned, so the reviewer",
+    "  reads them beside it. Never make a tests-only group.",
+    "- Order groups so understanding compounds: contracts, types, and schemas first,",
+    "  then core logic, then wiring and call sites, then the rest.",
+    "- Quarantine purely mechanical churn (lockfiles, generated code, snapshots,",
+    "  renames, formatting-only edits) in a final group titled so the reviewer knows",
+    "  to skim it.",
+    "- Keep each group reviewable: prefer 1-6 files, splitting a bigger concern into",
+    "  narrower ones.",
+    "Then write the reading notes, and keep every one of them short. The band that",
+    "shows them is two lines tall, so a long note is a note the reviewer never sees.",
+    "- group context: one short clause on what this part of the change does. Lay of",
+    "  the land only; never tell them what to check or restate the file list.",
+    "- note, one per file: what that file's functions do, in a clause of at most 12",
+    "  words. Say what the code is for, not that it changed: \"signs render tokens",
+    "  and scopes the S3 upload\", not \"updates the token signer\". The symbol hints",
+    "  above name the functions; describe those.",
     "Reply with ONLY a JSON object, no prose:",
-    '{"summary": "<2-3 sentences for a reviewer new to this codebase: what the PR does and how the pieces fit together>",',
-    ' "groups": [{"title": "<short label>", "context": "<what to look for>", "files": ["<path>", ...]}, ...]}',
-    "Every file must appear in exactly one group. Use only the paths listed above.",
+    '{"summary": "<one sentence: what the PR does, for a reviewer new to this codebase>",',
+    ' "groups": [{"title": "<short label>", "context": "<one short clause>", "files": ["<path>", ...]}, ...],',
+    ' "notes": {"<path>": "<at most 12 words on what this file\'s functions do>", ...}}',
+    "Every file must appear in exactly one group, and get one note. Use only the paths listed above.",
   ].join("\n");
 }
 
@@ -37,9 +86,15 @@ export function groupingPrompt(pr: PrMeta, files: FileStat[]): string {
 // the caller can fall back. Unknown and duplicate paths are dropped; files
 // the model forgot land in a trailing "Other changes" group.
 export function parseGroups(stdout: string, diffPaths: string[]): ReviewGroups | null {
-  const obj = extractJsonObject(stdout);
-  if (obj === null) return null;
-  const o = obj as { summary?: unknown; groups?: unknown };
+  return normalizeGroups(extractJsonObject(stdout), diffPaths);
+}
+
+// The shape check on its own, for a plan that is already an object: the cached
+// plan read back from review-state gets the same treatment as fresh model
+// output, so a stale or hand-edited cache cannot put a phantom file on the board.
+export function normalizeGroups(obj: unknown, diffPaths: string[]): ReviewGroups | null {
+  if (obj === null || typeof obj !== "object") return null;
+  const o = obj as { summary?: unknown; groups?: unknown; notes?: unknown };
   if (!Array.isArray(o.groups)) return null;
   const known = new Set(diffPaths);
   const seen = new Set<string>();
@@ -61,22 +116,77 @@ export function parseGroups(stdout: string, diffPaths: string[]): ReviewGroups |
   if (groups.length === 0) return null;
   const missing = diffPaths.filter((p) => !seen.has(p));
   if (missing.length > 0) groups.push({ title: "Other changes", context: "", files: missing });
-  return { summary: typeof o.summary === "string" ? o.summary : "", groups };
+  const notes: Record<string, string> = {};
+  if (o.notes !== null && typeof o.notes === "object" && !Array.isArray(o.notes)) {
+    for (const [path, note] of Object.entries(o.notes as Record<string, unknown>)) {
+      if (known.has(path) && typeof note === "string" && note !== "") notes[path] = note;
+    }
+  }
+  return { summary: typeof o.summary === "string" ? o.summary : "", groups, notes };
 }
 
+const TEST_DIR = /(^|\/)(__tests__|tests?|specs?)\//;
+
+function baseName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+function stem(path: string): string {
+  const base = baseName(path);
+  const dot = base.lastIndexOf(".");
+  return dot === -1 ? base : base.slice(0, dot);
+}
+
+function extension(path: string): string {
+  const base = baseName(path);
+  const dot = base.lastIndexOf(".");
+  return dot === -1 ? "" : base.slice(dot);
+}
+
+// "src/widget.test.ts", "tests/widget_test.py" and "src/__tests__/widget.tsx" all
+// name the thing they cover; null means the path is not a test at all.
+function testStem(path: string): string | null {
+  const name = stem(path);
+  const stripped = name.replace(/[._-](test|spec)$/i, "").replace(/^(test|spec)[._-]/i, "");
+  if (stripped !== name) return stripped;
+  return TEST_DIR.test(path) ? name : null;
+}
+
+// The fallback fires when the grouping model is unavailable, so it still honors
+// the rule the prompt cares most about: a test rides along with the code it
+// covers, even when it lives under tests/. Everything else buckets by top-level
+// directory.
 export function fallbackGroups(diffPaths: string[]): ReviewGroups {
+  const sources = diffPaths.filter((p) => testStem(p) === null).sort();
+  const covers = (p: string): string => {
+    const st = testStem(p);
+    if (st === null) return p;
+    const matches = sources.filter((s) => stem(s) === st);
+    return matches.find((s) => extension(s) === extension(p)) ?? matches[0] ?? p;
+  };
+  const pair = new Map(diffPaths.map((p) => [p, covers(p)]));
+  const pairOf = (p: string): string => pair.get(p) ?? p;
+  const byPair = (a: string, b: string): number => {
+    const pa = pairOf(a);
+    const pb = pairOf(b);
+    if (pa !== pb) return pa.localeCompare(pb);
+    if (a === pa) return -1;
+    if (b === pb) return 1;
+    return a.localeCompare(b);
+  };
   const buckets = new Map<string, string[]>();
   for (const p of diffPaths) {
-    const slash = p.indexOf("/");
-    const dir = slash === -1 ? "(root)" : p.slice(0, slash);
+    const key = pairOf(p);
+    const slash = key.indexOf("/");
+    const dir = slash === -1 ? "(root)" : key.slice(0, slash);
     const list = buckets.get(dir) ?? [];
     list.push(p);
     buckets.set(dir, list);
   }
   const groups = [...buckets.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([title, files]) => ({ title, context: "", files: files.sort() }));
-  return { summary: "", groups };
+    .map(([title, files]) => ({ title, context: "", files: files.sort(byPair) }));
+  return { summary: "", groups, notes: {} };
 }
 
 export async function fetchGroups(

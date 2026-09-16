@@ -102,7 +102,9 @@ export function orderCacheKey(prNumbers: number[]): string {
 // last by the board's applyOrder rather than poisoning the whole batch, and if
 // every read fails the order degrades to PR-number order.
 export type OrderSourceDeps = {
-  fetchMeta: (pr: number) => Promise<PrOrderMeta>;
+  // `repo` is the PR's EXTRA_REPOS slug when it has one, so the meta read
+  // addresses the right repo.
+  fetchMeta: (pr: number, repo?: string) => Promise<PrOrderMeta>;
   run: OrderRunner;
 };
 
@@ -112,11 +114,11 @@ function numberOrder(prNumbers: number[]): OrderEntry[] {
 
 export function makeOrderFetcher(
   deps: OrderSourceDeps & { onUpdate: () => void },
-): { ensure: (prNumbers: number[]) => void; get: () => OrderEntry[] | null } {
+): { ensure: (prNumbers: number[], repoByPr?: Map<number, string>) => void; get: () => OrderEntry[] | null } {
   let currentKey = "";
   const cache = new Map<string, OrderEntry[]>();
   const inFlight = new Set<string>();
-  const ensure = (prNumbers: number[]) => {
+  const ensure = (prNumbers: number[], repoByPr?: Map<number, string>) => {
     const key = orderCacheKey(prNumbers);
     currentKey = key;
     if (prNumbers.length === 0 || cache.has(key) || inFlight.has(key)) return;
@@ -124,7 +126,7 @@ export function makeOrderFetcher(
     void (async () => {
       let result: OrderEntry[];
       try {
-        const settled = await Promise.allSettled(prNumbers.map((n) => deps.fetchMeta(n)));
+        const settled = await Promise.allSettled(prNumbers.map((n) => deps.fetchMeta(n, repoByPr?.get(n))));
         const prs = prNumbers.flatMap((n, i) => {
           const s = settled[i];
           return s.status === "fulfilled" ? [{ number: n, ...s.value }] : [];

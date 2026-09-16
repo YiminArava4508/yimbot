@@ -5,10 +5,14 @@ import {
   applyReadyLabel,
   blockedInfo,
   checksInfo,
+  compareStatus,
+  defaultBranch,
   type GhRunner,
+  ghRunner,
   listMyClosedUnmergedPRs,
   listMyMergedPRs,
   listMyOpenPRs,
+  listSuccessfulRunHeadShas,
   markPrReadyForReview,
   mergeableInfo,
   parseBlockedInfo,
@@ -19,10 +23,15 @@ import {
   parseMergeableInfo,
   parseClosedUnmergedPRs,
   parseMergedPRs,
+  parseMergeCommit,
   parseOpenPRs,
+  parseRunHeadShas,
   prDiff,
   prIsDraft,
   prLabels,
+  parsePrState,
+  prMergeCommit,
+  prState,
   parsePrReviewMeta,
   prReviewMeta,
   removeLabel,
@@ -61,6 +70,29 @@ test("listMyOpenPRs requests author=@me open PRs and parses them", async () => {
   const prs = await listMyOpenPRs(run);
   assert.deepEqual(prs, [{ number: 1, headRefName: "eng-1-a", isDraft: true }]);
   assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "open"]);
+});
+
+test("listMyOpenPRs tags rows with the repo it was asked about", async () => {
+  const { run } = capturingRunner([JSON.stringify([{ number: 3, headRefName: "eng-3-a", isDraft: true }])]);
+  const prs = await listMyOpenPRs(run, "acme/terraform-aws-platform");
+  assert.deepEqual(prs, [{ number: 3, headRefName: "eng-3-a", isDraft: true, repo: "acme/terraform-aws-platform" }]);
+});
+
+test("ghRunner: an extra repo sets GH_REPO for the child, the codebase runner does not", async () => {
+  const seen: (string | undefined)[] = [];
+  const exec = async (_cmd: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+    seen.push(opts.env?.GH_REPO);
+    return { stdout: "" };
+  };
+  await ghRunner("/tmp", undefined, exec)(["pr", "list"]);
+  await ghRunner("/tmp", "acme/tf", exec)(["pr", "list"]);
+  assert.deepEqual(seen, [undefined, "acme/tf"]);
+});
+
+test("parseMergedPRs tags rows with the extra repo slug when given", () => {
+  const json = JSON.stringify([{ number: 7, headRefName: "eng-1-x" }]);
+  assert.deepEqual(parseMergedPRs(json, "acme/tf"), [{ number: 7, headRefName: "eng-1-x", repo: "acme/tf" }]);
+  assert.deepEqual(parseMergedPRs(json), [{ number: 7, headRefName: "eng-1-x" }]);
 });
 
 test("parseMergedPRs keeps only number/headRefName", () => {
@@ -210,8 +242,15 @@ test("parseChecksInfo reports failing on a failed StatusContext state", () => {
   assert.deepEqual(parseChecksInfo(json), { state: "failing", headSha: "sha2" });
 });
 
-test("parseChecksInfo treats an unfinished check as pending, even alongside a failure", () => {
+test("parseChecksInfo reports failing once any check has concluded red, even while others still run", () => {
+  // A concluded failure on this head will not turn green on its own; waiting for
+  // the rest of the run only delays the CI fix and lets a labeled PR read as a hold.
   const json = rollupJson("sha3", [checkRun("COMPLETED", "FAILURE", "a"), checkRun("IN_PROGRESS", null, "b")]);
+  assert.equal(parseChecksInfo(json).state, "failing");
+});
+
+test("parseChecksInfo stays pending while checks run and none has failed", () => {
+  const json = rollupJson("sha3b", [checkRun("COMPLETED", "SUCCESS", "a"), checkRun("IN_PROGRESS", null, "b")]);
   assert.equal(parseChecksInfo(json).state, "pending");
 });
 
@@ -547,11 +586,11 @@ test("prDiff passes the PR number to gh pr diff and returns raw stdout", async (
   assert.deepEqual(calls, [["pr", "diff", "42"]]);
 });
 
-test("parsePrReviewMeta maps title, body, isDraft, headRefOid and diffstat", () => {
+test("parsePrReviewMeta maps title, body, headRefOid and diffstat", () => {
   const meta = parsePrReviewMeta(
     JSON.stringify({ title: "t", body: "b", isDraft: true, headRefOid: "abc", additions: 10, deletions: 3 }),
   );
-  assert.deepEqual(meta, { title: "t", body: "b", isDraft: true, headSha: "abc", additions: 10, deletions: 3 });
+  assert.deepEqual(meta, { title: "t", body: "b", headSha: "abc", additions: 10, deletions: 3 });
 });
 
 test("parsePrReviewMeta defaults a missing body to empty", () => {
@@ -568,6 +607,75 @@ test("prReviewMeta views the PR once with every field the review and order flows
     return JSON.stringify({ title: "t", body: "b", isDraft: false, headRefOid: "abc", additions: 1, deletions: 2 });
   };
   const meta = await prReviewMeta(run, 7);
-  assert.deepEqual(meta, { title: "t", body: "b", isDraft: false, headSha: "abc", additions: 1, deletions: 2 });
-  assert.deepEqual(calls, [["pr", "view", "7", "--json", "title,body,isDraft,headRefOid,additions,deletions"]]);
+  assert.deepEqual(meta, { title: "t", body: "b", headSha: "abc", additions: 1, deletions: 2 });
+  assert.deepEqual(calls, [["pr", "view", "7", "--json", "title,body,headRefOid,additions,deletions"]]);
+});
+
+test("parsePrState reads the labels and the draft flag from one view", () => {
+  assert.deepEqual(
+    parsePrState(JSON.stringify({ labels: [{ name: "ready-to-merge" }], isDraft: true })),
+    { labels: ["ready-to-merge"], isDraft: true },
+  );
+  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false });
+});
+
+test("prState asks for both fields in a single call", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify({ labels: [], isDraft: false })]);
+  await prState(run, 4706);
+  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels,isDraft"]);
+});
+
+test("parseRunHeadShas lists head shas in gh order", () => {
+  assert.deepEqual(parseRunHeadShas('[{"headSha":"aaa"},{"headSha":"bbb"}]'), ["aaa", "bbb"]);
+  assert.deepEqual(parseRunHeadShas("[]"), []);
+});
+
+test("listSuccessfulRunHeadShas asks gh for successful runs of one workflow on one branch", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return '[{"headSha":"abc"}]';
+  };
+  assert.deepEqual(await listSuccessfulRunHeadShas(run, "deploy-nonprod.yml", "main"), ["abc"]);
+  assert.deepEqual(seen[0], [
+    "run", "list", "--workflow", "deploy-nonprod.yml", "--branch", "main",
+    "--status", "success", "--json", "headSha", "--limit", "30",
+  ]);
+});
+
+test("parseMergeCommit reads the oid and throws when the PR has none", () => {
+  assert.equal(parseMergeCommit('{"mergeCommit":{"oid":"deadbeef"}}'), "deadbeef");
+  assert.throws(() => parseMergeCommit('{"mergeCommit":null}'), /no merge commit/);
+});
+
+test("prMergeCommit views the PR's merge commit", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return '{"mergeCommit":{"oid":"c0ffee"}}';
+  };
+  assert.equal(await prMergeCommit(run, 42), "c0ffee");
+  assert.deepEqual(seen[0], ["pr", "view", "42", "--json", "mergeCommit"]);
+});
+
+test("compareStatus calls the compare API and trims the status", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return "ahead\n";
+  };
+  assert.equal(await compareStatus(run, { owner: "acme", name: "app" }, "base1", "head1"), "ahead");
+  assert.deepEqual(seen[0], ["api", "repos/acme/app/compare/base1...head1", "--jq", ".status"]);
+});
+
+test("defaultBranch asks gh for the named repo's default branch and trims it", async () => {
+  const seen: string[][] = [];
+  const run: GhRunner = async (args) => {
+    seen.push(args);
+    return "master\n";
+  };
+  assert.equal(await defaultBranch(run, "acme/app"), "master");
+  assert.deepEqual(seen[0], [
+    "repo", "view", "acme/app", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name",
+  ]);
 });

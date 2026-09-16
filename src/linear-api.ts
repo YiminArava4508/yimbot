@@ -1,4 +1,9 @@
+import type { Blocker } from "./blocked.ts";
 import { labelFilterAllows, type LabelFilter } from "./labels.ts";
+import { observeReach } from "./reach.ts";
+import type { Ticket } from "./ticket-format.ts";
+import { readFileSync } from "node:fs";
+import { basename, extname } from "node:path";
 
 const API_URL = "https://api.linear.app/graphql";
 
@@ -24,17 +29,28 @@ export type CycleTodoIssue = LinearIssue & {
   labels: string[];
   // Raw Linear description, scanned at claim time for dependencies stated in prose.
   description: string;
-  // Identifiers of tickets this one is blocked by (from inverse "blocks" relations).
-  blockedBy: string[];
+  // Tickets this one is blocked by (from inverse "blocks" relations).
+  blockedBy: Blocker[];
   estimate: number | null;
 };
 
-type InverseRelationNodes = { nodes: { type: string; issue: { identifier: string } | null }[] };
+type RelatedIssueNode = { identifier: string; state: { name: string; type: string } };
+type InverseRelationNodes = { nodes: { type: string; issue: RelatedIssueNode | null }[] };
 
-// Blocker identifiers from an issue's inverse relations: the blockers are the
-// "blocks" relations where this issue is the target (relatedIssue).
-function blockersFrom(inverse: InverseRelationNodes): string[] {
-  return inverse.nodes.filter((r) => r.type === "blocks" && r.issue).map((r) => r.issue!.identifier);
+// The GraphQL selection every blocker read shares: the identifier plus the
+// workflow state that decides whether the blocker's work has landed.
+const BLOCKERS_SELECTION = "inverseRelations { nodes { type issue { identifier state { name type } } } }";
+
+// Blockers from an issue's inverse relations: the blockers are the "blocks"
+// relations where this issue is the target (relatedIssue).
+function blockersFrom(inverse: InverseRelationNodes): Blocker[] {
+  return inverse.nodes
+    .filter((r) => r.type === "blocks" && r.issue)
+    .map((r) => ({
+      identifier: r.issue!.identifier,
+      stateName: r.issue!.state.name,
+      stateType: r.issue!.state.type,
+    }));
 }
 
 async function gql<T>(
@@ -43,25 +59,34 @@ async function gql<T>(
   variables: Record<string, unknown>,
   fetchImpl: typeof fetch,
 ): Promise<T> {
-  const res = await fetchImpl(API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: apiKey,
-    },
-    body: JSON.stringify({ query, variables }),
+  // Wrapped so the board can warn when Linear stops answering. The body read
+  // and the reply checks are inside the wrapper too: a connection dropped after
+  // the headers fails on the read, and a rejected key arrives as a 400 whose
+  // GraphQL error says "not authenticated". classifyError sorts those out: a
+  // 404 or an ordinary GraphQL error is the service answering, a credential
+  // rejection marks it down.
+  type Payload = { data?: T; errors?: { message: string }[] };
+  return observeReach("linear", async () => {
+    const res = await fetchImpl(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: apiKey,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!res.ok) {
+      throw new Error(`Linear API ${res.status}: ${await res.text()}`);
+    }
+    const payload = (await res.json()) as Payload;
+    if (payload.errors?.length) {
+      throw new Error(`Linear GraphQL: ${payload.errors.map((e) => e.message).join("; ")}`);
+    }
+    if (!payload.data) {
+      throw new Error("Linear GraphQL: response had no data");
+    }
+    return payload.data;
   });
-  if (!res.ok) {
-    throw new Error(`Linear API ${res.status}: ${await res.text()}`);
-  }
-  const payload = (await res.json()) as { data?: T; errors?: { message: string }[] };
-  if (payload.errors?.length) {
-    throw new Error(`Linear GraphQL: ${payload.errors.map((e) => e.message).join("; ")}`);
-  }
-  if (!payload.data) {
-    throw new Error("Linear GraphQL: response had no data");
-  }
-  return payload.data;
 }
 
 // Linear reports a missing entity (e.g. issue(id) with no matching issue) as a
@@ -201,7 +226,7 @@ export async function fetchIssuesInState(
   }));
 }
 
-export type IssueWithBlockers = LinearIssue & { blockedBy: string[]; labels: string[] };
+export type IssueWithBlockers = LinearIssue & { blockedBy: Blocker[]; labels: string[] };
 
 // The viewer's assigned issues in one state of the watched team, each enriched
 // with the identifiers of the tickets it is blocked by. Used by the reconcile
@@ -235,7 +260,7 @@ export async function fetchInProgressIssuesWithBlockers(
           identifier
           title
           labels { nodes { name } }
-          inverseRelations { nodes { type issue { identifier } } }
+          ${BLOCKERS_SELECTION}
         }
       }
     }`,
@@ -383,7 +408,7 @@ export async function fetchCycleTodoIssues(
           sortOrder
           estimate
           labels { nodes { name } }
-          inverseRelations { nodes { type issue { identifier } } }
+          ${BLOCKERS_SELECTION}
         }
       }
     }`,
@@ -491,24 +516,28 @@ export async function fetchIssueByIdentifier(
   };
 }
 
-// The workflow state type ("completed", "canceled", "started", ...) of an issue,
-// by identifier. Drives the cleanup step's no-PR (spike) reap: a terminal type
-// means the human closed the ticket out, so its worktree/session can go.
-export async function fetchIssueStateType(
+// The workflow state of an issue: its name and Linear's type for it. The name
+// matters because a team can map several states to one type -- "In Progress",
+// "Merged" and "Deployed To Nonprod" are all "started" -- so the type alone
+// cannot say whether the work has landed. Drives the cleanup step's gates: a
+// landed ticket's worktree/session can go.
+export type TicketState = { name: string; type: string };
+
+export async function fetchIssueState(
   apiKey: string,
   identifier: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<string> {
-  type Data = { issue: { state: { type: string } } };
+): Promise<TicketState> {
+  type Data = { issue: { state: { name: string; type: string } } };
   const data = await gql<Data>(
     apiKey,
-    `query IssueStateType($id: String!) {
-      issue(id: $id) { state { type } }
+    `query IssueState($id: String!) {
+      issue(id: $id) { state { name type } }
     }`,
     { id: identifier },
     fetchImpl,
   );
-  return data.issue.state.type;
+  return data.issue.state;
 }
 
 // The fields needed to hang a sub-issue off an issue: its uuid, team,
@@ -639,6 +668,15 @@ export async function upsertMarkedComment(
     if (!data.commentUpdate.success) throw new Error(`commentUpdate failed for ${existing.id}`);
     return;
   }
+  await createComment(apiKey, issueId, body, fetchImpl);
+}
+
+export async function createComment(
+  apiKey: string,
+  issueId: string,
+  body: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
   type CreateData = { commentCreate: { success: boolean } };
   const data = await gql<CreateData>(
     apiKey,
@@ -649,6 +687,99 @@ export async function upsertMarkedComment(
     fetchImpl,
   );
   if (!data.commentCreate.success) throw new Error(`commentCreate failed for ${issueId}`);
+}
+
+// Everything a session needs to read a ticket: what get-ticket.sh prints.
+// Linear pages a bare connection at 50; 250 is its ceiling per request, and a
+// ticket with more comments than that is not a realistic case.
+export type FullTicket = Ticket & { id: string; teamId: string };
+
+export async function fetchTicket(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<FullTicket> {
+  type Data = {
+    issue: {
+      id: string;
+      identifier: string;
+      title: string;
+      url: string;
+      description: string | null;
+      estimate: number | null;
+      state: { name: string };
+      labels: { nodes: { name: string }[] };
+      parent: { identifier: string } | null;
+      assignee: { name: string } | null;
+      team: { id: string };
+      comments: { nodes: { body: string; createdAt: string; user: { name: string } | null }[] };
+    } | null;
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query Ticket($id: String!) {
+      issue(id: $id) {
+        id identifier title url description estimate
+        state { name }
+        labels { nodes { name } }
+        parent { identifier }
+        assignee { name }
+        team { id }
+        comments(first: 250) { nodes { body createdAt user { name } } }
+      }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  const issue = data.issue;
+  if (!issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  const comments = issue.comments.nodes
+    .map((c) => ({ author: c.user?.name ?? null, createdAt: c.createdAt, body: c.body }))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return {
+    id: issue.id,
+    teamId: issue.team.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    url: issue.url,
+    description: issue.description ?? "",
+    estimate: issue.estimate,
+    state: issue.state.name,
+    labels: issue.labels.nodes.map((l) => l.name),
+    parent: issue.parent?.identifier ?? null,
+    assignee: issue.assignee?.name ?? null,
+    comments,
+  };
+}
+
+// Move an issue into the team state with this name (case-insensitive), and
+// return the state's canonical name. What move-ticket.sh runs.
+export async function moveIssueToStateByName(
+  apiKey: string,
+  identifier: string,
+  stateName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  type Data = { issue: { id: string; team: { id: string } } | null };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueTeam($id: String!) { issue(id: $id) { id team { id } } }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  if (!data.issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  const states = await fetchTeamStates(apiKey, data.issue.team.id, fetchImpl);
+  const want = stateName.trim().toLowerCase();
+  const state = states.find((s) => s.name.toLowerCase() === want);
+  if (!state) {
+    throw new Error(`no state "${stateName}" on this team; states are: ${states.map((s) => s.name).join(", ")}`);
+  }
+  await moveIssueToState(apiKey, data.issue.id, state.id, fetchImpl);
+  return state.name;
 }
 
 export async function fetchMarkedCommentBody(
@@ -693,4 +824,92 @@ export async function createBlocksRelation(
   if (!data.issueRelationCreate.success) {
     throw new Error(`issueRelationCreate failed: ${blockerId} blocks ${blockedId}`);
   }
+}
+
+export type IssueFamily = {
+  id: string;
+  identifier: string;
+  parent: string | null;
+  children: { identifier: string; state: string }[];
+};
+
+// The QA step's one read per ticket: the uuid (for marked-comment lookups),
+// the parent (the QA unit), and each child's workflow state (the readiness gate).
+export async function fetchIssueFamily(
+  apiKey: string,
+  identifier: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<IssueFamily> {
+  type Data = {
+    issue: {
+      id: string;
+      identifier: string;
+      parent: { identifier: string } | null;
+      children: { nodes: { identifier: string; state: { name: string } }[] };
+    } | null;
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query IssueFamily($id: String!) {
+      issue(id: $id) {
+        id identifier
+        parent { identifier }
+        children { nodes { identifier state { name } } }
+      }
+    }`,
+    { id: identifier },
+    fetchImpl,
+  );
+  if (!data.issue) {
+    throw new Error(`Entity not found: no issue for identifier "${identifier}"`);
+  }
+  return {
+    id: data.issue.id,
+    identifier: data.issue.identifier,
+    parent: data.issue.parent?.identifier ?? null,
+    children: data.issue.children.nodes.map((c) => ({ identifier: c.identifier, state: c.state.name })),
+  };
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+};
+
+// Two-step Linear upload: ask for a presigned slot, PUT the bytes there with the
+// headers Linear hands back, and return the asset url a comment can embed.
+export async function uploadFile(
+  apiKey: string,
+  path: string,
+  fetchImpl: typeof fetch = fetch,
+  readFile: (p: string) => Buffer = (p) => readFileSync(p),
+): Promise<string> {
+  const bytes = readFile(path);
+  const contentType = CONTENT_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream";
+  type Data = {
+    fileUpload: {
+      success: boolean;
+      uploadFile: { uploadUrl: string; assetUrl: string; headers: { key: string; value: string }[] } | null;
+    };
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `mutation FileUpload($contentType: String!, $filename: String!, $size: Int!) {
+      fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+        success
+        uploadFile { uploadUrl assetUrl headers { key value } }
+      }
+    }`,
+    { contentType, filename: basename(path), size: bytes.length },
+    fetchImpl,
+  );
+  const slot = data.fileUpload.uploadFile;
+  if (!data.fileUpload.success || !slot) throw new Error(`fileUpload failed for ${path}`);
+  const headers: Record<string, string> = { "Content-Type": contentType };
+  for (const h of slot.headers) headers[h.key] = h.value;
+  const res = await fetchImpl(slot.uploadUrl, { method: "PUT", headers, body: bytes as unknown as BodyInit });
+  if (!res.ok) throw new Error(`upload PUT ${res.status}: ${await res.text()}`);
+  return slot.assetUrl;
 }

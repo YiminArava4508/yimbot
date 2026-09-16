@@ -41,11 +41,17 @@ A very common cause is not a code defect at all: the branch is behind
 
 3. **Stale-branch first.** If the branch is behind `origin/main`
    (`git fetch origin main` then check `git rev-list --count HEAD..origin/main`),
-   merge it in directly:
+   merge it in directly, after fast-forwarding to the remote branch so the later
+   push is not rejected:
 
    ```bash
+   git fetch origin "$(git branch --show-current)"
+   git merge --ff-only "origin/$(git branch --show-current)"
    git merge origin/main
    ```
+
+   If the `--ff-only` merge refuses, the branch has diverged from its remote;
+   stop and report it.
 
    Do not run the project's full sync task (`task merge-main` or similar): its
    codegen output is gitignored, so it produces nothing committable and can eat
@@ -90,15 +96,17 @@ A very common cause is not a code defect at all: the branch is behind
    step is for the code edits from step 4.)
 
    If the push is **rejected** (non-fast-forward: the branch advanced on the
-   remote), rebase onto the remote and retry once:
+   remote), merge the remote branch in and retry once. Never `git pull --rebase`
+   here: a rebase flattens the main merge and replays main's commits onto the
+   branch as duplicates, muddying the PR history.
 
    ```bash
-   git pull --rebase origin "$(git branch --show-current)" && git push
+   git pull --no-rebase --no-edit origin "$(git branch --show-current)" && git push
    ```
 
-   If the rebase hits a conflict or the push still fails, **stop**: run
-   `git rebase --abort`, leave the session open, and report in the summary that
-   the branch diverged and needs a human. Do not force push.
+   If the merge hits a conflict or the push still fails, **stop**: run
+   `git merge --abort`, leave the session open, and report in the summary that
+   the branch diverged and needs a human. Never force push.
 
 6. **Flag the session ready to test** so the user knows they can run local dev
    here:

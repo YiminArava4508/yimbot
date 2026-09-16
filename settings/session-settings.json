@@ -4,6 +4,8 @@
       "Bash(git push --force:*)",
       "Bash(git push --force-with-lease:*)",
       "Bash(git push -f:*)",
+      "Bash(git pull --rebase:*)",
+      "Bash(git pull -r:*)",
       "Bash(git clean:*)",
       "Bash(git reset --hard origin:*)",
       "Bash(rm -rf /:*)",
@@ -27,6 +29,28 @@
       {
         "hooks": [
           { "type": "command", "command": "bash -c 'source \"$HOME/new-session.sh\" 2>/dev/null; command -v emit_hook_event >/dev/null 2>&1 && emit_hook_event input_received'" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"$HOME/.config/yimbot/heavy-queue.sh\" pre", "timeout": 1800 }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"$HOME/.config/yimbot/no-self-rebase.sh\" pre", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"$HOME/.config/yimbot/heavy-queue.sh\" post", "timeout": 10 }
         ]
       }
     ]

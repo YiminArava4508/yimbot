@@ -43,9 +43,14 @@ resolve.
 3. **Merge `origin/main`.**
 
    ```bash
-   git fetch origin main
+   git fetch origin main "$(git branch --show-current)"
+   git merge --ff-only "origin/$(git branch --show-current)"
    git merge origin/main -m "Merge main"
    ```
+
+   The `--ff-only` step picks up anything a bot or another session pushed to the
+   branch, so the later push is not rejected. If it refuses to fast-forward the
+   branch has diverged; stop and report it.
 
    If it merges cleanly with no derived output to regenerate, skip to step 6.
 
@@ -91,10 +96,12 @@ resolve.
    git push
    ```
 
-   If the push is rejected as non-fast-forward, rebase onto the remote and retry
-   once (`git pull --rebase origin "$(git branch --show-current)" && git push`);
-   if that still fails, abort the rebase and report the divergence rather than
-   force-pushing.
+   If the push is rejected as non-fast-forward, merge the remote branch in and
+   retry once (`git pull --no-rebase --no-edit origin "$(git branch --show-current)"
+   && git push`). Never `git pull --rebase` here: a rebase flattens the main merge
+   and replays main's commits onto the branch as duplicates. If the merge
+   conflicts or the push still fails, `git merge --abort` and report the
+   divergence rather than force-pushing.
 
 7. **Re-run tests if generated output changed.** If codegen or a migration
    produced different content, run the relevant suite to confirm the branch still

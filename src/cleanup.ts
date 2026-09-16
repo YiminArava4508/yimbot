@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MergedPR, OpenPR } from "./gh.ts";
+import type { TicketState } from "./linear-api.ts";
 import { isContinuationBranch, issueFromBranch } from "./pr-advance.ts";
 
 export type Worktree = { path: string; branch: string };
@@ -26,15 +27,19 @@ export type CleanupDeps = {
   listClosedUnmergedPRs: () => Promise<MergedPR[]>;
   // The viewer's open PRs. A worktree with NO PR anywhere (open, merged, or
   // closed) is a spike's: its ticket's Linear state is the only completion
-  // signal, so the no-PR reap below keys off issueStateType instead of gh.
+  // signal, so the no-PR reap below keys off issueState instead of gh.
   listOpenPRs: () => Promise<OpenPR[]>;
-  // The Linear workflow state type ("completed", "canceled", "started", ...) of
-  // an issue by identifier (ENG-<n>). A terminal type on a no-PR worktree's
-  // ticket means the human closed it out, so the worktree/session can go. Also
-  // gates split-group teardown and the closed-unmerged reap: a resolved PR set
-  // alone can't prove the work is done (the next slice's or the successor PR may
-  // not exist yet), so both hold until the ticket goes terminal.
-  issueStateType: (identifier: string) => Promise<string | null>;
+  // The Linear workflow state of an issue by identifier (ENG-<n>). A landed
+  // state on a no-PR worktree's ticket means the work is finished, so the
+  // worktree/session can go. Also gates split-group teardown and the
+  // closed-unmerged reap: a resolved PR set alone can't prove the work is done
+  // (the next slice's or the successor PR may not exist yet), so both hold until
+  // the ticket lands.
+  issueState: (identifier: string) => Promise<TicketState | null>;
+  // State names that count as landed despite a non-terminal type, lowercased.
+  // Shared with the blocked-by rule (clearedStateNames), so "a blocker has
+  // landed" and "this ticket is finished" never drift apart.
+  clearedStates: Set<string>;
   // Whether a closed PR's worktree holds no work teardown would destroy: a clean
   // tree AND every commit pushed to its own origin branch (the branch survives on
   // origin, recoverable). Gates the closed-unmerged teardown. Not the base-ref
@@ -50,9 +55,21 @@ export type CleanupDeps = {
   // Reconcile the board against the full merged-branch set each tick. Called even
   // when a merged PR has no worktree left to tear down, so a row stuck on a stale
   // action status (e.g. "fixing CI") still transitions to merged. The open set
-  // rides along so a merged split slice never marks its ticket's row merged while
-  // sibling slice PRs are still open; skipped when the open list can't be fetched.
-  reconcileMerged?: (mergedBranches: Set<string>, openBranches: Set<string>) => void;
+  // rides along so a merged branch never marks its ticket's row merged while
+  // another PR on that row is still open; skipped when the open list can't be
+  // fetched.
+  reconcileMerged?: (merged: MergedPR[], open: OpenPR[]) => void;
+  // How each split parent's row should read this tick (see splitParentRows),
+  // reported by branch. Skipped when the open PR list can't be fetched, like
+  // every other open-set-dependent path here.
+  reportSplitParents?: (rows: { awaiting: string[]; tracking: string[] }) => void;
+  // The merged worktrees held this tick (open sibling PR, ticket not landed, or
+  // its lookup failed), by branch, so their rows can say so. Called with the
+  // full list every tick the merged path runs, so a lifted hold clears.
+  reportHeldMerged?: (branches: string[]) => void;
+  // A branch's board row key, so the guard above can compare rows rather than
+  // branch names. Supplied by the caller that owns key derivation.
+  rowKeyOf?: (branch: string) => string;
   // Live tmux session names, for the pr-<n>-fix session scan below.
   listSessions: () => string[];
   // Kill a tmux session by exact name (a merged PR's fix session).
@@ -67,6 +84,18 @@ export type CleanupDeps = {
   isSplitParent: (worktreePath: string) => boolean;
   log: (msg: string) => void;
 };
+
+// Whether a ticket's work has landed, so its worktree and session can go. A
+// completed or canceled type says so outright. Otherwise the state name decides:
+// a team can map several states to "started" -- ENG has "In Progress", "In
+// Review", "Merged" and "Deployed To Nonprod" -- and the ones past merge mean
+// the work is finished even though Linear still calls the ticket started. Same
+// rule the blocked-by check uses, from the same configured set.
+export function ticketWorkLanded(state: TicketState | null, cleared: Set<string>): boolean {
+  if (state === null) return false;
+  if (state.type === "completed" || state.type === "canceled") return true;
+  return cleared.has(state.name.trim().toLowerCase());
+}
 
 // The tmux session / worktree dir a branch (or session name) maps to, mirroring
 // new-session.sh's rule exactly (`sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50`). The
@@ -167,6 +196,51 @@ export function groupReady(
   );
 }
 
+// How each split parent's board row should read. Each slice is its own ticket
+// with its own row, so no slice can speak for the group; the tracking ticket is
+// the only row that covers the whole split. `awaiting` is the parents with a
+// slice PR still open; `tracking` is every other split parent: the slices all
+// resolved, or none has a worktree yet. A split parent never has work of its
+// own, so a row reading "working" there is wrong in both windows.
+//
+// `markedBranches` are the worktrees carrying the split-parent marker. It is
+// written before the first slice exists, so it is the only sign of a split in
+// the window before buildSplitGroups can see a group.
+//
+// Both guards are on the derived row key, not the branch, because a slice branch
+// carrying the parent's ticket slug derives to the parent's key: the two share
+// one row, and the ready step already emits that row's status every heartbeat.
+// Reporting it here too would leave the two writers alternating forever, two
+// lines per heartbeat, trimming every other row out of the capped log.
+//
+// A parent with no integration worktree is skipped: its key has no live
+// worktree, and the integration branch gets no PR of its own, so neither half
+// of filterToLiveRows keeps the row and the event is dead weight.
+export function splitParentRows(
+  groups: SplitGroup[],
+  openBranches: Set<string>,
+  keyOf: (branch: string) => string,
+  markedBranches: string[] = [],
+): { awaiting: string[]; tracking: string[] } {
+  const openKeys = new Set([...openBranches].map(keyOf));
+  const awaiting: string[] = [];
+  const tracking: string[] = [];
+  const seen = new Set<string>();
+  for (const g of groups) {
+    if (g.integrationBranch === null) continue;
+    seen.add(g.integrationBranch);
+    if (openKeys.has(keyOf(g.integrationBranch))) continue;
+    const bucket = g.sliceBranches.some((b) => openBranches.has(b)) ? awaiting : tracking;
+    bucket.push(g.integrationBranch);
+  }
+  for (const branch of markedBranches) {
+    if (seen.has(branch) || openKeys.has(keyOf(branch))) continue;
+    seen.add(branch);
+    tracking.push(branch);
+  }
+  return { awaiting, tracking };
+}
+
 // Worktrees to tear down: branch is in the merged set AND the worktree lives
 // under worktreesDir. The path filter keeps the main checkout (and any unrelated
 // worktree) out even if its branch name matched a merged PR.
@@ -193,9 +267,10 @@ export type OrphanFacts = {
 };
 
 // Worktrees to re-couple with a session: a session-less worktree older than one
-// heartbeat (past the launch race), with no launch in progress, that is not part
-// of a split group and whose PR has not resolved (merged/closed — those are the
-// cleanup step's to tear down, and reattaching one would race that teardown).
+// heartbeat (past the launch race), with no launch in progress, that is not a
+// split group's integration worktree and whose PR has not resolved (merged/closed
+// — those are the cleanup step's to tear down, and reattaching one would race
+// that teardown).
 // No inert gate: reattaching never destroys work, and the tmux session persists
 // even if the resume finds no prior conversation, so an empty worktree is
 // re-coupled once, not looped over. Any guard failing spares it.
@@ -227,7 +302,8 @@ export type OrphanSweepDeps = {
   // teardown. Empty on a fetch failure, so a transient gh error only defers a
   // re-couple, never resurrects a resolved worktree.
   resolvedBranches: () => Promise<Set<string>>;
-  // A worktree's .yimbot-parent-session marker, to exclude split-group members.
+  // A worktree's .yimbot-parent-session marker, to find each split group's
+  // integration worktree (the only member the sweep excludes).
   readParentSession: (worktreePath: string) => string | null;
   // Whether a live session belongs to the ticket owning this worktree dir name.
   // Prefix-matched (not exact) so the 50-char worktree/full session-name split
@@ -277,9 +353,15 @@ export async function sweepOrphanWorktrees(deps: OrphanSweepDeps): Promise<void>
   }
 
   const prefix = deps.worktreesDir.endsWith("/") ? deps.worktreesDir : `${deps.worktreesDir}/`;
+  // Only a group's integration worktree is off-limits: its session is the split's
+  // parent, torn down with the group as a whole. Slices get their own branch-named
+  // sessions (split-pr.sh mirrors new-session.sh), so a session-less slice with an
+  // open PR re-couples like any ticket; the resolved guard below already spares
+  // slices whose PR merged/closed, and group teardown only runs once every slice
+  // is resolved, so a reattached slice can never race it.
   const grouped = new Set(
-    buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir).flatMap(
-      (g) => g.worktreePaths,
+    buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir).flatMap((g) =>
+      g.integration ? [g.integration.path] : [],
     ),
   );
 
@@ -317,6 +399,35 @@ export function selectMergedFixSessions(sessions: string[], mergedPrNumbers: Set
   });
 }
 
+// One Linear answer per ticket per tick: a branch in both the merged and the
+// closed set, or several worktrees of one ticket, would otherwise each pay a
+// round trip.
+type LandedMemo = Map<string, Promise<TicketState | null>>;
+
+// Why a ticket-backed branch's teardown must wait, or null to proceed. A
+// branch with no Linear identifier (Shortcut, ad-hoc) has nothing to ask, so
+// its PR state alone decides. A failed lookup holds too: reaping on an
+// unanswered question is the one mistake that cannot be undone.
+async function ticketHold(branch: string, deps: CleanupDeps, memo: LandedMemo): Promise<string | null> {
+  const identifier = issueFromBranch(branch);
+  if (identifier === null) return null;
+  let pending = memo.get(identifier);
+  if (!pending) {
+    pending = deps.issueState(identifier);
+    memo.set(identifier, pending);
+  }
+  let state: TicketState | null;
+  try {
+    state = await pending;
+  } catch (err) {
+    return `issue state lookup failed for ${identifier}: ${err}`;
+  }
+  if (!ticketWorkLanded(state, deps.clearedStates)) {
+    return `ticket ${identifier} not landed: ${state?.name ?? "unknown"}`;
+  }
+  return null;
+}
+
 // One cleanup-step tick, run every heartbeat. Independent reconciliations against
 // the viewer's PRs: (a) tear down each merged worktree (removes the worktree + its
 // branch-named ticket session); (a2) tear down each closed-unmerged worktree that
@@ -342,20 +453,25 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
     return;
   }
 
+  const worktreesPrefix = deps.worktreesDir.endsWith("/") ? deps.worktreesDir : `${deps.worktreesDir}/`;
+  const landedMemo: LandedMemo = new Map();
   const mergedBranches = new Set(merged.map((p) => p.headRefName));
-  const mergedNumbers = new Set(merged.map((p) => p.number));
+  // Fix sessions only ever run on codebase-repo PRs, and PR numbers are
+  // per-repo counters, so an extra repo's merge must not match one by number.
+  const mergedNumbers = new Set(merged.filter((p) => !p.repo).map((p) => p.number));
 
   // Fetched before the board reconcile: without the open set, a merged split
   // slice would mark its whole ticket row merged while sibling PRs are open.
   // Also feeds path (a3) below. On failure both sit the tick out.
-  let openBranches: Set<string> | null = null;
+  let openPRs: OpenPR[] | null = null;
   try {
-    openBranches = new Set((await deps.listOpenPRs()).map((p) => p.headRefName));
+    openPRs = await deps.listOpenPRs();
   } catch (err) {
     deps.log(`open PR list failed: ${err}`);
   }
+  const openBranches: Set<string> | null = openPRs && new Set(openPRs.map((p) => p.headRefName));
 
-  if (openBranches !== null) deps.reconcileMerged?.(mergedBranches, openBranches);
+  if (openPRs !== null) deps.reconcileMerged?.(merged, openPRs);
 
   // Closed-but-not-merged PRs (spikes, abandoned/superseded work). Fetched up front
   // because both the split-group readiness below and path (a2) need it. A failure to
@@ -379,6 +495,13 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   const groups = buildSplitGroups(worktrees, deps.readParentSession, deps.worktreesDir);
   const groupedPaths = new Set(groups.flatMap((g) => g.worktreePaths));
 
+  if (openBranches !== null && deps.rowKeyOf) {
+    const marked = worktrees
+      .filter((w) => w.path.startsWith(worktreesPrefix) && deps.isSplitParent(w.path))
+      .map((w) => w.branch);
+    deps.reportSplitParents?.(splitParentRows(groups, openBranches, deps.rowKeyOf, marked));
+  }
+
   // Without the open set, a slice PR opened from the integration branch is
   // invisible, so falling back to slices-only readiness could reap a live group;
   // the group loop sits the tick out instead (teardown self-dedupes, so a gh
@@ -393,19 +516,10 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       // Linear state is the authority on "all work done" — hold the group until the
       // ticket goes terminal. Sessions with no Linear identifier (Shortcut splits)
       // can't be looked up, so readiness alone decides for them, as before.
-      const identifier = issueFromBranch(g.session);
-      if (identifier !== null) {
-        let stateType: string | null;
-        try {
-          stateType = await deps.issueStateType(identifier);
-        } catch (err) {
-          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
-          continue;
-        }
-        if (stateType !== "completed" && stateType !== "canceled") {
-          deps.log(`kept split group ${g.session} (ticket ${identifier} not done: ${stateType})`);
-          continue;
-        }
+      const hold = await ticketHold(g.session, deps, landedMemo);
+      if (hold !== null) {
+        deps.log(`kept split group ${g.session} (${hold})`);
+        continue;
       }
       // Gate only the members not backed by a merged PR — the integration worktree
       // and any closed slice — on having no unpushed work, so an abandoned slice
@@ -433,15 +547,37 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
   }
 
   // (a) normal merged worktrees (excluding any that belong to a split group) →
-  // tear down worktree + branch-named ticket session.
-  for (const w of selectMergedWorktrees(worktrees, mergedBranches, deps.worktreesDir)) {
-    if (groupedPaths.has(w.path)) continue;
-    try {
-      deps.teardown(w.branch);
-      deps.log(`torn down ${w.branch} (PR merged)`);
-    } catch (err) {
-      deps.log(`teardown failed for ${w.branch}: ${err}`);
+  // tear down worktree + branch-named ticket session. A merge in one repo is not
+  // the ticket done: a sibling PR on the same branch in another repo may be
+  // open, and the ticket may still be in flight, so both gates hold the worktree
+  // (mirroring the closed-unmerged path below).
+  const mergedWorktrees = selectMergedWorktrees(worktrees, mergedBranches, deps.worktreesDir).filter(
+    (w) => !groupedPaths.has(w.path),
+  );
+  if (openBranches === null) {
+    if (mergedWorktrees.length > 0) deps.log(`merged teardown deferred (open PR list unavailable)`);
+  } else {
+    const held: string[] = [];
+    for (const w of mergedWorktrees) {
+      if (openBranches.has(w.branch)) {
+        deps.log(`kept ${w.branch} (PR merged but branch has an open PR)`);
+        held.push(w.branch);
+        continue;
+      }
+      const hold = await ticketHold(w.branch, deps, landedMemo);
+      if (hold !== null) {
+        deps.log(`kept ${w.branch} (PR merged but ${hold})`);
+        held.push(w.branch);
+        continue;
+      }
+      try {
+        deps.teardown(w.branch);
+        deps.log(`torn down ${w.branch} (PR merged)`);
+      } catch (err) {
+        deps.log(`teardown failed for ${w.branch}: ${err}`);
+      }
     }
+    deps.reportHeldMerged?.(held);
   }
 
   // (a2) closed-but-not-merged PRs (spikes, abandoned/superseded work): tear down
@@ -474,19 +610,10 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       }
       // Branches with no Linear identifier (Shortcut, ad-hoc) can't be looked up,
       // so PR state alone decides for them, as in the split-group path.
-      const identifier = issueFromBranch(w.branch);
-      if (identifier !== null) {
-        let stateType: string | null;
-        try {
-          stateType = await deps.issueStateType(identifier);
-        } catch (err) {
-          deps.log(`issue state lookup failed for ${identifier}: ${err}`);
-          continue;
-        }
-        if (stateType !== "completed" && stateType !== "canceled") {
-          deps.log(`kept ${w.branch} (PR closed unmerged but ticket ${identifier} not done: ${stateType})`);
-          continue;
-        }
+      const hold = await ticketHold(w.branch, deps, landedMemo);
+      if (hold !== null) {
+        deps.log(`kept ${w.branch} (PR closed unmerged but ${hold})`);
+        continue;
       }
       if (!deps.hasNoUnpushedWork(w.path)) {
         deps.log(`kept ${w.branch} (PR closed unmerged but worktree has unsaved work)`);
@@ -519,27 +646,27 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       if (isContinuationBranch(w.branch)) continue;
       const identifier = issueFromBranch(w.branch);
       if (identifier === null) continue;
-      let stateType: string | null;
+      let state: TicketState | null;
       try {
-        stateType = await deps.issueStateType(identifier);
+        state = await deps.issueState(identifier);
       } catch (err) {
         deps.log(`issue state lookup failed for ${identifier}: ${err}`);
         continue;
       }
-      if (stateType !== "completed" && stateType !== "canceled") continue;
+      if (!ticketWorkLanded(state, deps.clearedStates)) continue;
       // Same guards as the closed-unmerged path: a split in progress or unsaved
       // work spares the worktree.
       if (deps.isSplitParent(w.path)) {
-        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but worktree is a split parent)`);
+        deps.log(`kept ${w.branch} (ticket ${identifier} ${state!.name} but worktree is a split parent)`);
         continue;
       }
       if (!deps.hasNoUnpushedWork(w.path)) {
-        deps.log(`kept ${w.branch} (ticket ${identifier} ${stateType} but worktree has unsaved work)`);
+        deps.log(`kept ${w.branch} (ticket ${identifier} ${state!.name} but worktree has unsaved work)`);
         continue;
       }
       try {
         deps.teardown(w.branch);
-        deps.log(`torn down ${w.branch} (ticket ${identifier} ${stateType}, no PR)`);
+        deps.log(`torn down ${w.branch} (ticket ${identifier} ${state!.name}, no PR)`);
       } catch (err) {
         deps.log(`teardown failed for ${w.branch}: ${err}`);
       }

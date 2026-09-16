@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./test-temp.ts";
 import { readRefineEnabled, refineEnvDefault, refineToggleFilePath, writeRefineEnabled } from "./refine-toggle.ts";
 
 function withTempLog(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "yimbot-refine-toggle-"));
+  const dir = tempDir("yimbot-refine-toggle-");
   const prev = process.env.EVENTS_LOG;
   process.env.EVENTS_LOG = join(dir, "events.jsonl");
   try {
@@ -14,7 +14,6 @@ function withTempLog(fn: (dir: string) => void): void {
   } finally {
     if (prev === undefined) delete process.env.EVENTS_LOG;
     else process.env.EVENTS_LOG = prev;
-    rmSync(dir, { recursive: true, force: true });
   }
 }
 

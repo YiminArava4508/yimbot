@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tempDir } from "./test-temp.ts";
+import { clearedStateNames } from "./blocked.ts";
 import { filterByLabel, parseLabelFilter } from "./labels.ts";
 import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
+import type { QaPhase, QaUnit } from "./qa-state.ts";
 import {
   bindReturnKey,
   buildSessionName,
@@ -16,14 +18,23 @@ import {
   type DependencyScanDeps,
   type DeployDeps,
   deployOnce,
+  MAX_LAUNCH_ATTEMPTS,
+  releaseLaunch,
+  tailBuffer,
   detectNewIssues,
   findExistingSession,
   freshClaimState,
   freshDeployState,
   hasSessionForWorktree,
   isLaunchMarkerActive,
+  liveQaKeys,
+  QA_SESSION_RE,
   liveRefineKeys,
   manuallyLiveKeys,
+  qaScriptPath,
+  qaSessionArgs,
+  reportSplitParentRows,
+  splitSliceKeys,
   markFeatureReady,
   parseWorktreePorcelain,
   pollOnce,
@@ -31,6 +42,7 @@ import {
   reconcileBlockedInProgress,
   type ReconcileDeps,
   resolveSessionForKey,
+  detachedSessionEnv,
   returnKeyBindArgs,
   returnKeyUnbindArgs,
   sanitizeBranchToSession,
@@ -102,6 +114,20 @@ test("manuallyLiveKeys keeps only worktrees under the dir that have a live sessi
     "/home/u/Work/worktrees",
   );
   assert.deepEqual([...keys], ["ENG-1383"]);
+});
+
+test("splitSliceKeys keeps only worktrees under the dir that carry a parent-session marker", () => {
+  const keys = splitSliceKeys(
+    [
+      { path: "/home/u/Work/worktrees/eng-2275-1-2-exclude-bots", branch: "eng-2275-1-2-exclude-bots" },
+      { path: "/home/u/Work/worktrees/eng-1417-polish", branch: "eng-1417-polish" }, // no marker
+      { path: "/home/u/Work/worktrees/eng-9-outside", branch: "eng-9-outside" },
+      { path: "/home/u/Work/gemini", branch: "main" }, // outside dir
+    ],
+    (path) => (path.includes("eng-2275") || path.includes("main") ? "eng-2249-parent" : null),
+    "/home/u/Work/worktrees",
+  );
+  assert.deepEqual([...keys], ["ENG-2275"]);
 });
 
 test("pollOnce launches new issues and marks them seen", async () => {
@@ -271,6 +297,78 @@ test("deployOnce retries an issue whose launch failed (not latched on failure)",
   assert.ok(state.launched.has("a"));
 });
 
+test("tailBuffer keeps everything while under the limit", () => {
+  const tail = tailBuffer(10);
+  tail.push("abc");
+  tail.push("de");
+  assert.equal(tail.text(), "abcde");
+});
+
+test("tailBuffer drops the head so the failure at the end survives", () => {
+  const tail = tailBuffer(5);
+  tail.push("aaaaaaa");
+  tail.push("die: git worktree add failed");
+  assert.equal(tail.text(), "ailed");
+});
+
+test("tailBuffer truncates a single oversized push", () => {
+  const tail = tailBuffer(4);
+  tail.push("0123456789");
+  assert.equal(tail.text(), "6789");
+});
+
+test("tailBuffer of an empty stream is empty", () => {
+  assert.equal(tailBuffer(10).text(), "");
+});
+
+test("releaseLaunch un-latches a failed launch so the next heartbeat retries it", () => {
+  const state = freshDeployState();
+  const logs: string[] = [];
+  state.launched.add("a");
+  releaseLaunch(state, "a", "ENG-1", (m) => void logs.push(m));
+  assert.ok(!state.launched.has("a"), "an exit-non-zero launch must not stay latched");
+  assert.equal(state.attempts.get("a"), 1);
+  assert.deepEqual(logs, [], "one failure is not worth a give-up line");
+});
+
+test("releaseLaunch gives up at the attempt cap instead of relaunching forever", () => {
+  const state = freshDeployState();
+  const logs: string[] = [];
+  const log = (m: string) => void logs.push(m);
+  for (let i = 0; i < MAX_LAUNCH_ATTEMPTS; i++) {
+    state.launched.add("a");
+    releaseLaunch(state, "a", "ENG-1", log);
+  }
+  assert.ok(state.launched.has("a"), "at the cap the latch stays so the retry loop ends");
+  assert.equal(logs.length, 1, "the give-up is reported once, not every heartbeat");
+  assert.ok(logs[0].includes("ENG-1"));
+  // A later exit for the same issue must not re-log or un-latch.
+  releaseLaunch(state, "a", "ENG-1", log);
+  assert.ok(state.launched.has("a"));
+  assert.equal(logs.length, 1);
+});
+
+test("releaseLaunch tracks attempts per issue", () => {
+  const state = freshDeployState();
+  state.launched.add("a");
+  state.launched.add("b");
+  releaseLaunch(state, "a", "ENG-1", () => {});
+  assert.equal(state.attempts.get("a"), 1);
+  assert.equal(state.attempts.get("b"), undefined);
+  assert.ok(!state.launched.has("a"));
+  assert.ok(state.launched.has("b"), "one issue's failure must not un-latch another");
+});
+
+test("deployOnce relaunches an issue releaseLaunch un-latched", async () => {
+  const state = freshDeployState();
+  const { deps, launched } = deployDeps();
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+  releaseLaunch(state, "a", "ENG-1", () => {}); // new-session.sh exited non-zero
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug", "eng-1-fix-bug"], "the retry actually happens");
+});
+
 test("deployOnce survives a fetch failure without launching or latching", async () => {
   const state = freshDeployState();
   const logs: string[] = [];
@@ -417,7 +515,7 @@ function gitIn(cwd: string, args: string[]): void {
 // A real temp repo pair: a bare "origin" and a clone with one pushed commit on
 // main. Returns the clone path; callers mutate it per case.
 function tempClone(): string {
-  const root = mkdtempSync(join(tmpdir(), "yimbot-push-test-"));
+  const root = tempDir("yimbot-push-test-");
   const bare = join(root, "origin.git");
   const clone = join(root, "clone");
   gitIn(root, ["init", "--bare", "-b", "main", bare]);
@@ -493,6 +591,19 @@ test("resolveSessionForKey matches despite a title change since launch", () => {
   assert.equal(session, "eng-42-old-title");
 });
 
+test("resolveSessionForKey falls back to the worktree dir slug when the branch is off-ticket", () => {
+  // A reroot/rebase parks the worktree on a temp branch; the dir still names the ticket.
+  const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "tmp-reroot-42" }];
+  const session = resolveSessionForKey("ENG-42", worktrees, ["eng-42-fix-login"]);
+  assert.equal(session, "eng-42-fix-login");
+});
+
+test("resolveSessionForKey resolves an extra-repo PR row to its ticket's session", () => {
+  const worktrees = [{ path: "/wt/eng-42-fix-login", branch: "eng-42-fix-login" }];
+  const session = resolveSessionForKey("ENG-42@acme/tf", worktrees, ["eng-42-fix-login"]);
+  assert.equal(session, "eng-42-fix-login");
+});
+
 test("resolveSessionForKey returns null when no worktree backs the key", () => {
   const worktrees = [{ path: "/wt/eng-7-other", branch: "eng-7-other" }];
   assert.equal(resolveSessionForKey("ENG-42", worktrees, ["eng-7-other"]), null);
@@ -503,9 +614,62 @@ test("resolveSessionForKey returns null when the worktree has no live session", 
   assert.equal(resolveSessionForKey("ENG-42", worktrees, []), null);
 });
 
+test("worktreeKeysUnder keys a worktree by its dir slug when the branch is off-ticket", () => {
+  const keys = worktreeKeysUnder([{ path: "/wt/eng-42-fix-login", branch: "tmp-reroot-42" }], "/wt");
+  assert.deepEqual([...keys], ["ENG-42"]);
+});
+
+test("worktreeKeysUnder keeps the branch key when neither branch nor dir names a ticket", () => {
+  const keys = worktreeKeysUnder([{ path: "/wt/readme-diagrams", branch: "docs/readme-diagrams" }], "/wt");
+  assert.deepEqual([...keys], ["docs/readme-diagrams"]);
+});
+
 test("liveRefineKeys maps refine sessions to board keys", () => {
   const keys = liveRefineKeys(["refine-eng-9", "eng-12-some-ticket", "refine-sc-4", "refine-plat-12"]);
   assert.deepEqual(keys, new Set(["ENG-9", "SC-4", "PLAT-12"]));
+});
+
+test("liveQaKeys maps qa sessions to board keys", () => {
+  const keys = liveQaKeys(["qa-eng-90", "eng-12-some-ticket", "refine-sc-4", "qa-sc-7", "qa-123-title"], []);
+  assert.deepEqual(keys, new Set(["ENG-90", "SC-7"]));
+});
+
+test("liveQaKeys keeps pre-session units and drops terminal ones", () => {
+  const unit = (identifier: string, phase: QaPhase): QaUnit => ({
+    identifier,
+    id: `id-${identifier}`,
+    phase,
+    lastPr: 1,
+    prs: [],
+  });
+  const keys = liveQaKeys(
+    [],
+    [
+      unit("ENG-90", "awaiting-deploy"),
+      unit("ENG-91", "waiting-children"),
+      unit("ENG-92", "in-session"),
+      unit("ENG-93", "posted"),
+      unit("ENG-94", "failed"),
+    ],
+  );
+  assert.deepEqual(keys, new Set(["ENG-90", "ENG-91", "ENG-92"]));
+});
+
+test("QA_SESSION_RE matches only qa session names", () => {
+  assert.equal(QA_SESSION_RE.test("qa-eng-90"), true);
+  assert.equal(QA_SESSION_RE.test("qa-123-title"), false);
+  assert.equal(QA_SESSION_RE.test("refine-eng-90"), false);
+  assert.equal(QA_SESSION_RE.test("eng-90-qa"), false);
+});
+
+test("qaSessionArgs builds the qa-session.sh argv", () => {
+  assert.deepEqual(qaSessionArgs("ENG-90", "https://np", ["ENG-101", "ENG-102"], ["acme/app#12", "#7"]), [
+    qaScriptPath,
+    "ENG-90",
+    "https://np",
+    "ENG-101,ENG-102",
+    "acme/app#12,#7",
+  ]);
 });
 
 test("resolveSessionForKey falls back to a live refine session when no worktree matches", () => {
@@ -553,6 +717,15 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
   };
 }
 
+// A blocker still in flight: short of the merge state, so it blocks.
+const blocker = (identifier: string, stateName = "In Review") => ({
+  identifier,
+  stateName,
+  stateType: "started",
+});
+
+const cleared = clearedStateNames("Merged", "Deployed To Nonprod");
+
 function claimDeps(overrides: Partial<ClaimDeps> = {}): {
   deps: ClaimDeps;
   moved: CycleTodoIssue[];
@@ -569,6 +742,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     maxInProgress: 3,
     countInProgress: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
+    clearedStates: cleared,
     moveToInProgress: async (issue) => void moved.push(issue),
     log: (msg) => void logs.push(msg),
     ...overrides,
@@ -620,14 +794,14 @@ test("claimOnce skips (no pick) when In-Progress count is at the cap", async () 
   assert.equal(moved.length, 0);
 });
 
-test("claimOnce defers a blocked todo and logs it when merged is available", async () => {
+test("claimOnce defers a blocked todo and logs its blocker's state", async () => {
   const { deps, moved, logs } = claimDeps({
-    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"] })],
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4")] })],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0);
-  assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
+  assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4 (In Review)")));
 });
 
 test("claimOnce logs unestimated todos it defers to the refine step", async () => {
@@ -662,9 +836,20 @@ test("claimOnce says nothing about unestimated todos while the refine step is of
   assert.ok(!logs.some((l) => l.includes("no estimate")));
 });
 
-test("claimOnce claims a blocked todo once its blocker is merged", async () => {
+test("claimOnce claims a blocked todo once its blocker reaches the merge state", async () => {
   const { deps, moved } = claimDeps({
-    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"] })],
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4", "Merged")] }),
+    ],
+    fetchMergedIdentifiers: async () => new Set<string>(),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((i) => i.id), ["5"]);
+});
+
+test("claimOnce still claims when the blocker's PR merged before its ticket moved", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4")] })],
     fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
   });
   await claimOnce(freshClaimState(), deps);
@@ -675,8 +860,8 @@ test("claimOnce only logs deferrals for todos in this instance's LABEL_FILTER sl
   const { deps, logs } = claimDeps({
     labelFilter: parseLabelFilter("!bot"),
     fetchCycleTodos: async () => [
-      cycleTodo({ id: "5", priority: 1, blockedBy: ["ENG-4"], labels: ["bot"] }),
-      cycleTodo({ id: "6", priority: 2, blockedBy: ["ENG-4"] }),
+      cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4")], labels: ["bot"] }),
+      cycleTodo({ id: "6", priority: 2, blockedBy: [blocker("ENG-4")] }),
     ],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
@@ -760,6 +945,7 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
   const deps: ReconcileDeps = {
     fetchInProgress: async () => [],
     fetchMergedIdentifiers: async () => new Set<string>(),
+    clearedStates: cleared,
     moveToTodo: async (id) => void movedBack.push(id),
     unlatchDeploy: (id) => void unlatched.push(id),
     log: (msg) => void logs.push(msg),
@@ -771,23 +957,24 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
 test("reconcile moves a blocked In-Progress ticket back and unlatches, never tearing down", async () => {
   const { deps, movedBack, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: [blocker("ENG-4")] },
     ],
     fetchMergedIdentifiers: async () => new Set<string>(),
   });
   await reconcileBlockedInProgress(deps);
   assert.deepEqual(movedBack, ["i-5"]);
   assert.deepEqual(unlatched, ["i-5"]);
-  assert.ok(logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4")));
+  assert.ok(
+    logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4 (In Review)")),
+  );
 });
 
 test("reconcile leaves unblocked and no-blocker tickets alone", async () => {
   const { deps, movedBack } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: [blocker("ENG-4", "Merged")] },
       { id: "i-6", identifier: "ENG-6", title: "t", labels: [], blockedBy: [] },
     ],
-    fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
   });
   await reconcileBlockedInProgress(deps);
   assert.equal(movedBack.length, 0);
@@ -807,7 +994,7 @@ test("reconcile swallows a fetch failure without throwing", async () => {
 test("reconcile does not unlatch when the move fails", async () => {
   const { deps, unlatched, logs } = reconcileDeps({
     fetchInProgress: async () => [
-      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: ["ENG-4"] },
+      { id: "i-5", identifier: "ENG-5", title: "t", labels: [], blockedBy: [blocker("ENG-4")] },
     ],
     moveToTodo: async () => {
       throw new Error("move boom");
@@ -818,6 +1005,17 @@ test("reconcile does not unlatch when the move fails", async () => {
   assert.ok(logs.some((l) => l.includes("failed to move ENG-5 back")));
 });
 
+test("detachedSessionEnv flags the launch as detached so new-session.sh never switches the client", () => {
+  const env = detachedSessionEnv({ PATH: "/usr/bin", TMUX: "/tmp/tmux-1000/default,9,0" });
+  assert.equal(env.SESSION_DETACH, "1");
+  assert.equal(env.PATH, "/usr/bin");
+  assert.equal(env.TMUX, "/tmp/tmux-1000/default,9,0");
+});
+test("detachedSessionEnv merges extra vars alongside the flag", () => {
+  const env = detachedSessionEnv({ PATH: "/usr/bin" }, { SESSION_RESUME: "1" });
+  assert.equal(env.SESSION_DETACH, "1");
+  assert.equal(env.SESSION_RESUME, "1");
+});
 test("returnKeyBindArgs targets the board pane so the window and pane are selected too", () => {
   assert.deepEqual(returnKeyBindArgs("%36", "Y"), [
     "bind-key", "-T", "prefix", "Y", "switch-client", "-t", "%36",
@@ -1060,4 +1258,50 @@ test("claimOnce claims normally when no dependency scan is configured", async ()
   });
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 1);
+});
+
+function splitReporter(current: Record<string, string | undefined>) {
+  const emitted: { kind: string; key: string }[] = [];
+  const report = (rows: { awaiting: string[]; tracking: string[] }) =>
+    reportSplitParentRows(rows, {
+      currentStatus: (key) => current[key],
+      emitStatus: (ev) => void emitted.push({ kind: ev.kind, key: ev.key }),
+    });
+  return { report, emitted };
+}
+
+test("reportSplitParentRows: a parent with an open slice PR reads waiting on slices", () => {
+  const { report, emitted } = splitReporter({ "ENG-1320": "working" });
+  report({ awaiting: ["eng-1320-parent"], tracking: [] });
+  assert.deepEqual(emitted, [{ kind: "awaiting_slices", key: "ENG-1320" }]);
+});
+
+test("reportSplitParentRows: a working split parent with nothing pending reads tracker ticket", () => {
+  const { report, emitted } = splitReporter({ "ENG-1929": "working" });
+  report({ awaiting: [], tracking: ["eng-1929-parent"] });
+  assert.deepEqual(emitted, [{ kind: "tracking", key: "ENG-1929" }]);
+});
+
+test("reportSplitParentRows: a wait that ended drops to tracker ticket, not working", () => {
+  const { report, emitted } = splitReporter({ "ENG-1320": "waiting on slices" });
+  report({ awaiting: [], tracking: ["eng-1320-parent"] });
+  assert.deepEqual(emitted, [{ kind: "tracking", key: "ENG-1320" }]);
+});
+
+test("reportSplitParentRows: a tracker ticket starts waiting once a slice PR opens", () => {
+  const { report, emitted } = splitReporter({ "ENG-1929": "tracker ticket" });
+  report({ awaiting: ["eng-1929-parent"], tracking: [] });
+  assert.deepEqual(emitted, [{ kind: "awaiting_slices", key: "ENG-1929" }]);
+});
+
+test("reportSplitParentRows: never writes over a hold status", () => {
+  const { report, emitted } = splitReporter({ "ENG-1320": "needs decision", "ENG-1929": "review findings" });
+  report({ awaiting: ["eng-1320-parent"], tracking: ["eng-1929-parent"] });
+  assert.deepEqual(emitted, []);
+});
+
+test("reportSplitParentRows: leaves a row with any other status alone", () => {
+  const { report, emitted } = splitReporter({ "ENG-1929": "ready to merge" });
+  report({ awaiting: [], tracking: ["eng-1929-parent"] });
+  assert.deepEqual(emitted, []);
 });

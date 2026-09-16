@@ -47,7 +47,8 @@ session is done and will be reaped.
      subticket up with no memory of this analysis. Put any slice-specific
      context (files involved, approach, gotchas) into the subticket
      description by passing it in the title only if short; otherwise add a
-     comment on the subticket via the Linear MCP.
+     comment on the subticket: `~/comment-ticket.sh <SUBTICKET> "<context>"`
+     (or `- < file.md` to pipe a longer body).
    - **Last action of this step, after every slice and every relation:** run
      `~/estimate-ticket.sh <TICKET> 0`. That zero is what marks the parent
      refined (a 0-point container the claim step never picks up), so it must

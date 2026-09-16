@@ -69,9 +69,9 @@ seed_prompt_for() {
   elif [[ "$name" =~ ^sc-([0-9]+)- ]]; then
     printf 'Fetch Shortcut story %s via the Shortcut MCP (mcp__shortcut__stories-get-by-id) and read its description, acceptance criteria, and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^eng-([0-9]+)-cont-[0-9]+$ ]]; then
-    printf 'Fetch Linear issue ENG-%s via the Linear MCP (mcp__linear-server__get_issue) and read the yimbot acceptance-criteria tracker comment. Implement ONLY the still-open (unchecked) criteria, cutting your PR from main. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
+    printf 'Run ~/get-ticket.sh ENG-%s to read Linear issue ENG-%s and find the yimbot acceptance-criteria tracker comment. Implement ONLY the still-open (unchecked) criteria, cutting your PR from main. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}" "${BASH_REMATCH[1]}"
   elif [[ "$name" =~ ^eng-([0-9]+)- ]]; then
-    printf 'Fetch Linear issue ENG-%s via the Linear MCP (mcp__linear-server__get_issue) and read its description and comments. Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}"
+    printf 'Run ~/get-ticket.sh ENG-%s to read Linear issue ENG-%s (description and comments). Then invoke the pickup-ticket skill and follow it exactly.' "${BASH_REMATCH[1]}" "${BASH_REMATCH[1]}"
   fi
 }
 
@@ -262,6 +262,24 @@ launch_claude_in() {
   fi
 }
 
+# How a finished launch is handed to the user: "switch" moves the caller's tmux
+# client onto the new session, "attach" takes over the caller's terminal, and
+# "detach" leaves the session running in the background. Every launch the yimbot
+# daemon spawns sets SESSION_DETACH: those inherit the board's TMUX, and without
+# the flag the switch below would yank the user's client off whatever they were
+# doing each time a ticket or PR fix starts.
+attach_mode() {
+  if [ -n "${SESSION_DETACH:-}" ]; then
+    echo detach
+  elif [ -n "${TMUX:-}" ]; then
+    echo switch
+  elif [ -t 0 ]; then
+    echo attach
+  else
+    echo detach
+  fi
+}
+
 # When sourced (e.g. by a test) load the functions above and stop; only run
 # session setup when the script is executed directly.
 (return 0 2>/dev/null) && return 0
@@ -333,14 +351,12 @@ fi
 
 # --- Tmux session ---
 if tmux has-session -t "$NAME" 2>/dev/null; then
-  log "Session '$NAME' already exists, switching to it..."
-  if [ -n "${TMUX:-}" ]; then
-    tmux switch-client -t "$NAME" || die "Failed to switch to session '$NAME'"
-  elif [ -t 0 ]; then
-    tmux attach -t "$NAME" || die "Failed to attach to session '$NAME'"
-  else
-    log "No TTY; session '$NAME' already running, leaving detached"
-  fi
+  log "Session '$NAME' already exists"
+  case "$(attach_mode)" in
+    switch) tmux switch-client -t "$NAME" || die "Failed to switch to session '$NAME'" ;;
+    attach) tmux attach -t "$NAME" || die "Failed to attach to session '$NAME'" ;;
+    *) log "Session '$NAME' already running, leaving detached" ;;
+  esac
   exit 0
 fi
 
@@ -371,15 +387,11 @@ done
 
 launch_claude_in "$NAME:Claude"
 
-log "All windows set up. Switching to session '$NAME'"
+log "All windows set up for session '$NAME'"
 tmux select-window -t "$FIRST_WINDOW"
 
-# Switch if already in tmux, attach on a terminal; when launched headless (e.g. by
-# the yimbot daemon) leave the session detached and exit 0.
-if [ -n "${TMUX:-}" ]; then
-  tmux switch-client -t "$NAME" || die "Failed to switch to session '$NAME'"
-elif [ -t 0 ]; then
-  tmux attach -t "$NAME" || die "Failed to attach to session '$NAME'"
-else
-  log "No TTY; session '$NAME' left detached"
-fi
+case "$(attach_mode)" in
+  switch) tmux switch-client -t "$NAME" || die "Failed to switch to session '$NAME'" ;;
+  attach) tmux attach -t "$NAME" || die "Failed to attach to session '$NAME'" ;;
+  *) log "Session '$NAME' left detached" ;;
+esac

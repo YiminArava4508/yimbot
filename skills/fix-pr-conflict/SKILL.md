@@ -37,9 +37,14 @@ the PR's own commits stay intact; you only add a resolution merge commit.
 2. **Bring main in with a merge.**
 
    ```bash
-   git fetch origin main
+   git fetch origin main "$(git branch --show-current)"
+   git merge --ff-only "origin/$(git branch --show-current)"
    git merge origin/main
    ```
+
+   The `--ff-only` step picks up anything a bot or another session pushed to the
+   branch, so the push in step 7 is not rejected. If it refuses to fast-forward
+   the branch has diverged; stop and report it.
 
    If it merges clean, skip to step 6. Otherwise
    `git diff --name-only --diff-filter=U` lists the conflicted paths.
@@ -145,14 +150,16 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    artifacts from step 1) and amend or add a follow-up commit before pushing.
 
    If the push is **rejected** (non-fast-forward: the branch advanced on the
-   remote), rebase onto the remote and retry once:
+   remote), merge the remote branch in and retry once. Never `git pull --rebase`
+   here: a rebase flattens the main merge and replays main's commits onto the
+   branch as duplicates, muddying the PR history.
 
    ```bash
-   git pull --rebase origin "$(git branch --show-current)" && git push
+   git pull --no-rebase --no-edit origin "$(git branch --show-current)" && git push
    ```
 
-   If the rebase hits a conflict or the push still fails, **stop**: run
-   `git rebase --abort`, leave the session open, and report that the branch
+   If the merge hits a conflict or the push still fails, **stop**: run
+   `git merge --abort`, leave the session open, and report that the branch
    diverged and needs a human. Never force push.
 
 8. **Flag the session ready to test** so the user knows they can run local dev

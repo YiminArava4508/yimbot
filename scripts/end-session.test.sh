@@ -31,4 +31,12 @@ assert_eq "$(unset CODEBASE_PATH; codebase_path)" "$HOME/Work/gemini" "defaults 
 assert_eq "$(teardown_steps true)" "kill_session remove_worktree delete_branch" "headless kills session first"
 assert_eq "$(teardown_steps false)" "remove_worktree delete_branch kill_session" "interactive kills session last"
 
+# worktree_path_for_branch resolves the dir git checked a branch out into from
+# porcelain output, even when the dir name diverges from the branch (the
+# mismatch that looped cleanup forever). Pure: parses its input, no git call.
+PORCELAIN=$'worktree /wt/fix-dealteam-integration-tx\nHEAD abc\nbranch refs/heads/fix/wrike-add-shared-users-integration-tx\n\nworktree /wt/eng-42\nHEAD def\nbranch refs/heads/eng-42\n'
+assert_eq "$(worktree_path_for_branch "$PORCELAIN" "fix/wrike-add-shared-users-integration-tx")" "/wt/fix-dealteam-integration-tx" "resolves diverged dir by branch"
+assert_eq "$(worktree_path_for_branch "$PORCELAIN" "eng-42")" "/wt/eng-42" "resolves matching dir by branch"
+assert_eq "$(worktree_path_for_branch "$PORCELAIN" "no/such-branch")" "" "empty when branch absent"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: end-session.sh helper tests"; else exit 1; fi

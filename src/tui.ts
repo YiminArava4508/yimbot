@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
-import { bus, filterToLiveRows, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, bus, filterToLiveRows, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
@@ -79,21 +79,35 @@ export function bindHelpKey(
   });
 }
 
+// A split parent's row: it has no work of its own, only slices to wait on.
+// A parent whose status is a hold (needs decision, review findings) is not
+// one of these; it owes a human an answer and stays with the tasks.
+const PARENT_STATUSES = new Set([TRACKING_STATUS, AWAITING_SLICES_STATUS]);
+
+export function isParentRow(row: Pick<BoardRow, "status">): boolean {
+  return PARENT_STATUSES.has(row.status);
+}
+
 // Placement reads the row's section, never its status. The daemon reports the
 // section each heartbeat from the facts that actually decide it (the ready
 // label, the draft flag), so a queued PR stays in the merge pane while its
 // status walks through a CI fix, a conflict fix or a review round -- the status
-// column is where that shows. A row only moves when the label does.
-export function partitionRows(rows: BoardRow[]): { review: BoardRow[]; merge: BoardRow[]; tasks: BoardRow[] } {
+// column is where that shows. A row only moves when the label does. The one
+// exception is the split parents: the daemon only ever gives that status to a
+// split's tracking ticket, and it outranks whatever section the key's own PR
+// left behind before the split, so they leave the work panes for their own.
+export function partitionRows(rows: BoardRow[]): Record<Pane, BoardRow[]> {
   const review: BoardRow[] = [];
   const merge: BoardRow[] = [];
   const tasks: BoardRow[] = [];
+  const parents: BoardRow[] = [];
   for (const r of rows) {
-    if (r.section === "review") review.push(r);
+    if (isParentRow(r)) parents.push(r);
+    else if (r.section === "review") review.push(r);
     else if (r.section === "merge") merge.push(r);
     else tasks.push(r);
   }
-  return { review, merge, tasks };
+  return { review, merge, tasks, parents };
 }
 
 export type ReviewEntry = { row: BoardRow; reason: string };
@@ -116,45 +130,65 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
   return [...ordered, ...unranked];
 }
 
-// The board's geometry: three full-width bordered panes stacked top to
-// bottom -- tasks, ready to review, ready to merge. Each keeps an equal third
-// of the body (tasks takes the remainder) whether or not it has rows, so the
-// panes never jump around as PRs move between them. The floor of 4 keeps one
-// data row visible (header + 2 border rows) on a tiny screen.
+// The board's geometry: four full-width bordered panes stacked top to
+// bottom -- tasks, ready to review, ready to merge, parent tickets. The parents
+// pane sits at the foot and takes only what its rows need (header + 2 border
+// rows), capped at a quarter of the body and gone entirely while empty: those
+// rows are context, and the space is the work panes'. The three work panes
+// each keep an equal third of what remains (tasks takes the remainder) whether
+// or not they have rows, so they never jump around as PRs move between them.
+// The floor of 4 keeps one data row visible on a tiny screen.
 //
 // Below this the board's nine columns no longer fit beside the queue, so the
 // queue gives way rather than squeezing the rows it exists to annotate. The
 // queue holds the left edge and the board panes inset past it.
 const QUEUE_MIN_SCREEN_WIDTH = 80;
 
+// Header row plus the two border rows; a pane needs one more to show a row.
+const PANE_CHROME_ROWS = 3;
+const PANE_MIN_HEIGHT = PANE_CHROME_ROWS + 1;
+
 export function boardLayout(
   screenHeight: number,
   screenWidth: number,
+  parentRows = 0,
 ): {
   tasks: { top: number; left: number; right: number; bottom: number };
   review: { left: number; right: number; bottom: number; height: number };
   merge: { left: number; right: number; bottom: number; height: number };
+  parents: { left: number; right: number; bottom: number; height: number };
   queue: { top: number; left: number; width: number; bottom: number } | null;
 } {
   const footerRows = 1;
   const titleRows = 1;
-  const third = Math.max(4, Math.floor((screenHeight - titleRows - footerRows) / 3));
+  const body = screenHeight - titleRows - footerRows;
+  // Never below what the three work panes need at their floor, so a short
+  // terminal squeezes the parents pane away before it squeezes the work.
+  const parentsCap = Math.min(Math.floor(body / 4), body - 3 * PANE_MIN_HEIGHT);
+  const parentsFit = parentRows > 0 && parentsCap >= PANE_MIN_HEIGHT;
+  const parentsHeight = parentsFit ? Math.min(parentRows + PANE_CHROME_ROWS, parentsCap) : 0;
+  const third = Math.max(PANE_MIN_HEIGHT, Math.floor((body - parentsHeight) / 3));
   const showQueue = screenWidth >= QUEUE_MIN_SCREEN_WIDTH;
   const inset = showQueue ? QUEUE_PANE_WIDTH : 0;
+  const mergeBottom = footerRows + parentsHeight;
   return {
-    tasks: { top: titleRows, left: inset, right: 0, bottom: footerRows + 2 * third },
-    review: { left: inset, right: 0, bottom: footerRows + third, height: third },
-    merge: { left: inset, right: 0, bottom: footerRows, height: third },
+    tasks: { top: titleRows, left: inset, right: 0, bottom: mergeBottom + 2 * third },
+    review: { left: inset, right: 0, bottom: mergeBottom + third, height: third },
+    merge: { left: inset, right: 0, bottom: mergeBottom, height: third },
+    parents: { left: inset, right: 0, bottom: footerRows, height: parentsHeight },
     queue: showQueue ? { top: titleRows, left: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows } : null,
   };
 }
 
-export type Pane = "tasks" | "review" | "merge";
+export type Pane = "tasks" | "review" | "merge" | "parents";
 export type PaneCounts = Record<Pane, number>;
+
+// Top to bottom on screen; the focus keys walk this order.
+export const PANE_ORDER: readonly Pane[] = ["tasks", "review", "merge", "parents"];
 
 // Each pane's resting outline; the focused pane takes the focus hue so the
 // operator can see where their keys land.
-export const PANE_BORDER: Record<Pane, string> = { tasks: "grey", review: "yellow", merge: "green" };
+export const PANE_BORDER: Record<Pane, string> = { tasks: "grey", review: "yellow", merge: "green", parents: "grey" };
 
 export function paneBorderColor(pane: Pane, focused: boolean): string {
   return focused ? FOCUS_BORDER : PANE_BORDER[pane];
@@ -169,7 +203,7 @@ export function applyPaneFocusStyle(
   widgets: Record<Pane, { style: { border: { fg: string }; label: { fg: string }; selected: { inverse: boolean } } }>,
   focused: Pane,
 ): void {
-  for (const p of ["tasks", "review", "merge"] as const) {
+  for (const p of PANE_ORDER) {
     const fg = paneBorderColor(p, p === focused);
     widgets[p].style.border.fg = fg;
     widgets[p].style.label.fg = fg;
@@ -182,7 +216,7 @@ export function applyPaneFocusStyle(
 // the operator's f/r/R/enter would silently no-op against it.
 export function resolvePane(current: Pane, counts: PaneCounts): Pane {
   if (counts[current] > 0) return current;
-  for (const p of ["tasks", "review", "merge"] as const) if (counts[p] > 0) return p;
+  for (const p of PANE_ORDER) if (counts[p] > 0) return p;
   return "tasks";
 }
 
@@ -190,20 +224,18 @@ export function resolvePane(current: Pane, counts: PaneCounts): Pane {
 // empty pane is hidden, so landing on it would focus nothing visible). No
 // non-empty pane in that direction stays put.
 export function movePane(current: Pane, dir: "up" | "down", counts: PaneCounts): Pane {
-  const order: Pane[] = ["tasks", "review", "merge"];
   const step = dir === "down" ? 1 : -1;
-  for (let i = order.indexOf(current) + step; i >= 0 && i < order.length; i += step) {
-    if (counts[order[i]] > 0) return order[i];
+  for (let i = PANE_ORDER.indexOf(current) + step; i >= 0 && i < PANE_ORDER.length; i += step) {
+    if (counts[PANE_ORDER[i]] > 0) return PANE_ORDER[i];
   }
   return current;
 }
 
 // Tab's fallback cycle through the panes, skipping empty ones.
 export function nextPane(current: Pane, counts: PaneCounts): Pane {
-  const order: Pane[] = ["tasks", "review", "merge"];
-  const i = order.indexOf(current);
-  for (let step = 1; step <= order.length; step++) {
-    const p = order[(i + step) % order.length];
+  const i = PANE_ORDER.indexOf(current);
+  for (let step = 1; step <= PANE_ORDER.length; step++) {
+    const p = PANE_ORDER[(i + step) % PANE_ORDER.length];
     if (counts[p] > 0) return p;
   }
   return current;
@@ -243,6 +275,7 @@ export function selectedBoardRow(
     tasks: { rows: BoardRow[]; selected: number };
     review: { entries: ReviewEntry[]; selected: number };
     merge: { rows: BoardRow[]; selected: number };
+    parents: { rows: BoardRow[]; selected: number };
   },
 ): BoardRow | undefined {
   if (pane === "review") return panes.review.entries[panes.review.selected - 1]?.row;
@@ -598,7 +631,8 @@ export function runTui(opts: {
   const tasksPane = makePane("tasks", { top: 1, left: 0, right: 0, bottom: 1 });
   const reviewPane = makePane("review", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
   const mergePane = makePane("merge", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
-  const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane };
+  const parentsPane = makePane("parents", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
+  const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane, parents: parentsPane };
   tasksPane.focus();
 
   // Never focused, never in the pane rotation. Reading the queue reaps stale
@@ -624,6 +658,7 @@ export function runTui(opts: {
   let currentRows: BoardRow[] = [];
   let currentTasks: BoardRow[] = [];
   let currentMerge: BoardRow[] = [];
+  let currentParents: BoardRow[] = [];
   let currentReview: ReviewEntry[] = [];
   let focusedPane: Pane = "tasks";
   // Set when a settings apply's rollback restart also failed, so the daemon
@@ -635,6 +670,7 @@ export function runTui(opts: {
     tasks: currentTasks.length,
     review: currentReview.length,
     merge: currentMerge.length,
+    parents: currentParents.length,
   });
   const render = () => {
     currentRows = filterToLiveRows(
@@ -646,7 +682,7 @@ export function runTui(opts: {
       opts.liveKeys(),
       opts.openPrKeys(),
     );
-    const { review, merge, tasks } = partitionRows(currentRows);
+    const { review, merge, tasks, parents } = partitionRows(currentRows);
     const withPr = review.filter((r): r is BoardRow & { pr: number } => r.pr != null);
     orderFetcher.ensure(
       withPr.map((r) => r.pr),
@@ -655,12 +691,14 @@ export function runTui(opts: {
     currentReview = applyOrder(review, orderFetcher.get());
     currentTasks = tasks;
     currentMerge = merge;
+    currentParents = parents;
     const now = Date.now();
-    const layout = boardLayout(Number(screen.rows) || 24, Number(screen.cols) || 80);
-    const [tasksData, reviewData, mergeData] = alignTables([
+    const layout = boardLayout(Number(screen.rows) || 24, Number(screen.cols) || 80, parents.length);
+    const [tasksData, reviewData, mergeData, parentsData] = alignTables([
       boardTable(tasks.map((row) => ({ row })), now),
       boardTable(currentReview.map((e) => ({ row: e.row })), now),
       boardTable(merge.map((row) => ({ row })), now),
+      boardTable(parents.map((row) => ({ row })), now),
     ]);
     tasksPane.bottom = layout.tasks.bottom;
     tasksPane.setLabel(` tasks (${tasks.length}) `);
@@ -673,9 +711,14 @@ export function runTui(opts: {
     mergePane.bottom = layout.merge.bottom;
     mergePane.setLabel(` ready to merge (${merge.length}) `);
     mergePane.setData(mergeData);
+    parentsPane.height = layout.parents.height;
+    parentsPane.bottom = layout.parents.bottom;
+    parentsPane.setLabel(` parent tickets (${parents.length}) `);
+    parentsPane.setData(parentsData);
     tasksPane.left = layout.tasks.left;
     reviewPane.left = layout.review.left;
     mergePane.left = layout.merge.left;
+    parentsPane.left = layout.parents.left;
     // Skip the read while an overlay hides the pane: it reaps tickets, so
     // polling it here would write state nobody can see.
     if (layout.queue && !isOverlayOpen()) {
@@ -686,9 +729,20 @@ export function runTui(opts: {
     }
     // While an overlay is open every pane stays hidden (the overlay owns
     // the screen); the close callback re-renders, which shows them again.
+    // The parents pane has no reserved space, so empty means hidden. Hiding
+    // it while focused makes blessed rewind focus onto a history pane, which
+    // the focus sync would record; keep the operator's pane so resolvePane
+    // below picks the fallback deterministically instead.
     if (!isOverlayOpen()) {
       reviewPane.show();
       mergePane.show();
+      if (parents.length > 0) {
+        parentsPane.show();
+      } else {
+        const keep = focusedPane;
+        parentsPane.hide();
+        focusedPane = keep;
+      }
     }
     const pane = resolvePane(focusedPane, paneCounts());
     if (pane !== focusedPane) {
@@ -715,6 +769,7 @@ export function runTui(opts: {
       tasks: { rows: currentTasks, selected: tasksPane.selected },
       review: { entries: currentReview, selected: reviewPane.selected },
       merge: { rows: currentMerge, selected: mergePane.selected },
+      parents: { rows: currentParents, selected: parentsPane.selected },
     });
   const focusedWidget = () => paneWidgets[focusedPane];
   const focusPane = (p: Pane) => {
@@ -816,7 +871,16 @@ export function runTui(opts: {
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
   });
 
+  // A parent row's pr, when it has one, is the PR the split closed: the fold
+  // carries it forward, but nothing about it is actionable any more.
+  const refuseParentRow = (): boolean => {
+    if (focusedPane !== "parents") return false;
+    setNotice("{red-fg}parent tickets have no PR of their own{/red-fg}", NOTICE_ERROR_TTL_MS);
+    return true;
+  };
+
   bindReadyKey(screen, isOverlayOpen, () => {
+    if (refuseParentRow()) return;
     void handleReadyPress(selRow(), opts.onAddReadyLabel, setNotice);
   });
 
@@ -836,6 +900,7 @@ export function runTui(opts: {
   });
 
   bindReviewKey(screen, isOverlayOpen, () => {
+    if (refuseParentRow()) return;
     const r = selRow();
     if (!r) return;
     if (r.pr == null) {
@@ -860,6 +925,7 @@ export function runTui(opts: {
   tasksPane.on("select", () => openSelectedSession(currentTasks[tasksPane.selected - 1]));
   reviewPane.on("select", () => openSelectedSession(currentReview[reviewPane.selected - 1]?.row));
   mergePane.on("select", () => openSelectedSession(currentMerge[mergePane.selected - 1]));
+  parentsPane.on("select", () => openSelectedSession(currentParents[parentsPane.selected - 1]));
 
   render();
 }

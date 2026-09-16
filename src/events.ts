@@ -206,6 +206,7 @@ const MERGED_STATUS = STATUS.merged!.status;
 export const HELD_SLICE_STATUS = "merged, waiting on slices";
 export const HELD_MERGED_STATUS = "merged, waiting on ticket";
 export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
+export const TRACKING_STATUS = STATUS.tracking!.status;
 export const WORKING_STATUS = STATUS.task_started!.status;
 
 // Statuses that mean a human already owes this row an answer. A status derived

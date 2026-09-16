@@ -385,9 +385,8 @@ export function fmtDuration(ms: number): string {
 }
 
 // One header for all three panes, in one order, so a row reads the same
-// wherever it sits. WHY only ever fills in the review pane (the AI ordering's
-// rationale); it stays blank in the other two rather than shifting the grid.
-export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON", "WHY"];
+// wherever it sits.
+export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];
 
 // What the REPO column reads: nothing until the row has a PR, the codebase
 // checkout's directory name for a codebase-repo PR, the name half of the
@@ -402,14 +401,14 @@ function codebaseRepoName(): string {
   return basename(configFromEnv(process.env).codebasePath);
 }
 
-export type BoardEntry = { row: BoardRow; why?: string };
+export type BoardEntry = { row: BoardRow };
 
 export function boardTable(
   entries: BoardEntry[],
   now: number = Date.now(),
   codebaseName: string = codebaseRepoName(),
 ): string[][] {
-  const body = entries.map(({ row: r, why }) => {
+  const body = entries.map(({ row: r }) => {
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
     return [
       fmtTime(r.ts),
@@ -421,7 +420,6 @@ export function boardTable(
       r.title ?? "",
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
       r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
-      why ?? "",
     ];
   });
   return [BOARD_HEADER, ...body];
@@ -661,7 +659,7 @@ export function runTui(opts: {
     const layout = boardLayout(Number(screen.rows) || 24, Number(screen.cols) || 80);
     const [tasksData, reviewData, mergeData] = alignTables([
       boardTable(tasks.map((row) => ({ row })), now),
-      boardTable(currentReview.map((e) => ({ row: e.row, why: e.reason })), now),
+      boardTable(currentReview.map((e) => ({ row: e.row })), now),
       boardTable(merge.map((row) => ({ row })), now),
     ]);
     tasksPane.bottom = layout.tasks.bottom;

@@ -25,6 +25,9 @@ import {
   reviewFooterHint,
   reviewHeader,
   reviewLayout,
+  WIDE_LABEL,
+  wideFooterHint,
+  wideLayout,
   reviewPaneBorderColor,
   type ReviewDeps,
 } from "./tui-review.ts";
@@ -1525,5 +1528,119 @@ test("shift+O is not the session jump", async () => {
   await flush();
   screen.focused.emit("keypress", "O", { name: "o", full: "S-o", shift: true });
   assert.deepEqual(opened, []);
+  screen.destroy();
+});
+
+test("wideLayout is one hidden full-width scrolling pane that never wraps", () => {
+  const l = wideLayout();
+  assert.equal(l.wide.hidden, true);
+  assert.equal(l.wide.scrollable, true);
+  assert.equal(l.wide.wrap, false);
+  assert.equal(l.wide.width, "100%");
+  assert.equal(l.wide.top, 1);
+  assert.equal(l.wide.bottom, 1);
+  assert.equal(l.wide.keys, true);
+  assert.equal(l.wide.vi, true);
+});
+
+test("wideFooterHint keeps file movement, viewed, context and the way back", () => {
+  const base = { loaded: true, total: 2, allViewed: false, contextCount: 0, hasSession: false };
+  assert.equal(wideFooterHint({ ...base, loaded: false }), "loading…   z/q back");
+  assert.equal(wideFooterHint({ ...base, total: 0 }), "no changes in this PR   z/q back");
+  const hint = wideFooterHint(base);
+  assert.ok(hint.includes("n/p file"));
+  assert.ok(hint.includes("space viewed"));
+  assert.ok(hint.includes("c context"));
+  assert.ok(hint.includes("z/q back"));
+  assert.ok(!hint.includes("C clear"));
+  assert.ok(!hint.includes("r ready to merge"));
+  assert.ok(wideFooterHint({ ...base, allViewed: true }).includes("r ready to merge"));
+  assert.ok(wideFooterHint({ ...base, contextCount: 1 }).includes("C clear context"));
+  assert.ok(wideFooterHint({ ...base, hasSession: true }).includes("o session"));
+});
+
+test("z opens the side-by-side diff over the columns and z again restores them", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "z");
+  const wide = paneByLabel(screen, WIDE_LABEL);
+  const plan = paneByLabel(screen, " review plan ");
+  assert.equal(plan.hidden, true);
+  assert.equal(wide.hidden, false);
+  assert.equal(screen.focused, wide);
+  const content = wide.getContent();
+  assert.ok(content.includes("│"), "two columns");
+  assert.ok(content.includes("x") && content.includes("y"), "old and new side by side");
+  press(screen, "z");
+  assert.equal(wide.hidden, true);
+  assert.equal(plan.hidden, false);
+  assert.equal(screen.focused, paneByLabel(screen, " diff "), "back on the diff pane");
+  screen.destroy();
+});
+
+test("z from the diff pane and q from wide mode both return without closing the review", async () => {
+  const screen = makeScreen();
+  let closed = false;
+  openReview(screen, testDeps(), () => { closed = true; });
+  await settle();
+  press(screen, "tab");
+  press(screen, "z");
+  const wide = screen.focused;
+  assert.equal(wide.options.wrap, false);
+  press(screen, "q");
+  assert.equal(closed, false);
+  assert.equal(wide.hidden, true);
+  screen.destroy();
+});
+
+test("n and p move between files in wide mode and space marks viewed", async () => {
+  const screen = makeScreen();
+  const deps = testDeps();
+  openReview(screen, deps, () => {});
+  await settle();
+  press(screen, "z");
+  const wide = screen.focused;
+  assert.ok(wide.getContent().includes("src/b.ts"), "first file in the plan order");
+  press(screen, "n");
+  assert.ok(wide.getContent().includes("src/a.ts"));
+  press(screen, "p");
+  assert.ok(wide.getContent().includes("src/b.ts"));
+  press(screen, "space");
+  assert.equal(deps.saved.length, 1);
+  assert.ok(deps.saved[0][1].has("src/b.ts"));
+  assert.ok(wide.getContent().includes("src/a.ts"), "advanced to the next unviewed file");
+  screen.destroy();
+});
+
+test("f does not open the flow chart while wide mode is up", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "z");
+  press(screen, "f");
+  assert.equal(paneByLabel(screen, " flow ").hidden, true);
+  screen.destroy();
+});
+
+test("ctrl-z is left alone so the shell suspend key does not open wide mode", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  screen.focused.emit("keypress", "\u001a", { name: "z", full: "C-z", ctrl: true });
+  assert.equal(paneByLabel(screen, WIDE_LABEL).hidden, true);
+  screen.destroy();
+});
+
+test("the side-by-side render leaves the scrollbar column to blessed", async () => {
+  const screen = makeScreen();
+  openReview(screen, testDeps(), () => {});
+  await settle();
+  press(screen, "z");
+  const wide = screen.focused;
+  const row = wide.getContent().split("\n").find((l: string) => l.includes("│"));
+  assert.ok(row);
+  const plain = blessed.helpers.stripTags(row);
+  assert.equal(plain.length, wide.width - 3, "border on both sides plus the scrollbar column");
   screen.destroy();
 });

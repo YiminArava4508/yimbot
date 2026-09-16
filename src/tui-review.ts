@@ -213,6 +213,18 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
   };
 }
 
+// blessed truncates each percentage on its own, so at many widths
+// floor(25%) + floor(45%) lands one short of floor(70%) and the board's last
+// frame shows through the uncovered column. paint() applies these integer
+// columns on top of the layout's percentages so the seams always meet.
+export function reviewColumns(screenWidth: number): {
+  planWidth: number; diffLeft: number; diffWidth: number; claudeLeft: number;
+} {
+  const planWidth = Math.floor(screenWidth * 0.25);
+  const claudeLeft = Math.floor(screenWidth * 0.7);
+  return { planWidth, diffLeft: planWidth, diffWidth: claudeLeft - planWidth, claudeLeft };
+}
+
 // The flow overlay is a single scrolling pane: arch-brief renders the scoped
 // graph and the written brief into one row list, and the brief already carries
 // the role, the edge's carries and the at-risk reason a separate note band
@@ -452,6 +464,11 @@ export function openReview(
     plan.top = 1 + gh;
     diff.top = 1 + gh;
     claude.top = 1 + gh;
+    const cols = reviewColumns(s.width);
+    plan.width = cols.planWidth;
+    diff.left = cols.diffLeft;
+    diff.width = cols.diffWidth;
+    claude.left = cols.claudeLeft;
     diff.setContent(diffPaneLines(fd).join("\n"));
     for (const [pane, box] of [["plan", plan], ["diff", diff], ["claude", claude]] as const) {
       const fg = reviewPaneBorderColor(focused === pane);

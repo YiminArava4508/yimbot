@@ -23,6 +23,7 @@ import {
   planLines,
   reviewFooterHint,
   reviewHeader,
+  reviewColumns,
   reviewLayout,
   WIDE_LABEL,
   wideFooterHint,
@@ -254,6 +255,16 @@ test("reviewLayout pins the panes: guide band on top, plan/diff/claude as thirds
   assert.equal(l.diff.width, "45%");
   assert.equal(l.header.height, 1);
   assert.equal(l.footer.bottom, 0);
+});
+
+test("reviewColumns leaves no uncovered column between the panes at any width", () => {
+  for (let w = 20; w <= 400; w++) {
+    const c = reviewColumns(w);
+    assert.equal(c.planWidth, Math.floor(w * 0.25), `plan ${w}`);
+    assert.equal(c.diffLeft, c.planWidth, `diff left ${w}`);
+    assert.equal(c.diffLeft + c.diffWidth, c.claudeLeft, `seam ${w}`);
+    assert.equal(c.claudeLeft, Math.floor(w * 0.7), `claude ${w}`);
+  }
 });
 
 test("reviewLayout makes the plan and diff panes wheel-scrollable", () => {

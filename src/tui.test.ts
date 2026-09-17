@@ -132,7 +132,8 @@ test("footerHint is a lean legend: help and quit everywhere, the rest lives unde
   for (const pane of ["tasks", "review", "merge"] as const) {
     const hint = footerHint(pane);
     assert.match(hint, /\? help/);
-    assert.match(hint, /q quit/);
+    assert.match(hint, /\^c quit/);
+    assert.doesNotMatch(hint, /\bq quit/);
     assert.doesNotMatch(hint, /j\/k move|f flag|m mode|s settings|returns here|tab pane/);
   }
 });
@@ -146,11 +147,12 @@ test("footerHint shows r/R on every pane: r reaches an unlabeled row wherever it
 test("helpLines carries every keybind the footer no longer shows", () => {
   const text = helpLines("F12").join("\n");
   for (const needle of [
-    "j/k", "^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "?", "q", "prefix+F12",
+    "j/k", "^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "?", "^c", "prefix+F12",
   ]) {
     assert.ok(text.includes(needle), `help must mention ${needle}`);
   }
   assert.doesNotMatch(text, /review pane/);
+  assert.doesNotMatch(text, /\{bold\}q\s*\{\/bold\}/, "q is no longer a quit key");
 });
 
 test("bindHelpKey opens only when no overlay is open", () => {
@@ -211,27 +213,19 @@ test("statusContent shows a green refine-on chip while refine is on", () => {
   assert.match(on, /green-bg.*REFINE ON/);
 });
 
-test("bindQuitKeys gates q and escape while settings is open, but C-c always fires", () => {
+test("bindQuitKeys binds only C-c: q and escape must not quit the board", () => {
   const handlers: Record<string, () => void> = {};
   const fakeScreen = {
     key: (keys: string[], fn: () => void) => {
       for (const k of keys) handlers[k] = fn;
     },
   };
-  let settingsOpen = true;
   let quitCalls = 0;
-  bindQuitKeys(fakeScreen, () => settingsOpen, () => false, () => quitCalls++);
+  bindQuitKeys(fakeScreen, () => false, () => quitCalls++);
 
-  handlers["q"]();
-  handlers["escape"]();
-  assert.equal(quitCalls, 0, "q and escape must not quit while the panel is open");
-
+  assert.deepEqual(Object.keys(handlers), ["C-c"], "C-c is the only quit key");
   handlers["C-c"]();
-  assert.equal(quitCalls, 1, "C-c must quit even while the panel is open");
-
-  settingsOpen = false;
-  handlers["q"]();
-  assert.equal(quitCalls, 2, "q quits again once the panel is closed");
+  assert.equal(quitCalls, 1, "C-c quits");
 });
 
 test("bindQuitKeys stands down on C-c while the claude pane is focused so the pty gets it", () => {
@@ -243,7 +237,7 @@ test("bindQuitKeys stands down on C-c while the claude pane is focused so the pt
   };
   let claudeFocused = true;
   let quitCalls = 0;
-  bindQuitKeys(fakeScreen, () => true, () => claudeFocused, () => quitCalls++);
+  bindQuitKeys(fakeScreen, () => claudeFocused, () => quitCalls++);
 
   handlers["C-c"]();
   assert.equal(quitCalls, 0, "C-c must not quit while the claude pane is focused");

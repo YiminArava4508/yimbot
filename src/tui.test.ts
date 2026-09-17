@@ -33,6 +33,15 @@ test("boardTable renders #N in the PR column and the title", () => {
   assert.equal(body[6], "add column");
 });
 
+test("boardTable prefixes a research title with a magenta type chip, plain titles untouched", () => {
+  const [, research, plain] = boardTable(
+    [{ row: row({ title: "Decide retention for exports" }) }, { row: row({ title: "add column" }) }],
+    0,
+  );
+  assert.equal(research[6], "{magenta-fg}[research]{/magenta-fg} Decide retention for exports");
+  assert.equal(plain[6], "add column");
+});
+
 test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
   const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
   assert.equal(extra[5], "terraform-x");

@@ -46,7 +46,7 @@ export function screenTerm(term: string | undefined): string | undefined {
 // so the row that most needs r (green, unlabeled, therefore in tasks) is
 // exactly the one a pane-gated r could not reach.
 export function footerHint(_pane: Pane): string {
-  return "r ready   R review   ? help   q quit";
+  return "r ready   R review   ? help   ^c quit";
 }
 
 // The help overlay's body: every keybind, one per line, aligned.
@@ -62,7 +62,7 @@ export function helpLines(key: string): string[] {
     ["s", "settings"],
     [`prefix+${key}`, "return here from a session"],
     ["?", "toggle this help"],
-    ["q", "quit"],
+    ["^c", "quit"],
   ];
   const pad = Math.max(...binds.map(([k]) => k.length));
   return binds.map(([k, desc]) => `{bold}${k.padEnd(pad)}{/bold}  ${desc}`);
@@ -550,22 +550,18 @@ export function alignTables(tables: string[][][]): string[][][] {
 
 // screen.key's handler runs before the focused widget's own keypress handling
 // (see neo-blessed's screen.js _listenKeys: it emits on the screen first, then
-// on screen.focused). While any overlay (settings or review) is open, the
-// overlay's own widgets own q/escape (e.g. list.js maps them to
+// on screen.focused). C-c is the only quit key: q and escape are left to the
+// overlays, which own them for close/cancel (list.js maps escape to
 // cancelSelected, which drives the settings panel's unsaved-changes
-// double-escape prompt), so the board must not act on them here. C-c stays a
-// hard quit except while the review overlay's claude pane is focused: there
-// it is claude's own interrupt, and because the screen handler fires first it
-// must stand down for the sequence to reach the pane's keypress forwarding.
+// double-escape prompt). C-c is a hard quit everywhere except while the review
+// overlay's claude pane is focused: there it is claude's own interrupt, and
+// because the screen handler fires first it must stand down for the sequence
+// to reach the pane's keypress forwarding.
 export function bindQuitKeys(
   screen: { key: (keys: string[], fn: () => void) => void },
-  isOverlayOpen: () => boolean,
   isClaudeFocused: () => boolean,
   quit: () => void,
 ): void {
-  screen.key(["q", "escape"], () => {
-    if (!isOverlayOpen()) quit();
-  });
   screen.key(["C-c"], () => {
     if (!isClaudeFocused()) quit();
   });
@@ -875,7 +871,7 @@ export function runTui(opts: {
   // Swapped in by bindReviewKey's open below; openReview's getter reports
   // false once the overlay closes, so no reset is needed here.
   let reviewClaudeFocused: () => boolean = () => false;
-  bindQuitKeys(screen, isOverlayOpen, () => reviewClaudeFocused(), quit);
+  bindQuitKeys(screen, () => reviewClaudeFocused(), quit);
 
   // The help box floats over the board (panes stay visible under it), owns
   // the keyboard while open, and closes on ?, q or escape.

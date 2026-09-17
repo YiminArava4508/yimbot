@@ -309,8 +309,10 @@ merge**, then **merged**. Merged rows stay on the board for a while so you can
 see recent completions, then age out. A ticket split into slices keeps a row of
 its own: each slice is a subticket with its own row, and the tracking ticket
 reads **tracker ticket**, or **waiting on slices** while a slice PR is open,
-since it has no work of its own. Press `q` to quit the board; it also stops
-the daemon.
+since it has no work of its own. Press `ctrl+c` to quit the board; it also
+stops the daemon. The one exception is inside the review overlay while the
+claude pane is focused, where `ctrl+c` goes to claude as its interrupt; leave
+that pane first.
 
 The board stacks three panes: **tasks**, **ready to review** and **ready to
 merge**. Which pane a row sits in is decided by GitHub, not by the row's status:

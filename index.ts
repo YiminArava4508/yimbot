@@ -11,6 +11,7 @@ import { readMode, toggleMode } from "./src/mode.ts";
 import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
 import { loadQaState } from "./src/qa-state.ts";
+import { loadTrackerState } from "./src/tracker-state.ts";
 import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
@@ -31,6 +32,7 @@ import {
   listTmuxSessions,
   liveQaKeys,
   liveRefineKeys,
+  liveTrackerKeys,
   liveWorktreeKeys,
   manuallyLiveKeys,
   splitSliceKeys,
@@ -206,6 +208,7 @@ if (process.stdout.isTTY) {
       const sessions = listTmuxSessions();
       for (const k of liveRefineKeys(sessions)) keys.add(k);
       for (const k of liveQaKeys(sessions, loadQaState().units.values())) keys.add(k);
+      for (const k of liveTrackerKeys(loadTrackerState())) keys.add(k);
       return keys;
     },
     openPrKeys,

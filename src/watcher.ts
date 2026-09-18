@@ -66,6 +66,7 @@ import {
   reviewOnce,
 } from "./pr-review.ts";
 import { freshQaState, loadQaState, type QaPhase, type QaUnit, saveQaState } from "./qa-state.ts";
+import { isLinearTracker, loadTrackerState, saveTrackerState, type TrackerShape } from "./tracker-state.ts";
 import { qaOnce, type QaDeps } from "./qa.ts";
 import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
@@ -210,10 +211,15 @@ export type DeployState = {
   launched: Set<string>;
   // Failed launches per issue, so the retry below is bounded. See releaseLaunch.
   attempts: Map<string, number>;
+  // Identifiers of the In Progress issues that are Linear trackers this tick
+  // (see isLinearTracker). Rebuilt from the fetch every tick, so an issue that
+  // left In Progress drops out; persisted for the TUI, which keeps these rows on
+  // the board although no worktree or PR backs them.
+  trackers: Set<string>;
 };
 
 export function freshDeployState(): DeployState {
-  return { launched: new Set(), attempts: new Map() };
+  return { launched: new Set(), attempts: new Map(), trackers: new Set() };
 }
 
 // How many times a launch may fail before the deploy step stops retrying it.
@@ -246,18 +252,42 @@ export function releaseLaunch(
   state.launched.delete(issueId);
 }
 
+// An In Progress issue as the deploy step sees it. The tracker fields are
+// optional so callers that only know the LinearIssue shape still type-check;
+// without them an issue is dev work.
+export type DeployIssue = LinearIssue & TrackerShape;
+
 export type DeployDeps = {
-  fetchIssues: () => Promise<LinearIssue[]>;
+  fetchIssues: () => Promise<DeployIssue[]>;
   listSessions: () => string[];
   listWorktrees: () => string[];
   // Create a worktree + session for a launched issue.
   launch: (name: string, issue: LinearIssue) => Promise<void> | void;
+  // Whether a split's integration worktree exists for this identifier. A split
+  // parent matches the tracker rule too (Linear children, zeroed parent), but
+  // its row belongs to the split flow; see reportSplitParentRows.
+  isSplitParent?: (identifier: string) => boolean;
+  // Report a Linear tracker's board row this tick.
+  reportTracker?: (issue: DeployIssue) => void;
+  // Persist the tracker set when it changes.
+  saveTrackers?: (identifiers: Set<string>) => void;
   log: (msg: string) => void;
 };
 
-// One deploy-step tick. For each In-Progress issue: skip it if already
-// launched/adopted this process; else, if a session or worktree already exists
-// for it, adopt it (latch, no relaunch); else launch one and latch it.
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  return a.size === b.size && [...a].every((x) => b.has(x));
+}
+
+// One deploy-step tick. For each In-Progress issue: a Linear tracker (a parent
+// decomposed in Linear, no work of its own) gets a board row and nothing else;
+// otherwise skip it if already launched/adopted this process; else, if a session
+// or worktree already exists for it, adopt it (latch, no relaunch); else launch
+// one and latch it.
+//
+// The tracker check runs before the latch and adopt checks so a ticket launched
+// as dev work and decomposed afterwards (or whose stale session is still up)
+// flips to a tracker without a restart. A tracker is never latched, so it is
+// re-evaluated every tick and launches the moment it stops matching.
 //
 // This is restart-safe where the old seen-set baseline was not: after a restart
 // the latch is empty, but a live ticket's existing session/worktree makes it
@@ -266,7 +296,7 @@ export type DeployDeps = {
 // ticket is latched for the process, the cleanup step removing its worktree after
 // its PR merges does NOT retrigger a launch.
 export async function deployOnce(state: DeployState, deps: DeployDeps): Promise<void> {
-  let issues: LinearIssue[];
+  let issues: DeployIssue[];
   try {
     issues = await deps.fetchIssues();
   } catch (err) {
@@ -276,7 +306,13 @@ export async function deployOnce(state: DeployState, deps: DeployDeps): Promise<
 
   const sessions = deps.listSessions();
   const worktrees = deps.listWorktrees();
+  const trackers = new Set<string>();
   for (const issue of issues) {
+    if (isLinearTracker(issue) && !deps.isSplitParent?.(issue.identifier)) {
+      trackers.add(issue.identifier);
+      deps.reportTracker?.(issue);
+      continue;
+    }
     if (state.launched.has(issue.id)) continue;
     if (findExistingSession(issue.identifier, sessions, worktrees)) {
       state.launched.add(issue.id); // adopt an existing session/worktree
@@ -291,6 +327,22 @@ export async function deployOnce(state: DeployState, deps: DeployDeps): Promise<
       deps.log(`failed to launch ${issue.identifier}: ${err}`);
     }
   }
+  if (sameSet(trackers, state.trackers)) return;
+  for (const id of trackers) if (!state.trackers.has(id)) deps.log(`${id} is a Linear tracker: row only, no session`);
+  state.trackers = trackers;
+  deps.saveTrackers?.(trackers);
+}
+
+// Whether a split's integration worktree exists for this identifier: a dir under
+// `dir` named with the identifier prefix and carrying the split-parent marker.
+export function splitParentWorktreeFor(
+  identifier: string,
+  worktrees: string[],
+  isMarked: (worktreePath: string) => boolean,
+  dir: string = worktreesDir,
+): boolean {
+  const prefix = identifierPrefix(identifier);
+  return worktrees.some((name) => name.startsWith(prefix) && isMarked(join(dir, name)));
 }
 
 export type DependencyScanDeps = {
@@ -1062,18 +1114,46 @@ export function reportSplitParentRows(
   rows: { awaiting: string[]; tracking: string[] },
   deps: SplitParentReportDeps,
 ): void {
-  const replaceable = new Set([WORKING_STATUS, AWAITING_SLICES_STATUS]);
-  const report = (branches: string[], kind: "awaiting_slices" | "tracking", replaces: (s: string) => boolean) => {
+  const report = (branches: string[], kind: "awaiting_slices" | "tracking") => {
     for (const branch of branches) {
-      const { key, label } = deriveKey({ branch });
-      const current = deps.currentStatus(key);
-      if (isHoldStatus(current)) continue;
-      if (current !== undefined && !replaces(current)) continue;
-      deps.emitStatus({ kind, key, label, title: titleFromBranch(branch) });
+      reportParentRow({ ...deriveKey({ branch }), title: titleFromBranch(branch) }, kind, deps);
     }
   };
-  report(rows.awaiting, "awaiting_slices", () => true);
-  report(rows.tracking, "tracking", (s) => replaceable.has(s));
+  report(rows.awaiting, "awaiting_slices");
+  report(rows.tracking, "tracking");
+}
+
+// A Linear tracker's row (see isLinearTracker): same rule as a split parent
+// with nothing pending, keyed by the ticket identifier since it has no branch.
+export function reportLinearTrackerRow(
+  issue: { identifier: string; title: string },
+  deps: SplitParentReportDeps,
+): void {
+  reportParentRow({ ...deriveKey({ identifier: issue.identifier }), title: issue.title }, "tracking", deps);
+}
+
+const TRACKING_REPLACES = new Set([WORKING_STATUS, AWAITING_SLICES_STATUS]);
+
+// The shared rule for a parent row's status. A wait replaces anything but a
+// hold; the tracker status only replaces the "working" a fresh session starts
+// with or a wait that ended, so no unrelated row is disturbed.
+function reportParentRow(
+  row: { key: string; label: string; title: string },
+  kind: "awaiting_slices" | "tracking",
+  deps: SplitParentReportDeps,
+): void {
+  const current = deps.currentStatus(row.key);
+  if (isHoldStatus(current)) return;
+  if (kind === "tracking" && current !== undefined && !TRACKING_REPLACES.has(current)) return;
+  deps.emitStatus({ kind, ...row });
+}
+
+// Board keys of the deploy step's Linear trackers. Like refine and QA rows,
+// these have no worktree or PR, so the board's live-key filter unions them in.
+export function liveTrackerKeys(identifiers: Iterable<string>): Set<string> {
+  const keys = new Set<string>();
+  for (const identifier of identifiers) keys.add(deriveKey({ identifier }).key);
+  return keys;
 }
 
 // Board keys of split-slice worktrees under `dir`: those carrying a
@@ -1334,6 +1414,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   // against live sessions/worktrees each tick (restart-safe), so it is given the
   // session/worktree listers rather than a startup baseline.
   const deployState = freshDeployState();
+  deployState.trackers = loadTrackerState();
   const deployDeps: DeployDeps = {
     fetchIssues: async () =>
       filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.progressContext)),
@@ -1344,6 +1425,9 @@ export function startWatcher(config: WatcherConfig): () => void {
       emitEvent({ kind: "task_started", key, label, title: titleFromBranch(name) });
       return launchSession(name, () => releaseLaunch(deployState, issue.id, issue.identifier, log));
     },
+    isSplitParent: (identifier) => splitParentWorktreeFor(identifier, listWorktreeDirs(), isSplitParentWorktree),
+    reportTracker: (issue) => reportLinearTrackerRow(issue, { currentStatus, emitStatus }),
+    saveTrackers: saveTrackerState,
     log,
   };
 

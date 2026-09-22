@@ -439,6 +439,10 @@ export function freshClaimState(): ClaimState {
 // it to In Progress but the deploy step will ignore it — it stays In Progress
 // with no session and stalls the claim step until a human intervenes. This only
 // happens on a manual backward move; the normal forward flow is unaffected.
+function splitInFlight(todo: CycleTodoIssue): boolean {
+  return todo.parent?.stateType === "started";
+}
+
 export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<void> {
   if (!deps.autoClaim) return;
 
@@ -457,6 +461,13 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     return;
   }
   todos = todos.filter((t) => !state.skip.has(t.id));
+  // A slice of a pickup split sits in Todo while its parent's session is still
+  // carving it: claiming it would launch a second session on the same work.
+  todos = todos.filter((t) => {
+    if (!splitInFlight(t)) return true;
+    deps.log(`deferring ${t.identifier}: parent ${t.parent!.identifier} is in progress (split in flight)`);
+    return false;
+  });
   // Filtered once, up front, so the deferral logging below and selectNextClaim
   // agree on which todos are actually in this instance's slice.
   const inSlice = filterByLabel(deps.labelFilter, todos);

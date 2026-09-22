@@ -32,6 +32,9 @@ export type CycleTodoIssue = LinearIssue & {
   // Tickets this one is blocked by (from inverse "blocks" relations).
   blockedBy: Blocker[];
   estimate: number | null;
+  // The parent ticket when this is a sub-issue; its Linear state type tells the
+  // claim step whether a split of it is in flight ("started").
+  parent: { identifier: string; stateType: string } | null;
 };
 
 type RelatedIssueNode = { identifier: string; state: { name: string; type: string } };
@@ -385,6 +388,7 @@ export async function fetchCycleTodoIssues(
     estimate: number | null;
     labels: { nodes: { name: string }[] };
     inverseRelations: InverseRelationNodes;
+    parent?: { identifier: string; state: { type: string } } | null;
   };
   type IssuesData = { issues: { nodes: Node[] } };
   const data = await gql<IssuesData>(
@@ -409,6 +413,7 @@ export async function fetchCycleTodoIssues(
           estimate
           labels { nodes { name } }
           ${BLOCKERS_SELECTION}
+          parent { identifier state { type } }
         }
       }
     }`,
@@ -425,6 +430,7 @@ export async function fetchCycleTodoIssues(
     estimate: n.estimate ?? null,
     labels: n.labels.nodes.map((l) => l.name),
     blockedBy: blockersFrom(n.inverseRelations),
+    parent: n.parent ? { identifier: n.parent.identifier, stateType: n.parent.state.type } : null,
   }));
 }
 

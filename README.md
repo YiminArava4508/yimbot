@@ -130,7 +130,9 @@ flowchart TD
   released. While the refine step is on, an unestimated ticket is left alone
   as well: it is the refine step's to size first. A 0-point ticket is always
   skipped, estimated or not, because a zero marks a decomposed container whose
-  subtickets carry the actual work. Before claiming, it also reads the picked ticket's description:
+  subtickets carry the actual work. A Todo sub-issue whose parent is In Progress
+  is skipped too: that is a split in flight, and the parent's session is already
+  working the slice. Before claiming, it also reads the picked ticket's description:
   when the description states a blocking dependency that was never recorded as a
   relation (for example "must land after ENG-1319"), it creates the real Linear
   relation, leaves a comment explaining what it inferred, and leaves the ticket in

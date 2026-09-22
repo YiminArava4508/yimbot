@@ -526,11 +526,15 @@ export async function cleanupOnce(deps: CleanupDeps): Promise<void> {
       // never destroys local-only work. Merged members are always safe to reap and
       // are never gated (their origin branch may already be deleted, which would
       // fail the check and wedge the group). The integration branch counts as merged
-      // when a slice PR was opened from it and landed.
-      const guarded = [
-        ...g.slices.filter((s) => !mergedBranches.has(s.branch)),
-        ...(g.integration && !mergedBranches.has(g.integration.branch) ? [g.integration] : []),
-      ];
+      // when a slice PR was opened from it and landed, or when every slice merged:
+      // its commits were carved into those slices, and squash merges plus the
+      // deleted origin branch leave none of its SHAs reachable from origin, so the
+      // unpushed check would hold it forever.
+      const closedSlices = g.slices.filter((s) => !mergedBranches.has(s.branch));
+      const guarded = [...closedSlices];
+      if (g.integration && !mergedBranches.has(g.integration.branch) && closedSlices.length > 0) {
+        guarded.push(g.integration);
+      }
       if (!guarded.every((w) => deps.hasNoUnpushedWork(w.path))) {
         deps.log(`kept split group ${g.session} (a closed slice or integration worktree has unsaved work)`);
         continue;

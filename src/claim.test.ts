@@ -15,6 +15,7 @@ function todo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIss
     estimate: 2,
     labels: [],
     blockedBy: [],
+    parent: null,
     ...overrides,
   };
 }

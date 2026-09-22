@@ -161,8 +161,32 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
       estimate: null,
       labels: ["frontend", "migration"],
       blockedBy: [],
+      parent: null,
     },
   ]);
+});
+
+test("fetchCycleTodoIssues maps the parent ticket's identifier and state type", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "[1/2] slice",
+            priority: 2,
+            sortOrder: 7.5,
+            labels: { nodes: [] },
+            inverseRelations: { nodes: [] },
+            parent: { identifier: "ENG-40", state: { type: "started" } },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchCycleTodoIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.deepEqual(issues[0].parent, { identifier: "ENG-40", stateType: "started" });
 });
 
 test("fetchCycleTodoIssues maps blockedBy from inverse blocks relations", async () => {

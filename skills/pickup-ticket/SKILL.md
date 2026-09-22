@@ -198,11 +198,14 @@ the reuse audit above), and only then decide how to slice it into PRs.
   1. Create the slice's subticket, titled `[i/n] <slice summary>`, with a
      points estimate sized to the slice:
      - Linear tickets (`eng-*`): run
-       `~/create-subticket.sh <TICKET> "[i/n] <slice summary>" <points>`.
-       It creates the sub-issue (zeroing the parent ticket's estimate, so
-       points live only on the slices) and prints two lines: the subticket
-       identifier, then the slice branch name. Use that branch name verbatim
-       in the next step.
+       `~/create-subticket.sh <TICKET> "[i/n] <slice summary>" <points> --claimable`.
+       It creates the sub-issue in Todo and the current cycle, where intake
+       lives (never Triage), carrying the parent's labels and zeroing the
+       parent ticket's estimate so points live only on the slices. It prints
+       two lines: the subticket identifier, then the slice branch name. Use
+       that branch name verbatim in the next step. The daemon will not claim
+       the slice out from under you: it skips Todo sub-issues whose parent is
+       In Progress.
      - Shortcut tickets (`sc-*`): create a subtask under the story via the
        Shortcut MCP (`stories-create-subtask`), set the parent story's
        estimate to 0 (`stories-update`), and derive the slice branch from the

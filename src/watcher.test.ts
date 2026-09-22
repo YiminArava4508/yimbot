@@ -713,6 +713,7 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
     estimate: 2,
     labels: [],
     blockedBy: [],
+    parent: null,
     ...overrides,
   };
 }
@@ -802,6 +803,30 @@ test("claimOnce defers a blocked todo and logs its blocker's state", async () =>
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0);
   assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4 (In Review)")));
+});
+
+test("claimOnce defers a slice whose parent ticket is in progress (split in flight)", async () => {
+  // A pickup-ticket split creates its slices in Todo and the active cycle while
+  // the parent session is still carving them: claiming one would launch a second
+  // session on the same work.
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateType: "started" } }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
+});
+
+test("claimOnce claims a slice whose parent ticket is not started", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateType: "unstarted" } }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 1);
 });
 
 test("claimOnce logs unestimated todos it defers to the refine step", async () => {

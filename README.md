@@ -263,9 +263,9 @@ time; everything else waits its turn instead of thrashing the machine.
 
 A command qualifies by matching `HEAVY_PATTERNS`, an extended regex in
 `~/.config/yimbot/heavy-jobs.conf`. Every simple command in the chain is
-checked, with wrappers (`cd <path> &&`, env assignments, subshells, `bash -c`)
-peeled first, so `pgrep foo; task generate` queues just like a bare
-`task generate`. The default covers the common build, test, and codegen
+checked, with wrappers (`cd <path> &&`, env assignments, subshells, `bash -c`,
+`if`/`for` bodies, `time`, `timeout`, `nohup`) peeled first, so
+`pgrep foo; task generate` queues just like a bare `task generate`. The default covers the common build, test, and codegen
 commands:
 
 ```

@@ -53,14 +53,31 @@ strip_cd_prefix() {
   printf '%s' "$cmd"
 }
 
+# `timeout [opts] <duration>` in front of a command: drop the runner, its
+# options (with the value -k and -s take), and the duration.
+strip_timeout_prefix() {
+  local cmd=$1 opt
+  [[ $cmd =~ ^[[:space:]]*timeout[[:space:]]+(.*)$ ]] || { printf '%s' "$cmd"; return; }
+  cmd=${BASH_REMATCH[1]}
+  while [[ $cmd =~ ^(-[^[:space:]]+)[[:space:]]+(.*)$ ]]; do
+    opt=${BASH_REMATCH[1]} cmd=${BASH_REMATCH[2]}
+    case $opt in -k|-s|--kill-after|--signal) [[ $cmd =~ ^[^[:space:]]+[[:space:]]+(.*)$ ]] && cmd=${BASH_REMATCH[1]} ;; esac
+  done
+  [[ $cmd =~ ^[0-9.]+[smhd]?[[:space:]]+(.*)$ ]] && cmd=${BASH_REMATCH[1]}
+  printf '%s' "$cmd"
+}
+
 # A command also reaches the hook behind an env assignment, inside a subshell,
-# or as the body of a `bash -c`. Peel every layer so both the match and the
-# ticket see the real command rather than its wrapper.
+# as the body of a `bash -c`, after a compound keyword (`if`, `do`, `{`), or
+# under a runner (`time`, `timeout`, `nohup`). Peel every layer so both the
+# match and the ticket see the real command rather than its wrapper.
 unwrap_command() {
   local cmd=$1 prev=
   while [ "$cmd" != "$prev" ]; do
     prev=$cmd
     cmd=$(strip_cd_prefix "$cmd")
+    [[ $cmd =~ ^[[:space:]]*(if|then|else|elif|do|while|until|time|nohup|!|\{)[[:space:]]+(.*)$ ]] && cmd=${BASH_REMATCH[2]}
+    cmd=$(strip_timeout_prefix "$cmd")
     [[ $cmd =~ ^[[:space:]]*\((.*)\)[[:space:]]*$ ]] && cmd=${BASH_REMATCH[1]}
     [[ $cmd =~ ^[[:space:]]*(ba|z|)sh[[:space:]]+-c[[:space:]]+\"(.*)\"[[:space:]]*$ ]] && cmd=${BASH_REMATCH[2]}
     [[ $cmd =~ ^[[:space:]]*(ba|z|)sh[[:space:]]+-c[[:space:]]+\'(.*)\'[[:space:]]*$ ]] && cmd=${BASH_REMATCH[2]}
@@ -84,12 +101,71 @@ strip_heredocs() {
     { print }'
 }
 
-is_heavy() {
-  local cmd
+# One simple command per NUL-terminated record, split on ; | & && || and
+# newlines. A separator inside quotes, backticks, a $( ) or a ( ) does not
+# split, >& and &> are redirections, and an unquoted # ends the line. A record
+# may span lines; the caller peels its wrappers.
+split_commands() {
+  printf '%s\n' "$1" | awk '
+    function flush() { sub(/^[ \t\n]+/, "", seg); sub(/[ \t\n]+$/, "", seg); if (seg != "") printf "%s%c", seg, 0; seg = "" }
+    {
+      line = $0; n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1); nx = substr(line, i + 1, 1)
+        if (q != "") {
+          if (c == "\\" && q == "\"") { seg = seg c nx; i++; continue }
+          if (c == q) q = ""
+          seg = seg c; continue
+        }
+        if (c == "\\") { seg = seg c nx; i++; continue }
+        if (c == "\"" || c == "\047" || c == "`") { q = c; seg = seg c; continue }
+        if (c == "#" && (seg ~ /(^|[ \t\n])$/ || i == 1)) break
+        if (c == "(") { depth++; seg = seg c; continue }
+        if (c == ")") { if (depth > 0) depth--; seg = seg c; continue }
+        if (depth > 0) { seg = seg c; continue }
+        if (c == ";") { flush(); continue }
+        if (c == "|") { flush(); if (nx == "|") i++; continue }
+        if (c == "&") {
+          if (nx == "&") { flush(); i++; continue }
+          if (nx == ">" || substr(line, i - 1, 1) == ">") { seg = seg c; continue }
+          flush(); continue
+        }
+        seg = seg c
+      }
+      if (q == "" && depth == 0) flush(); else seg = seg "\n"
+    }
+    END { flush() }'
+}
+
+# The first simple command in the chain that matches HEAVY_PATTERNS, peeled of
+# its wrappers, or nothing. A session that runs `pgrep ...; task generate` is
+# still running a heavy job. This is the one parse the hook does per command,
+# so the reentrancy guards live here.
+heavy_command() {
+  local seg inner
   [ -n "${YIMBOT_HEAVY_HELD:-}" ] && return 1
-  cmd=$(unwrap_command "$1")
-  case $cmd in *heavy-queue.sh\ hold*) return 1 ;; esac
-  strip_heredocs "$cmd" | grep -Eq "$HEAVY_PATTERNS"
+  case $1 in *heavy-queue.sh\ hold*) return 1 ;; esac
+  while IFS= read -r -d '' seg; do
+    inner=$(unwrap_command "$seg")
+    if [[ $inner =~ $HEAVY_PATTERNS ]]; then
+      printf '%s' "$inner"
+      return 0
+    fi
+    if [ "$inner" != "$seg" ] && heavy_command "$inner"; then
+      return 0
+    fi
+  done < <(split_commands "$(strip_heredocs "$1")")
+  return 1
+}
+
+is_heavy() {
+  heavy_command "$1" >/dev/null
+}
+
+# What the board shows for a command on the queue: its heavy segment, or the
+# whole unwrapped command for a hold of something cheap.
+ticket_command() {
+  heavy_command "$1" || unwrap_command "$1"
 }
 
 queue_dir() {
@@ -231,7 +307,7 @@ hold_ticket() {
   # A ticket reaped between pre and here is gone for good, so rejoin at the back
   # rather than resurrect a path no other waiter is looking at any more.
   { [ -n "$HEAVY_TICKET" ] && [ -e "$HEAVY_TICKET" ]; } || HEAVY_TICKET=$(ticket_path)
-  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(unwrap_command "$1")" running "$$" || return 0
+  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(ticket_command "$1")" running "$$" || return 0
   # The path goes into the trap now, not at exit: this hold drops the ticket it
   # owns even if something reassigns HEAVY_TICKET in between.
   trap "rm -f $(shell_quote "$HEAVY_TICKET") 2>/dev/null" EXIT
@@ -329,11 +405,10 @@ cmd_pre() {
   payload=$(cat)
   cmd=$(payload_field "$payload" '.tool_input.command') || return 0
   [ -n "$cmd" ] || return 0
-  is_heavy "$cmd" || return 0
+  stripped=$(heavy_command "$cmd") || return 0
 
   cwd=$(payload_field "$payload" '.cwd') || cwd=$PWD
   key=$(heavy_key_for "$cwd")
-  stripped=$(unwrap_command "$cmd")
   # Losing the queue never costs the lock: every path below still rewrites the
   # command through hold. Dropping the handover with the ticket is what lets
   # hold write a fresh one for what it is about to run.

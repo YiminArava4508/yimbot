@@ -84,6 +84,54 @@ assert_fails is_heavy "$(printf 'cat > plan.md <<'"'"'EOF'"'"'\n# Plan\npnpm com
 assert_ok is_heavy "$(printf 'cat > note.md <<EOF\nnotes\nEOF\ngo build ./...')"
 assert_ok is_heavy "$(printf 'echo start\ngo build ./...')"
 
+# A heavy job chained behind a cheap one (`pgrep ...; task generate`) is still
+# heavy: every simple command in the chain is matched, not just the head.
+CHAIN='cd /x/api && pgrep -fl "air|graphql-codegen" | head -3; task generate > /tmp/g.log 2>&1; echo exit=$?; tail -5 /tmp/g.log'
+assert_defined heavy_command
+assert_ok is_heavy "$CHAIN"
+assert_eq "$(heavy_command "$CHAIN")" "task generate > /tmp/g.log 2>&1" "names the heavy segment of a chain"
+assert_ok is_heavy 'git pull && task generate'
+assert_ok is_heavy 'ls || go test ./...'
+assert_ok is_heavy 'task generate 2>&1 | tail -20'
+assert_eq "$(heavy_command 'task generate 2>&1 | tail -20')" "task generate 2>&1" "a redirection is not a separator"
+assert_ok is_heavy 'echo start; (cd api && CGO_ENABLED=0 go build ./...)'
+assert_ok is_heavy 'echo start; (echo a; go build ./...)'
+assert_ok is_heavy 'go build ./... & wait'
+# Separators inside quotes or a $( ) do not split, so a quoted or captured
+# mention of a build command stays cheap.
+assert_fails is_heavy 'echo "task generate; go build"'
+assert_fails is_heavy "echo 'a && task generate'"
+assert_fails is_heavy "grep 'go build' Taskfile.yaml | head"
+assert_fails is_heavy 'echo $(echo "x; task generate")'
+assert_fails is_heavy 'pgrep -fl "air|graphql-codegen" | head -3'
+
+# Splitting happens before peeling, so two wrapped commands in one chain are
+# seen apart rather than one greedy match swallowing the separator.
+assert_ok is_heavy '(cd a && echo x) && (cd b && go build ./...)'
+assert_eq "$(heavy_command '(cd api && go build ./...) && (echo done)')" "go build ./..." "a subshell segment is peeled cleanly"
+assert_ok is_heavy 'bash -c "echo a" && bash -c "go build ./..."'
+# A quoted or parenthesised segment spanning lines stays one segment.
+assert_fails is_heavy "$(printf 'git commit -m "fix build\n\ngo build passes now"')"
+assert_ok is_heavy "$(printf 'echo start\n(\n  cd api\n  go build ./...\n)')"
+# A trailing comment is not a command.
+assert_fails is_heavy 'pgrep -fl air | head -3 # then; task generate later'
+assert_ok is_heavy 'echo "#not a comment"; task generate # build it'
+# Heavy jobs also hide behind a group, a compound, or a runner prefix.
+assert_ok is_heavy '{ go build ./...; } 2>&1'
+assert_ok is_heavy 'if go test ./...; then echo ok; fi'
+assert_ok is_heavy 'for d in a b; do (cd $d && go build ./...); done'
+assert_ok is_heavy 'time go test ./...'
+assert_ok is_heavy 'timeout 600 task generate'
+assert_ok is_heavy 'timeout -k 5 10m task generate'
+assert_ok is_heavy 'nohup task generate &'
+assert_eq "$(heavy_command 'timeout 600 task generate')" "task generate" "the runner prefix is peeled from the ticket"
+# heavy_command is the one parse the hook does, so the guards live there too.
+assert_fails heavy_command "/home/ymbo/.config/yimbot/heavy-queue.sh hold 'task generate'"
+assert_fails env YIMBOT_HEAVY_HELD=1 bash -c "source '$(dirname "$0")/heavy-queue.sh'; heavy_conf_load; heavy_command 'task generate'"
+assert_defined ticket_command
+assert_eq "$(ticket_command 'echo a; task generate')" "task generate" "ticket text is the heavy segment"
+assert_eq "$(ticket_command 'cd /a && echo cheap')" "echo cheap" "a cheap hold shows the unwrapped command"
+
 # --- ticket primitives ---
 assert_defined queue_dir
 assert_defined ticket_path

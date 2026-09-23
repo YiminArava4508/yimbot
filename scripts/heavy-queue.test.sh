@@ -84,6 +84,27 @@ assert_fails is_heavy "$(printf 'cat > plan.md <<'"'"'EOF'"'"'\n# Plan\npnpm com
 assert_ok is_heavy "$(printf 'cat > note.md <<EOF\nnotes\nEOF\ngo build ./...')"
 assert_ok is_heavy "$(printf 'echo start\ngo build ./...')"
 
+# A heavy job chained behind a cheap one (`pgrep ...; task generate`) is still
+# heavy: every simple command in the chain is matched, not just the head.
+CHAIN='cd /x/api && pgrep -fl "air|graphql-codegen" | head -3; task generate > /tmp/g.log 2>&1; echo exit=$?; tail -5 /tmp/g.log'
+assert_defined heavy_command
+assert_ok is_heavy "$CHAIN"
+assert_eq "$(heavy_command "$CHAIN")" "task generate > /tmp/g.log 2>&1" "names the heavy segment of a chain"
+assert_ok is_heavy 'git pull && task generate'
+assert_ok is_heavy 'ls || go test ./...'
+assert_ok is_heavy 'task generate 2>&1 | tail -20'
+assert_eq "$(heavy_command 'task generate 2>&1 | tail -20')" "task generate 2>&1" "a redirection is not a separator"
+assert_ok is_heavy 'echo start; (cd api && CGO_ENABLED=0 go build ./...)'
+assert_ok is_heavy 'echo start; (echo a; go build ./...)'
+assert_ok is_heavy 'go build ./... & wait'
+# Separators inside quotes or a $( ) do not split, so a quoted or captured
+# mention of a build command stays cheap.
+assert_fails is_heavy 'echo "task generate; go build"'
+assert_fails is_heavy "echo 'a && task generate'"
+assert_fails is_heavy "grep 'go build' Taskfile.yaml | head"
+assert_fails is_heavy 'echo $(echo "x; task generate")'
+assert_fails is_heavy 'pgrep -fl "air|graphql-codegen" | head -3'
+
 # --- ticket primitives ---
 assert_defined queue_dir
 assert_defined ticket_path

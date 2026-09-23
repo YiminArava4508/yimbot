@@ -84,12 +84,65 @@ strip_heredocs() {
     { print }'
 }
 
+# One simple command per line, split on ; | & && || and newlines. A separator
+# inside quotes, backticks, a $( ) or a ( ) does not split, and >& / &> are
+# redirections, not separators. A subshell segment is peeled by the caller.
+split_segments() {
+  printf '%s\n' "$1" | awk '
+    function flush() { sub(/^[ \t]+/, "", seg); sub(/[ \t]+$/, "", seg); if (seg != "") print seg; seg = "" }
+    {
+      line = $0; n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1); nx = substr(line, i + 1, 1)
+        if (q != "") {
+          if (c == "\\" && q == "\"") { seg = seg c nx; i++; continue }
+          if (c == q) q = ""
+          seg = seg c; continue
+        }
+        if (c == "\\") { seg = seg c nx; i++; continue }
+        if (c == "\"" || c == "\047" || c == "`") { q = c; seg = seg c; continue }
+        if (c == "(") { depth++; seg = seg c; continue }
+        if (c == ")") { if (depth > 0) depth--; seg = seg c; continue }
+        if (depth > 0) { seg = seg c; continue }
+        if (c == ";") { flush(); continue }
+        if (c == "|") { flush(); if (nx == "|") i++; continue }
+        if (c == "&") {
+          if (nx == "&") { flush(); i++; continue }
+          if (nx == ">" || substr(line, i - 1, 1) == ">") { seg = seg c; continue }
+          flush(); continue
+        }
+        seg = seg c
+      }
+      if (q == "" && depth == 0) flush(); else seg = seg "\n"
+    }
+    END { flush() }'
+}
+
+# The first simple command in the chain that matches HEAVY_PATTERNS, peeled of
+# its wrappers, or nothing. A session that runs `pgrep ...; task generate` is
+# still running a heavy job.
+heavy_command() {
+  local cmd seg inner
+  cmd=$(unwrap_command "$1")
+  while IFS= read -r seg; do
+    inner=$(unwrap_command "$seg")
+    if printf '%s\n' "$inner" | grep -Eq "$HEAVY_PATTERNS"; then
+      printf '%s' "$inner"
+      return 0
+    fi
+    if [ "$inner" != "$seg" ] && heavy_command "$inner"; then
+      return 0
+    fi
+  done < <(split_segments "$(strip_heredocs "$cmd")")
+  return 1
+}
+
 is_heavy() {
   local cmd
   [ -n "${YIMBOT_HEAVY_HELD:-}" ] && return 1
   cmd=$(unwrap_command "$1")
   case $cmd in *heavy-queue.sh\ hold*) return 1 ;; esac
-  strip_heredocs "$cmd" | grep -Eq "$HEAVY_PATTERNS"
+  heavy_command "$cmd" >/dev/null
 }
 
 queue_dir() {
@@ -231,7 +284,7 @@ hold_ticket() {
   # A ticket reaped between pre and here is gone for good, so rejoin at the back
   # rather than resurrect a path no other waiter is looking at any more.
   { [ -n "$HEAVY_TICKET" ] && [ -e "$HEAVY_TICKET" ]; } || HEAVY_TICKET=$(ticket_path)
-  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(unwrap_command "$1")" running "$$" || return 0
+  ticket_write "$HEAVY_TICKET" "$(heavy_key_for "$PWD")" "$(heavy_command "$1" || unwrap_command "$1")" running "$$" || return 0
   # The path goes into the trap now, not at exit: this hold drops the ticket it
   # owns even if something reassigns HEAVY_TICKET in between.
   trap "rm -f $(shell_quote "$HEAVY_TICKET") 2>/dev/null" EXIT
@@ -333,7 +386,7 @@ cmd_pre() {
 
   cwd=$(payload_field "$payload" '.cwd') || cwd=$PWD
   key=$(heavy_key_for "$cwd")
-  stripped=$(unwrap_command "$cmd")
+  stripped=$(heavy_command "$cmd") || stripped=$(unwrap_command "$cmd")
   # Losing the queue never costs the lock: every path below still rewrites the
   # command through hold. Dropping the handover with the ticket is what lets
   # hold write a fresh one for what it is about to run.

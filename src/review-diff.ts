@@ -2,8 +2,19 @@
 // Pure parser for `gh pr diff` output (git unified diff format). No fs, no
 // subprocess: raw text in, per-file structures out, so tests stay hermetic.
 import blessed from "neo-blessed";
-import { DEFAULT_THEME, highlight as cliHighlight } from "cli-highlight";
-import "./review-diff-langs.ts";
+import { createHighlighterCoreSync, type HighlighterCore, type ThemedToken } from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import darkPlus from "shiki/themes/dark-plus.mjs";
+import { GRAMMARS, languageFor } from "./review-diff-langs.ts";
+
+export { languageFor };
+
+// blessed builds its 8-color fallback table at load by running every xterm
+// palette hex through colors.match against a truncated palette, and never
+// clears the match cache afterwards. Any hex that lands exactly on a palette
+// entry (the tint and gutter colors below do) would resolve to that stale
+// 8-color answer, so the cache is dropped before the first real lookup.
+blessed.colors._cache = {};
 
 export type DiffLineKind = "add" | "del" | "ctx" | "hunk" | "meta";
 export type DiffLine = { kind: DiffLineKind; text: string };
@@ -71,85 +82,190 @@ export function escapeTags(s: string): string {
   return s.replaceAll("{", "\u0000").replaceAll("}", "{close}").replaceAll("\u0000", "{open}");
 }
 
-const EXT_LANG: Record<string, string> = {
-  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
-  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-  py: "python", rb: "ruby", go: "go", rs: "rust", java: "java", kt: "kotlin",
-  c: "c", h: "c", cpp: "cpp", hpp: "cpp", cs: "csharp", swift: "swift",
-  sh: "bash", bash: "bash", zsh: "bash", json: "json", md: "markdown",
-  yml: "yaml", yaml: "yaml", toml: "ini", ini: "ini", sql: "sql",
-  css: "css", scss: "scss", html: "xml", xml: "xml", vue: "xml", php: "php",
-  graphql: "graphql", gql: "graphql", tf: "terraform", tfvars: "terraform", hcl: "terraform",
-};
 
-export function languageFor(path: string): string | null {
-  const dot = path.lastIndexOf(".");
-  if (dot === -1 || dot === path.length - 1) return null;
-  return EXT_LANG[path.slice(dot + 1).toLowerCase()] ?? null;
+// One Dark+ (the VSCode default dark theme) highlighter, created on first use
+// with the pure-JS regex engine so tokenizing stays synchronous and needs no
+// WASM. Grammars compile lazily inside shiki, so the first paint of each
+// language pays its compile cost once.
+const THEME = "dark-plus";
+let highlighter: HighlighterCore | null = null;
+function getHighlighter(): HighlighterCore {
+  highlighter ??= createHighlighterCoreSync({
+    themes: [darkPlus],
+    langs: GRAMMARS,
+    engine: createJavaScriptRegexEngine({ forgiving: true }),
+  });
+  return highlighter;
+}
+// Grammar compilation is lazy per language and costs a few hundred ms the
+// first time one is used. Warming TypeScript while the PR diff is still
+// downloading keeps the first file pick instant for the common case.
+export function warmHighlighter(): void {
+  try {
+    const hl = getHighlighter();
+    for (const lang of ["typescript", "tsx"]) hl.codeToTokensBase("const a = 1;", { lang, theme: THEME });
+  } catch {
+    // A grammar that fails to compile falls back to plain text at render time.
+  }
 }
 
-// The theme wraps highlight.js tokens in sentinel markers (SOH name STX ...
-// SOH /name STX) rather than blessed tags directly: the highlighted string
-// still has to pass through escapeTags, which would mangle literal tag
-// braces. The sentinels survive escaping and become {name-fg} tags after.
-// Blessed's own SGR input parser mishandles bright colors, so tags (which
-// the rest of the TUI already uses) are also the safer color channel.
-const MARK_OPEN = String.fromCharCode(1);
-const MARK_CLOSE = String.fromCharCode(2);
-const tokenColor = (name: string) => (s: string) =>
-  `${MARK_OPEN}${name}${MARK_CLOSE}${s}${MARK_OPEN}/${name}${MARK_CLOSE}`;
-const plainToken = (s: string) => s;
-// cli-highlight resolves each token as theme[token] || DEFAULT_THEME[token],
-// so any token missing here falls through to its chalk-based default and
-// leaks raw ANSI into the pane. Seed every DEFAULT_THEME key as plain first
-// so the fallback can never fire, then color the tokens we care about.
-const HL_THEME: Record<string, (s: string) => string> = {
-  ...Object.fromEntries(Object.keys(DEFAULT_THEME).map((k) => [k, plainToken])),
-  keyword: tokenColor("magenta"),
-  literal: tokenColor("magenta"),
-  built_in: tokenColor("cyan"),
-  type: tokenColor("cyan"),
-  attr: tokenColor("cyan"),
-  attribute: tokenColor("cyan"),
-  tag: tokenColor("cyan"),
-  link: tokenColor("cyan"),
-  number: tokenColor("yellow"),
-  symbol: tokenColor("yellow"),
-  bullet: tokenColor("yellow"),
-  string: tokenColor("green"),
-  addition: tokenColor("green"),
-  regexp: tokenColor("red"),
-  deletion: tokenColor("red"),
-  comment: tokenColor("grey"),
-  meta: tokenColor("grey"),
-  doctag: tokenColor("grey"),
-  title: tokenColor("blue"),
-  section: tokenColor("blue"),
-  name: tokenColor("blue"),
-  class: tokenColor("blue"),
-  function: tokenColor("blue"),
-};
-const MARK_RE = new RegExp(`${MARK_OPEN}(/?)([a-z]+)${MARK_CLOSE}`, "g");
+const THEME_FG = (darkPlus.fg ?? "#d4d4d4").toLowerCase();
 
-// Diff lines are highlighted one at a time, so hljs has no cross-line state:
-// the continuation lines of a multi-line string or comment can tokenize as
-// plain code. An accepted tradeoff of line-based diff highlighting.
-// Returns null when highlight.js rejects the input, so the caller can fall
-// back to the same whole-line coloring unrecognized files get.
-function highlightCode(code: string, language: string): string | null {
+const FONT_BOLD = 2;
+const FONT_UNDERLINE = 4;
+
+// A run of text in one style. color is null for the theme's default
+// foreground, which is left untagged so it follows the terminal's own text
+// color instead of forcing Dark+'s light grey onto every line.
+export type Tok = { text: string; color: string | null; bold: boolean; underline: boolean };
+
+const plainTok = (text: string): Tok => ({ text, color: null, bold: false, underline: false });
+
+function themedTok(t: ThemedToken): Tok {
+  const color = t.color?.toLowerCase() ?? null;
+  const style = t.fontStyle ?? 0;
+  return {
+    text: t.content,
+    color: color === THEME_FG ? null : color,
+    bold: (style & FONT_BOLD) !== 0,
+    underline: (style & FONT_UNDERLINE) !== 0,
+  };
+}
+
+const sameStyle = (a: Tok, b: Tok) => a.color === b.color && a.bold === b.bold && a.underline === b.underline;
+
+function mergeToks(toks: Tok[]): Tok[] {
+  const out: Tok[] = [];
+  for (const t of toks) {
+    const last = out.at(-1);
+    if (last && sameStyle(last, t)) last.text += t.text;
+    else out.push({ ...t });
+  }
+  return out;
+}
+
+const isBody = (l: DiffLine) => l.kind === "add" || l.kind === "del" || l.kind === "ctx";
+// "\ No newline at end of file" is a marker about the line above, not code.
+const isMarker = (l: DiffLine) => l.kind === "ctx" && l.text.startsWith("\\");
+const bodyText = (l: DiffLine) => l.text.slice(1);
+
+// Tokenizes one side of a hunk (the old side is ctx+del, the new side is
+// ctx+add) as a single document, so grammar state carries across lines and
+// multi-line strings, template literals, and block comments come out right.
+// Deletions are read from the old side, additions and context from the new.
+// Nothing carries between hunks: the code skipped between them is unknown, so
+// each hunk starts from a clean grammar state.
+function tokenizeSide(hl: HighlighterCore, lang: string, lines: DiffLine[]): Tok[][] | null {
+  if (lines.length === 0) return [];
+  const code = lines.map(bodyText).join("\n");
   try {
-    const marked = cliHighlight(code, { language, ignoreIllegals: true, theme: HL_THEME });
-    return escapeTags(marked).replace(MARK_RE, (_m, slash, name) => `{${slash}${name}-fg}`);
+    const themed = hl.codeToTokensBase(code, { lang, theme: THEME, includeExplanation: false });
+    if (themed.length !== lines.length) return null;
+    return themed.map((line) => mergeToks(line.map(themedTok)));
   } catch {
     return null;
   }
 }
 
-const kindWrap = (kind: DiffLineKind, esc: string): string => {
-  if (kind === "add") return `{green-fg}${esc}{/green-fg}`;
-  if (kind === "del") return `{red-fg}${esc}{/red-fg}`;
-  return esc;
-};
+function tokenizeHunk(hl: HighlighterCore, lang: string, hunk: DiffLine[], out: Map<DiffLine, Tok[]>): void {
+  const oldSide = hunk.filter((l) => l.kind !== "add");
+  const newSide = hunk.filter((l) => l.kind !== "del");
+  const oldToks = tokenizeSide(hl, lang, oldSide);
+  const newToks = tokenizeSide(hl, lang, newSide);
+  if (oldToks === null || newToks === null) {
+    for (const l of hunk) out.set(l, [plainTok(bodyText(l))]);
+    return;
+  }
+  oldSide.forEach((l, i) => { if (l.kind === "del") out.set(l, oldToks[i]); });
+  newSide.forEach((l, i) => out.set(l, newToks[i]));
+}
+
+// Tokens per body line, memoized per FileDiff (parse results are never
+// mutated after creation). Files with no grammar get one plain token a line.
+const tokenCache = new WeakMap<FileDiff, Map<DiffLine, Tok[]>>();
+
+export function fileTokens(fd: FileDiff): Map<DiffLine, Tok[]> {
+  const cached = tokenCache.get(fd);
+  if (cached) return cached;
+  const out = new Map<DiffLine, Tok[]>();
+  const lang = fd.status === "binary" ? null : languageFor(fd.path);
+  const body = fd.lines.filter((l) => isBody(l) && !isMarker(l));
+  if (lang === null) {
+    for (const l of body) out.set(l, [plainTok(bodyText(l))]);
+  } else {
+    const hl = getHighlighter();
+    let hunk: DiffLine[] = [];
+    for (const l of fd.lines) {
+      if (l.kind === "hunk") {
+        tokenizeHunk(hl, lang, hunk, out);
+        hunk = [];
+      } else if (isBody(l) && !isMarker(l)) {
+        hunk.push(l);
+      }
+    }
+    tokenizeHunk(hl, lang, hunk, out);
+  }
+  tokenCache.set(fd, out);
+  return out;
+}
+
+const TAB = "    ";
+const ASCII_ONLY = /^[\x20-\x7e]*$/;
+
+// Display width of a string: under fullUnicode a CJK character is two cells
+// and a combining mark zero, so String.length would misalign the columns.
+// ASCII takes the cheap path.
+const strWidth = (s: string): number => (ASCII_ONLY.test(s) ? s.length : blessed.unicode.strWidth(s));
+
+// Cuts text to at most `width` display columns; returns the kept text and
+// its width.
+function clipCols(text: string, width: number): [string, number] {
+  if (ASCII_ONLY.test(text)) {
+    const kept = text.slice(0, width);
+    return [kept, kept.length];
+  }
+  let out = "";
+  let cols = 0;
+  for (const ch of text) {
+    const w = blessed.unicode.strWidth(ch);
+    if (cols + w > width) break;
+    out += ch;
+    cols += w;
+  }
+  return [out, cols];
+}
+
+function tagTok(t: Tok, esc: string): string {
+  let s = esc;
+  if (t.color !== null) s = `{${t.color}-fg}${s}{/${t.color}-fg}`;
+  if (t.bold) s = `{bold}${s}{/bold}`;
+  if (t.underline) s = `{underline}${s}{/underline}`;
+  return s;
+}
+
+const cleanText = (text: string) => text.replace(/\r$/, "").replaceAll("\t", TAB);
+
+// Renders tokens as tagged text fitted to exactly `width` display columns:
+// truncated when longer, space-padded when shorter. Fitting runs on the raw
+// text before tagging and escaping, neither of which changes visible width.
+export function renderToks(toks: Tok[], width: number): string {
+  let out = "";
+  let cols = 0;
+  for (const t of toks) {
+    if (cols >= width) break;
+    const [kept, w] = clipCols(cleanText(t.text), width - cols);
+    if (kept === "") continue;
+    out += tagTok(t, escapeTags(kept));
+    cols += w;
+  }
+  return out + " ".repeat(Math.max(0, width - cols));
+}
+
+const GUTTER_FG = "#858585";
+const ADD_BG = "#005f00";
+const DEL_BG = "#5f0000";
+
+const dim = (s: string) => `{${GUTTER_FG}-fg}${s}{/${GUTTER_FG}-fg}`;
 
 const diffSign = (kind: DiffLineKind): string => {
   if (kind === "add") return "+";
@@ -157,42 +273,101 @@ const diffSign = (kind: DiffLineKind): string => {
   return " ";
 };
 
-const signTag = (kind: DiffLineKind): string => kindWrap(kind, diffSign(kind));
+const signTag = (kind: DiffLineKind): string => {
+  if (kind === "add") return "{green-fg}+{/green-fg}";
+  if (kind === "del") return "{red-fg}-{/red-fg}";
+  return " ";
+};
 
-const highlightBody = (code: string, lang: string | null): string | null =>
-  lang === null || code === "" ? null : highlightCode(code, lang);
+const rowBg = (kind: DiffLineKind): string | null => {
+  if (kind === "add") return ADD_BG;
+  if (kind === "del") return DEL_BG;
+  return null;
+};
 
-// renderFileDiff runs on every paint while highlighting is comparatively
-// expensive, so rendered lines are memoized per FileDiff (parse results are
-// never mutated after creation).
-const renderCache = new WeakMap<FileDiff, string[]>();
+const tint = (kind: DiffLineKind, row: string): string => {
+  const bg = rowBg(kind);
+  return bg === null ? row : `{${bg}-bg}${row}{/${bg}-bg}`;
+};
 
-export function renderFileDiff(fd: FileDiff): string[] {
-  const cached = renderCache.get(fd);
-  if (cached) return cached;
+const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
+type LineNo = { oldNo: number | null; newNo: number | null };
+
+// Old and new line numbers per body line, counted from each hunk header.
+function lineNumbers(fd: FileDiff): Map<DiffLine, LineNo> {
+  const out = new Map<DiffLine, LineNo>();
+  let oldNo = 0;
+  let newNo = 0;
+  for (const l of fd.lines) {
+    if (l.kind === "hunk") {
+      const m = HUNK_HEADER.exec(l.text);
+      oldNo = m ? Number(m[1]) : 0;
+      newNo = m ? Number(m[2]) : 0;
+    } else if (l.kind === "del") {
+      out.set(l, { oldNo: oldNo++, newNo: null });
+    } else if (l.kind === "add") {
+      out.set(l, { oldNo: null, newNo: newNo++ });
+    } else if (l.kind === "ctx" && !isMarker(l)) {
+      out.set(l, { oldNo: oldNo++, newNo: newNo++ });
+    }
+  }
+  return out;
+}
+
+const numCell = (no: number | null, width: number) => (no === null ? "" : String(no)).padStart(width);
+
+const fileHeader = (fd: FileDiff): string => {
   const name = fd.status === "renamed" ? `${escapeTags(fd.oldPath)} -> ${escapeTags(fd.path)}` : escapeTags(fd.path);
-  const out = [`{bold}${name}{/bold}  {green-fg}+${fd.additions}{/green-fg} {red-fg}-${fd.deletions}{/red-fg}`];
-  const lang = fd.status === "binary" ? null : languageFor(fd.path);
+  return `{bold}${name}{/bold}  {green-fg}+${fd.additions}{/green-fg} {red-fg}-${fd.deletions}{/red-fg}`;
+};
+
+const numWidthFor = (nos: Iterable<LineNo>): number => {
+  let max = 0;
+  for (const n of nos) max = Math.max(max, n.oldNo ?? 0, n.newNo ?? 0);
+  return Math.max(3, String(max).length);
+};
+
+// One rendered width per file: paint asks for the current pane width on
+// every call, and a terminal drag would otherwise pile up a copy per column.
+const renderCache = new WeakMap<FileDiff, { width: number; lines: string[] }>();
+
+// Unified view, laid out like an IDE inline diff: a dim gutter with the old
+// and new line numbers, a colored sign, then the tokenized code, with added
+// and deleted rows tinted across the full width.
+export function renderFileDiff(fd: FileDiff, width: number): string[] {
+  const cached = renderCache.get(fd);
+  if (cached && cached.width === width) return cached.lines;
+  const out = [fileHeader(fd)];
+  const toks = fileTokens(fd);
+  const nos = lineNumbers(fd);
+  const numWidth = numWidthFor(nos.values());
+  const gutterWidth = numWidth * 2 + 4;
+  const codeWidth = Math.max(1, width - gutterWidth);
   for (const l of fd.lines) {
     if (l.kind === "meta") continue;
     if (l.kind === "hunk") {
       out.push(`{cyan-fg}${escapeTags(l.text)}{/cyan-fg}`);
       continue;
     }
-    const hl = highlightBody(l.text.slice(1), lang);
-    out.push(hl === null ? kindWrap(l.kind, escapeTags(l.text)) : `${signTag(l.kind)}${hl}`);
+    if (isMarker(l)) {
+      out.push(dim(renderToks([plainTok(l.text)], width)));
+      continue;
+    }
+    const n = nos.get(l) ?? { oldNo: null, newNo: null };
+    const gutter = dim(`${numCell(n.oldNo, numWidth)} ${numCell(n.newNo, numWidth)} `);
+    const code = renderToks(toks.get(l) ?? [plainTok(bodyText(l))], codeWidth);
+    out.push(tint(l.kind, `${gutter}${signTag(l.kind)} ${code}`));
   }
   if (fd.status === "binary") out.push("{grey-fg}binary file, no text diff{/grey-fg}");
-  renderCache.set(fd, out);
+  renderCache.set(fd, { width, lines: out });
   return out;
 }
 
-export type SideCell = { no: number; kind: "add" | "del" | "ctx"; text: string };
+export type SideCell = { no: number; kind: "add" | "del" | "ctx"; text: string; line: DiffLine };
 export type SideRow =
   | { kind: "hunk"; text: string }
   | { kind: "row"; left: SideCell | null; right: SideCell | null };
-
-const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 // GitHub-style pairing: a run of deletions lines up with the run of additions
 // that immediately follows it, row by row; whichever run is longer spills
@@ -225,15 +400,15 @@ export function sideBySideRows(fd: FileDiff): SideRow[] {
     const text = l.text.slice(1);
     if (l.kind === "del") {
       if (adds.length > 0) flush();
-      dels.push({ no: oldNo++, kind: "del", text });
+      dels.push({ no: oldNo++, kind: "del", text, line: l });
     } else if (l.kind === "add") {
-      adds.push({ no: newNo++, kind: "add", text });
+      adds.push({ no: newNo++, kind: "add", text, line: l });
     } else {
       flush();
       rows.push({
         kind: "row",
-        left: { no: oldNo++, kind: "ctx", text },
-        right: { no: newNo++, kind: "ctx", text },
+        left: { no: oldNo++, kind: "ctx", text, line: l },
+        right: { no: newNo++, kind: "ctx", text, line: l },
       });
     }
   }
@@ -242,74 +417,39 @@ export function sideBySideRows(fd: FileDiff): SideRow[] {
 }
 
 const COLUMN_SEP = " │ ";
-const TAB = "    ";
-const ASCII_ONLY = /^[\x20-\x7e]*$/;
-
-// Truncate and pad to display columns: under fullUnicode a CJK character is
-// two cells and a combining mark zero, so String.length would misalign the
-// separator. ASCII lines take the cheap path.
-function fitCell(text: string, width: number): string {
-  const clean = text.replace(/\r$/, "").replaceAll("\t", TAB);
-  if (ASCII_ONLY.test(clean)) return clean.slice(0, width).padEnd(width);
-  let out = "";
-  let cols = 0;
-  for (const ch of clean) {
-    const w = blessed.unicode.strWidth(ch);
-    if (cols + w > width) break;
-    out += ch;
-    cols += w;
-  }
-  return out + " ".repeat(width - cols);
-}
-
-const cellKindColor = (kind: SideCell["kind"]): string | null => {
-  if (kind === "add") return "green";
-  if (kind === "del") return "red";
-  return null;
-};
 
 function renderGutter(cell: SideCell, numWidth: number): string {
-  const no = `${String(cell.no).padStart(numWidth)} ${diffSign(cell.kind)}`;
-  const color = cellKindColor(cell.kind);
-  return color === null ? no : `{${color}-fg}${no}{/${color}-fg}`;
+  return `${dim(String(cell.no).padStart(numWidth))} ${signTag(cell.kind)}`;
 }
 
-// One rendered width per file: paint asks for the current pane width on
-// every call, and a terminal drag would otherwise pile up a copy per column.
 const sideCache = new WeakMap<FileDiff, { width: number; lines: string[] }>();
 
 // Two equal columns, each `no sign text`, joined by COLUMN_SEP; an odd
-// leftover column pads the row end. Truncation and padding run on the raw
-// text before highlighting: the escapes and tags added afterwards do not
-// change the visible width, so the columns stay put. A context row is
-// highlighted once and the body shared between its two sides.
+// leftover column pads the row end. Each side is tinted by its own change
+// kind, and an empty side stays blank.
 export function renderSideBySide(fd: FileDiff, width: number): string[] {
   const cached = sideCache.get(fd);
   if (cached && cached.width === width) return cached.lines;
-  const name = fd.status === "renamed" ? `${escapeTags(fd.oldPath)} -> ${escapeTags(fd.path)}` : escapeTags(fd.path);
-  const out = [`{bold}${name}{/bold}  {green-fg}+${fd.additions}{/green-fg} {red-fg}-${fd.deletions}{/red-fg}`];
+  const out = [fileHeader(fd)];
   const rows = sideBySideRows(fd);
+  const toks = fileTokens(fd);
   const maxNo = rows.reduce((m, r) => (r.kind === "row" ? Math.max(m, r.left?.no ?? 0, r.right?.no ?? 0) : m), 0);
   const numWidth = Math.max(3, String(maxNo).length);
   const body = width - COLUMN_SEP.length - 2 * (numWidth + 2);
   const colWidth = Math.max(1, Math.floor(body / 2));
   const tail = " ".repeat(Math.max(0, body - 2 * colWidth));
   const blank = " ".repeat(numWidth + 2 + colWidth);
-  const lang = fd.status === "binary" ? null : languageFor(fd.path);
-  const cellBody = (cell: SideCell) => {
-    const fitted = fitCell(cell.text, colWidth);
-    return highlightBody(fitted, lang) ?? kindWrap(cell.kind, escapeTags(fitted));
+  const cell = (c: SideCell) => {
+    const code = renderToks(toks.get(c.line) ?? [plainTok(c.text)], colWidth);
+    return tint(c.kind, `${renderGutter(c, numWidth)}${code}`);
   };
   for (const r of rows) {
     if (r.kind === "hunk") {
-      out.push(`{cyan-fg}${escapeTags(fitCell(r.text, width))}{/cyan-fg}`);
+      out.push(`{cyan-fg}${renderToks([plainTok(r.text)], width)}{/cyan-fg}`);
       continue;
     }
-    const leftBody = r.left ? cellBody(r.left) : null;
-    const sameText = r.left !== null && r.right !== null && r.left.kind === "ctx" && r.right.kind === "ctx";
-    const rightBody = sameText ? leftBody : r.right ? cellBody(r.right) : null;
-    const left = r.left && leftBody !== null ? `${renderGutter(r.left, numWidth)}${leftBody}` : blank;
-    const right = r.right && rightBody !== null ? `${renderGutter(r.right, numWidth)}${rightBody}` : blank;
+    const left = r.left ? cell(r.left) : blank;
+    const right = r.right ? cell(r.right) : blank;
     out.push(`${left}${COLUMN_SEP}${right}${tail}`);
   }
   if (fd.status === "binary") out.push("{grey-fg}binary file, no text diff{/grey-fg}");

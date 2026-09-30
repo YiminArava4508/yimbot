@@ -5,7 +5,7 @@
 import blessed from "neo-blessed";
 import { attachClaudeOutput, claudeKeyAction } from "./claude-pane.ts";
 import type { ClaudeSession } from "./claude-sessions.ts";
-import { escapeTags, parseUnifiedDiff, renderFileDiff, renderSideBySide, type FileDiff } from "./review-diff.ts";
+import { escapeTags, parseUnifiedDiff, renderFileDiff, renderSideBySide, warmHighlighter, type FileDiff } from "./review-diff.ts";
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
@@ -82,8 +82,8 @@ export function planLines(
   return { lines, selectedLine };
 }
 
-export function diffPaneLines(fd: FileDiff | null): string[] {
-  if (fd) return renderFileDiff(fd);
+export function diffPaneLines(fd: FileDiff | null, width: number): string[] {
+  if (fd) return renderFileDiff(fd, width);
   return [`{${DIM_TAG}}loading diff…{/${DIM_TAG}}`];
 }
 
@@ -469,7 +469,8 @@ export function openReview(
     diff.left = cols.diffLeft;
     diff.width = cols.diffWidth;
     claude.left = cols.claudeLeft;
-    diff.setContent(diffPaneLines(fd).join("\n"));
+    // Border on both sides plus the column blessed reserves for the scrollbar.
+    diff.setContent(diffPaneLines(fd, Math.max(20, diff.width - 3)).join("\n"));
     for (const [pane, box] of [["plan", plan], ["diff", diff], ["claude", claude]] as const) {
       const fg = reviewPaneBorderColor(focused === pane);
       box.style.border.fg = fg;
@@ -480,8 +481,8 @@ export function openReview(
     // whatever stale dimensions it last had; re-fitting the pty to them would
     // resize it against a box nobody sees.
     if (overlay === "wide") {
-      // Border on both sides plus the column blessed reserves for the scrollbar.
-      wide.setContent(fd ? renderSideBySide(fd, Math.max(20, wide.width - 3)).join("\n") : diffPaneLines(fd).join("\n"));
+      const wideWidth = Math.max(20, wide.width - 3);
+      wide.setContent(fd ? renderSideBySide(fd, wideWidth).join("\n") : diffPaneLines(fd, wideWidth).join("\n"));
       wide.style.border.fg = reviewPaneBorderColor(true);
       wide.style.label.fg = reviewPaneBorderColor(true);
     }
@@ -859,6 +860,7 @@ export function openReview(
 
   const metaP = deps.fetchMeta();
   const diffP = deps.fetchDiff();
+  setImmediate(warmHighlighter);
   metaP.then(
     (m) => {
       if (closed) return;

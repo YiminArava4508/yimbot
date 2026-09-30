@@ -102,12 +102,12 @@ test("diffPaneLines renders just the diff, guidance lives in the guide band", ()
   const fd: FileDiff = {
     path: "src/a.ts", oldPath: "src/a.ts", status: "modified", additions: 0, deletions: 0, lines: [],
   };
-  const out = diffPaneLines(fd);
+  const out = diffPaneLines(fd, 80);
   assert.ok(out[0].includes("src/a.ts"));
 });
 
 test("diffPaneLines shows a loading stub without a diff", () => {
-  assert.ok(diffPaneLines(null)[0].includes("loading"));
+  assert.ok(diffPaneLines(null, 80)[0].includes("loading"));
 });
 
 test("guideLines shows organizing while groups are in flight", () => {

@@ -463,14 +463,24 @@ test("renderSideBySide lays out old and new columns of equal width to the given 
   assert.ok(rightOnly.trimStart().startsWith("│  23 +new3"), rightOnly);
 });
 
-test("renderSideBySide truncates long lines to the column instead of wrapping", () => {
+test("renderSideBySide wraps long lines onto continuation rows instead of cutting them off", () => {
   const long = "x".repeat(200);
   const [f] = parseUnifiedDiff(ONE_FILE("long.txt", long));
   const out = renderSideBySide(f, 40);
-  const row = out.find((l) => l.includes("xxx"));
-  assert.ok(row);
-  assert.equal(visible(row).length, 40);
-  assert.ok(!visible(row).includes("x".repeat(30)));
+  const rows = out.filter((l) => l.includes("xx"));
+  assert.ok(rows.length > 1);
+  for (const l of rows) assert.equal(visible(l).length, 40, JSON.stringify(visible(l)));
+  const count = (side: number) => rows.reduce((n, l) => n + (visible(l).split("\u2502")[side].match(/x/g) ?? []).length, 0);
+  assert.equal(count(1), 200);
+  assert.ok(rows[1].startsWith(`{${ADD_BG}-bg}`) || rows[1].includes(`{${ADD_BG}-bg}`), rows[1]);
+  assert.ok(!visible(rows[1]).includes("+"), "continuation rows carry no sign");
+});
+
+test("renderSideBySide wraps wide characters without splitting them", () => {
+  const [f] = parseUnifiedDiff(ONE_FILE("cjk.txt", "\u6f22".repeat(40)));
+  const out = renderSideBySide(f, 40);
+  for (const l of out) assert.ok(strWidth(visible(l)) <= 40, JSON.stringify(visible(l)));
+  assert.equal(out.join("").split("\u6f22").length - 1, 40);
 });
 
 test("renderSideBySide tints each side by change kind and highlights code", () => {
@@ -541,11 +551,11 @@ test("renderSideBySide strips CRLF carriage returns so a row stays one line", ()
   assert.equal(visible(row).length, 40);
 });
 
-test("renderSideBySide pads and truncates by display columns, not code units", () => {
+test("renderSideBySide pads and wraps by display columns, not code units", () => {
   const [f] = parseUnifiedDiff(ONE_FILE("u.txt", "标题 = 你好", "ok 😀 x", "宽".repeat(40)));
   const out = renderSideBySide(f, 40);
   const rows = out.filter((l) => l.includes("│"));
-  assert.equal(rows.length, 3);
+  assert.ok(rows.length > 3);
   for (const l of rows) assert.equal(strWidth(visible(l)), 40, JSON.stringify(visible(l)));
 });
 
@@ -584,4 +594,26 @@ test("renderSideBySide escapes braces in a hunk header once", () => {
   assert.ok(header.includes("foo() {open}{/cyan-fg}") || header.includes("foo() {open} "), header);
   assert.ok(!header.includes("{open}open"), header);
   assert.equal(visible(header).length, 60);
+});
+
+test("renderFileDiff cuts the file header and hunk header to the width instead of overflowing", () => {
+  const diff = [
+    "diff --git a/src/some/very/long/path/to/a-file-with-a-long-name.ts b/src/some/very/long/path/to/a-file-with-a-long-name.ts",
+    "index 1..2 100644",
+    "--- a/src/some/very/long/path/to/a-file-with-a-long-name.ts",
+    "+++ b/src/some/very/long/path/to/a-file-with-a-long-name.ts",
+    "@@ -1,2 +1,3 @@ export function someVeryLongFunctionName(argumentOne, argumentTwo)",
+    " a",
+    "+b",
+    "",
+  ].join("\n");
+  const [f] = parseUnifiedDiff(diff);
+  const width = 30;
+  for (const l of renderFileDiff(f, width)) assert.ok(strWidth(visible(l)) <= width, JSON.stringify(visible(l)));
+});
+
+test("renderSideBySide keeps the file header within the width", () => {
+  const diff = ["diff --git a/src/some/very/long/path/to/a-file-with-a-long-name.ts b/src/some/very/long/path/to/a-file-with-a-long-name.ts", "index 1..2 100644", "--- a/x", "+++ b/x", "@@ -1,1 +1,1 @@", "-a", "+b", ""].join("\n");
+  const [f] = parseUnifiedDiff(diff);
+  assert.ok(strWidth(visible(renderSideBySide(f, 40)[0])) <= 40);
 });

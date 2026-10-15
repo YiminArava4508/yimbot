@@ -200,7 +200,7 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
       border: { type: "line" }, label: " review plan ", style: paneStyle(),
     },
     diff: {
-      top: 6, left: "25%", width: "45%", bottom: 1, tags: true, keys: true, vi: true, mouse: true,
+      top: 6, left: "25%", width: "45%", bottom: 1, tags: true, wrap: false, keys: true, vi: true, mouse: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " diff ", style: paneStyle(),
       scrollbar: { ch: " ", style: { inverse: true } },

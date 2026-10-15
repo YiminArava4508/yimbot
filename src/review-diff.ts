@@ -261,6 +261,34 @@ export function renderToks(toks: Tok[], width: number): string {
   return out + " ".repeat(Math.max(0, width - cols));
 }
 
+// Splits tokens into rows of at most `width` display columns, keeping each
+// token's style. A character wider than the whole width still takes a row to
+// itself so the split always advances.
+function wrapToks(toks: Tok[], width: number): Tok[][] {
+  const rows: Tok[][] = [[]];
+  let cols = 0;
+  for (const t of toks) {
+    let rest = cleanText(t.text);
+    while (rest !== "") {
+      let [kept, w] = clipCols(rest, width - cols);
+      if (kept === "" && cols > 0) {
+        rows.push([]);
+        cols = 0;
+        continue;
+      }
+      if (kept === "") [kept, w] = [String.fromCodePoint(rest.codePointAt(0) ?? 32), width];
+      rows.at(-1)?.push({ ...t, text: kept });
+      cols += w;
+      rest = rest.slice(kept.length);
+      if (cols >= width && rest !== "") {
+        rows.push([]);
+        cols = 0;
+      }
+    }
+  }
+  return rows;
+}
+
 const GUTTER_FG = "#858585";
 const ADD_BG = "#005f00";
 const DEL_BG = "#5f0000";
@@ -317,9 +345,15 @@ function lineNumbers(fd: FileDiff): Map<DiffLine, LineNo> {
 
 const numCell = (no: number | null, width: number) => (no === null ? "" : String(no)).padStart(width);
 
-const fileHeader = (fd: FileDiff): string => {
-  const name = fd.status === "renamed" ? `${escapeTags(fd.oldPath)} -> ${escapeTags(fd.path)}` : escapeTags(fd.path);
-  return `{bold}${name}{/bold}  {green-fg}+${fd.additions}{/green-fg} {red-fg}-${fd.deletions}{/red-fg}`;
+// Name left-clipped to what the stats leave of `width`; the stats drop out
+// when even one name column does not fit beside them.
+const fileHeader = (fd: FileDiff, width: number): string => {
+  const name = fd.status === "renamed" ? `${fd.oldPath} -> ${fd.path}` : fd.path;
+  const stats = `  +${fd.additions} -${fd.deletions}`;
+  const room = width - stats.length;
+  if (room < 1) return `{bold}${escapeTags(clipCols(name, width)[0])}{/bold}`;
+  const [kept] = clipCols(name, room);
+  return `{bold}${escapeTags(kept)}{/bold}  {green-fg}+${fd.additions}{/green-fg} {red-fg}-${fd.deletions}{/red-fg}`;
 };
 
 const numWidthFor = (nos: Iterable<LineNo>): number => {
@@ -338,7 +372,7 @@ const renderCache = new WeakMap<FileDiff, { width: number; lines: string[] }>();
 export function renderFileDiff(fd: FileDiff, width: number): string[] {
   const cached = renderCache.get(fd);
   if (cached && cached.width === width) return cached.lines;
-  const out = [fileHeader(fd)];
+  const out = [fileHeader(fd, width)];
   const toks = fileTokens(fd);
   const nos = lineNumbers(fd);
   const numWidth = numWidthFor(nos.values());
@@ -347,7 +381,7 @@ export function renderFileDiff(fd: FileDiff, width: number): string[] {
   for (const l of fd.lines) {
     if (l.kind === "meta") continue;
     if (l.kind === "hunk") {
-      out.push(`{cyan-fg}${escapeTags(l.text)}{/cyan-fg}`);
+      out.push(`{cyan-fg}${escapeTags(clipCols(l.text, width)[0])}{/cyan-fg}`);
       continue;
     }
     if (isMarker(l)) {
@@ -424,13 +458,14 @@ function renderGutter(cell: SideCell, numWidth: number): string {
 
 const sideCache = new WeakMap<FileDiff, { width: number; lines: string[] }>();
 
-// Two equal columns, each `no sign text`, joined by COLUMN_SEP; an odd
+// Two equal columns, each `no sign text`, joined by COLUMN_SEP; code longer
+// than a column wraps onto continuation rows under a blank gutter; an odd
 // leftover column pads the row end. Each side is tinted by its own change
 // kind, and an empty side stays blank.
 export function renderSideBySide(fd: FileDiff, width: number): string[] {
   const cached = sideCache.get(fd);
   if (cached && cached.width === width) return cached.lines;
-  const out = [fileHeader(fd)];
+  const out = [fileHeader(fd, width)];
   const rows = sideBySideRows(fd);
   const toks = fileTokens(fd);
   const maxNo = rows.reduce((m, r) => (r.kind === "row" ? Math.max(m, r.left?.no ?? 0, r.right?.no ?? 0) : m), 0);
@@ -439,18 +474,21 @@ export function renderSideBySide(fd: FileDiff, width: number): string[] {
   const colWidth = Math.max(1, Math.floor(body / 2));
   const tail = " ".repeat(Math.max(0, body - 2 * colWidth));
   const blank = " ".repeat(numWidth + 2 + colWidth);
-  const cell = (c: SideCell) => {
-    const code = renderToks(toks.get(c.line) ?? [plainTok(c.text)], colWidth);
-    return tint(c.kind, `${renderGutter(c, numWidth)}${code}`);
-  };
+  const indent = " ".repeat(numWidth + 2);
+  const cell = (c: SideCell): string[] =>
+    wrapToks(toks.get(c.line) ?? [plainTok(c.text)], colWidth).map((row, i) =>
+      tint(c.kind, `${i === 0 ? renderGutter(c, numWidth) : indent}${renderToks(row, colWidth)}`),
+    );
   for (const r of rows) {
     if (r.kind === "hunk") {
       out.push(`{cyan-fg}${renderToks([plainTok(r.text)], width)}{/cyan-fg}`);
       continue;
     }
-    const left = r.left ? cell(r.left) : blank;
-    const right = r.right ? cell(r.right) : blank;
-    out.push(`${left}${COLUMN_SEP}${right}${tail}`);
+    const left = r.left ? cell(r.left) : [];
+    const right = r.right ? cell(r.right) : [];
+    for (let i = 0; i < Math.max(left.length, right.length); i++) {
+      out.push(`${left[i] ?? blank}${COLUMN_SEP}${right[i] ?? blank}${tail}`);
+    }
   }
   if (fd.status === "binary") out.push("{grey-fg}binary file, no text diff{/grey-fg}");
   sideCache.set(fd, { width, lines: out });

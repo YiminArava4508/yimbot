@@ -267,6 +267,10 @@ test("reviewColumns leaves no uncovered column between the panes at any width", 
   }
 });
 
+test("reviewLayout keeps diff rows on one line so a narrow pane clips instead of wrapping", () => {
+  assert.equal(reviewLayout().diff.wrap, false);
+});
+
 test("reviewLayout makes the plan and diff panes wheel-scrollable", () => {
   const l = reviewLayout();
   assert.equal(l.plan.mouse, true);

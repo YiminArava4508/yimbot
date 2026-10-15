@@ -30,6 +30,7 @@ export type YimbotConfig = {
   refineUsers: string;
   refineLabelFilter: string;
   maxRefining: number;
+  splitTickets: boolean;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -90,10 +91,11 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     REFINE_USERS: c.refineUsers,
     REFINE_LABEL_FILTER: c.refineLabelFilter,
     MAX_REFINING: String(c.maxRefining),
+    SPLIT_TICKETS: String(c.splitTickets),
   };
 }
 
-// The 22 keys this file's generated sections own. Anything else found in an
+// The 23 keys this file's generated sections own. Anything else found in an
 // existing .env is a hand-edited setting (BLOCKED_LABEL, TUI_*, ...) that a
 // regenerated file must not drop.
 const OWNED_ENV_KEYS = new Set([
@@ -119,6 +121,7 @@ const OWNED_ENV_KEYS = new Set([
   "REFINE_USERS",
   "REFINE_LABEL_FILTER",
   "MAX_REFINING",
+  "SPLIT_TICKETS",
 ]);
 
 // The KEY=value lines of an existing .env that this file's generated sections
@@ -171,6 +174,7 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `REFINE_USERS=${r.REFINE_USERS}`,
     `REFINE_LABEL_FILTER=${r.REFINE_LABEL_FILTER}`,
     `MAX_REFINING=${r.MAX_REFINING}`,
+    `SPLIT_TICKETS=${r.SPLIT_TICKETS}`,
   ];
   if (passthroughLines.length > 0) {
     lines.push("", "# --- Hand-edited settings this file's writer doesn't manage (preserved) ---", ...passthroughLines);
@@ -240,6 +244,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     refineUsers: or("REFINE_USERS", ""),
     refineLabelFilter: or("REFINE_LABEL_FILTER", ""),
     maxRefining: Number(or("MAX_REFINING", "1")),
+    splitTickets: !isOff(or("SPLIT_TICKETS", "true")),
   };
 }
 
@@ -284,6 +289,7 @@ const ROW_SPECS: { envKey: string; label: string; editor: EditorKind }[] = [
   { envKey: "REFINE_USERS", label: "refine users", editor: "text" },
   { envKey: "REFINE_LABEL_FILTER", label: "refine tickets", editor: "labelFilter" },
   { envKey: "MAX_REFINING", label: "refine cap", editor: "number" },
+  { envKey: "SPLIT_TICKETS", label: "split tickets", editor: "toggle" },
   { envKey: "RISK_LABELS", label: "risk labels", editor: "list" },
   { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number" },
   { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text" },
@@ -307,6 +313,7 @@ function displayValue(envKey: string, value: string): string {
     case "AUTO_CLEANUP":
     case "AUTO_CONTINUE":
     case "AUTO_REFINE":
+    case "SPLIT_TICKETS":
       return isOff(value) ? "off" : "on";
     case "AC_JUDGE_MODEL":
       return value || "(claude default)";

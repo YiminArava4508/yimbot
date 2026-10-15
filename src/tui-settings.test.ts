@@ -93,6 +93,7 @@ const baseConfig: YimbotConfig = {
   refineUsers: "",
   refineLabelFilter: "",
   maxRefining: 1,
+  splitTickets: true,
 };
 
 function testDeps(overrides: Partial<SettingsDeps> = {}): SettingsDeps {

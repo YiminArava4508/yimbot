@@ -51,6 +51,7 @@ const sample: YimbotConfig = {
   refineUsers: "",
   refineLabelFilter: "",
   maxRefining: 1,
+  splitTickets: true,
 };
 
 test("isConfigured requires a non-empty API key", () => {

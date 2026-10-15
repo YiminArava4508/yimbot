@@ -26,6 +26,8 @@ assert_eq "$(build_claude_cmd | grep -c -- '--permission-mode auto')" "1" "runs 
 assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "0" "does not bypass permissions"
 assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" "honors PLAN_MODEL"
 assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
+assert_eq "$(SPLIT_TICKETS=false build_claude_cmd | grep -c 'SPLIT_TICKETS=false')" "1" "passes SPLIT_TICKETS through"
+assert_eq "$(build_claude_cmd | grep -c 'SPLIT_TICKETS')" "0" "omits SPLIT_TICKETS when unset"
 
 # Resume mode (SESSION_RESUME) reattaches to the prior conversation with
 # --continue and, in launch_claude_in, sends no seed prompt.

@@ -190,6 +190,13 @@ the reuse audit above), and only then decide how to slice it into PRs.
 - The **original ticket branch keeps every change and gets no PR of its
   own.** Leave it up as a local integration branch: it is the only place the
   whole app can be run and tested locally, end to end.
+- **Check `echo "$SPLIT_TICKETS"` before creating slices.** If it is `false`,
+  `off`, `0`, or `no`, the ticket is product's and must not change: create no
+  subtickets, do not zero or edit the parent's estimate, and skip step 1 below.
+  Name each slice branch `<ticket-slug>-slice-<i>-of-<n>` (lowercase ticket
+  slug) in place of the subticket-derived name, and have each slice PR body
+  reference the parent ticket instead of a subticket. Everything else in the
+  flow is unchanged. Unset or any other value means the full flow below.
 - Every PR is a **new, independent slice branch off `main`**, never a
   branch stacked on another slice and never a GitHub stacked PR. Every slice
   also gets its **own subticket** under the original ticket, and its branch is

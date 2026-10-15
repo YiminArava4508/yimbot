@@ -28,6 +28,13 @@ session is done and will be reaped.
    single PR). Then go to step 6.
 
 5. **Oversized: decompose into subtickets.**
+   - **First check `echo "$SPLIT_TICKETS"`.** If it is `false`, `off`, `0`, or
+     `no`, do not create subtickets, relations, or comments, and do not set the
+     parent to 0: the ticket is product's, so leave it as written. Run
+     `~/estimate-ticket.sh <TICKET> <points>` sized for the whole ticket (5 for
+     anything larger), go to step 6, and skip the rest of this step. The worker
+     ships it as several slice PRs. Unset or any other value means split as
+     below.
    - Slice the work into independent, worker-sized pieces, each one PR well
      under 500 LOC. Slice along feature seams so every slice builds and tests
      green on its own.

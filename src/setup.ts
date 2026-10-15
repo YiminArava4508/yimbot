@@ -1002,6 +1002,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     refineUsers: "",
     refineLabelFilter: "",
     maxRefining: 1,
+    splitTickets: true,
   };
   const existingEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : null;
   writeEnvFile(serializeEnvFile(config, existingEnv ? extractPassthroughLines(existingEnv) : []));

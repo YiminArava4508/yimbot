@@ -243,6 +243,7 @@ build_claude_cmd() {
   # start, so a re-couple (session died, worktree lives) never re-runs the seed.
   [ -n "${SESSION_RESUME:-}" ] && cmd="$cmd --continue"
   [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
+  [ -n "${SPLIT_TICKETS:-}" ] && cmd="SPLIT_TICKETS=$SPLIT_TICKETS $cmd"
   printf '%s' "$cmd"
 }
 

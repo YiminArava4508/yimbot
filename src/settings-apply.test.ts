@@ -26,6 +26,7 @@ const prev: YimbotConfig = {
   refineUsers: "",
   refineLabelFilter: "",
   maxRefining: 1,
+  splitTickets: true,
 };
 const next: YimbotConfig = { ...prev, maxInProgress: 1, labelFilter: "bot" };
 

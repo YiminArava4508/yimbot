@@ -195,14 +195,20 @@ export async function fetchTeamStates(
 // The viewer's assigned issues in one state of the watched team. Shared by the
 // deploy step (In Progress) and the review step (In Review) — both watch a
 // single state, so this is deliberately state-agnostic.
-export type StateIssue = LinearIssue & { labels: string[] };
+// `estimate` and `hasChildren` are the deploy step's tracker check (a decomposed
+// parent: children plus a 0-point estimate); the review step ignores them.
+export type StateIssue = LinearIssue & { labels: string[]; estimate: number | null; hasChildren: boolean };
 
 export async function fetchIssuesInState(
   apiKey: string,
   ctx: LinearContext,
   fetchImpl: typeof fetch = fetch,
 ): Promise<StateIssue[]> {
-  type Node = LinearIssue & { labels: { nodes: { name: string }[] } };
+  type Node = LinearIssue & {
+    estimate: number | null;
+    labels: { nodes: { name: string }[] };
+    children: { nodes: { id: string }[] };
+  };
   type IssuesData = { issues: { nodes: Node[] } };
   const data = await gql<IssuesData>(
     apiKey,
@@ -215,7 +221,11 @@ export async function fetchIssuesInState(
           assignee: { id: { eq: $viewerId } }
         }
       ) {
-        nodes { id identifier title labels { nodes { name } } }
+        nodes {
+          id identifier title estimate
+          labels { nodes { name } }
+          children(first: 1) { nodes { id } }
+        }
       }
     }`,
     { teamId: ctx.teamId, stateId: ctx.stateId, viewerId: ctx.viewerId },
@@ -226,6 +236,8 @@ export async function fetchIssuesInState(
     identifier: n.identifier,
     title: n.title,
     labels: n.labels.nodes.map((l) => l.name),
+    estimate: n.estimate ?? null,
+    hasChildren: n.children.nodes.length > 0,
   }));
 }
 

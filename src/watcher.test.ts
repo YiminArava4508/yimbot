@@ -30,10 +30,13 @@ import {
   liveQaKeys,
   QA_SESSION_RE,
   liveRefineKeys,
+  liveTrackerKeys,
   manuallyLiveKeys,
   qaScriptPath,
   qaSessionArgs,
+  reportLinearTrackerRow,
   reportSplitParentRows,
+  splitParentWorktreeFor,
   splitSliceKeys,
   markFeatureReady,
   parseWorktreePorcelain,
@@ -232,6 +235,91 @@ test("deployOnce launches an orphaned In-Progress issue and latches it (no relau
   await deployOnce(state, deps);
   assert.deepEqual(launched, ["eng-1-fix-bug"]);
   assert.ok(state.launched.has("a"));
+});
+
+function trackerIssue(id: string, identifier: string, title: string) {
+  return { ...issue(id, identifier, title), estimate: 0, hasChildren: true };
+}
+
+test("deployOnce gives a Linear tracker a row, not a session, and never latches it", async () => {
+  const state = freshDeployState();
+  const reported: string[] = [];
+  const saved: Set<string>[] = [];
+  const { deps, launched } = deployDeps({
+    fetchIssues: async () => [trackerIssue("p", "ENG-1325", "Export"), issue("a", "ENG-1", "Fix bug")],
+    reportTracker: (i) => void reported.push(i.identifier),
+    saveTrackers: (ids) => void saved.push(new Set(ids)),
+  });
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug"], "only the leaf launches");
+  assert.equal(state.launched.has("p"), false, "a tracker is never latched");
+  assert.deepEqual(state.trackers, new Set(["ENG-1325"]));
+  assert.deepEqual(reported, ["ENG-1325"]);
+  assert.deepEqual(saved, [new Set(["ENG-1325"])]);
+});
+
+test("deployOnce does not adopt a tracker's stale session; the tracker check comes first", async () => {
+  const state = freshDeployState();
+  const { deps, launched } = deployDeps({
+    fetchIssues: async () => [trackerIssue("p", "ENG-1325", "Export")],
+    listSessions: () => ["eng-1325-export-shareable"],
+  });
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, []);
+  assert.equal(state.launched.has("p"), false);
+  assert.deepEqual(state.trackers, new Set(["ENG-1325"]));
+});
+
+test("deployOnce drops a tracker that left In Progress and saves only on change", async () => {
+  const state = freshDeployState();
+  const saved: Set<string>[] = [];
+  let issues = [trackerIssue("p", "ENG-1325", "Export")];
+  const { deps } = deployDeps({
+    fetchIssues: async () => issues,
+    saveTrackers: (ids) => void saved.push(new Set(ids)),
+  });
+  await deployOnce(state, deps);
+  await deployOnce(state, deps);
+  assert.equal(saved.length, 1, "an unchanged set is not re-saved");
+  issues = [];
+  await deployOnce(state, deps);
+  assert.deepEqual(state.trackers, new Set());
+  assert.deepEqual(saved.at(-1), new Set());
+});
+
+test("deployOnce launches a parent with children but a nonzero estimate as dev work", async () => {
+  const state = freshDeployState();
+  const { deps, launched } = deployDeps({
+    fetchIssues: async () => [{ ...issue("a", "ENG-1", "Fix bug"), estimate: 3, hasChildren: true }],
+  });
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, ["eng-1-fix-bug"]);
+  assert.deepEqual(state.trackers, new Set());
+});
+
+test("deployOnce leaves a split parent to the split flow even when it matches the tracker rule", async () => {
+  const state = freshDeployState();
+  const reported: string[] = [];
+  const { deps, launched } = deployDeps({
+    fetchIssues: async () => [trackerIssue("p", "ENG-1925", "Render service")],
+    listWorktrees: () => ["eng-1925-render-service"],
+    isSplitParent: (identifier) => identifier === "ENG-1925",
+    reportTracker: (i) => void reported.push(i.identifier),
+  });
+  await deployOnce(state, deps);
+  assert.deepEqual(launched, []);
+  assert.ok(state.launched.has("p"), "adopted like any ticket with a worktree");
+  assert.deepEqual(state.trackers, new Set());
+  assert.deepEqual(reported, []);
+});
+
+test("splitParentWorktreeFor finds the marked worktree by identifier prefix", () => {
+  const worktrees = ["eng-1925-render-service", "eng-19-other", "eng-1325-export"];
+  const marked = new Set(["/wt/eng-1925-render-service"]);
+  const isMarked = (path: string) => marked.has(path);
+  assert.equal(splitParentWorktreeFor("ENG-1925", worktrees, isMarked, "/wt"), true);
+  assert.equal(splitParentWorktreeFor("ENG-1325", worktrees, isMarked, "/wt"), false);
+  assert.equal(splitParentWorktreeFor("ENG-19", worktrees, isMarked, "/wt"), false, "prefix is bounded by a dash");
 });
 
 test("deployOnce adopts an existing session without launching (restart-safe)", async () => {
@@ -1329,4 +1417,43 @@ test("reportSplitParentRows: leaves a row with any other status alone", () => {
   const { report, emitted } = splitReporter({ "ENG-1929": "ready to merge" });
   report({ awaiting: [], tracking: ["eng-1929-parent"] });
   assert.deepEqual(emitted, []);
+});
+
+function trackerReporter(current: Record<string, string | undefined>) {
+  const emitted: { kind: string; key: string; label: string; title?: string }[] = [];
+  const report = (identifier: string, title: string) =>
+    reportLinearTrackerRow(
+      { identifier, title },
+      {
+        currentStatus: (key) => current[key],
+        emitStatus: (ev) => void emitted.push({ kind: ev.kind, key: ev.key, label: ev.label, title: ev.title }),
+      },
+    );
+  return { report, emitted };
+}
+
+test("reportLinearTrackerRow: a fresh row gets tracker ticket keyed by identifier, with the title", () => {
+  const { report, emitted } = trackerReporter({});
+  report("ENG-1325", "Export & shareable delivery");
+  assert.deepEqual(emitted, [
+    { kind: "tracking", key: "ENG-1325", label: "ENG-1325", title: "Export & shareable delivery" },
+  ]);
+});
+
+test("reportLinearTrackerRow: replaces the working a stale dev session left behind", () => {
+  const { report, emitted } = trackerReporter({ "ENG-1325": "working" });
+  report("ENG-1325", "Export");
+  assert.deepEqual(emitted.map((e) => e.kind), ["tracking"]);
+});
+
+test("reportLinearTrackerRow: never writes over a hold or any other status", () => {
+  const { report, emitted } = trackerReporter({ "ENG-1": "needs decision", "ENG-2": "ready to merge" });
+  report("ENG-1", "One");
+  report("ENG-2", "Two");
+  assert.deepEqual(emitted, []);
+});
+
+test("liveTrackerKeys maps persisted tracker identifiers to board keys", () => {
+  assert.deepEqual(liveTrackerKeys(new Set(["ENG-1325", "sc-42"])), new Set(["ENG-1325", "SC-42"]));
+  assert.deepEqual(liveTrackerKeys(new Set()), new Set());
 });

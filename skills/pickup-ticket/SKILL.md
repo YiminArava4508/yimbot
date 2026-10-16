@@ -175,6 +175,11 @@ and snapshots).
 - **Target: well under 500 LOC.** Aim to land every PR comfortably below the limit.
 - **Hard limit: 500 LOC.** A branch whose changes exceed 500 LOC **must**
   be split into multiple smaller PRs before shipping, no exceptions.
+- **Exception: `echo "$SPLIT_TICKETS"` is `false`, `off`, `0`, or `no`.**
+  Splitting is disabled: never split, whatever the size. Ship the ticket
+  branch as one PR through the single-PR flow, skip the split flow below, and
+  create no slices, subtickets, or `.yimbot-split-parent` flag. Unset or any
+  other value means the limit applies as written.
 
 Implementation always happens as a whole, on the single ticket branch.
 Splitting is a **PR-time operation**, not a set of separate implementation
@@ -190,20 +195,18 @@ the reuse audit above), and only then decide how to slice it into PRs.
 - The **original ticket branch keeps every change and gets no PR of its
   own.** Leave it up as a local integration branch: it is the only place the
   whole app can be run and tested locally, end to end.
-- **Check `echo "$SPLIT_TICKETS"` before creating slices.** If it is `false`,
-  `off`, `0`, or `no`, the ticket is product's and must not change: create no
-  subtickets, do not zero or edit the parent's estimate, and skip step 1 below.
-  Name each slice branch `<ticket-slug>-slice-<i>-of-<n>` (lowercase ticket
-  slug) in place of the subticket-derived name, and have each slice PR body
-  reference the parent ticket instead of a subticket. Everything else in the
-  flow is unchanged. Unset or any other value means the full flow below.
 - Every PR is a **new, independent slice branch off `main`**, never a
   branch stacked on another slice and never a GitHub stacked PR. Every slice
   also gets its **own subticket** under the original ticket, and its branch is
   named after that subticket, so each slice tracks and shows on the board as
   its own task. For each slice:
   1. Create the slice's subticket, titled `[i/n] <slice summary>`, with a
-     points estimate sized to the slice:
+     points estimate sized to the slice. **Keep the parent's points:** read the
+     parent's estimate before creating the first slice, and make the slice
+     points add up to exactly that number, never more (the split redistributes
+     the parent's points, it does not add to them). If the parent had no
+     estimate, size the whole ticket as one unit first and use that as the
+     total:
      - Linear tickets (`eng-*`): run
        `~/create-subticket.sh <TICKET> "[i/n] <slice summary>" <points> --claimable`.
        It creates the sub-issue in Todo and the current cycle, where intake

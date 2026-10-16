@@ -397,6 +397,7 @@ export function reachWarnings(down: Service[]): string {
 export function statusContent(
   mode: Mode,
   refineOn: boolean,
+  splitOn: boolean,
   active: number,
   notice: Notice | null,
   now: number,
@@ -405,7 +406,10 @@ export function statusContent(
   const refineChip = refineOn
     ? "{black-fg}{green-bg} REFINE ON {/green-bg}{/black-fg} "
     : "{black-fg}{red-bg} REFINE OFF {/red-bg}{/black-fg} ";
-  const base = `${reachWarnings(down)}${refineChip}${modeContent(mode)} live | ${active} active`;
+  const splitChip = splitOn
+    ? "{black-fg}{green-bg} SPLIT ON {/green-bg}{/black-fg} "
+    : "{black-fg}{red-bg} SPLIT OFF {/red-bg}{/black-fg} ";
+  const base = `${reachWarnings(down)}${refineChip}${splitChip}${modeContent(mode)} live | ${active} active`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -656,6 +660,7 @@ export function runTui(opts: {
   mode: () => Mode;
   onToggleMode: () => Mode;
   refineEnabled: () => boolean;
+  splitEnabled: () => boolean;
   settings: SettingsDeps;
   reviewDeps: (pr: number, key: string, label: string, repo?: string) => ReviewDeps;
   // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
@@ -818,7 +823,7 @@ export function runTui(opts: {
     status.setContent(
       daemonStopped
         ? "daemon stopped"
-        : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now(), unreachable()),
+        : statusContent(opts.mode(), opts.refineEnabled(), opts.splitEnabled(), active, notice, Date.now(), unreachable()),
     );
     screen.render();
   };

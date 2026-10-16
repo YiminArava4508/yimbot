@@ -202,15 +202,25 @@ test("footerHint no longer advertises a refine key (refine lives in settings)", 
 });
 
 test("statusContent shows a red refine-off chip while refine is off", () => {
-  const off = statusContent("supervised", false, 2, null, 0, []);
+  const off = statusContent("supervised", false, true, 2, null, 0, []);
   assert.match(off, /REFINE OFF/);
   assert.match(off, /red-bg/);
 });
 
 test("statusContent shows a green refine-on chip while refine is on", () => {
-  const on = statusContent("supervised", true, 2, null, 0, []);
+  const on = statusContent("supervised", true, true, 2, null, 0, []);
   assert.match(on, /REFINE ON/);
   assert.match(on, /green-bg.*REFINE ON/);
+});
+
+test("statusContent shows a green split-on chip while splitting is on", () => {
+  const on = statusContent("supervised", true, true, 2, null, 0, []);
+  assert.match(on, /green-bg.*SPLIT ON/);
+});
+
+test("statusContent shows a red split-off chip while splitting is off", () => {
+  const off = statusContent("supervised", true, false, 2, null, 0, []);
+  assert.match(off, /red-bg.*SPLIT OFF/);
 });
 
 test("bindQuitKeys binds only C-c: q and escape must not quit the board", () => {
@@ -316,10 +326,10 @@ test("bindFlagKey gates f while settings is open", () => {
 
 test("statusContent shows an unexpired notice and drops it after its ttl", () => {
   const notice = { text: "adding ready label to #481…", until: 10_000 };
-  assert.match(statusContent("supervised", true, 2, notice, 9_999, []), /adding ready label to #481/);
-  assert.match(statusContent("supervised", true, 2, notice, 9_999, []), /2 active/);
-  assert.doesNotMatch(statusContent("supervised", true, 2, notice, 10_000, []), /adding ready label/);
-  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0, []), /adding ready label/);
+  assert.match(statusContent("supervised", true, true, 2, notice, 9_999, []), /adding ready label to #481/);
+  assert.match(statusContent("supervised", true, true, 2, notice, 9_999, []), /2 active/);
+  assert.doesNotMatch(statusContent("supervised", true, true, 2, notice, 10_000, []), /adding ready label/);
+  assert.doesNotMatch(statusContent("supervised", true, true, 2, null, 0, []), /adding ready label/);
 });
 
 test("handleReadyPress reports the same outcome the review overlay does", async () => {
@@ -464,7 +474,7 @@ function renderHeaderLines(columns: number, rows: number): string[] {
   blessed.text({
     parent: screen,
     ...statusLayout(),
-    content: statusContent("supervised", true, 3, null, Date.now(), []),
+    content: statusContent("supervised", true, true, 3, null, Date.now(), []),
   });
   screen.render();
   const lines = screen.lines.map((line: [number, string][]) =>
@@ -977,14 +987,14 @@ test("reachWarnings names each failing service in red", () => {
 });
 
 test("statusContent leads with the reach warnings, ahead of the chips", () => {
-  const bar = statusContent("supervised", true, 2, null, 0, ["github"]);
+  const bar = statusContent("supervised", true, true, 2, null, 0, ["github"]);
   assert.ok(bar.startsWith("{red-fg}⚠ github{/red-fg}"));
   assert.ok(bar.indexOf("github") < bar.indexOf("REFINE"));
   assert.match(bar, /2 active/);
 });
 
 test("statusContent says nothing about reachability while every service answers", () => {
-  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0, []), /⚠/);
+  assert.doesNotMatch(statusContent("supervised", true, true, 2, null, 0, []), /⚠/);
 });
 
 test("applyPaneFocusStyle highlights the focused pane's row and nobody else's", () => {

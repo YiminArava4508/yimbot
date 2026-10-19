@@ -5,7 +5,7 @@
 import blessed from "neo-blessed";
 import { attachClaudeOutput, claudeKeyAction } from "./claude-pane.ts";
 import type { ClaudeSession } from "./claude-sessions.ts";
-import { escapeTags, parseUnifiedDiff, renderFileDiff, renderSideBySide, warmHighlighter, type FileDiff } from "./review-diff.ts";
+import { changeSignature, escapeTags, parseUnifiedDiff, renderFileDiff, renderSideBySide, warmHighlighter, type FileDiff } from "./review-diff.ts";
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
@@ -144,13 +144,16 @@ export function reviewHeader(pr: number, title: string, viewedCount: number, tot
 }
 
 // Where the review chat's work stands relative to the PR on the remote.
-export type SyncStatus = { dirty: boolean; unpushed: number };
+export type SyncStatus = { dirty: boolean; unpushed: number; head: string };
 
 export function syncChip(sync: SyncStatus | null, pushedSha: string): string {
   if (sync === null) return "";
   const parts: string[] = [];
   if (sync.dirty) parts.push("uncommitted");
   if (sync.unpushed > 0) parts.push(`${sync.unpushed} unpushed`);
+  if (parts.length === 0 && sync.head !== pushedSha) {
+    return `local ${sync.head.slice(0, 7)} differs from PR ${pushedSha.slice(0, 7)}`;
+  }
   if (parts.length === 0) return `pushed @ ${pushedSha.slice(0, 7)}`;
   return parts.join(", ");
 }
@@ -459,16 +462,20 @@ export function openReview(
     return rendered;
   };
 
+  function paintHeader(fs: string[]): void {
+    const title = meta ? meta.title : "loading…";
+    header.setContent(
+      reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length, meta ? syncChip(sync, meta.headSha) : ""),
+    );
+  }
+
   function paint(footerOverride?: string): void {
     if (closed) return;
     rendered = null;
     const g = currentGroups();
     const fs = files();
     if (selectedPath === null || !fs.includes(selectedPath)) selectedPath = fs[0] ?? null;
-    const title = meta ? meta.title : "loading…";
-    header.setContent(
-      reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length, meta ? syncChip(sync, meta.headSha) : ""),
-    );
+    paintHeader(fs);
     const { lines, selectedLine } = planLines(g.groups, viewed, contextFiles, selectedPath);
     plan.setContent(lines.join("\n"));
     if (selectedLine >= 0 && selectedLine !== lastPlanScroll) {
@@ -755,6 +762,7 @@ export function openReview(
     if (archMap !== map) return;
     // A null is a transient model failure, never something to remember:
     // caching it would freeze the fallback in until the next push.
+    if (meta?.headSha !== m.headSha) return;
     if (fresh) {
       annotation = fresh;
       deps.saveFlow(m.headSha, fresh);
@@ -968,46 +976,57 @@ export function openReview(
     if (refreshing || closed || meta === null) return;
     refreshing = true;
     paint("refreshing…");
+    let moved: { title: string; body: string; headSha: string } | null = null;
     try {
-      const [m, raw] = await Promise.all([deps.fetchMeta(), deps.fetchDiff()]);
+      // A push between the meta and diff calls would pair the new SHA with the
+      // old diff, so refetch until the head holds still (bounded: the next poll
+      // catches anything that keeps moving).
+      let m = await deps.fetchMeta();
+      let raw = await deps.fetchDiff();
+      for (let i = 0; i < 2 && (await deps.fetchHeadSha()) !== m.headSha; i++) {
+        m = await deps.fetchMeta();
+        raw = await deps.fetchDiff();
+      }
       if (closed) return;
       const next = parseUnifiedDiff(raw);
-      const prev = meta;
-      if (prev === null) return;
-      const moved = m.headSha !== prev.headSha;
-      if (moved) {
-        deps.saveViewed(prev.headSha, viewed);
-        const before = new Map(fileDiffs.map((f) => [f.path, JSON.stringify(f)]));
-        const kept = [...viewed].filter((p) => {
-          const f = next.find((n) => n.path === p);
-          return f !== undefined && before.get(p) === JSON.stringify(f);
-        });
+      const changed = m.headSha !== meta.headSha;
+      if (changed) {
+        deps.saveViewed(meta.headSha, viewed);
+        const before = new Map(fileDiffs.map((f) => [f.path, changeSignature(f)]));
+        const kept = next.filter((f) => viewed.has(f.path) && before.get(f.path) === changeSignature(f)).map((f) => f.path);
         viewed = new Set([...deps.loadViewed(m.headSha), ...kept]);
         deps.saveViewed(m.headSha, viewed);
+        const live = new Set(next.map((f) => f.path));
+        contextFiles = new Set([...contextFiles].filter((p) => live.has(p)));
         groups = null;
         annotation = null;
+        moved = m;
       }
       meta = m;
       fileDiffs = next;
       lastCtxSig = null;
+      paint(changed ? `{green-fg}PR updated @ ${m.headSha.slice(0, 7)}{/green-fg}` : undefined);
       void refreshSync();
-      paint(moved ? `{green-fg}PR updated @ ${m.headSha.slice(0, 7)}{/green-fg}` : undefined);
-      if (moved) await groupAndAnnotate(m);
     } catch (err: unknown) {
       if (closed) return;
       paint(`{red-fg}refresh failed: ${err instanceof Error ? err.message : String(err)}{/red-fg}`);
     } finally {
       refreshing = false;
     }
+    if (moved) await groupAndAnnotate(moved).catch(() => {});
   }
 
   async function refreshSync(): Promise<void> {
+    let next: SyncStatus | null = null;
     try {
-      sync = await deps.syncStatus();
+      next = await deps.syncStatus();
     } catch {
-      sync = null;
+      next = null;
     }
-    paint();
+    if (closed || JSON.stringify(next) === JSON.stringify(sync)) return;
+    sync = next;
+    paintHeader(files());
+    s.render();
   }
 
   async function pollHead(): Promise<void> {

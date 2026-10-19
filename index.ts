@@ -122,12 +122,9 @@ if (process.stdout.isTTY) {
   const claudeRegistry = makeSessionRegistry(spawnClaudePty);
   // The claude session runs in the PR's worktree so it can read the actual
   // branch; a PR-only row with no worktree falls back to the main checkout.
-  const worktreeForKey = (key: string): string => {
-    const wt = listGitWorktrees(currentCodebasePath()).find(
-      (w) => deriveKey({ branch: w.branch }).key === key,
-    );
-    return wt?.path ?? currentCodebasePath();
-  };
+  const worktreeFor = (key: string) =>
+    listGitWorktrees(currentCodebasePath()).find((w) => deriveKey({ branch: w.branch }).key === key);
+  const worktreeForKey = (key: string): string => worktreeFor(key)?.path ?? currentCodebasePath();
   // Queue a PR the operator signed off on by hand: promote it if it is still a
   // draft, label it, then move its row now rather than leaving it where it was
   // until the next heartbeat re-reports the section. Shared by the board's r
@@ -142,12 +139,13 @@ if (process.stdout.isTTY) {
   const reviewDeps = (pr: number, key: string, label: string, repo?: string): ReviewDeps => {
     const run = ghRunner(currentCodebasePath(), repo);
     const cwd = worktreeForKey(key);
+    const hasWorktree = worktreeFor(key) !== undefined;
     return {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
       fetchHeadSha: () => prHeadSha(run, pr),
-      syncStatus: () => worktreeSyncStatus(cwd),
+      syncStatus: async () => (hasWorktree ? worktreeSyncStatus(cwd) : null),
       runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
       queueToMerge: () => queueToMerge(pr, key, label, repo),
       loadViewed: (headSha) => readViewed(pr, headSha),

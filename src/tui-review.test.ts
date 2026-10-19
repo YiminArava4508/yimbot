@@ -377,7 +377,7 @@ function testDeps(
     fetchDiff: async () => DIFF,
     fetchMeta: async () => ({ title: "t", body: "b", headSha: "sha1" }),
     fetchHeadSha: async () => "sha1",
-    syncStatus: async () => ({ dirty: false, unpushed: 0 }),
+    syncStatus: async () => ({ dirty: false, unpushed: 0, head: "sha1" }),
     pollMs: 0,
     runGrouping: async () => GROUP_JSON,
     queueToMerge: async () => {},
@@ -1690,10 +1690,12 @@ test("the side-by-side render leaves the scrollbar column to blessed", async () 
 
 test("syncChip says pushed, unpushed, or uncommitted, and nothing when unknown", () => {
   assert.equal(syncChip(null, "abc1234def"), "");
-  assert.equal(syncChip({ dirty: false, unpushed: 0 }, "abc1234def"), "pushed @ abc1234");
-  assert.equal(syncChip({ dirty: false, unpushed: 2 }, "abc1234def"), "2 unpushed");
-  assert.equal(syncChip({ dirty: true, unpushed: 0 }, "abc1234def"), "uncommitted");
-  assert.equal(syncChip({ dirty: true, unpushed: 1 }, "abc1234def"), "uncommitted, 1 unpushed");
+  const at = (dirty: boolean, unpushed: number, head = "abc1234def") => ({ dirty, unpushed, head });
+  assert.equal(syncChip(at(false, 0), "abc1234def"), "pushed @ abc1234");
+  assert.equal(syncChip(at(false, 2), "abc1234def"), "2 unpushed");
+  assert.equal(syncChip(at(true, 0), "abc1234def"), "uncommitted");
+  assert.equal(syncChip(at(true, 1), "abc1234def"), "uncommitted, 1 unpushed");
+  assert.equal(syncChip(at(false, 0, "9999999aaa"), "abc1234def"), "local 9999999 differs from PR abc1234");
 });
 
 const DIFF2 = DIFF.replace("+y", "+pushed");
@@ -1791,10 +1793,92 @@ test("a failed refresh keeps the old diff and reports in the footer", async () =
 
 test("the header shows the worktree sync chip", async () => {
   const screen = makeScreen();
-  const deps = testDeps({ syncStatus: async () => ({ dirty: false, unpushed: 3 }) });
+  const deps = testDeps({ syncStatus: async () => ({ dirty: false, unpushed: 3, head: "sha1" }) });
   openReview(screen, deps, () => {});
   await wait(20);
   const header = screen.children.find((c: any) => c.type === "text");
   assert.ok(header.getContent().includes("3 unpushed"));
+  screen.destroy();
+});
+
+test("a sync status landing after a refresh does not wipe the footer notice", async () => {
+  const screen = makeScreen();
+  let n = 0;
+  const { deps, push } = liveDeps({
+    pollMs: 0,
+    runGrouping: () => new Promise<string>(() => {}),
+    syncStatus: async () => {
+      n++;
+      await wait(15);
+      return { dirty: false, unpushed: n, head: "sha1" };
+    },
+  });
+  openReview(screen, deps, () => {});
+  await wait(40);
+  push();
+  pressR(screen);
+  await wait(60);
+  const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
+  assert.ok(footer.getContent().includes("PR updated"));
+  screen.destroy();
+});
+
+test("a refresh whose meta and diff straddle a push settles on the newer head", async () => {
+  const screen = makeScreen();
+  const metas = ["sha1", "sha2", "sha3"];
+  let m = 0;
+  const { deps, savedGroups } = (() => {
+    const d = testDeps({
+      pollMs: 0,
+      fetchMeta: async () => ({ title: "t", body: "b", headSha: metas[Math.min(m++, 2)] }),
+      fetchHeadSha: async () => "sha3",
+    });
+    return { deps: d, savedGroups: d.savedGroups };
+  })();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  pressR(screen);
+  await wait(40);
+  assert.ok(!savedGroups.some(([sha]) => sha === "sha2"), "nothing may be cached under the torn head");
+  assert.ok(savedGroups.some(([sha]) => sha === "sha3"));
+  screen.destroy();
+});
+
+test("a slow annotation for the old head is not saved after a push", async () => {
+  const screen = makeScreen();
+  const gates: (() => void)[] = [];
+  const flows: string[] = [];
+  const { deps, push } = liveDeps({
+    pollMs: 0,
+    runAnnotation: () => new Promise<string>((res) => gates.push(() => res(ANN_JSON))),
+    saveFlow: (sha) => { flows.push(sha); },
+  });
+  openReview(screen, deps, () => {});
+  await wait(20);
+  push();
+  pressR(screen);
+  await wait(30);
+  for (const g of gates) g();
+  await wait(20);
+  assert.ok(!flows.includes("sha1"), "the old head's annotation must be dropped");
+  screen.destroy();
+});
+
+test("a refresh is not blocked while the new head is still being grouped", async () => {
+  const screen = makeScreen();
+  const { deps, calls, push } = liveDeps({
+    pollMs: 0,
+    runGrouping: () => new Promise<string>(() => {}),
+  });
+  openReview(screen, deps, () => {});
+  await wait(20);
+  push();
+  pressR(screen);
+  await wait(30);
+  const after = calls.diff;
+  pressR(screen);
+  await wait(30);
+  assert.ok(calls.diff > after, "R must refetch even though grouping never finished");
   screen.destroy();
 });

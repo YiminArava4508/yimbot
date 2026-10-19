@@ -23,6 +23,7 @@ import {
   planLines,
   reviewFooterHint,
   reviewHeader,
+  syncChip,
   reviewColumns,
   reviewLayout,
   WIDE_LABEL,
@@ -375,6 +376,9 @@ function testDeps(
     pr: 42,
     fetchDiff: async () => DIFF,
     fetchMeta: async () => ({ title: "t", body: "b", headSha: "sha1" }),
+    fetchHeadSha: async () => "sha1",
+    syncStatus: async () => ({ dirty: false, unpushed: 0 }),
+    pollMs: 0,
     runGrouping: async () => GROUP_JSON,
     queueToMerge: async () => {},
     loadViewed: () => new Set(),
@@ -1681,5 +1685,116 @@ test("the side-by-side render leaves the scrollbar column to blessed", async () 
   assert.ok(row);
   const plain = blessed.helpers.stripTags(row);
   assert.equal(plain.length, wide.width - 3, "border on both sides plus the scrollbar column");
+  screen.destroy();
+});
+
+test("syncChip says pushed, unpushed, or uncommitted, and nothing when unknown", () => {
+  assert.equal(syncChip(null, "abc1234def"), "");
+  assert.equal(syncChip({ dirty: false, unpushed: 0 }, "abc1234def"), "pushed @ abc1234");
+  assert.equal(syncChip({ dirty: false, unpushed: 2 }, "abc1234def"), "2 unpushed");
+  assert.equal(syncChip({ dirty: true, unpushed: 0 }, "abc1234def"), "uncommitted");
+  assert.equal(syncChip({ dirty: true, unpushed: 1 }, "abc1234def"), "uncommitted, 1 unpushed");
+});
+
+const DIFF2 = DIFF.replace("+y", "+pushed");
+const diffPane = (screen: any) => paneByLabel(screen, " diff ");
+const pressR = (screen: any) => screen.focused.emit("keypress", "R", { name: "r", shift: true, full: "S-r" });
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function liveDeps(overrides: Partial<ReviewDeps> = {}) {
+  const calls = { diff: 0, head: 0 };
+  let head = "sha1";
+  const deps = testDeps({
+    pollMs: 15,
+    fetchHeadSha: async () => { calls.head++; return head; },
+    fetchMeta: async () => ({ title: "t", body: "b", headSha: head }),
+    fetchDiff: async () => { calls.diff++; return head === "sha1" ? DIFF : DIFF2; },
+    ...overrides,
+  });
+  return { deps, calls, push: () => { head = "sha2"; } };
+}
+
+test("openReview refetches the diff when the poll sees a new head sha", async () => {
+  const screen = makeScreen();
+  const { deps, calls, push } = liveDeps();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  press(screen, "tab");
+  assert.ok(!diffPane(screen).getContent().includes("pushed"));
+  push();
+  await wait(60);
+  assert.equal(calls.diff, 2);
+  assert.ok(diffPane(screen).getContent().includes("pushed"), "diff pane must show the pushed change");
+  screen.destroy();
+});
+
+test("openReview does not refetch while the head sha is unchanged", async () => {
+  const screen = makeScreen();
+  const { deps, calls } = liveDeps();
+  openReview(screen, deps, () => {});
+  await wait(60);
+  assert.ok(calls.head > 1, "the poll must run");
+  assert.equal(calls.diff, 1);
+  screen.destroy();
+});
+
+test("R refetches without waiting for the poll", async () => {
+  const screen = makeScreen();
+  const { deps, calls, push } = liveDeps({ pollMs: 0 });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  push();
+  pressR(screen);
+  await wait(20);
+  assert.equal(calls.diff, 2);
+  assert.ok(diffPane(screen).getContent().includes("pushed"));
+  screen.destroy();
+});
+
+test("the poll stops once the overlay closes", async () => {
+  const screen = makeScreen();
+  const { deps, calls } = liveDeps();
+  openReview(screen, deps, () => {});
+  await wait(40);
+  press(screen, "q");
+  const seen = calls.head;
+  await wait(60);
+  assert.equal(calls.head, seen);
+  screen.destroy();
+});
+
+test("a failed refresh keeps the old diff and reports in the footer", async () => {
+  const screen = makeScreen();
+  let fail = false;
+  const { deps, push } = liveDeps({
+    pollMs: 0,
+    fetchDiff: async () => {
+      if (fail) throw new Error("gh down");
+      return DIFF;
+    },
+  });
+  let closed = false;
+  openReview(screen, deps, () => { closed = true; });
+  await flush();
+  await flush();
+  fail = true;
+  push();
+  pressR(screen);
+  await wait(20);
+  const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
+  assert.ok(footer.getContent().includes("gh down"));
+  assert.ok(!closed);
+  screen.destroy();
+});
+
+test("the header shows the worktree sync chip", async () => {
+  const screen = makeScreen();
+  const deps = testDeps({ syncStatus: async () => ({ dirty: false, unpushed: 3 }) });
+  openReview(screen, deps, () => {});
+  await wait(20);
+  const header = screen.children.find((c: any) => c.type === "text");
+  assert.ok(header.getContent().includes("3 unpushed"));
   screen.destroy();
 });

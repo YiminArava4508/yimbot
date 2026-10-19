@@ -6,7 +6,8 @@ import { format } from "node:util";
 import { execFile } from "node:child_process";
 import { envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
-import { applyReadyLabel, ghRunner, prDiff, prReviewMeta } from "./src/gh.ts";
+import { worktreeSyncStatus } from "./src/worktree-sync.ts";
+import { applyReadyLabel, ghRunner, prDiff, prHeadSha, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
@@ -145,6 +146,8 @@ if (process.stdout.isTTY) {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
+      fetchHeadSha: () => prHeadSha(run, pr),
+      syncStatus: () => worktreeSyncStatus(cwd),
       runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
       queueToMerge: () => queueToMerge(pr, key, label, repo),
       loadViewed: (headSha) => readViewed(pr, headSha),

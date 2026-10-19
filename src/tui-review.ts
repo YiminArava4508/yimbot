@@ -138,8 +138,21 @@ export function guideHeight(lines: string[], innerWidth: number, maxHeight: numb
   return Math.min(maxHeight, Math.max(3, rows + 2));
 }
 
-export function reviewHeader(pr: number, title: string, viewedCount: number, total: number): string {
-  return `PR #${pr}  ${escapeTags(title)}  |  ${viewedCount}/${total} viewed`;
+export function reviewHeader(pr: number, title: string, viewedCount: number, total: number, chip = ""): string {
+  const base = `PR #${pr}  ${escapeTags(title)}  |  ${viewedCount}/${total} viewed`;
+  return chip ? `${base}  |  ${chip}` : base;
+}
+
+// Where the review chat's work stands relative to the PR on the remote.
+export type SyncStatus = { dirty: boolean; unpushed: number };
+
+export function syncChip(sync: SyncStatus | null, pushedSha: string): string {
+  if (sync === null) return "";
+  const parts: string[] = [];
+  if (sync.dirty) parts.push("uncommitted");
+  if (sync.unpushed > 0) parts.push(`${sync.unpushed} unpushed`);
+  if (parts.length === 0) return `pushed @ ${pushedSha.slice(0, 7)}`;
+  return parts.join(", ");
 }
 
 export type ReviewPane = "plan" | "diff" | "claude";
@@ -167,7 +180,7 @@ export function reviewFooterHint(s: {
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   const sess = s.hasSession ? "   o session" : "";
   const ask = s.hasClaude ? "   a claude" : "";
-  return `j/k move   space viewed   c context${clear}   tab pane${ask}${done}${sess}   q back`;
+  return `j/k move   space viewed   c context${clear}   tab pane${ask}   R refresh${done}${sess}   q back`;
 }
 
 // Same rule as the board's paneBorderColor: the focused pane takes the focus
@@ -276,7 +289,7 @@ export function wideFooterHint(s: {
   const done = s.allViewed ? "   {green-fg}r ready to merge{/green-fg}" : "";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   const sess = s.hasSession ? "   o session" : "";
-  return `j/k scroll   n/p file   space viewed   c context${clear}${done}${sess}   z/q back`;
+  return `j/k scroll   n/p file   space viewed   c context${clear}   R refresh${done}${sess}   z/q back`;
 }
 
 const NO_ARCH_MAP = "{red-fg}no map in this repo   G build{/red-fg}";
@@ -285,6 +298,14 @@ export type ReviewDeps = {
   pr: number;
   fetchDiff: () => Promise<string>;
   fetchMeta: () => Promise<{ title: string; body: string; headSha: string }>;
+  // Just the PR's current head SHA: one cheap call per poll, so a push from the
+  // review chat is noticed without refetching the whole diff every tick.
+  fetchHeadSha: () => Promise<string>;
+  // The reviewed worktree's uncommitted and unpushed state, null when it
+  // cannot be read.
+  syncStatus: () => Promise<SyncStatus | null>;
+  // Poll interval in ms; 0 turns the poll off. Defaults to 10s.
+  pollMs?: number;
   runGrouping: (prompt: string) => Promise<string>;
   // Sign off on the review: promote the PR if it is still a draft, put the ready
   // label on it, and land it in the board's ready-to-merge pane. Bound to r, the
@@ -373,6 +394,10 @@ export function openReview(
   // moveNode walks exactly what the brief put on screen.
   let flowNodes: string[] = [];
   let regenerating = false;
+  let sync: SyncStatus | null = null;
+  let refreshing = false;
+  let polling = false;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
   // Refreshed on every o press, so a session that starts or dies mid-review
   // is picked up rather than stranding the key until the overlay is reopened.
   let ticketSession = deps.sessionName();
@@ -441,7 +466,9 @@ export function openReview(
     const fs = files();
     if (selectedPath === null || !fs.includes(selectedPath)) selectedPath = fs[0] ?? null;
     const title = meta ? meta.title : "loading…";
-    header.setContent(reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length));
+    header.setContent(
+      reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length, meta ? syncChip(sync, meta.headSha) : ""),
+    );
     const { lines, selectedLine } = planLines(g.groups, viewed, contextFiles, selectedPath);
     plan.setContent(lines.join("\n"));
     if (selectedLine >= 0 && selectedLine !== lastPlanScroll) {
@@ -550,6 +577,7 @@ export function openReview(
   function close(notice: string | null, isError: boolean): void {
     if (closed) return;
     closed = true;
+    if (pollTimer) clearInterval(pollTimer);
     if (meta) deps.saveViewed(meta.headSha, viewed);
     s.removeListener("resize", onScreenResize);
     exitSub?.dispose();
@@ -787,6 +815,7 @@ export function openReview(
     else if (key.name === "g" && key.shift) select(files().length - 1);
     else if (key.name === "g") select(0);
     else if (key.name === "space") toggleViewed();
+    else if (key.name === "r" && key.shift) void refresh();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
@@ -802,6 +831,7 @@ export function openReview(
     if (key.name === "tab") focusPane("plan");
     else if (plainA(key)) focusPane("claude");
     else if (key.name === "space") toggleViewed();
+    else if (key.name === "r" && key.shift) void refresh();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
@@ -815,6 +845,7 @@ export function openReview(
     if (key.name === "n") select(selectedIndex() + 1);
     else if (key.name === "p") select(selectedIndex() - 1);
     else if (key.name === "space") toggleViewed();
+    else if (key.name === "r" && key.shift) void refresh();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
@@ -889,8 +920,7 @@ export function openReview(
   );
   // Grouping needs the diff's file list and the PR title/body, so it starts
   // once both land; the placeholder group keeps the diff readable meanwhile.
-  Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
-    if (closed || rawDiff === null) return;
+  async function groupAndAnnotate(m: { title: string; body: string; headSha: string }): Promise<void> {
     if (fileDiffs.length === 0) {
       groups = { summary: "", groups: [], notes: {} };
       paint();
@@ -914,17 +944,90 @@ export function openReview(
       applyGroups(cached, false);
     } else {
       const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, fileStats(fileDiffs));
-      if (closed) return;
+      if (closed || meta?.headSha !== m.headSha) return;
       // A fallback is what we show when the model was unreachable, never what we
       // remember: caching it would freeze a transient failure in until the next push.
       if (!res.usedFallback) deps.saveGroups(m.headSha, res.groups);
       applyGroups(res.groups, res.usedFallback);
     }
     await loadAnnotation(true);
+  }
+
+  Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
+    if (closed || rawDiff === null) return;
+    await groupAndAnnotate(m);
   }).catch(() => {
     // metaP rejection: already reported and closed by metaP.then's own
     // rejection handler above.
   });
+
+  // Pull the PR's current meta and diff into the open overlay. A new head SHA
+  // re-keys everything cached per SHA; viewed marks carry over only for files
+  // whose diff did not change, so a pushed fix is reviewed again.
+  async function refresh(): Promise<void> {
+    if (refreshing || closed || meta === null) return;
+    refreshing = true;
+    paint("refreshing…");
+    try {
+      const [m, raw] = await Promise.all([deps.fetchMeta(), deps.fetchDiff()]);
+      if (closed) return;
+      const next = parseUnifiedDiff(raw);
+      const prev = meta;
+      if (prev === null) return;
+      const moved = m.headSha !== prev.headSha;
+      if (moved) {
+        deps.saveViewed(prev.headSha, viewed);
+        const before = new Map(fileDiffs.map((f) => [f.path, JSON.stringify(f)]));
+        const kept = [...viewed].filter((p) => {
+          const f = next.find((n) => n.path === p);
+          return f !== undefined && before.get(p) === JSON.stringify(f);
+        });
+        viewed = new Set([...deps.loadViewed(m.headSha), ...kept]);
+        deps.saveViewed(m.headSha, viewed);
+        groups = null;
+        annotation = null;
+      }
+      meta = m;
+      fileDiffs = next;
+      lastCtxSig = null;
+      void refreshSync();
+      paint(moved ? `{green-fg}PR updated @ ${m.headSha.slice(0, 7)}{/green-fg}` : undefined);
+      if (moved) await groupAndAnnotate(m);
+    } catch (err: unknown) {
+      if (closed) return;
+      paint(`{red-fg}refresh failed: ${err instanceof Error ? err.message : String(err)}{/red-fg}`);
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  async function refreshSync(): Promise<void> {
+    try {
+      sync = await deps.syncStatus();
+    } catch {
+      sync = null;
+    }
+    paint();
+  }
+
+  async function pollHead(): Promise<void> {
+    if (polling || refreshing || closed || meta === null) return;
+    polling = true;
+    try {
+      void refreshSync();
+      const head = await deps.fetchHeadSha();
+      if (!closed && meta !== null && head !== meta.headSha) await refresh();
+    } catch {
+      // A missed poll is retried on the next tick.
+    } finally {
+      polling = false;
+    }
+  }
+
+  const pollMs = deps.pollMs ?? 10_000;
+  pollTimer = pollMs > 0 ? setInterval(() => void pollHead(), pollMs) : null;
+  pollTimer?.unref();
+  void refreshSync();
 
   return { claudeFocused: () => !closed && focused === "claude" };
 }

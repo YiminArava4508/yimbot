@@ -416,6 +416,10 @@ export async function prDiff(run: GhRunner, prNumber: number): Promise<string> {
   return run(["pr", "diff", String(prNumber)]);
 }
 
+export async function prHeadSha(run: GhRunner, prNumber: number): Promise<string> {
+  return (await run(["pr", "view", String(prNumber), "--json", "headRefOid", "--jq", ".headRefOid"])).trim();
+}
+
 export function parseRunHeadShas(json: string): string[] {
   return (JSON.parse(json) as { headSha: string }[]).map((r) => r.headSha);
 }

@@ -79,6 +79,12 @@ export function deriveKey(opts: { identifier?: string; branch?: string; pr?: num
   return { key, label: key };
 }
 
+// Whether a row key is the pr:<n> fallback, i.e. the branch carried no ticket slug.
+// An extra-repo row's key keeps the prefix (pr:<n>@owner/repo).
+export function isPrKey(key: string): boolean {
+  return key.startsWith("pr:");
+}
+
 // The board row a PR belongs to. A codebase-repo PR folds into its ticket's
 // row; a PR in an EXTRA_REPOS repo gets a row of its own, keyed by ticket and
 // repo but labeled like the ticket, so a ticket spanning repos shows one row

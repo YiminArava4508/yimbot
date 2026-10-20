@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import blessed from "neo-blessed";
-import { parseUnifiedDiff, escapeTags, languageFor, renderFileDiff, renderSideBySide, sideBySideRows, warmHighlighter, type FileDiff, type SideCell } from "./review-diff.ts";
+import { changeSignature, parseUnifiedDiff, escapeTags, languageFor, renderFileDiff, renderSideBySide, sideBySideRows, warmHighlighter, type FileDiff, type SideCell } from "./review-diff.ts";
 
 const strWidth = (s: string) => blessed.unicode.strWidth(s);
 function untag(m: string): string {
@@ -616,4 +616,12 @@ test("renderSideBySide keeps the file header within the width", () => {
   const diff = ["diff --git a/src/some/very/long/path/to/a-file-with-a-long-name.ts b/src/some/very/long/path/to/a-file-with-a-long-name.ts", "index 1..2 100644", "--- a/x", "+++ b/x", "@@ -1,1 +1,1 @@", "-a", "+b", ""].join("\n");
   const [f] = parseUnifiedDiff(diff);
   assert.ok(strWidth(visible(renderSideBySide(f, 40)[0])) <= 40);
+});
+
+test("changeSignature ignores hunk offsets and context, so a rebase keeps it", () => {
+  const a = parseUnifiedDiff(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,2 +1,2 @@", " ctx", "-old", "+new", ""].join("\n"))[0];
+  const b = parseUnifiedDiff(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -40,2 +41,2 @@", " other", "-old", "+new", ""].join("\n"))[0];
+  const c = parseUnifiedDiff(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,2 +1,2 @@", " ctx", "-old", "+newer", ""].join("\n"))[0];
+  assert.equal(changeSignature(a), changeSignature(b));
+  assert.notEqual(changeSignature(a), changeSignature(c));
 });

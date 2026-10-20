@@ -29,6 +29,15 @@ export type FileDiff = {
   lines: DiffLine[];
 };
 
+// What a file's change is, minus hunk offsets and context: a rebase shifts
+// those without touching the change, so equal signatures mean "same edit".
+export function changeSignature(f: FileDiff): string {
+  return f.lines
+    .filter((l) => l.kind === "add" || l.kind === "del")
+    .map((l) => `${l.kind}${l.text}`)
+    .join("\n");
+}
+
 const DIFF_HEADER = /^diff --git a\/(.*) b\/(.*)$/;
 
 export function parseUnifiedDiff(text: string): FileDiff[] {

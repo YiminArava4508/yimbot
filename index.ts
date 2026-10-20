@@ -6,7 +6,8 @@ import { format } from "node:util";
 import { execFile } from "node:child_process";
 import { envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
-import { applyReadyLabel, ghRunner, prDiff, prReviewMeta } from "./src/gh.ts";
+import { worktreeSyncStatus } from "./src/worktree-sync.ts";
+import { applyReadyLabel, ghRunner, prDiff, prHeadSha, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
@@ -121,12 +122,9 @@ if (process.stdout.isTTY) {
   const claudeRegistry = makeSessionRegistry(spawnClaudePty);
   // The claude session runs in the PR's worktree so it can read the actual
   // branch; a PR-only row with no worktree falls back to the main checkout.
-  const worktreeForKey = (key: string): string => {
-    const wt = listGitWorktrees(currentCodebasePath()).find(
-      (w) => deriveKey({ branch: w.branch }).key === key,
-    );
-    return wt?.path ?? currentCodebasePath();
-  };
+  const worktreeFor = (key: string) =>
+    listGitWorktrees(currentCodebasePath()).find((w) => deriveKey({ branch: w.branch }).key === key);
+  const worktreeForKey = (key: string): string => worktreeFor(key)?.path ?? currentCodebasePath();
   // Queue a PR the operator signed off on by hand: promote it if it is still a
   // draft, label it, then move its row now rather than leaving it where it was
   // until the next heartbeat re-reports the section. Shared by the board's r
@@ -141,10 +139,13 @@ if (process.stdout.isTTY) {
   const reviewDeps = (pr: number, key: string, label: string, repo?: string): ReviewDeps => {
     const run = ghRunner(currentCodebasePath(), repo);
     const cwd = worktreeForKey(key);
+    const hasWorktree = worktreeFor(key) !== undefined;
     return {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
+      fetchHeadSha: () => prHeadSha(run, pr),
+      syncStatus: async () => (hasWorktree ? worktreeSyncStatus(cwd) : null),
       runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
       queueToMerge: () => queueToMerge(pr, key, label, repo),
       loadViewed: (headSha) => readViewed(pr, headSha),

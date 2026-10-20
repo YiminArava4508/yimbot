@@ -9,7 +9,7 @@ import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
-import { researchWords, ticketType } from "./ticket-type.ts";
+import { researchWords, rowType, type TicketType } from "./ticket-type.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { configFromEnv } from "./settings-model.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
@@ -466,12 +466,16 @@ function codebaseRepoName(): string {
   return basename(configFromEnv(process.env).codebasePath);
 }
 
-// The TITLE cell: a research item gets a chip ahead of its title, so the type
+const TYPE_CHIP_COLOR: Record<TicketType, string> = { research: "magenta", pr: "cyan" };
+
+// The TITLE cell: a typed row gets a chip ahead of its title, so the type
 // reads at a glance without the board spending a column on a rare marker.
-export function titleCell(row: Pick<BoardRow, "title">, words: string[] = researchWords()): string {
+export function titleCell(row: Pick<BoardRow, "key" | "title">, words: string[] = researchWords()): string {
   const title = row.title ?? "";
-  const type = ticketType(row.title, words);
-  return type ? `{magenta-fg}[${type}]{/magenta-fg} ${title}` : title;
+  const type = rowType(row, words);
+  if (!type) return title;
+  const color = TYPE_CHIP_COLOR[type];
+  return `{${color}-fg}[${type}]{/${color}-fg} ${title}`;
 }
 
 export type BoardEntry = { row: BoardRow };

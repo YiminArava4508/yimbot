@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_RESEARCH_WORDS, researchWords, ticketType } from "./ticket-type.ts";
+import { DEFAULT_RESEARCH_WORDS, researchWords, rowType, ticketType } from "./ticket-type.ts";
 
 test("ticketType reads research from a title that opens with a research verb", () => {
   assert.equal(ticketType("Decide retention for bov-exports/ objects"), "research");
@@ -38,4 +38,19 @@ test("researchWords falls back to the defaults and reads RESEARCH_TITLE_WORDS wh
     if (prev === undefined) delete process.env.RESEARCH_TITLE_WORDS;
     else process.env.RESEARCH_TITLE_WORDS = prev;
   }
+});
+
+test("rowType reads pr from a row key that fell back to the PR number, with or without a repo", () => {
+  assert.equal(rowType({ key: "pr:7117", title: "test extract regression coverage" }), "pr");
+  assert.equal(rowType({ key: "pr:12@acme/terraform-x", title: undefined }), "pr");
+});
+
+test("rowType lets pr win over a research-sounding title", () => {
+  assert.equal(rowType({ key: "pr:7117", title: "investigate slow sync" }), "pr");
+});
+
+test("rowType leaves a ticket row to its title", () => {
+  assert.equal(rowType({ key: "ENG-1", title: "Decide retention" }), "research");
+  assert.equal(rowType({ key: "ENG-1", title: "Add column" }), null);
+  assert.equal(rowType({ key: "ENG-1@acme/terraform-x", title: "Add column" }), null);
 });

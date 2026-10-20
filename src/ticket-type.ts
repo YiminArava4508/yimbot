@@ -4,7 +4,7 @@
 // "file explorer" is not.
 import { envCsvSet } from "./env.ts";
 
-export type TicketType = "research";
+export type TicketType = "research" | "pr";
 
 export const DEFAULT_RESEARCH_WORDS = [
   "research",
@@ -33,4 +33,11 @@ export function ticketType(title: string | undefined, words: string[] = research
   if (!title || words.length === 0) return null;
   const re = new RegExp(`\\b(?:${words.map(escapeRegex).join("|")})\\b`, "i");
   return re.test(title) ? "research" : null;
+}
+
+// A row whose key fell back to the PR number has no ticket slug in its branch,
+// so the PR is all there is to track. That outranks any title word.
+export function rowType(row: { key: string; title?: string }, words: string[] = researchWords()): TicketType | null {
+  if (row.key.startsWith("pr:")) return "pr";
+  return ticketType(row.title, words);
 }

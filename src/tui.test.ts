@@ -42,6 +42,11 @@ test("boardTable prefixes a research title with a magenta type chip, plain title
   assert.equal(plain[6], "add column");
 });
 
+test("boardTable prefixes a ticketless PR row with a cyan pr chip", () => {
+  const [, pr] = boardTable([{ row: row({ key: "pr:7117", label: "PR #7117", pr: 7117, title: "test extract coverage" }) }], 0);
+  assert.equal(pr[6], "{cyan-fg}[pr]{/cyan-fg} test extract coverage");
+});
+
 test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
   const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
   assert.equal(extra[5], "terraform-x");

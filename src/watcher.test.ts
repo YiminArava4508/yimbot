@@ -811,7 +811,7 @@ test("claimOnce defers a slice whose parent ticket is in progress (split in flig
   // session on the same work.
   const { deps, moved, logs } = claimDeps({
     fetchCycleTodos: async () => [
-      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateType: "started" } }),
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName: "In Progress", stateType: "started" } }),
     ],
   });
   await claimOnce(freshClaimState(), deps);
@@ -819,10 +819,20 @@ test("claimOnce defers a slice whose parent ticket is in progress (split in flig
   assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
 });
 
+test("claimOnce claims a late follow-up whose parent already reached the merged state", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName: "Merged", stateType: "started" } }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 1);
+});
+
 test("claimOnce claims a slice whose parent ticket is not started", async () => {
   const { deps, moved } = claimDeps({
     fetchCycleTodos: async () => [
-      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateType: "unstarted" } }),
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName: "Todo", stateType: "unstarted" } }),
     ],
   });
   await claimOnce(freshClaimState(), deps);

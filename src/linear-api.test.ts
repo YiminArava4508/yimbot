@@ -166,7 +166,7 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
   ]);
 });
 
-test("fetchCycleTodoIssues maps the parent ticket's identifier and state type", async () => {
+test("fetchCycleTodoIssues maps the parent ticket's identifier, state name and state type", async () => {
   const fetchImpl = fakeFetch({
     data: {
       issues: {
@@ -179,14 +179,14 @@ test("fetchCycleTodoIssues maps the parent ticket's identifier and state type", 
             sortOrder: 7.5,
             labels: { nodes: [] },
             inverseRelations: { nodes: [] },
-            parent: { identifier: "ENG-40", state: { type: "started" } },
+            parent: { identifier: "ENG-40", state: { name: "In Progress", type: "started" } },
           },
         ],
       },
     },
   });
   const issues = await fetchCycleTodoIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
-  assert.deepEqual(issues[0].parent, { identifier: "ENG-40", stateType: "started" });
+  assert.deepEqual(issues[0].parent, { identifier: "ENG-40", stateName: "In Progress", stateType: "started" });
 });
 
 test("fetchCycleTodoIssues maps blockedBy from inverse blocks relations", async () => {

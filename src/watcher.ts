@@ -9,7 +9,7 @@ import {
   parseAcceptanceCriteria,
   renderAcComment,
 } from "./acceptance.ts";
-import { mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
+import { isClearedState, mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
 import { selectNextClaim } from "./claim.ts";
 import { filterByLabel, type LabelFilter } from "./labels.ts";
 import {
@@ -425,6 +425,15 @@ export function freshClaimState(): ClaimState {
   return { skip: new Set() };
 }
 
+// A started parent means its session may still be carving slices. A parent in
+// a cleared state (Merged or later) has landed, so its Todo children are late
+// follow-ups that are safe to claim.
+function splitInFlight(todo: CycleTodoIssue, cleared: Set<string>): boolean {
+  const parent = todo.parent;
+  if (!parent || isClearedState(parent.stateName, cleared)) return false;
+  return parent.stateType === "started";
+}
+
 // One tick of the claim step. Gated by the WIP cap: acts while fewer than
 // maxInProgress tickets are In Progress (there is no review-queue cap — in-review
 // PRs are worked automatically by the review step). It claims at most one ticket
@@ -439,12 +448,6 @@ export function freshClaimState(): ClaimState {
 // it to In Progress but the deploy step will ignore it — it stays In Progress
 // with no session and stalls the claim step until a human intervenes. This only
 // happens on a manual backward move; the normal forward flow is unaffected.
-function splitInFlight(todo: CycleTodoIssue, cleared: Set<string>): boolean {
-  const parent = todo.parent;
-  if (!parent || cleared.has(parent.stateName.trim().toLowerCase())) return false;
-  return parent.stateType === "started";
-}
-
 export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<void> {
   if (!deps.autoClaim) return;
 

@@ -829,6 +829,18 @@ test("claimOnce claims a late follow-up whose parent already reached the merged 
   assert.equal(moved.length, 1);
 });
 
+test("claimOnce matches the parent's cleared state name ignoring case and padding", async () => {
+  for (const stateName of [" merged ", "DEPLOYED TO NONPROD"]) {
+    const { deps, moved } = claimDeps({
+      fetchCycleTodos: async () => [
+        cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName, stateType: "started" } }),
+      ],
+    });
+    await claimOnce(freshClaimState(), deps);
+    assert.equal(moved.length, 1, stateName);
+  }
+});
+
 test("claimOnce claims a slice whose parent ticket is not started", async () => {
   const { deps, moved } = claimDeps({
     fetchCycleTodos: async () => [

@@ -39,12 +39,17 @@ export function clearedStateNames(mergedStateName: string, reviewStateName: stri
   );
 }
 
+// True when a ticket state name is the merge state or one past it.
+export function isClearedState(stateName: string, cleared: Set<string>): boolean {
+  return cleared.has(stateName.trim().toLowerCase());
+}
+
 // A blocker stops blocking once its work has landed: it reached the merge state
 // (or one past it), it was closed out, or its PR is merged even though nobody
 // moved the ticket.
 function isSatisfied(b: Blocker, merged: Set<string>, cleared: Set<string>): boolean {
   return (
-    cleared.has(b.stateName.trim().toLowerCase()) ||
+    isClearedState(b.stateName, cleared) ||
     b.stateType === "completed" ||
     b.stateType === "canceled" ||
     b.stateType === "duplicate" ||

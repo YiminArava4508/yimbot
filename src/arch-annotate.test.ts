@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { annotationPrompt, fetchAnnotation, normalizeAnnotation, parseAnnotation } from "./arch-annotate.ts";
-import type { ArchMap } from "./arch-map.ts";
+import { CATEGORIES, type ArchMap } from "./arch-map.ts";
 import type { FileStat } from "./review-groups.ts";
 
 const MAP: ArchMap = {
@@ -38,7 +38,7 @@ test("parseAnnotation reads JSON out of surrounding prose", () => {
   })}\nhope that helps`;
   const a = parseAnnotation(out, MAP);
   assert.equal(a?.flow, "review pulls a diff from gh");
-  assert.deepEqual(a?.touched, [{ node: "gh", note: "the fetch signature moved" }]);
+  assert.deepEqual(a?.touched, [{ node: "gh", note: "the fetch signature moved", category: "behavior" }]);
   assert.equal(a?.atRisk[0].node, "review");
 });
 
@@ -90,4 +90,46 @@ test("fetchAnnotation passes the built prompt to the runner", async () => {
   }, MAP, { number: 1, title: "t", body: "" }, FILES);
   assert.ok(seen.includes("src/gh.ts"));
   assert.equal(a?.flow, "f");
+});
+
+test("parseAnnotation reads summary, titles and categories", () => {
+  const a = parseAnnotation(JSON.stringify({
+    flow: "f",
+    summary: { what: "w", why: "y" },
+    touched: [{ node: "gh", title: "prDiff takes a ref", category: "contract", note: "n" }],
+    atRisk: [],
+    added: [],
+  }), MAP);
+  assert.deepEqual(a?.summary, { what: "w", why: "y" });
+  assert.equal(a?.touched[0].title, "prDiff takes a ref");
+  assert.equal(a?.touched[0].category, "contract");
+});
+
+test("parseAnnotation defaults an unknown category", () => {
+  const a = parseAnnotation(JSON.stringify({
+    flow: "f",
+    touched: [{ node: "gh", note: "n", category: "weird" }],
+    atRisk: [{ node: "review", why: "w", viaEdge: "review->gh" }],
+    added: [],
+  }), MAP);
+  assert.equal(a?.touched[0].category, "behavior");
+  assert.equal(a?.atRisk[0].category, "risk");
+});
+
+test("parseAnnotation accepts the old shape", () => {
+  const a = parseAnnotation(JSON.stringify({
+    flow: "f",
+    touched: [{ node: "gh", note: "n" }],
+    atRisk: [],
+    added: [],
+  }), MAP);
+  assert.notEqual(a, null);
+  assert.equal(a?.summary, undefined);
+});
+
+test("annotationPrompt asks for summary, title and category", () => {
+  const p = annotationPrompt(MAP, { number: 7, title: "t", body: "b" }, FILES);
+  assert.ok(p.includes('"summary"'));
+  assert.ok(p.includes('"title"'));
+  for (const c of CATEGORIES) assert.ok(p.includes(c));
 });

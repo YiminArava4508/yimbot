@@ -119,11 +119,16 @@ function detail(text: string, width: number, tag: string | null = null): BriefRo
 }
 
 const LABEL_WIDTH = 9;
+const MIN_LABELED_ROOM = 10;
 
 // A dim label in a fixed column with the text wrapped under itself, so a long
 // note never slides back under the label.
 function labeled(label: string, text: string, width: number, textTag: string = BODY_TAG): BriefRow[] {
   const room = width - DETAIL_INDENT.length - LABEL_WIDTH;
+  if (room < MIN_LABELED_ROOM) {
+    const labelRow = { text: `${DETAIL_INDENT}{${DIM_TAG}}${label}{/${DIM_TAG}}`, node: null };
+    return [labelRow, ...detail(text, width, textTag)];
+  }
   return wrapText(text, room).map((line, i) => ({
     text: DETAIL_INDENT
       + (i === 0 ? `{${DIM_TAG}}${label.padEnd(LABEL_WIDTH)}{/${DIM_TAG}}` : " ".repeat(LABEL_WIDTH))
@@ -271,12 +276,13 @@ export function briefRows(s: BriefInput): BriefRow[] {
     const source = byId.get(first.viaEdge.split("->")[0].trim());
     const edge = s.map.edges.find((e) => e.from === source?.id && e.to === id);
     const title = entryTitle(s.ann, id);
+    const category = entryCategory(s.ann, id, states.get(id) ?? "at-risk");
+    const chipRoom = category ? category.length + 3 : 0;
     const head = source && entries.length === 1 && title === ""
-      ? riskHeader(source.label, target.label, edge?.carries ?? "", s.width)
+      ? riskHeader(source.label, target.label, edge?.carries ?? "", s.width - chipRoom)
       : { text: escapeTags(title || target.label), via: "" };
     const [open, close] = STATE_TAGS[states.get(id) ?? "at-risk"];
     const mark = id === s.selected;
-    const category = entryCategory(s.ann, id, states.get(id) ?? "at-risk");
     riskRows.push({
       text: NODE_INDENT + (mark ? "{inverse}" : "") + (category ? `${chip(category)} ` : "") + open + head.text + close
         + (mark ? "{/inverse}" : ""),

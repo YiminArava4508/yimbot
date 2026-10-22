@@ -395,3 +395,24 @@ test("the old note and reason prefixes are gone", () => {
   const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" });
   for (const r of rows) assert.ok(!/^\s*[~!] /.test(plain(r.text)), plain(r.text));
 });
+
+test("the risk header leaves room for its chip before inlining carries", () => {
+  const map: ArchMap = {
+    ...MAP,
+    nodes: [node("alpha"), node("bravo")],
+    edges: [{ from: "alpha", to: "bravo", carries: "payload rows" }],
+  };
+  const ann: ArchAnnotation = { flow: "", touched: [], atRisk: [{ node: "bravo", why: "w", viaEdge: "alpha->bravo" }], added: [] };
+  for (const width of [40, 41, 42, 43, 44]) {
+    const rows = briefRows({ map, ann, changed: [], stale: 0, width, selected: null });
+    const head = rows.find((r) => r.node === "bravo");
+    assert.ok(head && plain(head.text).length <= width, `width ${width}: ${head && plain(head.text)}`);
+  }
+});
+
+test("labeled lines keep their text readable on a very narrow pane", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 12, selected: null, title: "t" });
+  const changes = rows.findIndex((r) => plain(r.text).trim() === "changes");
+  assert.ok(changes >= 0, "label sits on its own line");
+  assert.ok(plain(rows[changes + 1].text).trim().length > 3, "text is not one character per line");
+});

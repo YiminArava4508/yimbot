@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { BODY_TAG, DIM_TAG } from "./arch-layout.ts";
 import { briefRows, drawable, flowView, nodeRows, scopeMap, wrapText } from "./arch-brief.ts";
 import { nodeStates, UNMAPPED_ID, type ArchAnnotation, type ArchMap } from "./arch-map.ts";
 
@@ -415,4 +416,13 @@ test("labeled lines keep their text readable on a very narrow pane", () => {
   const changes = rows.findIndex((r) => plain(r.text).trim() === "changes");
   assert.ok(changes >= 0, "label sits on its own line");
   assert.ok(plain(rows[changes + 1].text).trim().length > 3, "text is not one character per line");
+});
+
+test("the whole summary block uses the body color, not the dim one", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" });
+  for (const needle of ["Moves the commission split", "why Deals were", "the split moves onto the offer"]) {
+    const row = rows.find((r) => plain(r.text).includes(needle));
+    assert.ok(row?.text.includes(`{${BODY_TAG}}`), needle);
+    assert.ok(!row?.text.includes(`{${DIM_TAG}}`), needle);
+  }
 });

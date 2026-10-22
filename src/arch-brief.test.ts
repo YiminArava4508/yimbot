@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { briefRows, drawable, flowView, nodeRows, scopeMap, wrapText } from "./arch-brief.ts";
-import { UNMAPPED_ID, type ArchAnnotation, type ArchMap } from "./arch-map.ts";
+import { nodeStates, UNMAPPED_ID, type ArchAnnotation, type ArchMap } from "./arch-map.ts";
 
 // A hub (ent) with many inbound edges, the shape that made the full-map chart
 // unreadable: scoping must not drag its untouched callers in behind it.
@@ -76,6 +76,61 @@ test("drawable gives up once the edges outnumber what routes cleanly", () => {
     edges: Array.from({ length: 9 }, (_, i) => ({ from: "svc", to: `x${i}`, carries: "" })),
   };
   assert.ok(!drawable(dense));
+});
+
+const node = (id: string) => ({ id, label: id, role: "", files: [`${id}/**`] });
+const edge = (from: string, to: string) => ({ from, to, carries: "" });
+const CHAIN: ArchMap = {
+  generatedAt: "", commit: "",
+  nodes: [node("a"), node("b"), node("c")],
+  edges: [edge("a", "b"), edge("b", "c")],
+};
+
+test("scopeMap with context keeps one hop of idle neighbours", () => {
+  const sub = scopeMap(CHAIN, null, ["a/x.ts"], undefined, true);
+  assert.deepEqual(sub.nodes.map((n) => n.id).sort(), ["a", "b"]);
+});
+
+test("scopeMap with context drops edges between two context nodes", () => {
+  const map: ArchMap = {
+    ...CHAIN,
+    nodes: [node("a"), node("b"), node("c")],
+    edges: [edge("a", "b"), edge("a", "c"), edge("b", "c")],
+  };
+  const sub = scopeMap(map, null, ["a/x.ts"], undefined, true);
+  assert.deepEqual(sub.edges.map((e) => `${e.from}->${e.to}`).sort(), ["a->b", "a->c"]);
+});
+
+test("drawable ignores context nodes in the node cap", () => {
+  const nodes = ["a", "b", "c", "n1", "n2", "n3", "n4"].map(node);
+  const map: ArchMap = {
+    ...CHAIN, nodes,
+    edges: [edge("a", "b"), edge("b", "c"), edge("a", "n1"), edge("b", "n2"), edge("c", "n3"), edge("c", "n4")],
+  };
+  const changed = ["a/x.ts", "b/x.ts", "c/x.ts"];
+  const states = nodeStates(map, null, changed);
+  assert.ok(drawable(scopeMap(map, null, changed, states, true), states));
+});
+
+test("flowView falls back to no context when the edges outnumber what routes cleanly", () => {
+  const leaves = Array.from({ length: 9 }, (_, i) => node(`l${i}`));
+  const map: ArchMap = {
+    ...CHAIN,
+    nodes: [node("hub"), node("peer"), ...leaves],
+    edges: [edge("hub", "peer"), ...leaves.map((l) => edge("hub", l.id))],
+  };
+  const view = flowView({ map, ann: null, changed: ["hub/x.ts", "peer/x.ts"], stale: 0, width: 80, selected: null });
+  const text = view.rows.map((r) => r.text).join("\n");
+  assert.ok(text.includes("[ hub ]"));
+  assert.ok(!text.includes("[ l0 ]"));
+});
+
+test("a context neighbour that is at-risk keeps its at-risk state", () => {
+  const ann: ArchAnnotation = { flow: "", touched: [], atRisk: [{ node: "b", why: "w", viaEdge: "a->b" }], added: [] };
+  const states = nodeStates(CHAIN, ann, ["a/x.ts"]);
+  assert.equal(states.get("b"), "at-risk");
+  const sub = scopeMap(CHAIN, ann, ["a/x.ts"], states, true);
+  assert.equal(sub.nodes.filter((n) => n.id === "b").length, 1);
 });
 
 test("wrapText breaks on spaces and hard breaks a word that cannot fit", () => {
@@ -211,7 +266,7 @@ test("a carries label too long for the row moves to its own line whole", () => {
   const head = visible.find((l) => l.includes("-->"))!;
   assert.ok(head.includes("ent schema  -->  river workers"), "the header degrades to a bare arrow");
   assert.ok(!head.includes("…"), "nothing is cut mid word");
-  assert.ok(visible.some((l) => l.includes(`via: ${long}`.slice(0, 30))));
+  assert.ok(visible.some((l) => l.includes("consumes") && l.includes(long.slice(0, 20))));
   assert.ok(visible.join(" ").includes("notification fanout"), "the whole label survives");
 });
 
@@ -286,4 +341,78 @@ test("the unmapped bucket counts its files once, in the label the merge gave it"
   }).map((r) => r.text.replace(/\{[^{}]*\}/g, ""));
   assert.ok(visible.some((l) => l.trim() === "unmapped (2)"));
   assert.ok(!visible.some((l) => l.includes("unmapped (2)   2 files")));
+});
+
+const plain = (t: string): string => t.replace(/\{[^}]*\}/g, "");
+
+const RICH: ArchAnnotation = {
+  flow: "the split moves onto the offer",
+  summary: { what: "Moves the commission split onto offers.", why: "Deals were double counting." },
+  touched: [{ node: "svc", title: "Split resolved per offer", category: "contract", note: "resolves per-offer" }],
+  atRisk: [{ node: "workers", title: "Job volume grows", category: "risk", why: "volume scales with edits", viaEdge: "ent -> workers" }],
+  added: [],
+};
+
+test("briefRows leads with the PR title, what and why", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "Offer splits" });
+  const lines = rows.map((r) => plain(r.text)).filter((t) => t !== "");
+  assert.equal(lines[0], "Offer splits");
+  assert.equal(lines[1], "Moves the commission split onto offers.");
+  assert.equal(lines[2], "why Deals were double counting.");
+});
+
+test("briefRows renders no summary block when the annotation has none", () => {
+  const rows = briefRows({ map: MAP, ann: ANN, changed: CHANGED, stale: 0, width: 80, selected: null, title: "Offer splits" });
+  const lines = rows.map((r) => plain(r.text));
+  assert.ok(!lines.some((l) => l.startsWith("why ")));
+  assert.ok(nodeRows(rows).includes("svc"));
+});
+
+test("an entry renders chip, title and labeled lines in order", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" });
+  const lines = rows.map((r) => plain(r.text));
+  const head = lines.findIndex((l) => l.includes("[contract]") && l.includes("Split resolved per offer"));
+  assert.ok(head >= 0);
+  assert.ok(lines[head + 2].trimStart().startsWith("changes"));
+  const risk = lines.findIndex((l) => l.includes("[risk]") && l.includes("Job volume grows"));
+  assert.ok(risk >= 0);
+  assert.ok(lines[risk + 1].trimStart().startsWith("consumes"));
+  assert.ok(lines[risk + 2].trimStart().startsWith("risk"));
+});
+
+test("a node named in touched and atRisk still gets one row", () => {
+  const ann: ArchAnnotation = { ...RICH, atRisk: [{ node: "svc", why: "w", viaEdge: "ent -> svc" }] };
+  const ids = nodeRows(briefRows({ map: MAP, ann, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" }));
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test("no wrapped row runs past a narrow pane (selectable headers stay on one row)", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 30, selected: null, title: "Offer splits" });
+  for (const r of rows.filter((x) => x.node === null)) assert.ok(plain(r.text).length <= 30, plain(r.text));
+});
+
+test("the old note and reason prefixes are gone", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" });
+  for (const r of rows) assert.ok(!/^\s*[~!] /.test(plain(r.text)), plain(r.text));
+});
+
+test("the risk header leaves room for its chip before inlining carries", () => {
+  const map: ArchMap = {
+    ...MAP,
+    nodes: [node("alpha"), node("bravo")],
+    edges: [{ from: "alpha", to: "bravo", carries: "payload rows" }],
+  };
+  const ann: ArchAnnotation = { flow: "", touched: [], atRisk: [{ node: "bravo", why: "w", viaEdge: "alpha->bravo" }], added: [] };
+  for (const width of [40, 41, 42, 43, 44]) {
+    const rows = briefRows({ map, ann, changed: [], stale: 0, width, selected: null });
+    const head = rows.find((r) => r.node === "bravo");
+    assert.ok(head && plain(head.text).length <= width, `width ${width}: ${head && plain(head.text)}`);
+  }
+});
+
+test("labeled lines keep their text readable on a very narrow pane", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 12, selected: null, title: "t" });
+  const changes = rows.findIndex((r) => plain(r.text).trim() === "changes");
+  assert.ok(changes >= 0, "label sits on its own line");
+  assert.ok(plain(rows[changes + 1].text).trim().length > 3, "text is not one character per line");
 });

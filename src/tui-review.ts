@@ -538,6 +538,7 @@ export function openReview(
           stale: unmapped.length,
           width: Math.max(12, chart.width - 2),
           selected: selectedNode,
+          title: meta?.title,
         });
         flowNodes = view.nodes;
         chart.setContent(view.rows.map((r) => r.text).join("\n"));

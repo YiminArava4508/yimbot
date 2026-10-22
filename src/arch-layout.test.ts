@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  BODY_TAG,
+  CATEGORY_TAGS,
+  DIM_TAG,
+  chip,
   breakCycles,
   dedupeEdges,
   displayLabel,
@@ -12,7 +16,7 @@ import {
   serializeGrid,
   type NodeBox,
 } from "./arch-layout.ts";
-import type { ArchEdge, ArchMap, NodeState } from "./arch-map.ts";
+import { CATEGORIES, type ArchEdge, type ArchMap, type NodeState } from "./arch-map.ts";
 
 const e = (from: string, to: string): ArchEdge => ({ from, to, carries: "" });
 
@@ -250,4 +254,18 @@ test("renderGrid gives two overlapping channels a column each", () => {
   const channels = new Set<number>();
   for (const row of grid) row.forEach((ch, col) => ch === "|" && channels.add(col));
   assert.equal(channels.size, 2);
+});
+
+test("chip wraps the category in its tag", () => {
+  assert.equal(chip("contract"), `{${CATEGORY_TAGS.contract}}[contract]{/${CATEGORY_TAGS.contract}}`);
+});
+
+test("every category has a distinct tag", () => {
+  const tags = CATEGORIES.map((c) => CATEGORY_TAGS[c]);
+  assert.equal(new Set(tags).size, CATEGORIES.length);
+});
+
+test("body text is brighter than the dim tag", () => {
+  assert.notEqual(DIM_TAG, "#9e9e9e-fg");
+  assert.notEqual(BODY_TAG, DIM_TAG);
 });

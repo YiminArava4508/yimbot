@@ -6,8 +6,11 @@
 // anyway. Scoping to what the change reaches also makes room for the three
 // fields a box chart can never show: a node's role, an edge's carries, and the
 // annotation's reason a downstream node is at risk.
-import { DIM_TAG, layoutGraph, STATE_TAGS } from "./arch-layout.ts";
-import { nodeFiles, nodeStates, UNMAPPED_ID, type ArchAnnotation, type ArchMap, type NodeState } from "./arch-map.ts";
+import { BODY_TAG, CATEGORY_TAGS, chip, DIM_TAG, layoutGraph, STATE_TAGS } from "./arch-layout.ts";
+import {
+  CATEGORIES, nodeFiles, nodeStates, UNMAPPED_ID,
+  type ArchAnnotation, type ArchMap, type Category, type NodeState,
+} from "./arch-map.ts";
 import { escapeTags } from "./review-diff.ts";
 
 // A row the operator can land on carries its node id; spacers and prose carry
@@ -57,13 +60,21 @@ export function scopeMap(
   ann: ArchAnnotation | null,
   changed: string[],
   precomputed?: Map<string, NodeState>,
+  context = false,
 ): ArchMap {
   const states = precomputed ?? nodeStates(map, ann, changed);
   const keep = new Set(map.nodes.filter((n) => states.get(n.id) !== "idle").map((n) => n.id));
+  const active = new Set(keep);
+  if (context) {
+    for (const e of map.edges) {
+      if (active.has(e.from)) keep.add(e.to);
+      if (active.has(e.to)) keep.add(e.from);
+    }
+  }
   return {
     ...map,
     nodes: map.nodes.filter((n) => keep.has(n.id)),
-    edges: map.edges.filter((e) => keep.has(e.from) && keep.has(e.to)),
+    edges: map.edges.filter((e) => keep.has(e.from) && keep.has(e.to) && (active.has(e.from) || active.has(e.to))),
   };
 }
 
@@ -73,8 +84,9 @@ const MAX_EDGES = 8;
 // Past these counts the routing stops being traceable, so the graph is skipped
 // and the brief stands alone. A single box is skipped from the other end: it
 // draws nothing the node's own line in the brief does not already say.
-export function drawable(sub: ArchMap): boolean {
-  return sub.nodes.length >= 2 && sub.nodes.length <= MAX_NODES && sub.edges.length <= MAX_EDGES;
+export function drawable(sub: ArchMap, states?: Map<string, NodeState>): boolean {
+  const shown = states ? sub.nodes.filter((n) => states.get(n.id) !== "idle").length : sub.nodes.length;
+  return shown >= 2 && shown <= MAX_NODES && sub.edges.length <= MAX_EDGES;
 }
 
 type BriefInput = {
@@ -84,6 +96,9 @@ type BriefInput = {
   stale: number;
   width: number;
   selected: string | null;
+  title?: string;
+  // Drawn between the header and the entries, so the summary reads first.
+  graph?: BriefRow[];
   // Precomputed by flowView and threaded through, so one paint runs the node
   // globs over the changed paths once rather than once per reader.
   states?: Map<string, NodeState>;
@@ -103,13 +118,57 @@ function detail(text: string, width: number, tag: string | null = null): BriefRo
   }));
 }
 
+const LABEL_WIDTH = 9;
+const MIN_LABELED_ROOM = 10;
+
+// A dim label in a fixed column with the text wrapped under itself, so a long
+// note never slides back under the label.
+function labeled(label: string, text: string, width: number, textTag: string = BODY_TAG): BriefRow[] {
+  const room = width - DETAIL_INDENT.length - LABEL_WIDTH;
+  if (room < MIN_LABELED_ROOM) {
+    const labelRow = { text: `${DETAIL_INDENT}{${DIM_TAG}}${label}{/${DIM_TAG}}`, node: null };
+    return [labelRow, ...detail(text, width, textTag)];
+  }
+  return wrapText(text, room).map((line, i) => ({
+    text: DETAIL_INDENT
+      + (i === 0 ? `{${DIM_TAG}}${label.padEnd(LABEL_WIDTH)}{/${DIM_TAG}}` : " ".repeat(LABEL_WIDTH))
+      + `{${textTag}}${escapeTags(line)}{/${textTag}}`,
+    node: null,
+  }));
+}
+
+function plainRow(text: string, width: number, tag: string): BriefRow[] {
+  return wrapText(text, width).map((line) => ({ text: `{${tag}}${escapeTags(line)}{/${tag}}`, node: null }));
+}
+
+function entryCategory(ann: ArchAnnotation | null, id: string, state: NodeState): Category | null {
+  const t = ann?.touched.find((x) => x.node === id);
+  if (t) return t.category ?? "behavior";
+  const r = ann?.atRisk.find((x) => x.node === id);
+  if (r) return r.category ?? "risk";
+  if (state === "added") return "new";
+  return null;
+}
+
+function entryTitle(ann: ArchAnnotation | null, id: string): string {
+  return ann?.touched.find((x) => x.node === id)?.title ?? ann?.atRisk.find((x) => x.node === id)?.title ?? "";
+}
+
+function categoryCounts(ann: ArchAnnotation): string {
+  const all = [...ann.touched.map((t) => t.category ?? "behavior"), ...ann.atRisk.map((r) => r.category ?? "risk")];
+  return CATEGORIES.filter((c) => all.includes(c))
+    .map((c) => `{${CATEGORY_TAGS[c]}}${all.filter((x) => x === c).length} ${c}{/${CATEGORY_TAGS[c]}}`)
+    .join("  ");
+}
+
 // count < 0 leaves the tally off, which is how the unmapped bucket is drawn:
 // mergedMap already put its file count in the label it built.
-function nodeHeader(label: string, state: NodeState, count: number, selected: boolean): string {
+function nodeHeader(label: string, state: NodeState, count: number, selected: boolean, category: Category | null = null): string {
   const [open, close] = STATE_TAGS[state];
   const tally = count < 0 ? "" : `   ${count} file${count === 1 ? "" : "s"}`;
   const body = escapeTags(label) + tally;
-  return NODE_INDENT + (selected ? "{inverse}" : "") + open + body + close + (selected ? "{/inverse}" : "");
+  const tag = category ? `${chip(category)} ` : "";
+  return NODE_INDENT + (selected ? "{inverse}" : "") + tag + open + body + close + (selected ? "{/inverse}" : "");
 }
 
 // The carries label rides inline between the two ends while it fits, because
@@ -151,8 +210,8 @@ export function briefRows(s: BriefInput): BriefRow[] {
     const [fromId] = r.viaEdge.split("->").map((x) => x.trim());
     const carries = s.map.edges.find((e) => e.from === fromId && e.to === r.node)?.carries ?? "";
     const out: BriefRow[] = [];
-    if (carries !== "") out.push(...detail(`via: ${carries}`, s.width, DIM_TAG));
-    if (r.why !== "") out.push(...detail(`! ${r.why}`, s.width, "red-fg"));
+    if (carries !== "") out.push(...labeled("consumes", carries, s.width));
+    if (r.why !== "") out.push(...labeled("risk", r.why, s.width, "red-fg"));
     return out;
   };
 
@@ -160,14 +219,20 @@ export function briefRows(s: BriefInput): BriefRow[] {
     const files = `${s.stale}`;
     rows.push({ text: `{yellow-fg}stale: ${files} unmapped   G regen{/yellow-fg}`, node: null });
   }
+  if (s.title) rows.push({ text: `{bold}${escapeTags(s.title)}{/bold}`, node: null });
   if (s.ann === null) {
     rows.push({ text: `{${DIM_TAG}}no flow summary, touched nodes only{/${DIM_TAG}}`, node: null });
-  } else if (s.ann.flow !== "") {
-    for (const line of wrapText(s.ann.flow, s.width)) {
-      rows.push({ text: `{${DIM_TAG}}${escapeTags(line)}{/${DIM_TAG}}`, node: null });
+  } else {
+    if (s.ann.summary) {
+      rows.push(...plainRow(s.ann.summary.what, s.width, BODY_TAG));
+      if (s.ann.summary.why !== "") rows.push(...plainRow(`why ${s.ann.summary.why}`, s.width, DIM_TAG));
     }
+    if (s.ann.flow !== "") rows.push(...plainRow(s.ann.flow, s.width, s.ann.summary ? DIM_TAG : BODY_TAG));
+    const counts = categoryCounts(s.ann);
+    if (counts !== "") rows.push({ text: counts, node: null });
   }
   if (rows.length > 0) rows.push(spacer());
+  if (s.graph) rows.push(...s.graph);
 
   const inSection = (want: NodeState[]): ArchMap["nodes"] =>
     s.map.nodes.filter((n) => want.includes(states.get(n.id) ?? "idle"));
@@ -181,12 +246,15 @@ export function briefRows(s: BriefInput): BriefRow[] {
   for (const n of touched) {
     const bucket = n.id === UNMAPPED_ID;
     const count = bucket ? -1 : nodeFiles(s.map, n.id, s.changed).length;
-    const text = nodeHeader(n.label, states.get(n.id) ?? "idle", count, n.id === s.selected);
+    const state = states.get(n.id) ?? "idle";
+    const title = entryTitle(s.ann, n.id);
+    const text = nodeHeader(title || n.label, state, count, n.id === s.selected, entryCategory(s.ann, n.id, state));
     rows.push({ text, node: n.id });
-    if (n.role !== "") rows.push(...detail(n.role, s.width, DIM_TAG));
+    const roleLine = title ? [n.label, n.role].filter((x) => x !== "").join(" · ") : n.role;
+    if (roleLine !== "") rows.push(...detail(roleLine, s.width, DIM_TAG));
     if (bucket) rows.push(...detail("no node claims these files", s.width, DIM_TAG));
     const note = s.ann?.touched.find((t) => t.node === n.id)?.note;
-    if (note) rows.push(...detail(`~ ${note}`, s.width));
+    if (note) rows.push(...labeled("changes", note, s.width));
     // Touched wins over at-risk in nodeStates, so a node in both lists lands
     // here; its reason comes along rather than earning a duplicate row below.
     for (const r of risks.get(n.id) ?? []) rows.push(...riskDetail(r));
@@ -207,20 +275,24 @@ export function briefRows(s: BriefInput): BriefRow[] {
     const first = entries[0];
     const source = byId.get(first.viaEdge.split("->")[0].trim());
     const edge = s.map.edges.find((e) => e.from === source?.id && e.to === id);
-    const head = source && entries.length === 1
-      ? riskHeader(source.label, target.label, edge?.carries ?? "", s.width)
-      : { text: escapeTags(target.label), via: "" };
+    const title = entryTitle(s.ann, id);
+    const category = entryCategory(s.ann, id, states.get(id) ?? "at-risk");
+    const chipRoom = category ? category.length + 3 : 0;
+    const head = source && entries.length === 1 && title === ""
+      ? riskHeader(source.label, target.label, edge?.carries ?? "", s.width - chipRoom)
+      : { text: escapeTags(title || target.label), via: "" };
     const [open, close] = STATE_TAGS[states.get(id) ?? "at-risk"];
     const mark = id === s.selected;
     riskRows.push({
-      text: NODE_INDENT + (mark ? "{inverse}" : "") + open + head.text + close + (mark ? "{/inverse}" : ""),
+      text: NODE_INDENT + (mark ? "{inverse}" : "") + (category ? `${chip(category)} ` : "") + open + head.text + close
+        + (mark ? "{/inverse}" : ""),
       node: id,
     });
-    // One edge is already spelled out by the header, so only its reason is
-    // left; several share a bare header and each gets its own via and reason.
-    if (entries.length === 1) {
-      if (head.via !== "") riskRows.push(...detail(`via: ${head.via}`, s.width, DIM_TAG));
-      if (first.why !== "") riskRows.push(...detail(`! ${first.why}`, s.width, "red-fg"));
+    // A header that spelled the edge out leaves only the reason; otherwise
+    // each entry gets its own consumes and risk lines.
+    if (head.text.includes("-->")) {
+      if (head.via !== "") riskRows.push(...labeled("consumes", head.via, s.width));
+      if (first.why !== "") riskRows.push(...labeled("risk", first.why, s.width, "red-fg"));
     } else {
       for (const r of entries) riskRows.push(...riskDetail(r));
     }
@@ -252,16 +324,14 @@ export function nodeRows(rows: BriefRow[]): string[] {
 // the brief. selectedRow is what the shell scrolls to, so the row the operator
 // picked stays on screen as they walk down a brief taller than the pane.
 export function flowView(s: BriefInput): { rows: BriefRow[]; selectedRow: number; nodes: string[] } {
-  const rows: BriefRow[] = [];
   const states = s.states ?? nodeStates(s.map, s.ann, s.changed);
-  const sub = scopeMap(s.map, s.ann, s.changed, states);
-  if (drawable(sub)) {
-    for (const line of layoutGraph(sub, states, s.width, s.selected).lines) {
-      rows.push({ text: line, node: null });
-    }
-    rows.push(spacer());
+  const withContext = scopeMap(s.map, s.ann, s.changed, states, true);
+  const sub = drawable(withContext, states) ? withContext : scopeMap(s.map, s.ann, s.changed, states);
+  let graph: BriefRow[] | undefined;
+  if (drawable(sub, states)) {
+    graph = [...layoutGraph(sub, states, s.width, s.selected).lines.map((text) => ({ text, node: null })), spacer()];
   }
-  rows.push(...briefRows({ ...s, states }));
+  const rows = briefRows({ ...s, states, graph });
   const selectedRow = s.selected === null ? -1 : rows.findIndex((r) => r.node === s.selected);
   return { rows, selectedRow, nodes: nodeRows(rows) };
 }

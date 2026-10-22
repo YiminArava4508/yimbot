@@ -225,9 +225,9 @@ export function briefRows(s: BriefInput): BriefRow[] {
   } else {
     if (s.ann.summary) {
       rows.push(...plainRow(s.ann.summary.what, s.width, BODY_TAG));
-      if (s.ann.summary.why !== "") rows.push(...plainRow(`why ${s.ann.summary.why}`, s.width, DIM_TAG));
+      if (s.ann.summary.why !== "") rows.push(...plainRow(`why ${s.ann.summary.why}`, s.width, BODY_TAG));
     }
-    if (s.ann.flow !== "") rows.push(...plainRow(s.ann.flow, s.width, s.ann.summary ? DIM_TAG : BODY_TAG));
+    if (s.ann.flow !== "") rows.push(...plainRow(s.ann.flow, s.width, BODY_TAG));
     const counts = categoryCounts(s.ann);
     if (counts !== "") rows.push({ text: counts, node: null });
   }

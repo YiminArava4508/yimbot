@@ -120,9 +120,9 @@ test("flowView falls back to no context when the edges outnumber what routes cle
     edges: [edge("hub", "peer"), ...leaves.map((l) => edge("hub", l.id))],
   };
   const view = flowView({ map, ann: null, changed: ["hub/x.ts", "peer/x.ts"], stale: 0, width: 80, selected: null });
-  const graph = view.rows.slice(0, view.rows.findIndex((r) => r.text === "")).map((r) => r.text).join("\n");
-  assert.ok(graph.includes("hub"));
-  assert.ok(!graph.includes("l0"));
+  const text = view.rows.map((r) => r.text).join("\n");
+  assert.ok(text.includes("[ hub ]"));
+  assert.ok(!text.includes("[ l0 ]"));
 });
 
 test("a context neighbour that is at-risk keeps its at-risk state", () => {

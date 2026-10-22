@@ -97,6 +97,8 @@ type BriefInput = {
   width: number;
   selected: string | null;
   title?: string;
+  // Drawn between the header and the entries, so the summary reads first.
+  graph?: BriefRow[];
   // Precomputed by flowView and threaded through, so one paint runs the node
   // globs over the changed paths once rather than once per reader.
   states?: Map<string, NodeState>;
@@ -225,6 +227,7 @@ export function briefRows(s: BriefInput): BriefRow[] {
     if (counts !== "") rows.push({ text: counts, node: null });
   }
   if (rows.length > 0) rows.push(spacer());
+  if (s.graph) rows.push(...s.graph);
 
   const inSection = (want: NodeState[]): ArchMap["nodes"] =>
     s.map.nodes.filter((n) => want.includes(states.get(n.id) ?? "idle"));
@@ -315,17 +318,14 @@ export function nodeRows(rows: BriefRow[]): string[] {
 // the brief. selectedRow is what the shell scrolls to, so the row the operator
 // picked stays on screen as they walk down a brief taller than the pane.
 export function flowView(s: BriefInput): { rows: BriefRow[]; selectedRow: number; nodes: string[] } {
-  const rows: BriefRow[] = [];
   const states = s.states ?? nodeStates(s.map, s.ann, s.changed);
   const withContext = scopeMap(s.map, s.ann, s.changed, states, true);
   const sub = drawable(withContext, states) ? withContext : scopeMap(s.map, s.ann, s.changed, states);
+  let graph: BriefRow[] | undefined;
   if (drawable(sub, states)) {
-    for (const line of layoutGraph(sub, states, s.width, s.selected).lines) {
-      rows.push({ text: line, node: null });
-    }
-    rows.push(spacer());
+    graph = [...layoutGraph(sub, states, s.width, s.selected).lines.map((text) => ({ text, node: null })), spacer()];
   }
-  rows.push(...briefRows({ ...s, states }));
+  const rows = briefRows({ ...s, states, graph });
   const selectedRow = s.selected === null ? -1 : rows.findIndex((r) => r.node === s.selected);
   return { rows, selectedRow, nodes: nodeRows(rows) };
 }

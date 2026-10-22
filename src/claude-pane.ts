@@ -6,14 +6,16 @@
 import type { Terminal } from "@xterm/headless";
 import { escapeTags } from "./review-diff.ts";
 
-// C-q (DC1, 0x11) and C-\ (FS, 0x1c) are the only reserved keys while the
-// claude pane is focused; tab and everything else forward so claude's own
-// bindings keep working. neo-blessed's keys.js parses 0x11 into a key with a
-// sequence, but emits 0x1c unparsed; program.js then wraps it as { ch } with
-// no sequence, so the guard reads both.
-export function claudeKeyAction(key: { sequence?: string; ch?: string }): "unfocus" | "forward" {
+// C-h (BS, 0x08) steps left to the diff pane and C-\ (FS, 0x1c) returns to
+// the plan; they are the only reserved keys while the claude pane is focused,
+// so tab and everything else forward and claude's own bindings keep working.
+// neo-blessed's keys.js parses 0x08 into a key with a sequence, but emits
+// 0x1c unparsed; program.js then wraps it as { ch } with no sequence, so the
+// guard reads both.
+export function claudeKeyAction(key: { sequence?: string; ch?: string }): "left" | "unfocus" | "forward" {
   const seq = key.sequence ?? key.ch;
-  return seq === "\u0011" || seq === "\u001c" ? "unfocus" : "forward";
+  if (seq === "\b") return "left";
+  return seq === "\u001c" ? "unfocus" : "forward";
 }
 
 const BASE16 = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];

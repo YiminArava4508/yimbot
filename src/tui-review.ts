@@ -177,7 +177,7 @@ export function reviewFooterHint(s: {
 }): string {
   if (!s.loaded) return "loading…   q back";
   if (s.total === 0) return "no changes in this PR   q back";
-  if (s.focused === "claude") return "typing goes to claude   C-q or C-\\ back";
+  if (s.focused === "claude") return "typing goes to claude   C-h or C-\\ back";
   let done = "";
   if (s.allViewed) done = "   {green-fg}r ready to merge{/green-fg}";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
@@ -817,7 +817,10 @@ export function openReview(
   const plainA = (key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) =>
     key.name === "a" && !key.shift && !key.ctrl && !key.meta;
 
-  plan.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) => {
+  const ctrlL = (key: { name: string; ctrl?: boolean }) => key.name === "l" && key.ctrl === true;
+  const ctrlH = (key: { sequence?: string }) => key.sequence === "\b";
+
+  plan.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean; sequence?: string }) => {
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
     else if (key.name === "g" && key.shift) select(files().length - 1);
@@ -827,7 +830,7 @@ export function openReview(
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
-    else if (key.name === "tab") focusPane("diff");
+    else if (key.name === "tab" || ctrlL(key)) focusPane("diff");
     else if (plainA(key)) focusPane("claude");
     else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "z" && !key.ctrl) setWide(true);
@@ -835,9 +838,9 @@ export function openReview(
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
-  diff.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) => {
-    if (key.name === "tab") focusPane("plan");
-    else if (plainA(key)) focusPane("claude");
+  diff.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean; sequence?: string }) => {
+    if (key.name === "tab" || ctrlH(key)) focusPane("plan");
+    else if (plainA(key) || ctrlL(key)) focusPane("claude");
     else if (key.name === "space") toggleViewed();
     else if (key.name === "r" && key.shift) void refresh();
     else if (key.name === "r") queueToMerge();
@@ -868,7 +871,12 @@ export function openReview(
       paint();
       return;
     }
-    if (claudeKeyAction(key) === "unfocus") {
+    const action = claudeKeyAction(key);
+    if (action === "left") {
+      focusPane("diff");
+      return;
+    }
+    if (action === "unfocus") {
       focused = "plan";
       plan.focus();
       paint();

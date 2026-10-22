@@ -216,7 +216,7 @@ test("reviewFooterHint offers a claude only while a claude session is live", () 
 test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {
   const base = { total: 3, loaded: true, allViewed: false, focused: "claude" as const, contextCount: 0, hasSession: false, hasClaude: true };
   const hint = reviewFooterHint(base);
-  assert.ok(hint.includes("C-q or C-\\ back"));
+  assert.ok(hint.includes("C-h or C-\\ back"));
   assert.ok(!hint.includes("q back"));
 });
 
@@ -605,6 +605,31 @@ test("openReview: a focuses claude from plan and diff; tab never reaches it", as
   screen.destroy();
 });
 
+test("openReview moves between plan, diff and claude with C-h and C-l", async () => {
+  const fake = fakeClaudeSession();
+  const screen = makeScreen();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  const plan = paneByLabel(screen, " review plan ");
+  const diff = paneByLabel(screen, " diff ");
+  const claude = paneByLabel(screen, " claude ");
+  const ctrlL = () => screen.focused.emit("keypress", "", { name: "l", ctrl: true, sequence: "\f" });
+  const ctrlH = () => pressSeq(screen, "", "\b", "backspace");
+  ctrlL();
+  assert.equal(diff.style.border.fg, FOCUS_BORDER, "C-l from plan must land on diff");
+  ctrlL();
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "C-l from diff must land on claude");
+  ctrlL();
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "C-l stays on the rightmost pane");
+  ctrlH();
+  assert.equal(diff.style.border.fg, FOCUS_BORDER, "C-h from claude must land on diff");
+  ctrlH();
+  assert.equal(plan.style.border.fg, FOCUS_BORDER, "C-h from diff must land on plan");
+  assert.deepEqual(fake.writes, ["\f"], "only C-l pressed inside claude reaches the pty");
+  screen.destroy();
+});
+
 test("openReview ignores a and leaves it off the footer when no claude session exists", async () => {
   const screen = makeScreen();
   openReview(screen, testDeps(), () => {});
@@ -839,9 +864,9 @@ test("openReview forwards keystrokes (C-c included) to the claude pty; the unfoc
   assert.equal(plan.style.border.fg, FOCUS_BORDER);
   assert.equal(claude.style.border.fg, "grey");
   pressFocusClaude(screen);
-  pressSeq(screen, "", String.fromCharCode(17), "C-q");
-  assert.deepEqual(fake.writes, ["x", INTR], "C-q must unfocus without forwarding");
-  assert.equal(plan.style.border.fg, FOCUS_BORDER);
+  pressSeq(screen, "", "\b", "backspace");
+  assert.deepEqual(fake.writes, ["x", INTR], "C-h must unfocus without forwarding");
+  assert.equal(paneByLabel(screen, " diff ").style.border.fg, FOCUS_BORDER, "C-h must land on diff");
   assert.equal(claude.style.border.fg, "grey");
   screen.destroy();
 });

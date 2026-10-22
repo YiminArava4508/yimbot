@@ -599,6 +599,11 @@ export function reduceRows(
 // Terminal (merged) rows are kept regardless: their worktree is already gone by
 // design, and reduceRows still ages them out past the linger window.
 //
+// A PR-less ticket row is dropped when a live, unmerged extra-repo row for the
+// same ticket exists: the PR row tells the ticket's story, and the ticket's
+// session stays reachable through it (ticketKeyOf). A row that is flagged, on
+// hold or a split parent keeps its place, since only it carries that state.
+//
 // `liveKeys` is the deriveKey() keys of the codebase's worktrees; `openPrKeys`
 // is the same for the instance's open PRs. An empty openPrKeys (review step off,
 // or no successful gh list yet) leaves the worktree rule as the only one.
@@ -607,5 +612,15 @@ export function filterToLiveRows(
   liveKeys: Set<string>,
   openPrKeys: Set<string> = new Set(),
 ): BoardRow[] {
-  return rows.filter((r) => r.terminal || liveKeys.has(r.key) || openPrKeys.has(r.key));
+  const live = rows.filter((r) => r.terminal || liveKeys.has(r.key) || openPrKeys.has(r.key));
+  const repoTickets = new Set(live.filter((r) => !r.terminal && r.key.includes("@")).map((r) => ticketKeyOf(r.key)));
+  const foldedIntoRepoRow = (r: BoardRow) =>
+    !r.terminal &&
+    r.pr == null &&
+    !r.flagged &&
+    !isHoldStatus(r.status) &&
+    r.status !== AWAITING_SLICES_STATUS &&
+    r.status !== TRACKING_STATUS &&
+    repoTickets.has(r.key);
+  return live.filter((r) => !foldedIntoRepoRow(r));
 }

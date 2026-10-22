@@ -57,13 +57,21 @@ export function scopeMap(
   ann: ArchAnnotation | null,
   changed: string[],
   precomputed?: Map<string, NodeState>,
+  context = false,
 ): ArchMap {
   const states = precomputed ?? nodeStates(map, ann, changed);
   const keep = new Set(map.nodes.filter((n) => states.get(n.id) !== "idle").map((n) => n.id));
+  const active = new Set(keep);
+  if (context) {
+    for (const e of map.edges) {
+      if (active.has(e.from)) keep.add(e.to);
+      if (active.has(e.to)) keep.add(e.from);
+    }
+  }
   return {
     ...map,
     nodes: map.nodes.filter((n) => keep.has(n.id)),
-    edges: map.edges.filter((e) => keep.has(e.from) && keep.has(e.to)),
+    edges: map.edges.filter((e) => keep.has(e.from) && keep.has(e.to) && (active.has(e.from) || active.has(e.to))),
   };
 }
 
@@ -73,8 +81,9 @@ const MAX_EDGES = 8;
 // Past these counts the routing stops being traceable, so the graph is skipped
 // and the brief stands alone. A single box is skipped from the other end: it
 // draws nothing the node's own line in the brief does not already say.
-export function drawable(sub: ArchMap): boolean {
-  return sub.nodes.length >= 2 && sub.nodes.length <= MAX_NODES && sub.edges.length <= MAX_EDGES;
+export function drawable(sub: ArchMap, states?: Map<string, NodeState>): boolean {
+  const shown = states ? sub.nodes.filter((n) => states.get(n.id) !== "idle").length : sub.nodes.length;
+  return shown >= 2 && shown <= MAX_NODES && sub.edges.length <= MAX_EDGES;
 }
 
 type BriefInput = {
@@ -254,8 +263,9 @@ export function nodeRows(rows: BriefRow[]): string[] {
 export function flowView(s: BriefInput): { rows: BriefRow[]; selectedRow: number; nodes: string[] } {
   const rows: BriefRow[] = [];
   const states = s.states ?? nodeStates(s.map, s.ann, s.changed);
-  const sub = scopeMap(s.map, s.ann, s.changed, states);
-  if (drawable(sub)) {
+  const withContext = scopeMap(s.map, s.ann, s.changed, states, true);
+  const sub = drawable(withContext, states) ? withContext : scopeMap(s.map, s.ann, s.changed, states);
+  if (drawable(sub, states)) {
     for (const line of layoutGraph(sub, states, s.width, s.selected).lines) {
       rows.push({ text: line, node: null });
     }

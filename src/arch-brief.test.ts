@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { briefRows, drawable, flowView, nodeRows, scopeMap, wrapText } from "./arch-brief.ts";
-import { UNMAPPED_ID, type ArchAnnotation, type ArchMap } from "./arch-map.ts";
+import { nodeStates, UNMAPPED_ID, type ArchAnnotation, type ArchMap } from "./arch-map.ts";
 
 // A hub (ent) with many inbound edges, the shape that made the full-map chart
 // unreadable: scoping must not drag its untouched callers in behind it.
@@ -76,6 +76,61 @@ test("drawable gives up once the edges outnumber what routes cleanly", () => {
     edges: Array.from({ length: 9 }, (_, i) => ({ from: "svc", to: `x${i}`, carries: "" })),
   };
   assert.ok(!drawable(dense));
+});
+
+const node = (id: string) => ({ id, label: id, role: "", files: [`${id}/**`] });
+const edge = (from: string, to: string) => ({ from, to, carries: "" });
+const CHAIN: ArchMap = {
+  generatedAt: "", commit: "",
+  nodes: [node("a"), node("b"), node("c")],
+  edges: [edge("a", "b"), edge("b", "c")],
+};
+
+test("scopeMap with context keeps one hop of idle neighbours", () => {
+  const sub = scopeMap(CHAIN, null, ["a/x.ts"], undefined, true);
+  assert.deepEqual(sub.nodes.map((n) => n.id).sort(), ["a", "b"]);
+});
+
+test("scopeMap with context drops edges between two context nodes", () => {
+  const map: ArchMap = {
+    ...CHAIN,
+    nodes: [node("a"), node("b"), node("c")],
+    edges: [edge("a", "b"), edge("a", "c"), edge("b", "c")],
+  };
+  const sub = scopeMap(map, null, ["a/x.ts"], undefined, true);
+  assert.deepEqual(sub.edges.map((e) => `${e.from}->${e.to}`).sort(), ["a->b", "a->c"]);
+});
+
+test("drawable ignores context nodes in the node cap", () => {
+  const nodes = ["a", "b", "c", "n1", "n2", "n3", "n4"].map(node);
+  const map: ArchMap = {
+    ...CHAIN, nodes,
+    edges: [edge("a", "b"), edge("b", "c"), edge("a", "n1"), edge("b", "n2"), edge("c", "n3"), edge("c", "n4")],
+  };
+  const changed = ["a/x.ts", "b/x.ts", "c/x.ts"];
+  const states = nodeStates(map, null, changed);
+  assert.ok(drawable(scopeMap(map, null, changed, states, true), states));
+});
+
+test("flowView falls back to no context when the edges outnumber what routes cleanly", () => {
+  const leaves = Array.from({ length: 9 }, (_, i) => node(`l${i}`));
+  const map: ArchMap = {
+    ...CHAIN,
+    nodes: [node("hub"), node("peer"), ...leaves],
+    edges: [edge("hub", "peer"), ...leaves.map((l) => edge("hub", l.id))],
+  };
+  const view = flowView({ map, ann: null, changed: ["hub/x.ts", "peer/x.ts"], stale: 0, width: 80, selected: null });
+  const graph = view.rows.slice(0, view.rows.findIndex((r) => r.text === "")).map((r) => r.text).join("\n");
+  assert.ok(graph.includes("hub"));
+  assert.ok(!graph.includes("l0"));
+});
+
+test("a context neighbour that is at-risk keeps its at-risk state", () => {
+  const ann: ArchAnnotation = { flow: "", touched: [], atRisk: [{ node: "b", why: "w", viaEdge: "a->b" }], added: [] };
+  const states = nodeStates(CHAIN, ann, ["a/x.ts"]);
+  assert.equal(states.get("b"), "at-risk");
+  const sub = scopeMap(CHAIN, ann, ["a/x.ts"], states, true);
+  assert.equal(sub.nodes.filter((n) => n.id === "b").length, 1);
 });
 
 test("wrapText breaks on spaces and hard breaks a word that cannot fit", () => {

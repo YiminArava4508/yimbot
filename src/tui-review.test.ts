@@ -1417,7 +1417,7 @@ const inverted = (chart: any, label: string): boolean =>
   new RegExp(`\\{inverse\\}[^\\[]*\\[ ${label} \\]`).test(chart.content);
 
 const selected = (chart: any, label: string): boolean =>
-  new RegExp(`\\{inverse\\}(?:\\{[^{}]*\\})*${label}`).test(chart.content);
+  new RegExp(`\\{inverse\\}(?:\\{[^{}]*\\}|\\[\\w+\\]| )*${label}`).test(chart.content);
 
 test("the chart marks the selected node so j and k show on the chart itself", async () => {
   const screen = makeScreen();

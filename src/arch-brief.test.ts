@@ -266,7 +266,7 @@ test("a carries label too long for the row moves to its own line whole", () => {
   const head = visible.find((l) => l.includes("-->"))!;
   assert.ok(head.includes("ent schema  -->  river workers"), "the header degrades to a bare arrow");
   assert.ok(!head.includes("…"), "nothing is cut mid word");
-  assert.ok(visible.some((l) => l.includes(`via: ${long}`.slice(0, 30))));
+  assert.ok(visible.some((l) => l.includes("consumes") && l.includes(long.slice(0, 20))));
   assert.ok(visible.join(" ").includes("notification fanout"), "the whole label survives");
 });
 
@@ -341,4 +341,57 @@ test("the unmapped bucket counts its files once, in the label the merge gave it"
   }).map((r) => r.text.replace(/\{[^{}]*\}/g, ""));
   assert.ok(visible.some((l) => l.trim() === "unmapped (2)"));
   assert.ok(!visible.some((l) => l.includes("unmapped (2)   2 files")));
+});
+
+const plain = (t: string): string => t.replace(/\{[^}]*\}/g, "");
+
+const RICH: ArchAnnotation = {
+  flow: "the split moves onto the offer",
+  summary: { what: "Moves the commission split onto offers.", why: "Deals were double counting." },
+  touched: [{ node: "svc", title: "Split resolved per offer", category: "contract", note: "resolves per-offer" }],
+  atRisk: [{ node: "workers", title: "Job volume grows", category: "risk", why: "volume scales with edits", viaEdge: "ent -> workers" }],
+  added: [],
+};
+
+test("briefRows leads with the PR title, what and why", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "Offer splits" });
+  const lines = rows.map((r) => plain(r.text)).filter((t) => t !== "");
+  assert.equal(lines[0], "Offer splits");
+  assert.equal(lines[1], "Moves the commission split onto offers.");
+  assert.equal(lines[2], "why Deals were double counting.");
+});
+
+test("briefRows renders no summary block when the annotation has none", () => {
+  const rows = briefRows({ map: MAP, ann: ANN, changed: CHANGED, stale: 0, width: 80, selected: null, title: "Offer splits" });
+  const lines = rows.map((r) => plain(r.text));
+  assert.ok(!lines.some((l) => l.startsWith("why ")));
+  assert.ok(nodeRows(rows).includes("svc"));
+});
+
+test("an entry renders chip, title and labeled lines in order", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" });
+  const lines = rows.map((r) => plain(r.text));
+  const head = lines.findIndex((l) => l.includes("[contract]") && l.includes("Split resolved per offer"));
+  assert.ok(head >= 0);
+  assert.ok(lines[head + 2].trimStart().startsWith("changes"));
+  const risk = lines.findIndex((l) => l.includes("[risk]") && l.includes("Job volume grows"));
+  assert.ok(risk >= 0);
+  assert.ok(lines[risk + 1].trimStart().startsWith("consumes"));
+  assert.ok(lines[risk + 2].trimStart().startsWith("risk"));
+});
+
+test("a node named in touched and atRisk still gets one row", () => {
+  const ann: ArchAnnotation = { ...RICH, atRisk: [{ node: "svc", why: "w", viaEdge: "ent -> svc" }] };
+  const ids = nodeRows(briefRows({ map: MAP, ann, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" }));
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test("no wrapped row runs past a narrow pane (selectable headers stay on one row)", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 30, selected: null, title: "Offer splits" });
+  for (const r of rows.filter((x) => x.node === null)) assert.ok(plain(r.text).length <= 30, plain(r.text));
+});
+
+test("the old note and reason prefixes are gone", () => {
+  const rows = briefRows({ map: MAP, ann: RICH, changed: CHANGED, stale: 0, width: 80, selected: null, title: "t" });
+  for (const r of rows) assert.ok(!/^\s*[~!] /.test(plain(r.text)), plain(r.text));
 });

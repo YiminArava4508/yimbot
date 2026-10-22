@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -681,6 +681,67 @@ test("filterToLiveRows: worktree-less row kept when its PR is still open", () =>
     ["ENG-2099"],
     "an open PR is live work even with no worktree; a row in neither set is not",
   );
+});
+
+test("filterToLiveRows: a PR-less ticket row is hidden when its extra-repo PR row exists", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set(["ENG-2906@acme/tf"]));
+  assert.deepEqual(kept.map((r) => r.key), ["ENG-2906@acme/tf"]);
+});
+
+test("filterToLiveRows: a ticket row with its own codebase PR stays beside the extra-repo row", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906", pr: 12 }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set(["ENG-2906@acme/tf"]));
+  assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-2906@acme/tf"]);
+});
+
+test("filterToLiveRows: a PR-less ticket row stays when no extra-repo row shares its ticket", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-3000@acme/tf", pr: 8, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set(["ENG-3000@acme/tf"]));
+  assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-3000@acme/tf"]);
+});
+
+test("filterToLiveRows: a PR-less ticket row stays when its extra-repo row is itself filtered out", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set());
+  assert.deepEqual(kept.map((r) => r.key), ["ENG-2906"]);
+});
+
+test("filterToLiveRows: a merged extra-repo row does not hide an in-progress ticket row", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", status: "merged", terminal: true, section: "merge" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set());
+  assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-2906@acme/tf"]);
+});
+
+test("filterToLiveRows: a flagged, held or parent ticket row is never folded away", () => {
+  const repoRow = liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" });
+  const open = new Set(["ENG-2906@acme/tf"]);
+  const live = new Set(["ENG-2906"]);
+  for (const over of [
+    { flagged: true, flagReasons: ["needs input"] },
+    { status: "needs decision" },
+    { status: "review findings" },
+    { status: AWAITING_SLICES_STATUS },
+    { status: TRACKING_STATUS },
+  ]) {
+    const kept = filterToLiveRows([liveRow({ key: "ENG-2906", ...over }), repoRow], live, open);
+    assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-2906@acme/tf"], JSON.stringify(over));
+  }
 });
 
 test("filterToLiveRows: an empty open-PR cache leaves the worktree rule alone", () => {

@@ -183,6 +183,12 @@ if (process.stdout.isTTY) {
       sessionName: () =>
         resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
       openSession: (session) => switchToSession(session),
+      setPaneKeys: (on) => {
+        const pane = process.env.TMUX_PANE;
+        if (!pane) return;
+        const args = on ? ["set-option", "-p", "-t", pane, "@yimbot_keys", "1"] : ["set-option", "-p", "-u", "-t", pane, "@yimbot_keys"];
+        execFile("tmux", args, () => {});
+      },
       writeContext: (content) => {
         try {
           ensureContextScaffold(cwd);

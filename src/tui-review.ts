@@ -343,6 +343,9 @@ export type ReviewDeps = {
   // False when the switch did not happen — outside tmux, or the session died
   // between the resolve and the switch — so o can say so instead of no-oping.
   openSession: (session: string) => boolean;
+  // Tells tmux to hand C-h and C-l to this pane instead of switching panes,
+  // for as long as the review is open. A no-op outside tmux.
+  setPaneKeys: (on: boolean) => void;
 };
 
 // The returned claudeFocused getter feeds tui.ts's C-c gate: while the claude
@@ -364,6 +367,7 @@ export function openReview(
   const chart: any = blessed.box({ parent: s, ...flowLayout().chart });
   const wide: any = blessed.box({ parent: s, ...wideLayout().wide });
   plan.focus();
+  deps.setPaneKeys(true);
 
   let meta: { title: string; body: string; headSha: string } | null = null;
   let fileDiffs: FileDiff[] = [];
@@ -585,6 +589,7 @@ export function openReview(
     if (closed) return;
     closed = true;
     if (pollTimer) clearInterval(pollTimer);
+    deps.setPaneKeys(false);
     if (meta) deps.saveViewed(meta.headSha, viewed);
     s.removeListener("resize", onScreenResize);
     exitSub?.dispose();

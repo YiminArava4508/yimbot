@@ -394,6 +394,7 @@ function testDeps(
     regenerateArchMap: async () => {},
     sessionName: () => null,
     openSession: () => true,
+    setPaneKeys: () => {},
     saved,
     savedGroups,
     ...overrides,
@@ -627,6 +628,17 @@ test("openReview moves between plan, diff and claude with C-h and C-l", async ()
   ctrlH();
   assert.equal(plan.style.border.fg, FOCUS_BORDER, "C-h from diff must land on plan");
   assert.deepEqual(fake.writes, ["\f"], "only C-l pressed inside claude reaches the pty");
+  screen.destroy();
+});
+
+test("openReview claims the pane's C-h and C-l from tmux while open and releases them on close", async () => {
+  const calls: boolean[] = [];
+  const screen = makeScreen();
+  openReview(screen, testDeps({ setPaneKeys: (on) => { calls.push(on); } }), () => {});
+  await flush();
+  assert.deepEqual(calls, [true]);
+  press(screen, "q");
+  assert.deepEqual(calls, [true, false]);
   screen.destroy();
 });
 

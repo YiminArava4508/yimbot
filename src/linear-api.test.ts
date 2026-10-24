@@ -87,7 +87,16 @@ test("fetchIssuesInState returns issue nodes", async () => {
   const fetchImpl = fakeFetch({
     data: {
       issues: {
-        nodes: [{ id: "i-1", identifier: "ENG-42", title: "Fix login", labels: { nodes: [] } }],
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "Fix login",
+            estimate: 3,
+            labels: { nodes: [] },
+            children: { nodes: [] },
+          },
+        ],
       },
     },
   });
@@ -96,7 +105,45 @@ test("fetchIssuesInState returns issue nodes", async () => {
     { viewerId: "u", teamId: "t", stateId: "s" },
     fetchImpl,
   );
-  assert.deepEqual(issues, [{ id: "i-1", identifier: "ENG-42", title: "Fix login", labels: [] }]);
+  assert.deepEqual(issues, [
+    { id: "i-1", identifier: "ENG-42", title: "Fix login", labels: [], estimate: 3, hasChildren: false },
+  ]);
+});
+
+test("fetchIssuesInState maps a decomposed parent: estimate 0, hasChildren true", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-2",
+            identifier: "ENG-1325",
+            title: "Export",
+            estimate: 0,
+            labels: { nodes: [] },
+            children: { nodes: [{ id: "c-1" }] },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchIssuesInState("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.equal(issues[0].estimate, 0);
+  assert.equal(issues[0].hasChildren, true);
+});
+
+test("fetchIssuesInState maps a missing estimate to null", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          { id: "i-3", identifier: "ENG-7", title: "T", estimate: null, labels: { nodes: [] }, children: { nodes: [] } },
+        ],
+      },
+    },
+  });
+  const issues = await fetchIssuesInState("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.equal(issues[0].estimate, null);
 });
 
 test("GraphQL errors are surfaced", async () => {
@@ -490,8 +537,8 @@ test("fetchIssuesInState returns each issue's label names", async () => {
     data: {
       issues: {
         nodes: [
-          { id: "1", identifier: "ENG-1", title: "One", labels: { nodes: [{ name: "bot" }] } },
-          { id: "2", identifier: "ENG-2", title: "Two", labels: { nodes: [] } },
+          { id: "1", identifier: "ENG-1", title: "One", labels: { nodes: [{ name: "bot" }] }, children: { nodes: [] } },
+          { id: "2", identifier: "ENG-2", title: "Two", labels: { nodes: [] }, children: { nodes: [] } },
         ],
       },
     },

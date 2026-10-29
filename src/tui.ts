@@ -164,6 +164,8 @@ export function boardLayout(
   screenWidth: number,
   parentRows = 0,
 ): {
+  board: { top: number; left: number; right: number; bottom: number };
+  // Task 6 removes tasks, review and merge.
   tasks: { top: number; left: number; right: number; bottom: number };
   review: { left: number; right: number; bottom: number; height: number };
   merge: { left: number; right: number; bottom: number; height: number };
@@ -178,6 +180,7 @@ export function boardLayout(
   const inset = showQueue ? QUEUE_PANE_WIDTH : 0;
   const parentsHeight = showQueue ? parentsBoxHeight(body, parentRows) : 0;
   return {
+    board: { top: titleRows, left: inset, right: 0, bottom: footerRows },
     tasks: { top: titleRows, left: inset, right: 0, bottom: footerRows + 2 * third },
     review: { left: inset, right: 0, bottom: footerRows + third, height: third },
     merge: { left: inset, right: 0, bottom: footerRows, height: third },

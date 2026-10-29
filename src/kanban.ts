@@ -101,3 +101,36 @@ export function cardLines(card: Card, width: number, now: number, codebaseName: 
   if (repo) lines.push(grey(fitCell(repo, width)));
   return lines;
 }
+
+export function focusOrder(columns: Column[], hasParents: boolean): string[] {
+  const ids = columns.map((c) => c.id);
+  return hasParents ? [...ids, "parents"] : ids;
+}
+
+export function stepFocus(order: string[], current: string, dir: "next" | "prev"): string {
+  const i = order.indexOf(current);
+  if (i === -1) return order[0] ?? current;
+  const next = Math.min(order.length - 1, Math.max(0, i + (dir === "next" ? 1 : -1)));
+  return order[next];
+}
+
+export function cycleFocus(order: string[], current: string): string {
+  const i = order.indexOf(current);
+  if (i === -1) return order[0] ?? current;
+  return order[(i + 1) % order.length];
+}
+
+export function visibleWindow(
+  total: number,
+  focusedIndex: number,
+  prevStart: number,
+  width: number,
+  minWidth = 24,
+): { start: number; count: number; colWidth: number } {
+  const count = Math.max(1, Math.min(total, Math.floor(width / minWidth)));
+  let start = Math.min(prevStart, Math.max(0, total - count));
+  if (focusedIndex < start) start = focusedIndex;
+  else if (focusedIndex >= start + count) start = focusedIndex - count + 1;
+  start = Math.max(0, start);
+  return { start, count, colWidth: Math.floor(width / count) };
+}

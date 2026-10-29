@@ -637,12 +637,14 @@ test("boardLayout reserves an equal third of the body for every pane", () => {
   assert.equal(l.review.height, 7);
   assert.equal(l.review.bottom, 8);
   assert.deepEqual(l.tasks, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 15 });
+  assert.deepEqual(l.board, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 1 });
 });
 
 test("boardLayout keeps the parents box out of the way while it has no rows", () => {
   const l = boardLayout(24, 200, 0);
   assert.equal(l.parents, null);
   assert.equal(l.queue!.bottom, 1);
+  assert.equal(l.board.left, QUEUE_PANE_WIDTH);
   assert.deepEqual(boardLayout(24, 200), l);
 });
 
@@ -684,6 +686,7 @@ test("boardLayout reserves the left edge for the queue pane", () => {
   assert.ok(layout.queue, "a wide screen gets a queue pane");
   assert.equal(layout.queue!.width, QUEUE_PANE_WIDTH);
   assert.equal(layout.queue!.left, 0);
+  assert.equal(layout.board.left, QUEUE_PANE_WIDTH);
   assert.equal(layout.tasks.left, QUEUE_PANE_WIDTH);
   assert.equal(layout.review.left, QUEUE_PANE_WIDTH);
   assert.equal(layout.merge.left, QUEUE_PANE_WIDTH);
@@ -697,6 +700,7 @@ test("boardLayout drops the queue pane rather than let it crowd the board", () =
 test("boardLayout drops the queue pane on a narrow screen", () => {
   const layout = boardLayout(40, 50);
   assert.equal(layout.queue, null);
+  assert.equal(layout.board.left, 0);
   assert.equal(layout.tasks.left, 0);
   assert.equal(layout.merge.left, 0);
 });

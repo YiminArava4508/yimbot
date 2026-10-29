@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { BoardRow } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 import { cellWidth, fmtDuration } from "./board-format.ts";
-import { buildColumns, cardLines, pickRow, type Card } from "./kanban.ts";
+import { buildColumns, cardLines, cycleFocus, focusOrder, pickRow, stepFocus, visibleWindow, type Card } from "./kanban.ts";
 
 function row(over: Partial<BoardRow> = {}): BoardRow {
   return {
@@ -203,4 +203,49 @@ test("cardLines fits the head line to width when the key is long", () => {
       assert.ok(cellWidth(line) <= width, `${line} is wider than ${width}`);
     }
   }
+});
+
+const col = (id: string) => ({ id, title: id, cards: [] });
+
+test("focusOrder appends parents only when there are parents", () => {
+  assert.deepEqual(focusOrder([col("a"), col("b")], false), ["a", "b"]);
+  assert.deepEqual(focusOrder([col("a"), col("b")], true), ["a", "b", "parents"]);
+});
+
+test("stepFocus moves left to right and stops at the ends; an unknown current starts at the first", () => {
+  const order = ["a", "b", "c"];
+  assert.equal(stepFocus(order, "a", "next"), "b");
+  assert.equal(stepFocus(order, "c", "next"), "c");
+  assert.equal(stepFocus(order, "b", "prev"), "a");
+  assert.equal(stepFocus(order, "a", "prev"), "a");
+  assert.equal(stepFocus(order, "zzz", "next"), "a");
+  assert.equal(stepFocus(order, "zzz", "prev"), "a");
+});
+
+test("cycleFocus wraps from last to first", () => {
+  const order = ["a", "b", "c"];
+  assert.equal(cycleFocus(order, "a"), "b");
+  assert.equal(cycleFocus(order, "c"), "a");
+  assert.equal(cycleFocus(order, "zzz"), "a");
+});
+
+test("visibleWindow fits floor(width / 24) columns, never fewer than one", () => {
+  assert.equal(visibleWindow(10, 0, 0, 100).count, 4);
+  assert.equal(visibleWindow(2, 0, 0, 100).count, 2);
+  assert.equal(visibleWindow(5, 0, 0, 10).count, 1);
+});
+
+test("visibleWindow scrolls minimally to keep the focused column in view", () => {
+  assert.equal(visibleWindow(10, 5, 0, 72).start, 3);
+  assert.equal(visibleWindow(10, 1, 4, 72).start, 1);
+  assert.equal(visibleWindow(10, 5, 4, 72).start, 4);
+});
+
+test("visibleWindow gives colWidth of floor(width / count)", () => {
+  assert.equal(visibleWindow(10, 0, 0, 100).colWidth, 25);
+  assert.equal(visibleWindow(2, 0, 0, 100).colWidth, 50);
+});
+
+test("visibleWindow keeps start in range when columns shrink", () => {
+  assert.equal(visibleWindow(3, 2, 9, 72).start, 0);
 });

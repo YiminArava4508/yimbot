@@ -9,6 +9,7 @@ import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { cellWidth, codebaseRepoName, fitCell, grey } from "./board-format.ts";
+import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH } from "./table-view.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 import { createCardColumn, type CardColumn } from "./tui-cards.ts";
 import { buildColumns, cardLines, cycleFocus, focusOrder, stepFocus, visibleWindow, type Card, type Column } from "./kanban.ts";
@@ -88,12 +89,6 @@ export function bindHelpKey(
 // queue's width. It takes only what its rows need, capped at half the body so
 // the queue keeps the rest, and is gone entirely while empty or whenever the
 // queue is: those rows are context, and the board's width is the work's.
-const QUEUE_MIN_SCREEN_WIDTH = 80;
-
-// Header row plus the two border rows; a pane needs one more to show a row.
-const PANE_CHROME_ROWS = 3;
-const PANE_MIN_HEIGHT = PANE_CHROME_ROWS + 1;
-
 export type ParentsBox = { left: number; width: number; bottom: number; height: number };
 
 function parentsBoxHeight(body: number, parentRows: number): number {

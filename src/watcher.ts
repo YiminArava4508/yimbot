@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, isReadyClaim, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
 import { loadFixSeenAt, saveFixSeenAt } from "./fix-timers.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { setHeldMergedKeys } from "./held-merged.ts";
@@ -1554,10 +1554,6 @@ export function startWatcher(config: WatcherConfig): () => void {
   // of the fixers, which keep running on every open PR, so a labeled PR that
   // regresses is still fixed and simply keeps its label while the fixers work.
   const readyLog = (msg: string) => console.log(`[ready] ${msg}`);
-  const isReadyClaim = (status: string | undefined) =>
-    status === statusFor("ready_to_merge")?.status ||
-    status === statusFor("ready_unqueued")?.status ||
-    status === statusFor("draft_pr")?.status;
   const readyState = freshReadyState();
   // Rebuilt from scratch by listOpenPRs each tick, before addLabel runs (see
   // readyOnce), so the wraps below can key events by branch like every

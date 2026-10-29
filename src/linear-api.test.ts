@@ -14,6 +14,7 @@ import {
   fetchMarkedCommentBody,
   fetchIssueFamily,
   uploadFile,
+  fetchCycleBoard,
   fetchCycleTodoIssues,
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
@@ -893,4 +894,74 @@ test("uploadFile rejects when the PUT fails", async () => {
     return { ok: false, status: 403, text: async () => "denied", json: async () => ({}) };
   }) as unknown as typeof fetch;
   await assert.rejects(uploadFile("key", "/tmp/shot.png", fetchImpl, () => Buffer.from("x")), /upload PUT 403/);
+});
+
+function sequencedFetch(bodies: JsonBody[]): { fetchImpl: typeof fetch; calls: JsonBody[] } {
+  const calls: JsonBody[] = [];
+  const fetchImpl = (async (_url: string, init: { body: string }) => {
+    calls.push(JSON.parse(init.body) as JsonBody);
+    const body = bodies[calls.length - 1];
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+const boardStates = [
+  { id: "s-1", name: "Todo", type: "unstarted", position: 1 },
+  { id: "s-2", name: "In Progress", type: "started", position: 2 },
+];
+
+function boardTeamResponse(activeCycle: { number: number } | null): JsonBody {
+  return {
+    data: {
+      viewer: { id: "user-1" },
+      teams: { nodes: [{ id: "team-1", states: { nodes: boardStates }, activeCycle }] },
+    },
+  };
+}
+
+test("fetchCycleBoard returns the team's states, the active cycle number and the viewer's cycle issues", async () => {
+  const { fetchImpl } = sequencedFetch([
+    boardTeamResponse({ number: 42 }),
+    {
+      data: {
+        issues: {
+          nodes: [
+            { identifier: "ENG-1", title: "One", sortOrder: 3.5, estimate: 2, state: { id: "s-1" } },
+            { identifier: "ENG-2", title: "Two", sortOrder: -1, estimate: null, state: { id: "s-2" } },
+          ],
+        },
+      },
+    },
+  ]);
+  const board = await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.equal(board.cycleNumber, 42);
+  assert.deepEqual(board.states, boardStates);
+  assert.deepEqual(board.issues, [
+    { identifier: "ENG-1", title: "One", stateId: "s-1", sortOrder: 3.5, estimate: 2 },
+    { identifier: "ENG-2", title: "Two", stateId: "s-2", sortOrder: -1, estimate: null },
+  ]);
+});
+
+test("fetchCycleBoard filters the issue query by team, viewer and the active cycle", async () => {
+  const { fetchImpl, calls } = sequencedFetch([
+    boardTeamResponse({ number: 42 }),
+    { data: { issues: { nodes: [] } } },
+  ]);
+  await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].query as string, /isActive/);
+  assert.deepEqual(calls[1].variables, { teamId: "team-1", viewerId: "user-1" });
+});
+
+test("fetchCycleBoard returns cycleNumber null and no issues, without a second request, when the team has no active cycle", async () => {
+  const { fetchImpl, calls } = sequencedFetch([boardTeamResponse(null)]);
+  const board = await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(board, { cycleNumber: null, states: boardStates, issues: [] });
+});
+
+test("fetchCycleBoard throws for an unknown team name", async () => {
+  const { fetchImpl } = sequencedFetch([{ data: { viewer: { id: "u" }, teams: { nodes: [] } } }]);
+  await assert.rejects(fetchCycleBoard("key", "Nope", fetchImpl), /No Linear team named "Nope"/);
 });

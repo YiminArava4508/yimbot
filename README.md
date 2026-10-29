@@ -188,11 +188,11 @@ flowchart TD
   `blocked`); re-queue reuses `READY_MERGE_LABEL`.
 - **Watch other repos:** a ticket whose change lands outside the codebase repo
   (a terraform repo, say) still links its PR to the board, moves it to the
-  review pane, reports draft / ready to merge, and queues with `r`, as long as
-  the branch there carries the ticket slug and the repo is listed in
-  `EXTRA_REPOS` (comma-separated `owner/name`). Each PR gets its own row, and
-  the `REPO` column names the repo, so a ticket spanning two repos shows two
-  rows. Fix sessions (comments, CI, conflicts, queue blocks) run on the
+  review section, reports draft / ready to merge, and queues with `r`, as long
+  as the branch there carries the ticket slug and the repo is listed in
+  `EXTRA_REPOS` (comma-separated `owner/name`). The card's last line names the
+  repo. A ticket with PRs in several repos still shows as one card, and only
+  one of those PRs is reachable from it. Fix sessions (comments, CI, conflicts, queue blocks) run on the
   codebase repo only.
 - **Flag changes-requested reviews:** every heartbeat, any of your open
   non-draft PRs blocked by a changes-requested review raises that row's `⚑` on
@@ -287,9 +287,9 @@ queue costs a session its fairness and never its serialization.
 is also the longest a command sits on the lock itself before giving up and
 running unserialized, so nothing can block forever.
 
-The board shows the queue on a narrow pane down the right edge: the current
+The board shows the queue in the rail down the left edge: the current
 holder in green, any waiters listed below it, `idle` when nothing is
-queued. It is never focused and stays out of the pane rotation. Reading the
+queued. It is never focused and stays out of the column rotation. Reading the
 queue also reaps tickets left behind by dead sessions, so the pane is what
 keeps the queue tidy on a live board.
 
@@ -305,8 +305,8 @@ and every command runs unqueued, same as before the queue existed.
 ## TUI
 
 Running `pnpm start` from a terminal shows a live ticket board instead of a
-scrolling log: one row per ticket, updating in place as the daemon works. A
-row's status moves through its lifecycle as work progresses, starting at
+scrolling log: a kanban board of your tickets, updating in place as the daemon
+works. A ticket's status moves through its lifecycle as work progresses, starting at
 **working**, then **addressing review** / **fixing CI** / **resolving
 conflict** as those steps kick in, then **ready to test**, then **ready to
 merge**, then **merged**. Merged rows stay on the board for a while so you can
@@ -318,15 +318,22 @@ stops the daemon. The one exception is inside the review overlay while the
 claude pane is focused, where `ctrl+c` goes to claude as its interrupt; leave
 that pane first.
 
-The board stacks three panes: **tasks**, **ready to review** and **ready to
-merge**. Which pane a row sits in is decided by GitHub, not by the row's status:
-a draft PR is always in ready-to-review, a non-draft PR carrying the
-`ready-to-merge` label is always in ready-to-merge, and everything else is in
-tasks. So a queued PR whose CI breaks stays in ready-to-merge and its status
-reads **CI failing**, then **fixing CI** once the fix window opens. The row
-moves only when the label comes off (which is what Aviator does when it blocks
-a PR). All three panes share one set of columns, in
-one order, on one grid, so a row reads the same wherever it sits.
+The board has one column per Linear workflow state in the team's active
+cycle, and the header shows the cycle number. Only your tickets in the current
+cycle appear: a session on a ticket outside the cycle or assigned to someone
+else is not on the board. Each card shows the ticket key, its age (or `#PR`
+once it has one), the title, the status and the repo. A card yimbot has no
+session for shows the Linear state name instead. A rail on the left lists the
+background jobs and, below them, the parent tickets of a split. `j`/`k` move
+within a column, `ctrl+j`/`ctrl+k` (or `tab`)
+switch columns, and `?` lists the rest.
+
+GitHub decides whether a card reads **ready to review** or **ready to merge**,
+not the status: a draft PR is ready to review, and a non-draft PR carrying the
+`ready-to-merge` label is ready to merge. Progress inside that stage follows
+the label, so a queued PR whose CI breaks reads **ready to merge, CI failing**,
+then **ready to merge, fixing CI** once the fix window opens, until the label
+comes off (which is what Aviator does when it blocks a PR).
 
 Press `s` for the settings screen: every value `pnpm onboard` asks about, shown
 with the team, the assignee the API key resolves to, the three workflow states,

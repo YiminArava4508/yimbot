@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import type { Card } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -19,88 +19,6 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
   flagged: false,
   flagReasons: [],
   ...over,
-});
-
-test("every pane shares one header, in one order", () => {
-  assert.deepEqual(BOARD_HEADER, [
-    "TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON",
-  ]);
-  assert.deepEqual(boardTable([])[0], BOARD_HEADER);
-});
-
-test("boardTable renders #N in the PR column and the title", () => {
-  const [, body] = boardTable([{ row: row({ pr: 481, title: "add column" }) }], 0);
-  assert.equal(body[4], "#481");
-  assert.equal(body[6], "add column");
-});
-
-test("boardTable prefixes a research title with a magenta type chip, plain titles untouched", () => {
-  const [, research, plain] = boardTable(
-    [{ row: row({ title: "Decide retention for exports" }) }, { row: row({ title: "add column" }) }],
-    0,
-  );
-  assert.equal(research[6], "{magenta-fg}[research]{/magenta-fg} Decide retention for exports");
-  assert.equal(plain[6], "add column");
-});
-
-test("boardTable prefixes a ticketless PR row with a cyan pr chip", () => {
-  const [, pr] = boardTable([{ row: row({ key: "pr:7117", label: "PR #7117", pr: 7117, title: "test extract coverage" }) }], 0);
-  assert.equal(pr[6], "{cyan-fg}[pr]{/cyan-fg} test extract coverage");
-});
-
-test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
-  const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
-  assert.equal(extra[5], "{grey-fg}terraform-x{/grey-fg}");
-  const codebase = boardTable([{ row: row({ pr: 5970 }) }], 0, "gemini")[1];
-  assert.equal(codebase[5], "{grey-fg}gemini{/grey-fg}");
-  const none = boardTable([{ row: row({}) }], 0, "gemini")[1];
-  assert.equal(none[5], "");
-});
-
-test("boardTable leaves the PR cell blank when pr is absent", () => {
-  const [, body] = boardTable([{ row: row({}) }], 0);
-  assert.equal(body[4], "");
-});
-
-test("boardTable DUR uses now - startTs for an active row", () => {
-  const [, body] = boardTable([{ row: row({ startTs: 0, ts: 0 }) }], 65_000);
-  assert.equal(body[1], "{grey-fg}1m{/grey-fg}");
-});
-
-test("boardTable DUR is frozen at ts - startTs for a terminal row", () => {
-  const [, body] = boardTable([{ row: row({ terminal: true, startTs: 0, ts: 60_000 }) }], 999_999);
-  assert.equal(body[1], "{grey-fg}1m{/grey-fg}");
-});
-
-test("boardTable marks a flagged row and leaves others blank", () => {
-  const [, flagged] = boardTable([{ row: row({ flagged: true, flagReasons: ["manual"] }) }], 0);
-  assert.equal(flagged[7], "{red-fg}⚑{/red-fg}");
-  const [, plain] = boardTable([{ row: row({}) }], 0);
-  assert.equal(plain[7], "");
-});
-
-test("boardTable joins the flag reasons in the REASON cell", () => {
-  const [, body] = boardTable(
-    [{ row: row({ flagged: true, flagReasons: ["input", "changes-requested"] }) }],
-    0,
-  );
-  assert.equal(body[8], "{red-fg}input,changes-requested{/red-fg}");
-});
-
-test("boardTable leaves the REASON cell blank when unflagged", () => {
-  const [, body] = boardTable([{ row: row({}) }], 0);
-  assert.equal(body[8], "");
-});
-
-test("boardTable dims a terminal row's status", () => {
-  const [, body] = boardTable([{ row: row({ status: "merged", terminal: true }) }], 0);
-  assert.equal(body[2], "{grey-fg}merged{/grey-fg}");
-});
-
-test("boardTable has no column past REASON", () => {
-  const [, body] = boardTable([{ row: row({ pr: 11 }) }], 0);
-  assert.equal(body.length, BOARD_HEADER.length);
-  assert.equal(body.at(-1), "");
 });
 
 test("fmtDuration formats seconds, minutes, and hours", () => {
@@ -848,62 +766,6 @@ test("cellWidth measures visible width, ignoring blessed tags", () => {
   assert.equal(cellWidth("{red-fg}⚑{/red-fg}"), 1);
 });
 
-test("alignTables pads every cell to the widest in its column across all tables", () => {
-  const [a, b] = alignTables([
-    [["TIME", "STATUS"], ["09:14", "working"]],
-    [["TIME", "STATUS"], ["10:02", "ready to merge"]],
-  ]);
-  assert.deepEqual(a, [["TIME ", "STATUS        "], ["09:14", "working       "]]);
-  assert.deepEqual(b, [["TIME ", "STATUS        "], ["10:02", "ready to merge"]]);
-});
-
-test("alignTables pads by visible width so tagged cells line up with plain ones", () => {
-  const [a] = alignTables([[["{grey-fg}merged{/grey-fg}"], ["ready to merge"]]]);
-  assert.equal(cellWidth(a[0][0]), 14);
-  assert.equal(cellWidth(a[1][0]), 14);
-});
-
-test("alignTables gives an empty pane the same widths as a busy one", () => {
-  // A pane with no rows still renders its header, and that header has to sit on
-  // the same grid as the panes that do have rows.
-  const [empty, busy] = alignTables([
-    [BOARD_HEADER],
-    boardTable([{ row: row({ status: "resolving conflict", title: "a long branch title" }) }], 0),
-  ]);
-  assert.deepEqual(empty[0].map(cellWidth), busy[0].map(cellWidth));
-});
-
-// The alignment claim, checked against blessed itself rather than against the
-// padded strings: render three panes carrying very different content and assert
-// every column starts at the same screen offset in all three.
-test("the three panes render their columns on identical offsets", () => {
-  const { input, output } = fakeTty(200, 30);
-  const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true, fullUnicode: true });
-  const make = (top: number) =>
-    blessed.listtable({
-      parent: screen, top, left: 0, right: 0, height: 6,
-      tags: true, align: "left", keys: true, vi: true, mouse: true,
-      border: { type: "line" }, noCellBorders: true,
-      style: { header: { bold: true }, cell: { selected: { inverse: true } } },
-    });
-  const panes = [make(0), make(6), make(12)];
-  const data = alignTables([
-    boardTable([{ row: row({ label: "ENG-1", status: "resolving conflict", title: "a much longer branch title" }) }], 0),
-    boardTable([{ row: row({ label: "SC-22", pr: 4712, status: "draft pr" }) }], 0),
-    boardTable([], 0),
-  ]);
-  panes.forEach((p, i) => p.setData(data[i]));
-  screen.render();
-  const lines: string[] = screen.lines.map((line: [number, string][]) => line.map((c) => c[1]).join(""));
-  // Header row of each pane: one row below its border.
-  const headers = [lines[1], lines[7], lines[13]];
-  const offsets = headers.map((h) => BOARD_HEADER.map((col) => h.indexOf(col)));
-  assert.ok(offsets[0].every((o) => o > 0), `header not rendered: ${headers[0]}`);
-  assert.deepEqual(offsets[1], offsets[0]);
-  assert.deepEqual(offsets[2], offsets[0]);
-  screen.destroy();
-});
-
 test("cellWidth measures display width the way blessed does", () => {
   // The screen runs fullUnicode, so blessed sizes columns by display width:
   // a CJK title is two columns per character and a combining mark is zero.
@@ -915,15 +777,6 @@ test("cellWidth strips the same tags blessed does", () => {
   assert.equal(cellWidth("{red-fg}⚑{/red-fg}"), 1);
   // Not a blessed tag: braces around arbitrary text are literal content.
   assert.equal(cellWidth("{a b}"), 5);
-});
-
-test("alignTables keeps wide-character titles on the shared grid", () => {
-  const [a, b] = alignTables([
-    boardTable([{ row: row({ title: "需要审核" }) }], 0),
-    boardTable([{ row: row({ title: "ok" }) }], 0),
-  ]);
-  const titleIdx = BOARD_HEADER.indexOf("TITLE");
-  assert.equal(cellWidth(a[1][titleIdx]), cellWidth(b[1][titleIdx]));
 });
 
 test("reachWarnings is empty while everything answers", () => {

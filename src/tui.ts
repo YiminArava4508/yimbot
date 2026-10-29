@@ -7,9 +7,8 @@ import { AWAITING_SLICES_STATUS, TRACKING_STATUS, bus, filterToLiveRows, isFlagg
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
-import { researchWords } from "./ticket-type.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
-import { cellWidth, codebaseRepoName, fitCell, fmtDuration, fmtTime, grey, repoDisplayName, titleCell } from "./board-format.ts";
+import { cellWidth, codebaseRepoName, fitCell, grey } from "./board-format.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 import { createCardColumn, type CardColumn } from "./tui-cards.ts";
 import { buildColumns, cardLines, cycleFocus, focusOrder, stepFocus, visibleWindow, type Card, type Column } from "./kanban.ts";
@@ -369,36 +368,7 @@ export async function handleReadyPress(
   }
 }
 
-// One header for all three panes, in one order, so a row reads the same
-// wherever it sits.
-export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];
-
 export { cellWidth, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
-
-export type BoardEntry = { row: BoardRow };
-
-export function boardTable(
-  entries: BoardEntry[],
-  now: number = Date.now(),
-  codebaseName: string = codebaseRepoName(),
-  words: string[] = researchWords(),
-): string[][] {
-  const body = entries.map(({ row: r }) => {
-    const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
-    return [
-      grey(fmtTime(r.ts)),
-      grey(fmtDuration(durMs)),
-      r.terminal ? grey(r.status) : r.status,
-      r.label,
-      r.pr != null ? `#${r.pr}` : "",
-      grey(repoDisplayName(r, codebaseName)),
-      titleCell(r, words),
-      isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
-      r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
-    ];
-  });
-  return [BOARD_HEADER, ...body];
-}
 
 // The parent tickets box is the queue's width, far too narrow for the board's
 // nine columns, so each parent gets one line: the ticket, then whatever of the
@@ -412,25 +382,6 @@ export function parentRows(rows: BoardRow[]): string[][] {
     return [title ? `${label} {grey-fg}${title}{/grey-fg}` : label];
   });
   return [["PARENTS"], ...body];
-}
-
-// blessed sizes each table's columns from that table's own rows, so three panes
-// sharing a header still land on three different grids. Pad every cell out to
-// the widest cell in its column across ALL the tables and each pane computes the
-// same maxes, which is what puts the columns on the same offsets. An empty pane
-// still has its header row, so it lines up too.
-export function alignTables(tables: string[][][]): string[][][] {
-  const widths: number[] = [];
-  for (const table of tables) {
-    for (const row of table) {
-      row.forEach((cell, i) => {
-        widths[i] = Math.max(widths[i] ?? 0, cellWidth(cell));
-      });
-    }
-  }
-  return tables.map((table) =>
-    table.map((row) => row.map((cell, i) => cell + " ".repeat((widths[i] ?? 0) - cellWidth(cell)))),
-  );
 }
 
 // screen.key's handler runs before the focused widget's own keypress handling

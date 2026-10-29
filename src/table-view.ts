@@ -118,7 +118,7 @@ export type TableBoxes = {
 // the remainder) whether or not it has rows, so the panes never jump around as
 // PRs move between them. The parents box sits in the queue's column, so it
 // does not take height from these panes.
-export function tableBoxes(screenHeight: number, screenWidth: number, _parentsHeight: number): TableBoxes {
+export function tableBoxes(screenHeight: number, screenWidth: number): TableBoxes {
   const footerRows = 1;
   const titleRows = 1;
   const body = screenHeight - titleRows - footerRows;

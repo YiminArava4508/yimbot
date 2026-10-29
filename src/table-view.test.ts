@@ -269,7 +269,7 @@ test("alignTables keeps wide-character titles on the shared grid", () => {
 });
 
 test("tableBoxes reserves an equal third of the body for every pane", () => {
-  const l = tableBoxes(24, 200, 0);
+  const l = tableBoxes(24, 200);
   assert.equal(l.merge.height, 7);
   assert.equal(l.merge.bottom, 1);
   assert.equal(l.review.height, 7);
@@ -278,14 +278,14 @@ test("tableBoxes reserves an equal third of the body for every pane", () => {
 });
 
 test("tableBoxes drops the queue inset on a narrow screen", () => {
-  const l = tableBoxes(24, 79, 0);
+  const l = tableBoxes(24, 79);
   assert.equal(l.tasks.left, 0);
   assert.equal(l.review.left, 0);
   assert.equal(l.merge.left, 0);
 });
 
 test("tableBoxes keeps one data row visible per pane on a tiny screen", () => {
-  assert.equal(tableBoxes(8, 200, 0).review.height, 4);
+  assert.equal(tableBoxes(8, 200).review.height, 4);
 });
 
 test("tableFocusOrder skips empty panes and appends parents only when present", () => {

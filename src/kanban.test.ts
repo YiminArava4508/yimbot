@@ -134,11 +134,27 @@ test("cardLines marks a flagged row with the red flag", () => {
   assert.ok(!cardLines(card(), 30, 0, "c")[0].includes("⚑"));
 });
 
-test("cardLines status line reads ready to review / ready to merge from the row's section, else the row's status", () => {
-  const status = (r: BoardRow) => strip(cardLines(card({ row: r }), 30, 0, "c").at(-1) ?? "");
-  assert.equal(status(row({ section: "review", status: "coding" })), "ready to review");
-  assert.equal(status(row({ section: "merge", status: "coding" })), "ready to merge");
+test("cardLines status line reads only the section label while the row's status is a readiness claim", () => {
+  const status = (r: BoardRow) => strip(cardLines(card({ row: r }), 40, 0, "c").at(-1) ?? "");
+  assert.equal(status(row({ section: "review", status: "draft pr" })), "ready to review");
+  assert.equal(status(row({ section: "merge", status: "ready to merge" })), "ready to merge");
+  assert.equal(status(row({ section: "merge", status: "ready: r to queue" })), "ready to merge");
+});
+
+test("cardLines status line adds in-section progress after the section label", () => {
+  const status = (r: BoardRow) => strip(cardLines(card({ row: r }), 40, 0, "c").at(-1) ?? "");
+  assert.equal(status(row({ section: "merge", status: "CI failing" })), "ready to merge, CI failing");
+  assert.equal(status(row({ section: "merge", status: "merge queue blocked" })), "ready to merge, merge queue blocked");
+  assert.equal(status(row({ section: "review", status: "addressing review" })), "ready to review, addressing review");
   assert.equal(status(row({ section: "tasks", status: "coding" })), "coding");
+});
+
+test("cardLines freezes a terminal row's age at its last event", () => {
+  const done = row({ terminal: true, status: "refined", startTs: 0, ts: 10 * 60_000 });
+  const lines = cardLines(card({ row: done }), 30, 60 * 60_000, "c");
+  assert.ok(lines[0].includes(`{grey-fg}${fmtDuration(10 * 60_000)}{/grey-fg}`));
+  const live = cardLines(card({ row: row({ startTs: 0, ts: 10 * 60_000 }) }), 30, 60 * 60_000, "c");
+  assert.ok(live[0].includes(`{grey-fg}${fmtDuration(60 * 60_000)}{/grey-fg}`));
 });
 
 test("cardLines shows a split parent's own status and age, never the section or PR its pre-split PR left behind", () => {
@@ -199,7 +215,7 @@ test("cardLines omits the repo line when the repo is unknown", () => {
 test("cardLines keeps the row status out of grey but greys the no-row state name", () => {
   const withRow = cardLines(card({ row: row({ status: "coding" }) }), 30, 0, "c");
   assert.equal(withRow.at(-1), "coding");
-  const review = cardLines(card({ row: row({ section: "review" }) }), 30, 0, "c");
+  const review = cardLines(card({ row: row({ section: "review", status: "draft pr" }) }), 30, 0, "c");
   assert.equal(review.at(-1), "ready to review");
   const noRow = cardLines(card({ row: null, stateName: "Todo" }), 30, 0, "c");
   assert.equal(noRow.at(-1), "{grey-fg}Todo{/grey-fg}");

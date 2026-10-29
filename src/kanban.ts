@@ -1,5 +1,5 @@
 import { cellWidth, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
-import { isFlagged, isParentRow, type BoardRow } from "./events.ts";
+import { isFlagged, isParentRow, isReadyClaim, type BoardRow, type Section } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 
 export type Card = { key: string; title: string; stateName: string; row: BoardRow | null };
@@ -78,11 +78,13 @@ function wrapTitle(text: string, width: number): string[] {
   return rest ? [first, fitCell(rest, width)] : [first];
 }
 
+const SECTION_LABEL: Partial<Record<Section, string>> = { review: "ready to review", merge: "ready to merge" };
+
 function statusText(row: BoardRow): string {
-  if (isParentRow(row)) return row.status;
-  if (row.section === "review") return "ready to review";
-  if (row.section === "merge") return "ready to merge";
-  return row.status;
+  const label = SECTION_LABEL[row.section];
+  if (isParentRow(row) || !label) return row.status;
+  if (isReadyClaim(row.status)) return label;
+  return `${label}, ${row.status}`;
 }
 
 export function cardLines(card: Card, width: number, now: number, codebaseName: string): string[] {
@@ -90,7 +92,7 @@ export function cardLines(card: Card, width: number, now: number, codebaseName: 
   const extras: string[] = [];
   if (row) {
     const showPr = row.pr != null && !isParentRow(row);
-    extras.push(showPr ? grey(`#${row.pr}`) : grey(fmtDuration(now - row.startTs)));
+    extras.push(showPr ? grey(`#${row.pr}`) : grey(fmtDuration((row.terminal ? row.ts : now) - row.startTs)));
     if (isFlagged(row)) extras.push("{red-fg}⚑{/red-fg}");
   }
   const suffix = extras.join(" ");

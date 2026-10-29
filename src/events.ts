@@ -216,6 +216,15 @@ export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
 export const TRACKING_STATUS = STATUS.tracking!.status;
 export const WORKING_STATUS = STATUS.task_started!.status;
 
+// The statuses that only claim the PR is ready (queued, waiting on r, or a
+// clean draft). Anything else on a review or merge row is progress worth
+// showing next to the section.
+const READY_CLAIM_STATUSES = new Set([STATUS.ready_to_merge!.status, STATUS.ready_unqueued!.status, STATUS.draft_pr!.status]);
+
+export function isReadyClaim(status: string | undefined): boolean {
+  return status !== undefined && READY_CLAIM_STATUSES.has(status);
+}
+
 // A split parent's row: it has no work of its own, only slices to wait on.
 // A parent whose status is a hold (needs decision, review findings) is not
 // one of these; it owes a human an answer and stays out of the parents pane.

@@ -342,8 +342,8 @@ export function bindPaneNavKeys(
 // autonomous (the bot self-resolves everything) in green.
 export function modeContent(mode: Mode): string {
   return mode === "supervised"
-    ? "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}"
-    : "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}";
+    ? "{black-fg}{yellow-bg} ◆ SUPERVISED {/yellow-bg}{/black-fg}"
+    : "{black-fg}{green-bg} ◆ AUTONOMOUS {/green-bg}{/black-fg}";
 }
 
 // The header row above the tasks pane. The panes below are bordered at column 0
@@ -354,7 +354,15 @@ export function modeContent(mode: Mode): string {
 export const headerInset = 2;
 
 export function titleLayout(): Record<string, unknown> {
-  return { top: 0, left: headerInset };
+  return { top: 0, left: headerInset, tags: true };
+}
+
+export function titleContent(): string {
+  return "{cyan-fg}{bold}◢◤ YIMBOT{/bold}{/cyan-fg}";
+}
+
+export function paneLabel(name: string, count: number): string {
+  return ` ◢ ${name.toUpperCase()} ${count} ◣ `;
 }
 
 export function statusLayout(): Record<string, unknown> {
@@ -394,22 +402,8 @@ export function reachWarnings(down: Service[]): string {
   return down.map((s) => `{red-fg}⚠ ${s}{/red-fg} `).join("");
 }
 
-export function statusContent(
-  mode: Mode,
-  refineOn: boolean,
-  splitOn: boolean,
-  active: number,
-  notice: Notice | null,
-  now: number,
-  down: Service[],
-): string {
-  const refineChip = refineOn
-    ? "{black-fg}{green-bg} REFINE ON {/green-bg}{/black-fg} "
-    : "{black-fg}{red-bg} REFINE OFF {/red-bg}{/black-fg} ";
-  const splitChip = splitOn
-    ? "{black-fg}{green-bg} SPLIT ON {/green-bg}{/black-fg} "
-    : "{black-fg}{red-bg} SPLIT OFF {/red-bg}{/black-fg} ";
-  const base = `${reachWarnings(down)}${refineChip}${splitChip}${modeContent(mode)} live | ${active} active`;
+export function statusContent(mode: Mode, notice: Notice | null, now: number, down: Service[]): string {
+  const base = `${reachWarnings(down)}${modeContent(mode)}`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -718,7 +712,7 @@ export function runTui(opts: {
     style: { header: { bold: true }, border: { fg: "grey" }, label: { fg: "grey" } },
   });
 
-  const title = blessed.text({ parent: screen, ...titleLayout(), content: "yimbot" });
+  const title = blessed.text({ parent: screen, ...titleLayout(), content: titleContent() });
   const status = blessed.text({ parent: screen, ...statusLayout(), content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout() });
 
@@ -772,19 +766,19 @@ export function runTui(opts: {
       boardTable(merge.map((row) => ({ row })), now),
     ]);
     tasksPane.bottom = layout.tasks.bottom;
-    tasksPane.setLabel(` tasks (${tasks.length}) `);
+    tasksPane.setLabel(paneLabel("tasks", tasks.length));
     tasksPane.setData(tasksData);
     reviewPane.height = layout.review.height;
     reviewPane.bottom = layout.review.bottom;
-    reviewPane.setLabel(` ready to review (${currentReview.length}) `);
+    reviewPane.setLabel(paneLabel("ready to review", currentReview.length));
     reviewPane.setData(reviewData);
     mergePane.height = layout.merge.height;
     mergePane.bottom = layout.merge.bottom;
-    mergePane.setLabel(` ready to merge (${merge.length}) `);
+    mergePane.setLabel(paneLabel("ready to merge", merge.length));
     mergePane.setData(mergeData);
     if (layout.parents) {
       parentsPane.height = layout.parents.height;
-      parentsPane.setLabel(` parent tickets (${parents.length}) `);
+      parentsPane.setLabel(paneLabel("parent tickets", parents.length));
       parentsPane.setData(parentRows(parents));
     }
     tasksPane.left = layout.tasks.left;
@@ -823,11 +817,10 @@ export function runTui(opts: {
     }
     applyPaneFocusStyle(paneWidgets, focusedPane);
     footer.setContent(footerHint(focusedPane));
-    const active = currentRows.filter((r) => !r.terminal).length;
     status.setContent(
       daemonStopped
         ? "daemon stopped"
-        : statusContent(opts.mode(), opts.refineEnabled(), opts.splitEnabled(), active, notice, Date.now(), unreachable()),
+        : statusContent(opts.mode(), notice, Date.now(), unreachable()),
     );
     screen.render();
   };

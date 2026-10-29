@@ -83,11 +83,14 @@ export function createTableView(opts: {
     // Hiding a focused widget makes blessed rewind focus onto another one;
     // that focus event is ours, not the operator's.
     syncing = true;
-    for (const id of TABLE_IDS) {
-      if (visible) widgets[id].show();
-      else widgets[id].hide();
+    try {
+      for (const id of TABLE_IDS) {
+        if (visible) widgets[id].show();
+        else widgets[id].hide();
+      }
+    } finally {
+      syncing = false;
     }
-    syncing = false;
   };
 
   for (const id of TABLE_IDS) {

@@ -137,9 +137,13 @@ test("empty panes stay visible with their zero-count label", () => {
 
 test("hiding or emptying the focused pane does not report a focus", () => {
   const { view, input, focused } = setup();
+  // Two panes in the focus history, so hiding the focused one rewinds onto
+  // the other and would report it without the guard.
   view.widgets.review.focus();
+  view.widgets.tasks.focus();
   focused.length = 0;
   view.hide();
+  assert.deepEqual(focused, []);
   view.show();
   view.widgets.review.focus();
   focused.length = 0;

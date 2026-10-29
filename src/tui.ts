@@ -342,8 +342,8 @@ export function bindPaneNavKeys(
 // autonomous (the bot self-resolves everything) in green.
 export function modeContent(mode: Mode): string {
   return mode === "supervised"
-    ? "{black-fg}{yellow-bg} ◆ SUPERVISED {/yellow-bg}{/black-fg}"
-    : "{black-fg}{green-bg} ◆ AUTONOMOUS {/green-bg}{/black-fg}";
+    ? "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}"
+    : "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}";
 }
 
 // The header row above the tasks pane. The panes below are bordered at column 0
@@ -358,11 +358,11 @@ export function titleLayout(): Record<string, unknown> {
 }
 
 export function titleContent(): string {
-  return "{cyan-fg}{bold}◢◤ YIMBOT{/bold}{/cyan-fg}";
+  return "{cyan-fg}{bold}yimbot{/bold}{/cyan-fg}";
 }
 
 export function paneLabel(name: string, count: number): string {
-  return ` ◢ ${name.toUpperCase()} ${count} ◣ `;
+  return ` ${name} ${count} `;
 }
 
 export function statusLayout(): Record<string, unknown> {
@@ -472,6 +472,8 @@ export function titleCell(row: Pick<BoardRow, "key" | "title">, words: string[] 
   return `{${color}-fg}[${type}]{/${color}-fg} ${title}`;
 }
 
+const grey = (text: string): string => (text ? `{grey-fg}${text}{/grey-fg}` : "");
+
 export type BoardEntry = { row: BoardRow };
 
 export function boardTable(
@@ -483,12 +485,12 @@ export function boardTable(
   const body = entries.map(({ row: r }) => {
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
     return [
-      fmtTime(r.ts),
-      fmtDuration(durMs),
-      r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
+      grey(fmtTime(r.ts)),
+      grey(fmtDuration(durMs)),
+      r.terminal ? grey(r.status) : r.status,
       r.label,
       r.pr != null ? `#${r.pr}` : "",
-      repoDisplayName(r, codebaseName),
+      grey(repoDisplayName(r, codebaseName)),
       titleCell(r, words),
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
       r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",

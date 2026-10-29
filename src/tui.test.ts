@@ -49,9 +49,9 @@ test("boardTable prefixes a ticketless PR row with a cyan pr chip", () => {
 
 test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
   const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
-  assert.equal(extra[5], "terraform-x");
+  assert.equal(extra[5], "{grey-fg}terraform-x{/grey-fg}");
   const codebase = boardTable([{ row: row({ pr: 5970 }) }], 0, "gemini")[1];
-  assert.equal(codebase[5], "gemini");
+  assert.equal(codebase[5], "{grey-fg}gemini{/grey-fg}");
   const none = boardTable([{ row: row({}) }], 0, "gemini")[1];
   assert.equal(none[5], "");
 });
@@ -63,12 +63,12 @@ test("boardTable leaves the PR cell blank when pr is absent", () => {
 
 test("boardTable DUR uses now - startTs for an active row", () => {
   const [, body] = boardTable([{ row: row({ startTs: 0, ts: 0 }) }], 65_000);
-  assert.equal(body[1], "1m");
+  assert.equal(body[1], "{grey-fg}1m{/grey-fg}");
 });
 
 test("boardTable DUR is frozen at ts - startTs for a terminal row", () => {
   const [, body] = boardTable([{ row: row({ terminal: true, startTs: 0, ts: 60_000 }) }], 999_999);
-  assert.equal(body[1], "1m");
+  assert.equal(body[1], "{grey-fg}1m{/grey-fg}");
 });
 
 test("boardTable marks a flagged row and leaves others blank", () => {
@@ -174,8 +174,8 @@ test("bindHelpKey opens only when no overlay is open", () => {
 });
 
 test("modeContent highlights each mode distinctly", () => {
-  assert.equal(modeContent("supervised"), "{black-fg}{yellow-bg} ◆ SUPERVISED {/yellow-bg}{/black-fg}");
-  assert.equal(modeContent("autonomous"), "{black-fg}{green-bg} ◆ AUTONOMOUS {/green-bg}{/black-fg}");
+  assert.equal(modeContent("supervised"), "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}");
+  assert.equal(modeContent("autonomous"), "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}");
 });
 
 test("bindModeKey gates m while settings is open", () => {
@@ -212,12 +212,12 @@ test("statusContent is the mode chip alone: no refine, split or activity text", 
   assert.doesNotMatch(bar, /REFINE|SPLIT|live|active/);
 });
 
-test("paneLabel frames the pane name and its count", () => {
-  assert.equal(paneLabel("tasks", 3), " ◢ TASKS 3 ◣ ");
+test("paneLabel is the plain pane name and its count", () => {
+  assert.equal(paneLabel("tasks", 3), " tasks 3 ");
 });
 
-test("titleContent is the neon wordmark", () => {
-  assert.match(titleContent(), /◢◤ YIMBOT/);
+test("titleContent is the cyan wordmark", () => {
+  assert.match(titleContent(), /yimbot/);
   assert.match(titleContent(), /cyan-fg/);
 });
 
@@ -517,7 +517,7 @@ test("the header row sits inside the pane below it, not over its border columns"
   const paneTop = lines[1];
   // the pane's border owns column 0 and the last column; the header must start
   // inside them with a margin, and end before the right border's margin.
-  assert.equal(header.indexOf("◢◤ YIMBOT"), headerInset);
+  assert.equal(header.indexOf("yimbot"), headerInset);
   assert.ok(paneTop.length >= columns - 1, "the pane border should span the width");
   const padded = header.padEnd(columns, " ");
   assert.equal(padded.slice(columns - headerInset), " ".repeat(headerInset), "right margin must be blank");

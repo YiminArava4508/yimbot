@@ -3,7 +3,22 @@ import { HELD_MERGED_STATUS, HELD_SLICE_STATUS, MERGED_STATUS, isFlagged, isPare
 import type { CycleBoard } from "./linear-api.ts";
 
 export type Card = { key: string; title: string; stateName: string; row: BoardRow | null };
-export type Column = { id: string; title: string; cards: Card[] };
+export type Column = { id: string; title: string; color: string; cards: Card[] };
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+const TYPE_COLORS: Record<string, string> = {
+  triage: "magenta",
+  backlog: "grey",
+  unstarted: "white",
+  started: "yellow",
+  completed: "green",
+  canceled: "red",
+};
+
+export function columnColor(state: { type: string; color: string }): string {
+  if (HEX_COLOR.test(state.color)) return state.color;
+  return TYPE_COLORS[state.type] ?? "grey";
+}
 
 const TYPE_ORDER = ["triage", "backlog", "unstarted", "started", "completed", "canceled"];
 const HIDDEN_WHEN_EMPTY = new Set(["triage", "canceled"]);
@@ -34,7 +49,7 @@ export function buildColumns(board: CycleBoard, rows: BoardRow[]): Column[] {
         row: pickRow(rows, i.identifier),
       }));
     if (cards.length === 0 && HIDDEN_WHEN_EMPTY.has(state.type)) continue;
-    columns.push({ id: state.id, title: state.name, cards });
+    columns.push({ id: state.id, title: state.name, color: columnColor(state), cards });
   }
   return columns;
 }

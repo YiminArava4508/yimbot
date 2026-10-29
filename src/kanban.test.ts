@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { BoardRow } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 import { cellWidth, fmtDuration } from "./board-format.ts";
-import { buildColumns, cardLines, cycleFocus, focusOrder, pickRow, stepFocus, visibleWindow, type Card } from "./kanban.ts";
+import { buildColumns, cardLines, columnColor, cycleFocus, focusOrder, pickRow, stepFocus, visibleWindow, type Card } from "./kanban.ts";
 
 function row(over: Partial<BoardRow> = {}): BoardRow {
   return {
@@ -24,13 +24,13 @@ function board(over: Partial<CycleBoard> = {}): CycleBoard {
   return {
     cycleNumber: 1,
     states: [
-      { id: "s-done", name: "Done", type: "completed", position: 0 },
-      { id: "s-review", name: "In Review", type: "started", position: 2 },
-      { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
-      { id: "s-prog", name: "In Progress", type: "started", position: 1 },
-      { id: "s-back", name: "Backlog", type: "backlog", position: 0 },
-      { id: "s-triage", name: "Triage", type: "triage", position: 0 },
-      { id: "s-cancel", name: "Canceled", type: "canceled", position: 0 },
+      { id: "s-done", name: "Done", type: "completed", position: 0, color: "#5e6ad2" },
+      { id: "s-review", name: "In Review", type: "started", position: 2, color: "#f2994a" },
+      { id: "s-todo", name: "Todo", type: "unstarted", position: 0, color: "#e2e2e2" },
+      { id: "s-prog", name: "In Progress", type: "started", position: 1, color: "#f2c94c" },
+      { id: "s-back", name: "Backlog", type: "backlog", position: 0, color: "#bec2c8" },
+      { id: "s-triage", name: "Triage", type: "triage", position: 0, color: "#ff00ff" },
+      { id: "s-cancel", name: "Canceled", type: "canceled", position: 0, color: "#95a2b3" },
     ],
     issues: [],
     ...over,
@@ -51,6 +51,39 @@ test("buildColumns orders states by type group then position", () => {
     cols.map((c) => c.title),
     ["Backlog", "Todo", "In Progress", "In Review", "Done"],
   );
+});
+
+test("columnColor uses the Linear hex when valid", () => {
+  assert.equal(columnColor({ type: "started", color: "#f2c94c" }), "#f2c94c");
+  assert.equal(columnColor({ type: "started", color: "#ABCDEF" }), "#ABCDEF");
+});
+
+test("columnColor falls back by state type", () => {
+  const table: Record<string, string> = {
+    triage: "magenta",
+    backlog: "grey",
+    unstarted: "white",
+    started: "yellow",
+    completed: "green",
+    canceled: "red",
+    mystery: "grey",
+  };
+  for (const [type, want] of Object.entries(table)) {
+    assert.equal(columnColor({ type, color: "" }), want, type);
+  }
+});
+
+test("columnColor falls back when the hex is malformed", () => {
+  for (const color of ["red", "#fff", ""]) {
+    assert.equal(columnColor({ type: "started", color }), "yellow", color);
+  }
+});
+
+test("buildColumns gives each column its color", () => {
+  const cols = buildColumns(board(), []);
+  const byTitle = Object.fromEntries(cols.map((c) => [c.title, c.color]));
+  assert.equal(byTitle["In Progress"], "#f2c94c");
+  assert.equal(byTitle["Todo"], "#e2e2e2");
 });
 
 test("buildColumns keeps empty states but hides empty triage and canceled columns", () => {
@@ -237,7 +270,7 @@ test("cardLines fits the head line to width when the key is long", () => {
   }
 });
 
-const col = (id: string) => ({ id, title: id, cards: [] });
+const col = (id: string) => ({ id, title: id, color: "grey", cards: [] });
 
 test("focusOrder appends parents only when there are parents", () => {
   assert.deepEqual(focusOrder([col("a"), col("b")], false), ["a", "b"]);

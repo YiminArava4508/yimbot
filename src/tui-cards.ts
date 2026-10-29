@@ -11,6 +11,7 @@ export type CardColumn = {
   moveSelection(delta: number): void;
   setFocused(focused: boolean): void;
   setLabel(text: string): void;
+  setAccent(color: string): void;
 };
 
 const CARD_GAP = 1;
@@ -37,12 +38,14 @@ export function createCardColumn(opts: { parent: any; onOpen: (key: string) => v
   let contentHeight = 0;
   let focused = false;
 
+  const setAccent = (color: string) => {
+    widget.style.border.fg = color;
+    widget.style.label.fg = color;
+  };
+
   const cardHeight = (card: CardView) => card.lines.length + 2;
 
   const paint = () => {
-    const accent = focused ? FOCUS_BORDER : QUIET_BORDER;
-    widget.style.border.fg = accent;
-    widget.style.label.fg = accent;
     const selectedBorder = focused ? FOCUS_BORDER : DIM_SELECTED_BORDER;
     boxes.forEach((box, i) => {
       box.style.border.fg = i === selected ? selectedBorder : QUIET_BORDER;
@@ -143,5 +146,6 @@ export function createCardColumn(opts: { parent: any; onOpen: (key: string) => v
       paint();
     },
     setLabel: (text) => widget.setLabel(text),
+    setAccent,
   };
 }

@@ -907,8 +907,8 @@ function sequencedFetch(bodies: JsonBody[]): { fetchImpl: typeof fetch; calls: J
 }
 
 const boardStates = [
-  { id: "s-1", name: "Todo", type: "unstarted", position: 1 },
-  { id: "s-2", name: "In Progress", type: "started", position: 2 },
+  { id: "s-1", name: "Todo", type: "unstarted", position: 1, color: "#e2e2e2" },
+  { id: "s-2", name: "In Progress", type: "started", position: 2, color: "#f2c94c" },
 ];
 
 function boardTeamResponse(activeCycle: { number: number } | null): JsonBody {
@@ -941,6 +941,33 @@ test("fetchCycleBoard returns the team's states, the active cycle number and the
     { identifier: "ENG-1", title: "One", stateId: "s-1", sortOrder: 3.5, estimate: 2 },
     { identifier: "ENG-2", title: "Two", stateId: "s-2", sortOrder: -1, estimate: null },
   ]);
+});
+
+test("fetchCycleBoard carries each state's color", async () => {
+  const { fetchImpl, calls } = sequencedFetch([
+    {
+      data: {
+        viewer: { id: "user-1" },
+        teams: {
+          nodes: [
+            {
+              id: "team-1",
+              states: {
+                nodes: [
+                  { id: "s-2", name: "In Progress", type: "started", position: 2, color: "#f2c94c" },
+                  { id: "s-3", name: "Odd", type: "started", position: 3 },
+                ],
+              },
+              activeCycle: null,
+            },
+          ],
+        },
+      },
+    },
+  ]);
+  const board = await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.match(calls[0].query as string, /states \{ nodes \{ id name type position color \}/);
+  assert.deepEqual(board.states.map((s) => s.color), ["#f2c94c", ""]);
 });
 
 test("fetchCycleBoard filters the issue query by team, viewer and the active cycle", async () => {

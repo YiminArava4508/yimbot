@@ -83,7 +83,7 @@ export function bindHelpKey(
 
 // A split parent's row: it has no work of its own, only slices to wait on.
 // A parent whose status is a hold (needs decision, review findings) is not
-// one of these; it owes a human an answer and stays with the tasks.
+// one of these; it owes a human an answer and stays out of the parents pane.
 const PARENT_STATUSES = new Set([TRACKING_STATUS, AWAITING_SLICES_STATUS]);
 
 export function isParentRow(row: Pick<BoardRow, "status">): boolean {
@@ -153,10 +153,33 @@ export function styleParentsPane(
 }
 
 // The focus id is a column id or "parents". A focused column that left the
-// board hands the focus to the first entry; an empty board keeps the id.
+// board hands the focus to the first entry; an empty board keeps the id. An
+// unset focus waits for the first column rather than settling on the parents
+// pane before the first Linear board lands.
 export function resolveFocus(order: string[], current: string): string {
   if (order.length === 0 || order.includes(current)) return current;
+  const hasColumns = order.some((id) => id !== "parents");
+  if (current === "" && !hasColumns) return current;
   return order[0];
+}
+
+// Wraps a fetch so only results newer than the last applied one land: a slow
+// older request cannot overwrite a newer board. A rejection is dropped; a
+// failed Linear fetch already raises the reach warning inside the client.
+export function latestOnly<T>(fetch: () => Promise<T>, apply: (value: T) => void): () => void {
+  let issued = 0;
+  let applied = 0;
+  return () => {
+    const seq = ++issued;
+    fetch().then(
+      (value) => {
+        if (seq <= applied) return;
+        applied = seq;
+        apply(value);
+      },
+      () => {},
+    );
+  };
 }
 
 export type ColumnSlot = { id: string; left: number; width: number };
@@ -262,10 +285,10 @@ export function modeContent(mode: Mode): string {
     : "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}";
 }
 
-// The header row above the tasks pane. The panes below are bordered at column 0
+// The header row above the board. The panes below are bordered at column 0
 // and the last column, so "yimbot" and the status chips are inset past that
 // border plus one column of margin: the header then reads as sitting inside the
-// pane below instead of hanging off the screen edges. Exported so the layout
+// panes below instead of hanging off the screen edges. Exported so the layout
 // tests exercise these exact objects, not copies.
 export const headerInset = 2;
 
@@ -507,7 +530,7 @@ export function runTui(opts: {
   // render as "working (manual)" instead of aging off the board.
   manualLiveKeys: () => Set<string>;
   // Merged split slices whose worktree cleanup holds for the group; their rows
-  // read "merged, waiting on slices" and stay on the merge pane.
+  // read "merged, waiting on slices" and stay on the board.
   heldSliceKeys: () => Set<string>;
   // Merged worktrees the cleanup step is holding for the ticket's other PRs or
   // its Linear state; their rows read "merged, waiting on ticket".
@@ -719,18 +742,11 @@ export function runTui(opts: {
     opts.onOpenSession(target.row.key, target.row.label);
   };
 
-  // A failed fetch already raises the Linear reach warning inside the client;
-  // the board keeps the last good cycle.
-  const refreshBoard = () => {
-    opts.fetchBoard().then(
-      (board) => {
-        if (closed) return;
-        lastBoard = board;
-        render();
-      },
-      () => {},
-    );
-  };
+  const refreshBoard = latestOnly(opts.fetchBoard, (board) => {
+    if (closed) return;
+    lastBoard = board;
+    render();
+  });
 
   const onEvent = (_ev: YimbotEvent) => render();
   bus.on("event", onEvent);

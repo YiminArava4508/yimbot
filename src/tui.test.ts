@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { alignTables, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import type { Card } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -252,6 +252,53 @@ test("resolveFocus falls back to the first column when the focused one disappear
 
 test("resolveFocus keeps the id while the board has nothing to focus", () => {
   assert.equal(resolveFocus([], "a"), "a");
+});
+
+test("resolveFocus leaves an unset focus alone until the first column arrives", () => {
+  assert.equal(resolveFocus(["parents"], ""), "");
+  assert.equal(resolveFocus(["a", "b", "parents"], ""), "a");
+});
+
+test("resolveFocus still hands a vanished column's focus to the parents pane", () => {
+  assert.equal(resolveFocus(["parents"], "gone"), "parents");
+});
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+test("latestOnly drops a slow older result that lands after a newer one", async () => {
+  const pending = [deferred<number>(), deferred<number>()];
+  let call = 0;
+  const applied: number[] = [];
+  const refresh = latestOnly(() => pending[call++].promise, (v) => applied.push(v));
+  refresh();
+  refresh();
+  pending[1].resolve(2);
+  await pending[1].promise;
+  pending[0].resolve(1);
+  await pending[0].promise;
+  await Promise.resolve();
+  assert.deepEqual(applied, [2]);
+});
+
+test("latestOnly applies results that land in order and ignores rejections", async () => {
+  const applied: number[] = [];
+  let n = 0;
+  const refresh = latestOnly(async () => {
+    n++;
+    if (n === 2) throw new Error("down");
+    return n;
+  }, (v) => applied.push(v));
+  refresh();
+  await new Promise((r) => setImmediate(r));
+  refresh();
+  await new Promise((r) => setImmediate(r));
+  refresh();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(applied, [1, 3]);
 });
 
 test("placeColumns lays every column side by side when they fit, the last taking the leftover cells", () => {

@@ -235,6 +235,11 @@ if (process.stdout.isTTY) {
     settings,
     reviewDeps,
     fetchBoard: () => fetchCycleBoard(apiKey(), configFromEnv(process.env).teamName),
+    orderDeps: {
+      fetchMeta: (pr, repo) => prReviewMeta(ghRunner(currentCodebasePath(), repo), pr),
+      run: (prompt) =>
+        headless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
+    },
   });
 } else {
   const stop = await startDaemon();

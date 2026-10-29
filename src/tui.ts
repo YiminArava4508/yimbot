@@ -9,7 +9,9 @@ import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel } from "./board-format.ts";
-import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, partitionTable, tableFocusOrder, type TableId } from "./table-view.ts";
+import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, applyOrder, partitionTable, tableBoxes, tableFocusOrder, type ReviewEntry, type TableId } from "./table-view.ts";
+import { makeOrderFetcher, type OrderSourceDeps } from "./review-order.ts";
+import { createTableView } from "./tui-table-view.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 import { createCardColumn, type CardColumn } from "./tui-cards.ts";
 import { buildColumns, cardLines, cycleFocus, focusOrder, stepFocus, visibleWindow, type Card, type Column } from "./kanban.ts";
@@ -550,6 +552,9 @@ export function runTui(opts: {
   reviewDeps: (pr: number, key: string, label: string, repo?: string) => ReviewDeps;
   // The watched team's active cycle for the kanban columns.
   fetchBoard: () => Promise<CycleBoard>;
+  // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
+  // headless prompt runner (same claude -p shape as the review grouping).
+  orderDeps: OrderSourceDeps;
 }): void {
   const term = screenTerm(process.env.TERM);
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true, ...(term ? { term } : {}) });
@@ -601,10 +606,12 @@ export function runTui(opts: {
 
   let currentRows: BoardRow[] = [];
   let currentParents: BoardRow[] = [];
+  let currentTable: { tasks: BoardRow[]; review: ReviewEntry[]; merge: BoardRow[] } = { tasks: [], review: [], merge: [] };
+  let view: View = DEFAULT_VIEW;
   let currentColumns: Column[] = [];
   let lastBoard: CycleBoard | null = null;
   const columnWidgets = new Map<string, CardColumn>();
-  let focusedId = "";
+  let focusedId = "tasks";
   let windowStart = 0;
   let closed = false;
   // Set when a settings apply's rollback restart also failed, so the daemon
@@ -613,11 +620,18 @@ export function runTui(opts: {
   let daemonStopped = false;
   let notice: Notice | null = null;
 
+  const isTableId = (id: string): id is TableId => id === "tasks" || id === "review" || id === "merge";
   const focusedWidget = (): any => {
     if (focusedId === "parents") return parentsPane;
+    if (view === "table") return isTableId(focusedId) ? tableView.widgets[focusedId] : undefined;
     return columnWidgets.get(focusedId)?.widget;
   };
-  const currentOrder = () => focusOrder(currentColumns, currentParents.length > 0);
+  const tableCounts = () => ({
+    tasks: currentTable.tasks.length,
+    review: currentTable.review.length,
+    merge: currentTable.merge.length,
+  });
+  const currentOrder = () => viewFocusOrder(view, tableCounts(), currentColumns, currentParents.length > 0);
   const cardFor = (columnId: string, key: string | null | undefined): Card | undefined =>
     currentColumns.find((c) => c.id === columnId)?.cards.find((c) => c.key === key);
   const selectedCard = () => cardFor(focusedId, columnWidgets.get(focusedId)?.selectedKey());
@@ -626,6 +640,12 @@ export function runTui(opts: {
   };
   const focusChange = onPaneFocusChange(() => focusedId, setFocusId, () => render());
   parentsPane.on("focus", () => focusChange("parents"));
+
+  const tableView = createTableView({
+    parent: screen,
+    onFocus: (id) => focusChange(id),
+    onOpen: (r) => opts.onOpenSession(r.key, r.label),
+  });
 
   const makeColumn = (id: string): CardColumn => {
     const column = createCardColumn({
@@ -650,7 +670,7 @@ export function runTui(opts: {
       column.widget.destroy();
       columnWidgets.delete(id);
     }
-    focusedId = resolveFocus(currentOrder(), keep);
+    focusedId = viewFocus("kanban", currentOrder(), keep);
     const { start, slots } = placeColumns(ids, focusedId, windowStart, area.left, screenWidth - area.left - area.right);
     windowStart = start;
     const now = Date.now();
@@ -679,6 +699,11 @@ export function runTui(opts: {
     }
   };
 
+  const renderTable = (screenHeight: number, screenWidth: number) => {
+    focusedId = viewFocus("table", currentOrder(), focusedId);
+    tableView.render({ ...currentTable, now: Date.now(), boxes: tableBoxes(screenHeight, screenWidth), focusedId });
+  };
+
   const render = () => {
     currentRows = filterToLiveRows(
       reduceRows(readEvents(), Date.now(), {
@@ -690,9 +715,19 @@ export function runTui(opts: {
       opts.openPrKeys(),
     );
     const parents = currentRows.filter(isParentRow);
+    const screenHeight = Number(screen.rows) || 24;
     const screenWidth = Number(screen.cols) || 80;
-    const layout = boardLayout(Number(screen.rows) || 24, screenWidth, parents.length);
+    const layout = boardLayout(screenHeight, screenWidth, parents.length);
     currentParents = layout.parents ? parents : [];
+    if (view === "table") {
+      const sections = tableSections(currentRows, layout.parents !== null);
+      const withPr = sections.review.filter((r): r is BoardRow & { pr: number } => r.pr != null);
+      orderFetcher.ensure(
+        withPr.map((r) => r.pr),
+        new Map(withPr.flatMap((r) => (r.repo ? [[r.pr, r.repo] as const] : []))),
+      );
+      currentTable = { tasks: sections.tasks, review: applyOrder(sections.review, orderFetcher.get()), merge: sections.merge };
+    }
     if (layout.parents) {
       parentsPane.height = layout.parents.height;
       parentsPane.setLabel(paneLabel("parent tickets", currentParents.length));
@@ -716,12 +751,19 @@ export function runTui(opts: {
       const keep = focusedId;
       if (layout.parents) parentsPane.show();
       else parentsPane.hide();
+      if (view === "table") {
+        for (const column of columnWidgets.values()) column.widget.hide();
+        tableView.show();
+      } else {
+        tableView.hide();
+      }
       focusedId = keep;
-      renderColumns(layout.board, screenWidth);
+      if (view === "table") renderTable(screenHeight, screenWidth);
+      else renderColumns(layout.board, screenWidth);
       const widget = focusedWidget();
       if (widget && !widget.hidden && screen.focused !== widget) widget.focus();
     }
-    title.setContent(titleContent(lastBoard));
+    title.setContent(titleContent(headerBoard(view, lastBoard)));
     styleParentsPane(parentsPane, focusedId === "parents");
     footer.setContent(footerHint());
     status.setContent(
@@ -735,6 +777,7 @@ export function runTui(opts: {
     notice = { text, until: Date.now() + ttlMs };
     render();
   };
+  const orderFetcher = makeOrderFetcher({ ...opts.orderDeps, onUpdate: () => render() });
   const focusPane = (id: string) => {
     focusedId = id;
     render();
@@ -758,7 +801,7 @@ export function runTui(opts: {
   const onEvent = (_ev: YimbotEvent) => render();
   bus.on("event", onEvent);
   const refreshTimer = setInterval(render, refreshMs());
-  const boardTimer = setInterval(refreshBoard, BOARD_REFRESH_MS);
+  const boardTimer = setInterval(onlyInView("kanban", () => view, refreshBoard), BOARD_REFRESH_MS);
   // Reposition the absolutely-placed section immediately on a terminal resize
   // instead of leaving stale rows painted until the next tick.
   screen.on("resize", render);
@@ -812,7 +855,7 @@ export function runTui(opts: {
   // render() shows the panes again once the overlay closes.
   const hidePanes = () => {
     hidePanesKeepingFocus(
-      [parentsPane, ...[...columnWidgets.values()].map((c) => c.widget)],
+      [parentsPane, tableView, ...[...columnWidgets.values()].map((c) => c.widget)],
       () => focusedId,
       setFocusId,
     );
@@ -836,10 +879,12 @@ export function runTui(opts: {
 
   const selectedParent = () => currentParents[parentsPane.selected - 1];
 
-  // The row a key acts on: the parents pane's selection, or the focused
-  // column's card when yimbot has a row for it (a notice otherwise).
+  // The row a key acts on: the parents pane's selection, the focused table
+  // pane's row, or the focused column's card when yimbot has a row for it (a
+  // notice otherwise).
   const actionRow = (): BoardRow | undefined => {
     if (focusedId === "parents") return selectedParent();
+    if (view === "table") return isTableId(focusedId) ? tableView.selectedRow(focusedId, currentTable) : undefined;
     const target = rowForAction(selectedCard());
     if ("row" in target) return target.row;
     setNotice(target.notice, NOTICE_ERROR_TTL_MS);
@@ -869,6 +914,12 @@ export function runTui(opts: {
 
   bindModeKey(screen, isOverlayOpen, () => {
     opts.onToggleMode();
+    render();
+  });
+
+  bindViewKey(screen, isOverlayOpen, () => {
+    view = nextView(view);
+    if (view === "kanban") refreshBoard();
     render();
   });
 
@@ -905,5 +956,4 @@ export function runTui(opts: {
   });
 
   render();
-  refreshBoard();
 }

@@ -657,8 +657,6 @@ export function runTui(opts: {
   onAddReadyLabel: (pr: number, key: string, label: string, repo?: string) => Promise<void>;
   mode: () => Mode;
   onToggleMode: () => Mode;
-  refineEnabled: () => boolean;
-  splitEnabled: () => boolean;
   settings: SettingsDeps;
   reviewDeps: (pr: number, key: string, label: string, repo?: string) => ReviewDeps;
   // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the

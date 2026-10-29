@@ -12,13 +12,13 @@ import { readMode, toggleMode } from "./src/mode.ts";
 import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
 import { loadQaState } from "./src/qa-state.ts";
-import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
+import { writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
 import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src/linear-api.ts";
 import { applySettings } from "./src/settings-apply.ts";
-import { configFromEnv, envPath, isOff, writeEnvFile } from "./src/settings-model.ts";
+import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
 import { archMapPath, readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
@@ -232,8 +232,6 @@ if (process.stdout.isTTY) {
     },
     mode: readMode,
     onToggleMode: toggleMode,
-    refineEnabled: () => readRefineEnabled(refineEnvDefault(process.env)),
-    splitEnabled: () => !isOff(process.env.SPLIT_TICKETS ?? "true"),
     settings,
     reviewDeps,
     orderDeps: {

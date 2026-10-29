@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { openSettings, rowsToLines, settingsFooterHint, settingsPanelLayout, type SettingsDeps } from "./tui-settings.ts";
+import { categoryLines, openSettings, rowsToLines, settingsFooterHint, settingsLayout, type SettingsDeps } from "./tui-settings.ts";
 import type { SettingRow, YimbotConfig } from "./settings-model.ts";
 import type { ApplyResult } from "./settings-apply.ts";
 
 const rows: SettingRow[] = [
-  { envKey: "LINEAR_TEAM_NAME", label: "team", editor: "pickTeam", value: "Engineering", display: "Engineering" },
-  { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number", value: "9", display: "9" },
-  { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", value: "/nope", display: "/nope" },
+  { envKey: "LINEAR_TEAM_NAME", label: "team", editor: "pickTeam", category: "Linear", help: "", value: "Engineering", display: "Engineering" },
+  { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number", category: "Claim", help: "", value: "9", display: "9" },
+  { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", category: "System", help: "", value: "/nope", display: "/nope" },
 ];
 
 test("rowsToLines pads labels into one column and marks dirty rows", () => {
@@ -36,12 +36,39 @@ test("settingsFooterHint names the exits and only offers a write when dirty", ()
   assert.match(settingsFooterHint(1, true), /enter accept/);
 });
 
-test("settingsPanelLayout fills the screen between the header and the footer", () => {
-  const l = settingsPanelLayout();
-  assert.equal(l.top, 1);
-  assert.equal(l.bottom, 1);
-  assert.equal(l.width, "100%");
-  assert.equal(l.tags, true);
+test("settingsFooterHint names the pane switch", () => {
+  assert.match(settingsFooterHint(0, false), /h\/l pane/);
+});
+
+test("rowsToLines draws toggles as checkboxes", () => {
+  const toggles: SettingRow[] = [
+    { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle", category: "Claim", help: "", value: "true", display: "on" },
+    { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle", category: "Refine", help: "", value: "false", display: "off" },
+  ];
+  const lines = rowsToLines(toggles, [], {});
+  assert.match(lines[0], /\[x\] on/);
+  assert.match(lines[1], /\[ \] off/);
+});
+
+test("categoryLines marks the active category and shows dirty counts", () => {
+  const lines = categoryLines({ Linear: 0, Claim: 2, Refine: 0, Advance: 0, Models: 0, System: 0 }, 1);
+  assert.equal(lines.length, 6);
+  assert.match(lines[0], /Linear/);
+  assert.equal(lines[0].includes("*"), false);
+  assert.match(lines[1], /Claim/);
+  assert.match(lines[1], /▸/);
+  assert.match(lines[1], /2/);
+  assert.equal(lines[2].includes("▸"), false);
+});
+
+test("settingsLayout puts a sidebar, a detail list and a help box between the header and the footer", () => {
+  const l = settingsLayout();
+  assert.equal(l.sidebar.top, 1);
+  assert.equal(l.sidebar.left, 0);
+  assert.equal(l.detail.left, l.sidebar.width);
+  assert.equal(l.detail.tags, true);
+  assert.equal(l.help.bottom, 1);
+  assert.equal(l.help.left, l.sidebar.width);
 });
 
 // A minimal EventEmitter standing in for a TTY stream, mirroring the harness in
@@ -115,12 +142,64 @@ function press(screen: any, name: string) {
   screen.focused.emit("keypress", name.length === 1 ? name : "", { name, full: name });
 }
 
-test("openSettings paints every row on open", () => {
+// The detail list is attached first so screen.children.find returns it; the
+// sidebar and help box follow.
+function panes(screen: any) {
+  const [detail, sidebar] = screen.children.filter((c: any) => c.type === "list");
+  const help = screen.children.find((c: any) => c.type === "box");
+  return { detail, sidebar, help };
+}
+
+// Moves into the sidebar, steps to the named category, then back into the
+// detail list, the way an operator would.
+function showCategory(screen: any, name: string) {
+  const { sidebar } = panes(screen);
+  press(screen, "h");
+  const target = sidebar.ritems.findIndex((l: string) => l.includes(name));
+  while (sidebar.selected < target) press(screen, "j");
+  press(screen, "l");
+}
+
+test("openSettings paints the first category's rows and every category in the sidebar", () => {
   const screen = testScreen();
   openSettings(screen, testDeps(), () => {});
-  const list = screen.children.find((c: any) => c.type === "list");
-  assert.ok(list);
-  assert.equal(list.items.length > 10, true);
+  const { detail, sidebar } = panes(screen);
+  assert.equal(sidebar.items.length, 6);
+  assert.equal(detail.items.length, 6);
+  assert.match(detail.ritems[0], /linear api key/);
+  screen.destroy();
+});
+
+test("openSettings: moving down the sidebar swaps the detail rows", () => {
+  const screen = testScreen();
+  openSettings(screen, testDeps(), () => {});
+  const { detail } = panes(screen);
+  showCategory(screen, "Claim");
+  assert.equal(detail.ritems.some((l: string) => l.startsWith("wip cap")), true);
+  assert.equal(detail.ritems.some((l: string) => l.startsWith("linear api key")), false);
+  screen.destroy();
+});
+
+test("openSettings: the help box describes the focused row", () => {
+  const screen = testScreen();
+  openSettings(screen, testDeps(), () => {});
+  const { help } = panes(screen);
+  assert.ok(help);
+  assert.match(help.getContent(), /API key/);
+  assert.match(help.getContent(), /LINEAR_API_KEY/);
+  screen.destroy();
+});
+
+test("openSettings: an edit shows its dirty count in the sidebar", async () => {
+  const screen = testScreen();
+  openSettings(screen, testDeps(), () => {});
+  const { sidebar } = panes(screen);
+  showCategory(screen, "Claim");
+  const { detail } = panes(screen);
+  detail.select(detail.ritems.findIndex((l: string) => l.startsWith("auto-claim")));
+  press(screen, "enter");
+  const claim = sidebar.ritems.find((l: string) => l.includes("Claim"));
+  assert.match(claim, /1/);
   screen.destroy();
 });
 
@@ -147,6 +226,7 @@ test("openSettings: w with an invalid draft never calls apply", async () => {
     }),
     () => {},
   );
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   const wipIndex = list.ritems.findIndex((l: string) => l.startsWith("wip cap".padEnd(20, " ")));
   list.select(wipIndex);
@@ -176,6 +256,7 @@ test("openSettings: submitting a valid textbox edit reaches the draft and w appl
     }),
     () => {},
   );
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   const wipIndex = list.ritems.findIndex((l: string) => l.startsWith("wip cap".padEnd(20, " ")));
   list.select(wipIndex);
@@ -198,6 +279,7 @@ test("openSettings: esc twice discards a dirty draft and closes", () => {
   openSettings(screen, deps, () => {
     closed = true;
   });
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   // Toggle-edit the auto-claim row directly by simulating enter on it, then
   // confirm the double-esc discard sequence.
@@ -217,6 +299,7 @@ test("openSettings: navigating between the two escapes re-arms the discard warni
   openSettings(screen, deps, () => {
     closed = true;
   });
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
   press(screen, "enter"); // dirties the draft
@@ -242,6 +325,7 @@ test("openSettings: a failed apply keeps the dirty draft and reports the error",
   openSettings(screen, deps, () => {
     closed = true;
   });
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
   press(screen, "enter"); // toggle auto-claim, dirtying the draft
@@ -267,6 +351,7 @@ test("openSettings: closing after a failed, non-rolled-back apply tells onClose 
   openSettings(screen, deps, (stopped: boolean) => {
     daemonStopped = stopped;
   });
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
   press(screen, "enter");
@@ -286,6 +371,7 @@ test("openSettings: closing after a rolled-back failure does not report the daem
   openSettings(screen, deps, (stopped: boolean) => {
     daemonStopped = stopped;
   });
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
   press(screen, "enter");
@@ -311,6 +397,7 @@ test("openSettings: a later successful apply clears a previously reported daemon
   openSettings(screen, deps, (stopped: boolean) => {
     daemonStopped = stopped;
   });
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
   press(screen, "enter");
@@ -354,6 +441,7 @@ test("openSettings: a successful apply clears a daemon-stopped state seeded from
     },
     true,
   );
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
   press(screen, "enter");
@@ -375,6 +463,7 @@ test("openSettings: a rejected apply clears applying so the panel is usable afte
     },
   });
   openSettings(screen, deps, () => {});
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
   press(screen, "enter"); // toggle auto-claim, dirtying the draft
@@ -402,13 +491,14 @@ test("openSettings: a second edit attempt during an in-flight picker fetch does 
   });
   openSettings(screen, deps, () => {});
   const list = screen.children.find((c: any) => c.type === "list");
-  const floating = () => screen.children.filter((c: any) => c !== list && c.type !== "text");
+  const { sidebar } = panes(screen);
+  const floating = () => screen.children.filter((c: any) => c !== list && c !== sidebar && c.type !== "text" && c.type !== "box");
 
   const teamIndex = list.ritems.findIndex((l: string) => l.startsWith("team".padEnd(20, " ")));
   list.select(teamIndex);
   press(screen, "enter"); // starts the team fetch; list stays focused while it's pending
 
-  const wipIndex = list.ritems.findIndex((l: string) => l.startsWith("wip cap".padEnd(20, " ")));
+  const wipIndex = list.ritems.findIndex((l: string) => l.startsWith("deploy state".padEnd(20, " ")));
   list.select(wipIndex);
   press(screen, "enter"); // a second edit attempt on a different row, still mid-fetch
   assert.equal(floating().length, 0, "no widget should attach while the first fetch is still pending");
@@ -495,11 +585,12 @@ test("openSettings: an empty label picker never composes '!undefined' into the l
   const screen = testScreen();
   const deps = testDeps({ labels: () => Promise.resolve([]) });
   openSettings(screen, deps, () => {});
+  showCategory(screen, "Claim");
   const list = screen.children.find((c: any) => c.type === "list");
   const ticketsIndex = list.ritems.findIndex((l: string) => l.startsWith("tickets".padEnd(20, " ")));
   list.select(ticketsIndex);
   press(screen, "enter"); // opens the mode picker
-  const modePicker = screen.children.find((c: any) => c !== list && c.type === "list");
+  const modePicker = screen.children.filter((c: any) => c.type === "list").at(-1);
   modePicker.select(2); // "every ticket except labelled"
   press(screen, "enter"); // starts the labels() fetch, which resolves to []
   await new Promise((r) => setImmediate(r));
@@ -520,7 +611,7 @@ test("openSettings: a remote picker's cursor starts on the row's current value, 
   list.select(stateIndex);
   press(screen, "enter"); // opens the deploy-state picker; base value is "In Progress"
   await new Promise((r) => setImmediate(r));
-  const picker = screen.children.find((c: any) => c !== list && c.type === "list");
+  const picker = screen.children.filter((c: any) => c.type === "list").at(-1);
   assert.equal(
     picker.selected,
     picker.ritems.indexOf("In Progress"),

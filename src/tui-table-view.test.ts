@@ -155,3 +155,9 @@ test("a fresh view keeps its panes hidden until the first render", () => {
   view.render({ tasks: [], review: [], merge: [], now: 0, boxes: tableBoxes(30, 100), focusedId: "tasks" });
   for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
 });
+
+test("the tasks pane stretches from the title to the review pane", () => {
+  const { view } = setup();
+  const boxes = tableBoxes(30, 100);
+  assert.equal(view.widgets.tasks.height, 30 - boxes.tasks.top - boxes.tasks.bottom);
+});

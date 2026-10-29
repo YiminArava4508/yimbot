@@ -36,13 +36,15 @@ export function createTableView(opts: {
   onFocus: (id: TableId) => void;
   onOpen: (row: BoardRow) => void;
 }): TableView {
-  const makePane = (id: TableId) =>
+  // Positions are re-fit by render() from tableBoxes; tasks is sized by its
+  // top and bottom, so it must not start with a height that would win.
+  const makePane = (id: TableId, position: Record<string, number>) =>
     blessed.listtable({
       parent: opts.parent,
       left: 0,
       right: 0,
       bottom: 1,
-      height: 4,
+      ...position,
       hidden: true,
       tags: true,
       align: "left",
@@ -61,7 +63,11 @@ export function createTableView(opts: {
       },
     });
 
-  const widgets: Record<TableId, any> = { tasks: makePane("tasks"), review: makePane("review"), merge: makePane("merge") };
+  const widgets: Record<TableId, any> = {
+    tasks: makePane("tasks", { top: 1 }),
+    review: makePane("review", { height: 4 }),
+    merge: makePane("merge", { height: 4 }),
+  };
   const counts: Record<TableId, number> = { tasks: 0, review: 0, merge: 0 };
   let last: Pick<TableViewInput, "tasks" | "review" | "merge"> = { tasks: [], review: [], merge: [] };
   let visible = true;

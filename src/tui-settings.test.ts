@@ -50,6 +50,13 @@ test("rowsToLines draws toggles as checkboxes", () => {
   assert.match(lines[1], /\[ \] off/);
 });
 
+test("rowsToLines ticks the checkbox from the displayed state, not the raw value", () => {
+  const unset: SettingRow[] = [
+    { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle", category: "Claim", help: "", value: "", display: "on" },
+  ];
+  assert.match(rowsToLines(unset, [], {})[0], /\[x\] on/);
+});
+
 test("categoryLines marks the active category and shows dirty counts", () => {
   const lines = categoryLines({ Linear: 0, Claim: 2, Refine: 0, Advance: 0, Models: 0, System: 0 }, 1);
   assert.equal(lines.length, 6);
@@ -659,5 +666,24 @@ test("openSettings: a hung Linear fetch times out so the panel is usable again",
   // it immediately instead of being gated by a stuck `editing` flag.
   press(screen, "escape");
   assert.equal(closed, true);
+  screen.destroy();
+});
+
+test("openSettings: w with an error in another category jumps to that category", async () => {
+  const screen = testScreen();
+  openSettings(screen, testDeps(), () => {});
+  showCategory(screen, "Claim");
+  const { detail } = panes(screen);
+  detail.select(detail.ritems.findIndex((l: string) => l.startsWith("wip cap")));
+  press(screen, "enter");
+  await new Promise((r) => setImmediate(r));
+  press(screen, "backspace");
+  press(screen, "-");
+  press(screen, "1");
+  press(screen, "enter");
+  showCategory(screen, "Models");
+  assert.equal(detail.ritems.some((l: string) => l.startsWith("plan model")), true);
+  press(screen, "w");
+  assert.equal(detail.ritems.some((l: string) => /must be a positive integer/.test(l)), true);
   screen.destroy();
 });

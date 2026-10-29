@@ -33,7 +33,7 @@ export function rowsToLines(
   const dirtySet = new Set(dirty);
   return rows.map((r) => {
     const label = r.label.padEnd(LABEL_WIDTH, " ");
-    const shown = r.editor === "toggle" ? `${r.value === "true" ? "[x]" : "[ ]"} ${r.display}` : r.display;
+    const shown = r.editor === "toggle" ? `${r.display === "on" ? "[x]" : "[ ]"} ${r.display}` : r.display;
     const error = errors[r.envKey];
     if (error) return `${label}{red-fg}${shown}  (${error}){/red-fg}`;
     if (dirtySet.has(r.envKey)) return `${label}{yellow-fg}${shown} *{/yellow-fg}`;
@@ -457,7 +457,18 @@ export function openSettings(
     if (applying || editing) return;
     resetEscArm();
     const errors = validateDraft(draft);
-    if (Object.keys(errors).length > 0) {
+    const firstError = Object.keys(errors)[0];
+    if (firstError) {
+      const rows = draftRows(draft, assigneeName);
+      const bad = rows.find((r) => r.envKey === firstError);
+      if (bad) {
+        category = SETTING_CATEGORIES.indexOf(bad.category);
+        paint();
+        list.select(rowsInCategory(rows, bad.category).indexOf(bad));
+        paintHelp();
+        s.render();
+        return;
+      }
       paint();
       return;
     }

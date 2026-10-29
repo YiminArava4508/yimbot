@@ -196,7 +196,7 @@ export function reviewPaneBorderColor(focused: boolean): string {
 // shared one would repaint every border when paint() recolors the focused one.
 const paneStyle = () => ({ border: { fg: "grey" }, label: { fg: "grey" } });
 
-// Same discipline as footerLayout/settingsPanelLayout: exported plain records
+// Same discipline as footerLayout/settingsLayout: exported plain records
 // so the layout test exercises these exact objects. keys+vi on the diff pane
 // gives blessed's own j/k scrolling when it is focused; the plan pane's keys
 // are handled by openReview so headers can be skipped during selection.

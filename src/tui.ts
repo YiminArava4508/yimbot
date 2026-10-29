@@ -9,7 +9,7 @@ import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel } from "./board-format.ts";
-import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH } from "./table-view.ts";
+import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, partitionTable, tableFocusOrder, type TableId } from "./table-view.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 import { createCardColumn, type CardColumn } from "./tui-cards.ts";
 import { buildColumns, cardLines, cycleFocus, focusOrder, stepFocus, visibleWindow, type Card, type Column } from "./kanban.ts";
@@ -47,7 +47,7 @@ export function screenTerm(term: string | undefined): string | undefined {
 // A lean legend: the full keybind list lives under ?, the footer only names
 // help, quit, and r/R.
 export function footerHint(): string {
-  return "r ready   R review   ? help   ^c quit";
+  return "r ready   R review   v view   ? help   ^c quit";
 }
 
 // The help overlay's body: every keybind, one per line, aligned.
@@ -55,12 +55,14 @@ export function helpLines(key: string): string[] {
   const binds: [string, string][] = [
     ["j/k", "move selection"],
     ["^j/^k", "switch column (tab cycles)"],
+    ["h/l", "move between columns (kanban)"],
     ["enter", "open the selected card's tmux session"],
     ["f", "flag/unflag the selected card"],
     ["r", "queue the selected card's PR to merge (also inside R)"],
     ["R", "review the selected card's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
+    ["v", "toggle kanban view"],
     [`prefix+${key}`, "return here from a session"],
     ["?", "toggle this help"],
     ["^c", "quit"],
@@ -79,6 +81,67 @@ export function bindHelpKey(
   screen.key(["?"], () => {
     if (!isOverlayOpen()) open();
   });
+}
+
+export type View = "table" | "kanban";
+
+export const DEFAULT_VIEW: View = "table";
+
+export function nextView(view: View): View {
+  return view === "table" ? "kanban" : "table";
+}
+
+// v flips the board between the table and the kanban, gated like m.
+export function bindViewKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  toggle: () => void,
+): void {
+  screen.key(["v"], () => {
+    if (!isOverlayOpen()) toggle();
+  });
+}
+
+export function viewFocusOrder(
+  view: View,
+  tableCounts: Record<TableId, number>,
+  columns: Column[],
+  hasParents: boolean,
+): string[] {
+  if (view === "table") return tableFocusOrder(tableCounts, hasParents);
+  return focusOrder(columns, hasParents);
+}
+
+const TABLE_STOPS = new Set(["tasks", "review", "merge", "parents"]);
+
+// A column id carried over from the kanban means nothing to the table, and
+// with every table pane empty resolveFocus would keep it; the table then
+// falls back to the tasks pane, as it did before the kanban existed.
+export function viewFocus(view: View, order: string[], current: string): string {
+  const id = resolveFocus(order, current);
+  if (view === "kanban" || TABLE_STOPS.has(id)) return id;
+  return "tasks";
+}
+
+export function headerBoard(view: View, board: CycleBoard | null): CycleBoard | null {
+  return view === "kanban" ? board : null;
+}
+
+// With no room for the parents box (narrow or short screen) the parents go
+// back to the tasks pane rather than off the board.
+export function tableSections(
+  rows: BoardRow[],
+  hasParentsBox: boolean,
+): { tasks: BoardRow[]; review: BoardRow[]; merge: BoardRow[]; parents: BoardRow[] } {
+  const split = partitionTable(rows);
+  if (hasParentsBox) return split;
+  return { ...split, tasks: [...split.tasks, ...split.parents], parents: [] };
+}
+
+export function onlyInView(view: View, current: () => View, fn: () => void): () => void {
+  return () => {
+    if (current() === view) fn();
+  };
 }
 
 // The board's geometry: the kanban columns share the body between the title

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
-import type { Card } from "./kanban.ts";
+import { DEFAULT_VIEW, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import type { Card, Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -67,7 +67,7 @@ test("footerHint shows r/R: r reaches an unlabeled row wherever it sits", () => 
 test("helpLines carries every keybind the footer no longer shows", () => {
   const text = helpLines("F12").join("\n");
   for (const needle of [
-    "j/k", "^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "?", "^c", "prefix+F12",
+    "j/k", "^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "v", "h/l", "?", "^c", "prefix+F12",
   ]) {
     assert.ok(text.includes(needle), `help must mention ${needle}`);
   }
@@ -810,3 +810,102 @@ test("statusContent says nothing about reachability while every service answers"
   assert.doesNotMatch(statusContent("supervised", null, 0, []), /⚠/);
 });
 
+
+test("footerHint names the view key", () => {
+  assert.equal(footerHint(), "r ready   R review   v view   ? help   ^c quit");
+});
+
+test("helpLines lists v and h/l", () => {
+  const text = helpLines("Y").join("\n");
+  assert.match(text, /\{bold\}v\s*\{\/bold\}  toggle kanban view/);
+  assert.match(text, /\{bold\}h\/l\s*\{\/bold\}  move between columns \(kanban\)/);
+});
+
+test("nextView toggles", () => {
+  assert.equal(nextView("table"), "kanban");
+  assert.equal(nextView("kanban"), "table");
+});
+
+test("the default view is table", () => {
+  assert.equal(DEFAULT_VIEW, "table");
+});
+
+test("bindViewKey fires on v and not while an overlay is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const screen = { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } };
+  let overlay = true;
+  let toggles = 0;
+  bindViewKey(screen, () => overlay, () => toggles++);
+  handlers["v"]();
+  assert.equal(toggles, 0, "v must not switch views while an overlay is open");
+  overlay = false;
+  handlers["v"]();
+  assert.equal(toggles, 1);
+});
+
+const column = (id: string): Column => ({ id, title: id, color: "white", cards: [] });
+
+test("viewFocusOrder lists the non-empty table panes in table view and the column ids in kanban view, parents last when present", () => {
+  const counts = { tasks: 2, review: 0, merge: 1 };
+  const columns = [column("a"), column("b")];
+  assert.deepEqual(viewFocusOrder("table", counts, columns, false), ["tasks", "merge"]);
+  assert.deepEqual(viewFocusOrder("table", counts, columns, true), ["tasks", "merge", "parents"]);
+  assert.deepEqual(viewFocusOrder("kanban", counts, columns, false), ["a", "b"]);
+  assert.deepEqual(viewFocusOrder("kanban", counts, columns, true), ["a", "b", "parents"]);
+});
+
+test("a stale id resolves to the first stop of the new view", () => {
+  assert.equal(viewFocus("kanban", ["a", "b", "parents"], "review"), "a");
+  assert.equal(viewFocus("table", ["tasks", "merge", "parents"], "a"), "tasks");
+  assert.equal(viewFocus("table", ["review", "parents"], "a"), "review");
+  assert.equal(viewFocus("table", ["merge"], "tasks"), "merge");
+});
+
+test("a focus id still in the view's order stays put, parents included", () => {
+  assert.equal(viewFocus("table", ["tasks", "parents"], "parents"), "parents");
+  assert.equal(viewFocus("kanban", ["a", "parents"], "parents"), "parents");
+  assert.equal(viewFocus("kanban", ["a", "b"], "b"), "b");
+});
+
+test("an empty table falls back to the tasks pane, never a stale column id", () => {
+  assert.equal(viewFocus("table", [], "a"), "tasks");
+  assert.equal(viewFocus("table", [], "merge"), "merge");
+});
+
+test("headerBoard hides the cycle in table view and passes the board in kanban view", () => {
+  const board = { cycleNumber: 7 } as Parameters<typeof headerBoard>[1];
+  assert.equal(headerBoard("table", board), null);
+  assert.equal(headerBoard("kanban", board), board);
+  assert.equal(headerBoard("kanban", null), null);
+});
+
+test("tableSections keeps parents in their own box when it has room", () => {
+  const t = row({ key: "T" });
+  const p = row({ key: "P", status: "waiting on slices" });
+  const r = row({ key: "R", section: "review" });
+  const m = row({ key: "M", section: "merge" });
+  const s = tableSections([t, p, r, m], true);
+  assert.deepEqual(s.tasks.map((x) => x.key), ["T"]);
+  assert.deepEqual(s.parents.map((x) => x.key), ["P"]);
+  assert.deepEqual(s.review.map((x) => x.key), ["R"]);
+  assert.deepEqual(s.merge.map((x) => x.key), ["M"]);
+});
+
+test("tableSections puts parents back in tasks when the rail has no room", () => {
+  const t = row({ key: "T" });
+  const p = row({ key: "P", status: "waiting on slices" });
+  const s = tableSections([p, t], false);
+  assert.deepEqual(s.tasks.map((x) => x.key), ["T", "P"]);
+  assert.deepEqual(s.parents, []);
+});
+
+test("onlyInView runs the callback only while that view shows", () => {
+  let view: "table" | "kanban" = "table";
+  let calls = 0;
+  const tick = onlyInView("kanban", () => view, () => calls++);
+  tick();
+  assert.equal(calls, 0, "no Linear board fetch in table view");
+  view = "kanban";
+  tick();
+  assert.equal(calls, 1);
+});

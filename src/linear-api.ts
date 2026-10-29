@@ -436,6 +436,109 @@ export async function fetchCycleTodoIssues(
   }));
 }
 
+export type CycleBoardState = { id: string; name: string; type: string; position: number };
+export type CycleBoardIssue = {
+  identifier: string;
+  title: string;
+  stateId: string;
+  sortOrder: number;
+  estimate: number | null;
+};
+export type CycleBoard = {
+  cycleNumber: number | null;
+  states: CycleBoardState[];
+  issues: CycleBoardIssue[];
+};
+
+// The watched team's workflow states plus the viewer's issues in the team's
+// active cycle, for the kanban board. Skips the issue query when no cycle is active.
+export async function fetchCycleBoard(
+  apiKey: string,
+  teamName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CycleBoard> {
+  type TeamData = {
+    viewer: { id: string };
+    teams: {
+      nodes: {
+        id: string;
+        states: { nodes: CycleBoardState[] };
+        activeCycle: { number: number } | null;
+      }[];
+    };
+  };
+  const teamData = await gql<TeamData>(
+    apiKey,
+    `query CycleBoardTeam($teamName: String!) {
+      viewer { id }
+      teams(filter: { name: { eqIgnoreCase: $teamName } }) {
+        nodes {
+          id
+          states { nodes { id name type position } }
+          activeCycle { number }
+        }
+      }
+    }`,
+    { teamName },
+    fetchImpl,
+  );
+  const team = teamData.teams.nodes[0];
+  if (!team) throw new Error(`No Linear team named "${teamName}"`);
+  const states = team.states.nodes.map((s) => ({
+    id: s.id,
+    name: s.name,
+    type: s.type,
+    position: s.position,
+  }));
+  if (!team.activeCycle) return { cycleNumber: null, states, issues: [] };
+
+  type IssuesData = {
+    issues: {
+      nodes: {
+        identifier: string;
+        title: string;
+        sortOrder: number;
+        estimate: number | null;
+        state: { id: string };
+      }[];
+    };
+  };
+  const issueData = await gql<IssuesData>(
+    apiKey,
+    `query CycleBoardIssues($teamId: ID!, $viewerId: ID!) {
+      issues(
+        first: 250
+        filter: {
+          team: { id: { eq: $teamId } }
+          assignee: { id: { eq: $viewerId } }
+          cycle: { isActive: { eq: true } }
+        }
+      ) {
+        nodes {
+          identifier
+          title
+          sortOrder
+          estimate
+          state { id }
+        }
+      }
+    }`,
+    { teamId: team.id, viewerId: teamData.viewer.id },
+    fetchImpl,
+  );
+  return {
+    cycleNumber: team.activeCycle.number,
+    states,
+    issues: issueData.issues.nodes.map((n) => ({
+      identifier: n.identifier,
+      title: n.title,
+      stateId: n.state.id,
+      sortOrder: n.sortOrder,
+      estimate: n.estimate ?? null,
+    })),
+  };
+}
+
 // Count the viewer's assigned issues in a state matched by name, across ALL
 // teams (no team filter) — the personal-capacity WIP counts. Uses the state
 // name (not a team-scoped id) precisely so it spans teams.

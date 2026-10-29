@@ -209,7 +209,7 @@ export function sectionKind(section: Section): EventKind {
   return `section_${section}` as EventKind;
 }
 
-const MERGED_STATUS = STATUS.merged!.status;
+export const MERGED_STATUS = STATUS.merged!.status;
 export const HELD_SLICE_STATUS = "merged, waiting on slices";
 export const HELD_MERGED_STATUS = "merged, waiting on ticket";
 export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;

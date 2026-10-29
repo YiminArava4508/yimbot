@@ -1,5 +1,5 @@
 import { cellWidth, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
-import { isFlagged, isParentRow, isReadyClaim, type BoardRow, type Section } from "./events.ts";
+import { HELD_MERGED_STATUS, HELD_SLICE_STATUS, MERGED_STATUS, isFlagged, isParentRow, isReadyClaim, type BoardRow, type Section } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 
 export type Card = { key: string; title: string; stateName: string; row: BoardRow | null };
@@ -80,9 +80,12 @@ function wrapTitle(text: string, width: number): string[] {
 
 const SECTION_LABEL: Partial<Record<Section, string>> = { review: "ready to review", merge: "ready to merge" };
 
+const OWN_STATUSES = new Set([MERGED_STATUS, HELD_SLICE_STATUS, HELD_MERGED_STATUS]);
+
 function statusText(row: BoardRow): string {
   const label = SECTION_LABEL[row.section];
   if (isParentRow(row) || !label) return row.status;
+  if (row.terminal || OWN_STATUSES.has(row.status)) return row.status;
   if (isReadyClaim(row.status)) return label;
   return `${label}, ${row.status}`;
 }

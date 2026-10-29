@@ -141,6 +141,13 @@ test("cardLines status line reads only the section label while the row's status 
   assert.equal(status(row({ section: "merge", status: "ready: r to queue" })), "ready to merge");
 });
 
+test("cardLines status line reads a merged or held row as its own status, not ready to merge", () => {
+  const status = (r: BoardRow) => strip(cardLines(card({ row: r }), 40, 0, "c").at(-1) ?? "");
+  assert.equal(status(row({ section: "merge", status: "merged", terminal: true })), "merged");
+  assert.equal(status(row({ section: "merge", status: "merged, waiting on slices" })), "merged, waiting on slices");
+  assert.equal(status(row({ section: "review", status: "qa posted", terminal: true })), "qa posted");
+});
+
 test("cardLines status line adds in-section progress after the section label", () => {
   const status = (r: BoardRow) => strip(cardLines(card({ row: r }), 40, 0, "c").at(-1) ?? "");
   assert.equal(status(row({ section: "merge", status: "CI failing" })), "ready to merge, CI failing");

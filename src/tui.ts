@@ -8,7 +8,7 @@ import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
-import { cellWidth, codebaseRepoName, fitCell, grey } from "./board-format.ts";
+import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel } from "./board-format.ts";
 import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH } from "./table-view.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
 import { createCardColumn, type CardColumn } from "./tui-cards.ts";
@@ -299,10 +299,6 @@ export function titleContent(board: { cycleNumber: number | null } | null): stri
   return `${WORDMARK}${grey(` cycle ${board.cycleNumber}`)}`;
 }
 
-export function paneLabel(name: string, count: number): string {
-  return ` ${name} ${count} `;
-}
-
 export function statusLayout(): Record<string, unknown> {
   return { top: 0, right: headerInset, tags: true };
 }
@@ -364,7 +360,7 @@ export async function handleReadyPress(
   }
 }
 
-export { cellWidth, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
+export { cellWidth, fitCell, fmtDuration, grey, paneLabel, repoDisplayName, titleCell } from "./board-format.ts";
 
 // The parent tickets box is the queue's width, far too narrow for the board's
 // nine columns, so each parent gets one line: the ticket, then whatever of the

@@ -1,4 +1,5 @@
-import type { BoardRow } from "./events.ts";
+import { cellWidth, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
+import { isFlagged, type BoardRow } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 
 export type Card = { key: string; title: string; stateName: string; row: BoardRow | null };
@@ -36,4 +37,64 @@ export function buildColumns(board: CycleBoard, rows: BoardRow[]): Column[] {
     columns.push({ id: state.id, title: state.name, cards });
   }
   return columns;
+}
+
+const WRAP_MIN_WIDTH = 36;
+const CHIP = /^\{[a-z]+-fg\}\[[^\]]*\]\{\/[a-z]+-fg\}/;
+
+function takeFitting(word: string, room: number): string {
+  let out = "";
+  for (const ch of word) {
+    if (cellWidth(out + ch) > room) break;
+    out += ch;
+  }
+  return out;
+}
+
+function wrapTitle(text: string, width: number): string[] {
+  const chip = CHIP.exec(text)?.[0] ?? "";
+  const body = text.slice(chip.length).trim();
+  if (width < WRAP_MIN_WIDTH) {
+    if (!chip) return [fitCell(body, width)];
+    return [`${chip} ${fitCell(body, width - cellWidth(chip) - 1)}`.trimEnd()];
+  }
+  const words = body.split(/\s+/).filter(Boolean);
+  let first = chip;
+  while (words.length > 0) {
+    const word = words[0];
+    const next = first ? `${first} ${word}` : word;
+    if (cellWidth(next) <= width) {
+      first = next;
+      words.shift();
+      continue;
+    }
+    if (!first) {
+      first = takeFitting(word, width);
+      words[0] = word.slice(first.length);
+    }
+    break;
+  }
+  const rest = words.join(" ");
+  return rest ? [first, fitCell(rest, width)] : [first];
+}
+
+function statusText(row: BoardRow): string {
+  if (row.section === "review") return "ready to review";
+  if (row.section === "merge") return "ready to merge";
+  return row.status;
+}
+
+export function cardLines(card: Card, width: number, now: number, codebaseName: string): string[] {
+  const row = card.row;
+  const head = [card.key];
+  if (row) {
+    head.push(row.pr != null ? grey(`#${row.pr}`) : grey(fmtDuration(now - row.startTs)));
+    if (isFlagged(row)) head.push("{red-fg}⚑{/red-fg}");
+  }
+  const lines = [head.join(" "), ...wrapTitle(titleCell({ key: card.key, title: card.title }), width)];
+  if (!row) return [...lines, grey(fitCell(card.stateName, width))];
+  lines.push(grey(fitCell(statusText(row), width)));
+  const repo = repoDisplayName(row, codebaseName);
+  if (repo) lines.push(grey(fitCell(repo, width)));
+  return lines;
 }

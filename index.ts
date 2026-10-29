@@ -16,7 +16,7 @@ import { writeRefineEnabled } from "./src/refine-toggle.ts";
 import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
-import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src/linear-api.ts";
+import { fetchCycleBoard, fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src/linear-api.ts";
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
@@ -234,11 +234,7 @@ if (process.stdout.isTTY) {
     onToggleMode: toggleMode,
     settings,
     reviewDeps,
-    orderDeps: {
-      fetchMeta: (pr, repo) => prReviewMeta(ghRunner(currentCodebasePath(), repo), pr),
-      run: (prompt) =>
-        headless(envOr("REVIEW_ORDER_MODEL", envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", ""))))(prompt),
-    },
+    fetchBoard: () => fetchCycleBoard(apiKey(), configFromEnv(process.env).teamName),
   });
 } else {
   const stop = await startDaemon();

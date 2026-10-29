@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, parentRows, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
+import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, titleContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, parentRows, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -174,8 +174,8 @@ test("bindHelpKey opens only when no overlay is open", () => {
 });
 
 test("modeContent highlights each mode distinctly", () => {
-  assert.equal(modeContent("supervised"), "{black-fg}{yellow-bg} SUPERVISED {/yellow-bg}{/black-fg}");
-  assert.equal(modeContent("autonomous"), "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}");
+  assert.equal(modeContent("supervised"), "{black-fg}{yellow-bg} ◆ SUPERVISED {/yellow-bg}{/black-fg}");
+  assert.equal(modeContent("autonomous"), "{black-fg}{green-bg} ◆ AUTONOMOUS {/green-bg}{/black-fg}");
 });
 
 test("bindModeKey gates m while settings is open", () => {
@@ -206,26 +206,19 @@ test("footerHint no longer advertises a refine key (refine lives in settings)", 
   assert.doesNotMatch(footerHint("review"), /refine/);
 });
 
-test("statusContent shows a red refine-off chip while refine is off", () => {
-  const off = statusContent("supervised", false, true, 2, null, 0, []);
-  assert.match(off, /REFINE OFF/);
-  assert.match(off, /red-bg/);
+test("statusContent is the mode chip alone: no refine, split or activity text", () => {
+  const bar = statusContent("supervised", null, 0, []);
+  assert.equal(bar, modeContent("supervised"));
+  assert.doesNotMatch(bar, /REFINE|SPLIT|live|active/);
 });
 
-test("statusContent shows a green refine-on chip while refine is on", () => {
-  const on = statusContent("supervised", true, true, 2, null, 0, []);
-  assert.match(on, /REFINE ON/);
-  assert.match(on, /green-bg.*REFINE ON/);
+test("paneLabel frames the pane name and its count", () => {
+  assert.equal(paneLabel("tasks", 3), " ◢ TASKS 3 ◣ ");
 });
 
-test("statusContent shows a green split-on chip while splitting is on", () => {
-  const on = statusContent("supervised", true, true, 2, null, 0, []);
-  assert.match(on, /green-bg.*SPLIT ON/);
-});
-
-test("statusContent shows a red split-off chip while splitting is off", () => {
-  const off = statusContent("supervised", true, false, 2, null, 0, []);
-  assert.match(off, /red-bg.*SPLIT OFF/);
+test("titleContent is the neon wordmark", () => {
+  assert.match(titleContent(), /◢◤ YIMBOT/);
+  assert.match(titleContent(), /cyan-fg/);
 });
 
 test("bindQuitKeys binds only C-c: q and escape must not quit the board", () => {
@@ -331,10 +324,9 @@ test("bindFlagKey gates f while settings is open", () => {
 
 test("statusContent shows an unexpired notice and drops it after its ttl", () => {
   const notice = { text: "adding ready label to #481…", until: 10_000 };
-  assert.match(statusContent("supervised", true, true, 2, notice, 9_999, []), /adding ready label to #481/);
-  assert.match(statusContent("supervised", true, true, 2, notice, 9_999, []), /2 active/);
-  assert.doesNotMatch(statusContent("supervised", true, true, 2, notice, 10_000, []), /adding ready label/);
-  assert.doesNotMatch(statusContent("supervised", true, true, 2, null, 0, []), /adding ready label/);
+  assert.match(statusContent("supervised", notice, 9_999, []), /adding ready label to #481/);
+  assert.doesNotMatch(statusContent("supervised", notice, 10_000, []), /adding ready label/);
+  assert.doesNotMatch(statusContent("supervised", null, 0, []), /adding ready label/);
 });
 
 test("handleReadyPress reports the same outcome the review overlay does", async () => {
@@ -475,11 +467,11 @@ function renderHeaderLines(columns: number, rows: number): string[] {
     noCellBorders: true,
     data: [["TICKET"], ["ENG-1"]],
   });
-  blessed.text({ parent: screen, ...titleLayout(), content: "yimbot" });
+  blessed.text({ parent: screen, ...titleLayout(), content: titleContent() });
   blessed.text({
     parent: screen,
     ...statusLayout(),
-    content: statusContent("supervised", true, true, 3, null, Date.now(), []),
+    content: statusContent("supervised", null, Date.now(), []),
   });
   screen.render();
   const lines = screen.lines.map((line: [number, string][]) =>
@@ -525,11 +517,11 @@ test("the header row sits inside the pane below it, not over its border columns"
   const paneTop = lines[1];
   // the pane's border owns column 0 and the last column; the header must start
   // inside them with a margin, and end before the right border's margin.
-  assert.equal(header.indexOf("yimbot"), headerInset);
+  assert.equal(header.indexOf("◢◤ YIMBOT"), headerInset);
   assert.ok(paneTop.length >= columns - 1, "the pane border should span the width");
   const padded = header.padEnd(columns, " ");
   assert.equal(padded.slice(columns - headerInset), " ".repeat(headerInset), "right margin must be blank");
-  assert.match(header, /active/);
+  assert.match(header, /SUPERVISED/);
 });
 
 test("footerHint names the review key", () => {
@@ -991,15 +983,14 @@ test("reachWarnings names each failing service in red", () => {
   );
 });
 
-test("statusContent leads with the reach warnings, ahead of the chips", () => {
-  const bar = statusContent("supervised", true, true, 2, null, 0, ["github"]);
+test("statusContent leads with the reach warnings, ahead of the mode chip", () => {
+  const bar = statusContent("supervised", null, 0, ["github"]);
   assert.ok(bar.startsWith("{red-fg}⚠ github{/red-fg}"));
-  assert.ok(bar.indexOf("github") < bar.indexOf("REFINE"));
-  assert.match(bar, /2 active/);
+  assert.ok(bar.indexOf("github") < bar.indexOf("SUPERVISED"));
 });
 
 test("statusContent says nothing about reachability while every service answers", () => {
-  assert.doesNotMatch(statusContent("supervised", true, true, 2, null, 0, []), /⚠/);
+  assert.doesNotMatch(statusContent("supervised", null, 0, []), /⚠/);
 });
 
 test("applyPaneFocusStyle highlights the focused pane's row and nobody else's", () => {

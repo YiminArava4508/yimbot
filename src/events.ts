@@ -216,6 +216,15 @@ export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
 export const TRACKING_STATUS = STATUS.tracking!.status;
 export const WORKING_STATUS = STATUS.task_started!.status;
 
+// A split parent's row: it has no work of its own, only slices to wait on.
+// A parent whose status is a hold (needs decision, review findings) is not
+// one of these; it owes a human an answer and stays out of the parents pane.
+const PARENT_STATUSES = new Set([TRACKING_STATUS, AWAITING_SLICES_STATUS]);
+
+export function isParentRow(row: Pick<BoardRow, "status">): boolean {
+  return PARENT_STATUSES.has(row.status);
+}
+
 // Statuses that mean a human already owes this row an answer. A status derived
 // from somewhere other than the row's own session (the split parent's "waiting
 // on slices") must not overwrite one, or the row stops saying what it needs.

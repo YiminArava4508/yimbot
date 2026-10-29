@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import type { Card } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -148,6 +148,13 @@ const card = (over: Partial<Card>): Card => ({ key: "ENG-1", title: "t", stateNa
 test("rowForAction hands back the card's yimbot row", () => {
   const r = row({ key: "ENG-1" });
   assert.deepEqual(rowForAction(card({ row: r })), { row: r });
+});
+
+test("prActionRefusal refuses r and R on a parent card whatever its section or PR", () => {
+  const parent = row({ status: "waiting on slices", section: "merge", pr: 7 });
+  assert.equal(prActionRefusal(parent), "{red-fg}parent tickets have no PR of their own{/red-fg}");
+  assert.equal(prActionRefusal(row({ status: "tracker ticket", pr: 8 })), "{red-fg}parent tickets have no PR of their own{/red-fg}");
+  assert.equal(prActionRefusal(row({ status: "ready to merge", section: "merge", pr: 9 })), undefined);
 });
 
 test("rowForAction gives a notice for a card yimbot has no session for", () => {

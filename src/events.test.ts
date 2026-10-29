@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, isParentRow, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1279,4 +1279,11 @@ test("qa kinds map to statuses; posted and failed are terminal", () => {
   assert.deepEqual(statusFor("qa_started"), { status: "qa: in session", terminal: false });
   assert.deepEqual(statusFor("qa_posted"), { status: "qa posted", terminal: true });
   assert.deepEqual(statusFor("qa_failed"), { status: "qa failed", terminal: true });
+});
+
+test("isParentRow is true for the tracker and waiting-on-slices statuses only", () => {
+  assert.equal(isParentRow({ status: TRACKING_STATUS }), true);
+  assert.equal(isParentRow({ status: AWAITING_SLICES_STATUS }), true);
+  assert.equal(isParentRow({ status: "needs decision" }), false);
+  assert.equal(isParentRow({ status: "working" }), false);
 });

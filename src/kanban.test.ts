@@ -141,6 +141,15 @@ test("cardLines status line reads ready to review / ready to merge from the row'
   assert.equal(status(row({ section: "tasks", status: "coding" })), "coding");
 });
 
+test("cardLines shows a split parent's own status and age, never the section or PR its pre-split PR left behind", () => {
+  const parent = row({ status: "waiting on slices", section: "merge", pr: 7, startTs: 0 });
+  const lines = cardLines(card({ row: parent }), 30, 5 * 60_000, "c");
+  assert.ok(!lines[0].includes("#7"));
+  assert.ok(lines[0].includes(fmtDuration(5 * 60_000)));
+  assert.ok(lines.some((l) => strip(l) === "waiting on slices"));
+  assert.ok(!lines.some((l) => strip(l).includes("ready to merge")));
+});
+
 test("cardLines for a card with no row shows the Linear state name in grey and no age, flag or repo line", () => {
   const lines = cardLines(card({ row: null, stateName: "Todo" }), 30, 0, "codebase");
   assert.deepEqual(lines, ["ENG-1", "Fix the thing", "{grey-fg}Todo{/grey-fg}"]);

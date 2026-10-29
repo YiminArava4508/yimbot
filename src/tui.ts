@@ -3,7 +3,7 @@
 import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
-import { AWAITING_SLICES_STATUS, TRACKING_STATUS, bus, filterToLiveRows, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveRows, isFlagged, isParentRow, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
@@ -78,15 +78,6 @@ export function bindHelpKey(
   screen.key(["?"], () => {
     if (!isOverlayOpen()) open();
   });
-}
-
-// A split parent's row: it has no work of its own, only slices to wait on.
-// A parent whose status is a hold (needs decision, review findings) is not
-// one of these; it owes a human an answer and stays out of the parents pane.
-const PARENT_STATUSES = new Set([TRACKING_STATUS, AWAITING_SLICES_STATUS]);
-
-export function isParentRow(row: Pick<BoardRow, "status">): boolean {
-  return PARENT_STATUSES.has(row.status);
 }
 
 // The board's geometry: the kanban columns share the body between the title
@@ -202,6 +193,14 @@ export function placeColumns(
     return { id, left: left + k * colWidth, width: last ? width - colWidth * (count - 1) : colWidth };
   });
   return { start, slots };
+}
+
+export const PARENT_NOTICE = "{red-fg}parent tickets have no PR of their own{/red-fg}";
+
+// A parent row's pr, when it has one, is the PR the split closed: the fold
+// carries it forward, but nothing about it is actionable any more.
+export function prActionRefusal(row: Pick<BoardRow, "status">): string | undefined {
+  return isParentRow(row) ? PARENT_NOTICE : undefined;
 }
 
 export const NO_SESSION_NOTICE = "{red-fg}no yimbot session for this ticket{/red-fg}";
@@ -796,17 +795,17 @@ export function runTui(opts: {
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
   });
 
-  // A parent row's pr, when it has one, is the PR the split closed: the fold
-  // carries it forward, but nothing about it is actionable any more.
-  const refuseParentRow = (): boolean => {
-    if (focusedId !== "parents") return false;
-    setNotice("{red-fg}parent tickets have no PR of their own{/red-fg}", NOTICE_ERROR_TTL_MS);
-    return true;
+  const prActionRow = (): BoardRow | undefined => {
+    const r = actionRow();
+    if (!r) return undefined;
+    const refusal = prActionRefusal(r);
+    if (!refusal) return r;
+    setNotice(refusal, NOTICE_ERROR_TTL_MS);
+    return undefined;
   };
 
   bindReadyKey(screen, isOverlayOpen, () => {
-    if (refuseParentRow()) return;
-    const r = actionRow();
+    const r = prActionRow();
     if (!r) return;
     void handleReadyPress(r, opts.onAddReadyLabel, setNotice);
   });
@@ -827,8 +826,7 @@ export function runTui(opts: {
   });
 
   bindReviewKey(screen, isOverlayOpen, () => {
-    if (refuseParentRow()) return;
-    const r = actionRow();
+    const r = prActionRow();
     if (!r) return;
     if (r.pr == null) {
       setNotice("{red-fg}selected row has no PR to review{/red-fg}", NOTICE_ERROR_TTL_MS);

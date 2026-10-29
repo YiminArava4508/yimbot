@@ -1,5 +1,5 @@
 import { cellWidth, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
-import { isFlagged, type BoardRow } from "./events.ts";
+import { isFlagged, isParentRow, type BoardRow } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 
 export type Card = { key: string; title: string; stateName: string; row: BoardRow | null };
@@ -79,6 +79,7 @@ function wrapTitle(text: string, width: number): string[] {
 }
 
 function statusText(row: BoardRow): string {
+  if (isParentRow(row)) return row.status;
   if (row.section === "review") return "ready to review";
   if (row.section === "merge") return "ready to merge";
   return row.status;
@@ -88,7 +89,8 @@ export function cardLines(card: Card, width: number, now: number, codebaseName: 
   const row = card.row;
   const extras: string[] = [];
   if (row) {
-    extras.push(row.pr != null ? grey(`#${row.pr}`) : grey(fmtDuration(now - row.startTs)));
+    const showPr = row.pr != null && !isParentRow(row);
+    extras.push(showPr ? grey(`#${row.pr}`) : grey(fmtDuration(now - row.startTs)));
     if (isFlagged(row)) extras.push("{red-fg}⚑{/red-fg}");
   }
   const suffix = extras.join(" ");

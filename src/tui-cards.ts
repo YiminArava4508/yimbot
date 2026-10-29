@@ -15,6 +15,7 @@ export type CardColumn = {
 
 const CARD_GAP = 1;
 const QUIET_BORDER = "grey";
+const DIM_SELECTED_BORDER = "white";
 
 export function createCardColumn(opts: { parent: any; onOpen: (key: string) => void; onFocus: () => void }): CardColumn {
   // A scrollable box clips its children to its inner area, so a card that
@@ -42,8 +43,9 @@ export function createCardColumn(opts: { parent: any; onOpen: (key: string) => v
     const accent = focused ? FOCUS_BORDER : QUIET_BORDER;
     widget.style.border.fg = accent;
     widget.style.label.fg = accent;
+    const selectedBorder = focused ? FOCUS_BORDER : DIM_SELECTED_BORDER;
     boxes.forEach((box, i) => {
-      box.style.border.fg = i === selected ? accent : QUIET_BORDER;
+      box.style.border.fg = i === selected ? selectedBorder : QUIET_BORDER;
     });
   };
 
@@ -61,6 +63,9 @@ export function createCardColumn(opts: { parent: any; onOpen: (key: string) => v
     // needs the exact row the selected card starts on.
     widget.childBase = offset;
     widget.childOffset = 0;
+    // blessed moves the label only from its own 'scroll' listener, which this
+    // bypasses; emitting 'scroll' would re-enter screen.render from prerender.
+    if (widget._label) widget._label.rtop = offset - widget.itop;
   };
 
   const select = (index: number) => {
@@ -84,6 +89,7 @@ export function createCardColumn(opts: { parent: any; onOpen: (key: string) => v
         right: 0,
         height: cardHeight(card),
         tags: true,
+        wrap: false,
         mouse: true,
         border: { type: "line" },
         style: { border: { fg: QUIET_BORDER } },

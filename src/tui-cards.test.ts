@@ -172,17 +172,20 @@ test("a click on the second card selects it and calls onFocus", () => {
   screen.destroy();
 });
 
-test("setFocused toggles the border color between cyan and grey", () => {
+test("setFocused toggles the border color between cyan and grey and keeps the selection dimmed", () => {
   const { screen, col } = column();
+  col.setLabel("Todo");
   col.setCards(cards(2));
   col.setFocused(true);
   assert.equal(col.widget.style.border.fg, FOCUS_BORDER);
-  const [selected, other] = col.widget.children;
+  const [selected, other] = col.widget.children.filter((c: any) => !c._isLabel);
   assert.equal(selected.style.border.fg, FOCUS_BORDER);
   assert.equal(other.style.border.fg, "grey");
   col.setFocused(false);
   assert.equal(col.widget.style.border.fg, "grey");
-  assert.equal(selected.style.border.fg, "grey");
+  assert.equal(other.style.border.fg, "grey");
+  assert.notEqual(selected.style.border.fg, other.style.border.fg);
+  assert.notEqual(selected.style.border.fg, FOCUS_BORDER);
   screen.destroy();
 });
 
@@ -191,5 +194,24 @@ test("setLabel sets the column label", () => {
   col.setLabel("Todo 3");
   screen.render();
   assert.match(screenText(screen)[0], /Todo 3/);
+  screen.destroy();
+});
+
+test("the label stays on the top border after the column scrolls", () => {
+  const { screen, col } = column(12);
+  col.setLabel("Todo 6");
+  col.setCards(cards(6));
+  col.moveSelection(5);
+  screen.render();
+  assert.match(screenText(screen)[0], /Todo 6/);
+  screen.destroy();
+});
+
+test("a card line wider than the card is clipped instead of wrapped", () => {
+  const { screen, col } = column();
+  col.setCards([{ key: "ENG-0", lines: ["x".repeat(40), "tail"] }]);
+  screen.render();
+  const text = screenText(screen);
+  assert.equal(text.findIndex((l) => l.includes("tail")), 3);
   screen.destroy();
 });

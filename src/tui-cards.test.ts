@@ -172,6 +172,25 @@ test("a click on the second card selects it and calls onFocus", () => {
   screen.destroy();
 });
 
+test("a click on a card in the focused column keeps the keys on the column", () => {
+  const screen = testScreen();
+  const col = createCardColumn({ parent: screen, onOpen: () => {}, onFocus: () => col.widget.focus() });
+  col.widget.position.top = 0;
+  col.widget.position.left = 0;
+  col.widget.position.width = 30;
+  col.widget.position.height = 24;
+  col.setCards(cards(3));
+  col.widget.focus();
+  screen.render();
+  const y = screenText(screen).findIndex((l) => l.includes("title 1"));
+  screen.program.emit("mouse", { action: "mousedown", button: "left", x: 5, y });
+  screen.program.emit("mouse", { action: "mouseup", button: "left", x: 5, y });
+  assert.equal(screen.focused, col.widget);
+  press(screen, "j");
+  assert.equal(col.selectedKey(), "ENG-2");
+  screen.destroy();
+});
+
 test("setFocused toggles the border color between cyan and grey and keeps the selection dimmed", () => {
   const { screen, col } = column();
   col.setLabel("Todo");

@@ -91,6 +91,7 @@ export function createCardColumn(opts: { parent: any; onOpen: (key: string) => v
         tags: true,
         wrap: false,
         mouse: true,
+        autoFocus: false,
         border: { type: "line" },
         style: { border: { fg: QUIET_BORDER } },
         content: card.lines.join("\n"),

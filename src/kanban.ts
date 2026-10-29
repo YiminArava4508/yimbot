@@ -86,14 +86,17 @@ function statusText(row: BoardRow): string {
 
 export function cardLines(card: Card, width: number, now: number, codebaseName: string): string[] {
   const row = card.row;
-  const head = [card.key];
+  const extras: string[] = [];
   if (row) {
-    head.push(row.pr != null ? grey(`#${row.pr}`) : grey(fmtDuration(now - row.startTs)));
-    if (isFlagged(row)) head.push("{red-fg}⚑{/red-fg}");
+    extras.push(row.pr != null ? grey(`#${row.pr}`) : grey(fmtDuration(now - row.startTs)));
+    if (isFlagged(row)) extras.push("{red-fg}⚑{/red-fg}");
   }
+  const suffix = extras.join(" ");
+  const keyRoom = width - cellWidth(suffix) - 1;
+  const head = keyRoom >= 1 ? [fitCell(card.key, keyRoom), ...extras] : [fitCell(card.key, width)];
   const lines = [head.join(" "), ...wrapTitle(titleCell({ key: card.key, title: card.title }), width)];
   if (!row) return [...lines, grey(fitCell(card.stateName, width))];
-  lines.push(grey(fitCell(statusText(row), width)));
+  lines.push(fitCell(statusText(row), width));
   const repo = repoDisplayName(row, codebaseName);
   if (repo) lines.push(grey(fitCell(repo, width)));
   return lines;

@@ -186,3 +186,21 @@ test("cardLines omits the repo line when the repo is unknown", () => {
   assert.equal(strip(withPr.at(-1) ?? ""), "codebase");
   assert.equal(withPr.length, 4);
 });
+
+test("cardLines keeps the row status out of grey but greys the no-row state name", () => {
+  const withRow = cardLines(card({ row: row({ status: "coding" }) }), 30, 0, "c");
+  assert.equal(withRow.at(-1), "coding");
+  const review = cardLines(card({ row: row({ section: "review" }) }), 30, 0, "c");
+  assert.equal(review.at(-1), "ready to review");
+  const noRow = cardLines(card({ row: null, stateName: "Todo" }), 30, 0, "c");
+  assert.equal(noRow.at(-1), "{grey-fg}Todo{/grey-fg}");
+});
+
+test("cardLines fits the head line to width when the key is long", () => {
+  const long = card({ key: "VERYLONGTEAM-123456", row: row({ pr: 12345, flagged: true, flagReasons: ["x"] }) });
+  for (const width of [10, 14, 20]) {
+    for (const line of cardLines(long, width, 0, "c")) {
+      assert.ok(cellWidth(line) <= width, `${line} is wider than ${width}`);
+    }
+  }
+});

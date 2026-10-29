@@ -203,12 +203,14 @@ export function prActionRefusal(row: Pick<BoardRow, "status">): string | undefin
   return isParentRow(row) ? PARENT_NOTICE : undefined;
 }
 
+export const NO_CARD_NOTICE = "{red-fg}no ticket selected{/red-fg}";
 export const NO_SESSION_NOTICE = "{red-fg}no yimbot session for this ticket{/red-fg}";
 
 // A card is a Linear ticket; only one yimbot has a row for can be opened,
 // flagged, queued or reviewed.
 export function rowForAction(card: Card | undefined): { row: BoardRow } | { notice: string } {
-  if (!card?.row) return { notice: NO_SESSION_NOTICE };
+  if (!card) return { notice: NO_CARD_NOTICE };
+  if (!card.row) return { notice: NO_SESSION_NOTICE };
   return { row: card.row };
 }
 

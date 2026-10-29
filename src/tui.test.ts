@@ -161,8 +161,8 @@ test("rowForAction gives a notice for a card yimbot has no session for", () => {
   assert.deepEqual(rowForAction(card({ row: null })), { notice: "{red-fg}no yimbot session for this ticket{/red-fg}" });
 });
 
-test("rowForAction gives the same notice when no card is selected", () => {
-  assert.deepEqual(rowForAction(undefined), { notice: "{red-fg}no yimbot session for this ticket{/red-fg}" });
+test("rowForAction says no ticket is selected when the column is empty", () => {
+  assert.deepEqual(rowForAction(undefined), { notice: "{red-fg}no ticket selected{/red-fg}" });
 });
 
 test("resolveFocus keeps a focus id that is still on the board", () => {

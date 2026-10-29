@@ -259,10 +259,15 @@ export type EditorKind =
   | "labelFilter"
   | "readonly";
 
+export const SETTING_CATEGORIES = ["Linear", "Claim", "Refine", "Advance", "Models", "System"] as const;
+export type SettingCategory = (typeof SETTING_CATEGORIES)[number];
+
 export type SettingRow = {
   envKey: string;
   label: string;
   editor: EditorKind;
+  category: SettingCategory;
+  help: string;
   value: string;
   display: string;
 };
@@ -274,32 +279,38 @@ function maskKey(key: string): string {
   return `${head}${"*".repeat(6)}${key.slice(-4)}`;
 }
 
-const ROW_SPECS: { envKey: string; label: string; editor: EditorKind }[] = [
-  { envKey: "LINEAR_API_KEY", label: "linear api key", editor: "secret" },
-  { envKey: "ASSIGNEE", label: "assignee", editor: "readonly" },
-  { envKey: "LINEAR_TEAM_NAME", label: "team", editor: "pickTeam" },
-  { envKey: "DEPLOY_STATE_NAME", label: "deploy state", editor: "pickState" },
-  { envKey: "TODO_STATE_NAME", label: "todo state", editor: "pickState" },
-  { envKey: "REVIEW_STATE_NAME", label: "review state", editor: "pickState" },
-  { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter" },
-  { envKey: "MAX_ESTIMATE", label: "max estimate", editor: "number" },
-  { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number" },
-  { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle" },
-  { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle" },
-  { envKey: "REFINE_USERS", label: "refine users", editor: "text" },
-  { envKey: "REFINE_LABEL_FILTER", label: "refine tickets", editor: "labelFilter" },
-  { envKey: "MAX_REFINING", label: "refine cap", editor: "number" },
-  { envKey: "SPLIT_TICKETS", label: "split tickets", editor: "toggle" },
-  { envKey: "RISK_LABELS", label: "risk labels", editor: "list" },
-  { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number" },
-  { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text" },
-  { envKey: "PLAN_MODEL", label: "plan model", editor: "text" },
-  { envKey: "IMPL_MODEL", label: "impl model", editor: "text" },
-  { envKey: "AUTO_CLEANUP", label: "auto-cleanup", editor: "toggle" },
-  { envKey: "AUTO_CONTINUE", label: "auto-continue", editor: "toggle" },
-  { envKey: "MAX_CONTINUATIONS", label: "max continuations", editor: "number" },
-  { envKey: "AC_JUDGE_MODEL", label: "judge model", editor: "text" },
+type RowSpec = Pick<SettingRow, "envKey" | "label" | "editor" | "category" | "help">;
+
+const ROW_SPECS: RowSpec[] = [
+  { envKey: "LINEAR_API_KEY", label: "linear api key", editor: "secret", category: "Linear", help: "Personal API key yimbot uses to read and move tickets." },
+  { envKey: "ASSIGNEE", label: "assignee", editor: "readonly", category: "Linear", help: "The Linear user behind the API key. Tickets assigned to them are yimbot's." },
+  { envKey: "LINEAR_TEAM_NAME", label: "team", editor: "pickTeam", category: "Linear", help: "Linear team yimbot watches. Changing it resets which states you can pick." },
+  { envKey: "DEPLOY_STATE_NAME", label: "deploy state", editor: "pickState", category: "Linear", help: "State a ticket sits in while a session works on it." },
+  { envKey: "TODO_STATE_NAME", label: "todo state", editor: "pickState", category: "Linear", help: "State auto-claim pulls tickets from." },
+  { envKey: "REVIEW_STATE_NAME", label: "review state", editor: "pickState", category: "Linear", help: "State a ticket moves to once its PR is open." },
+  { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter", category: "Claim", help: "Which tickets auto-claim may take: all, only a label, or all except a label." },
+  { envKey: "MAX_ESTIMATE", label: "max estimate", editor: "number", category: "Claim", help: "Skip tickets estimated above this. Empty means no cap." },
+  { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number", category: "Claim", help: "Most tickets yimbot works at once." },
+  { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle", category: "Claim", help: "Pick up Todo tickets on each heartbeat without being asked." },
+  { envKey: "RISK_LABELS", label: "risk labels", editor: "list", category: "Claim", help: "Comma-separated labels that make a ticket wait for a human." },
+  { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle", category: "Refine", help: "Size unestimated tickets and split large ones on their own." },
+  { envKey: "REFINE_USERS", label: "refine users", editor: "text", category: "Refine", help: "Comma-separated users whose tickets get refined. Empty uses the API key's user." },
+  { envKey: "REFINE_LABEL_FILTER", label: "refine tickets", editor: "labelFilter", category: "Refine", help: "Label filter for refinement. Empty inherits the claim filter." },
+  { envKey: "MAX_REFINING", label: "refine cap", editor: "number", category: "Refine", help: "Most tickets refined at once." },
+  { envKey: "SPLIT_TICKETS", label: "split tickets", editor: "toggle", category: "Refine", help: "Let refinement decompose a ticket into subtickets." },
+  { envKey: "AUTO_CONTINUE", label: "auto-continue", editor: "toggle", category: "Advance", help: "Nudge a session forward when it stops before its acceptance criteria pass." },
+  { envKey: "MAX_CONTINUATIONS", label: "max continuations", editor: "number", category: "Advance", help: "Nudges per ticket before yimbot gives up and flags it." },
+  { envKey: "AC_JUDGE_MODEL", label: "judge model", editor: "text", category: "Advance", help: "Model that judges acceptance criteria. Empty uses Claude's default." },
+  { envKey: "AUTO_CLEANUP", label: "auto-cleanup", editor: "toggle", category: "Advance", help: "Remove worktrees and sessions once a ticket is merged." },
+  { envKey: "PLAN_MODEL", label: "plan model", editor: "text", category: "Models", help: "Claude Code model alias or id for planning sessions." },
+  { envKey: "IMPL_MODEL", label: "impl model", editor: "text", category: "Models", help: "Claude Code model alias or id for implementation sessions." },
+  { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number", category: "System", help: "Minutes between daemon passes over the board." },
+  { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", category: "System", help: "Git repo that worktrees are cut from. Must exist." },
 ];
+
+export function rowsInCategory(rows: SettingRow[], category: SettingCategory): SettingRow[] {
+  return rows.filter((r) => r.category === category);
+}
 
 function displayValue(envKey: string, value: string): string {
   switch (envKey) {
@@ -404,4 +415,12 @@ export function commitDraft(draft: Draft): YimbotConfig {
   // itself, so a literal "~/..." must not reach .env.
   if ("CODEBASE_PATH" in edits) edits.CODEBASE_PATH = expandTilde(edits.CODEBASE_PATH);
   return configFromEnv({ ...configToEnvRecord(draft.base), ...edits });
+}
+
+export function categoryDirtyCounts(draft: Draft, assignee: string): Record<SettingCategory, number> {
+  const dirty = new Set(dirtyKeys(draft));
+  const rows = draftRows(draft, assignee);
+  const counts = {} as Record<SettingCategory, number>;
+  for (const c of SETTING_CATEGORIES) counts[c] = rowsInCategory(rows, c).filter((r) => dirty.has(r.envKey)).length;
+  return counts;
 }

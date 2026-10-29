@@ -19,6 +19,9 @@ import {
   draftRows,
   validateDraft,
   commitDraft,
+  SETTING_CATEGORIES,
+  categoryDirtyCounts,
+  rowsInCategory,
   type YimbotConfig,
 } from "./settings-model.ts";
 
@@ -343,4 +346,34 @@ test("settingRows includes the split tickets toggle", () => {
   const row = rows.find((r) => r.envKey === "SPLIT_TICKETS");
   assert.equal(row?.editor, "toggle");
   assert.equal(row?.display, "off");
+});
+
+test("every row belongs to a category and carries help text", () => {
+  const rows = settingRows(sample, "x");
+  const names = new Set<string>(SETTING_CATEGORIES);
+  for (const r of rows) {
+    assert.equal(names.has(r.category), true, `${r.envKey} has an unknown category`);
+    assert.equal(r.help.length > 0, true, `${r.envKey} has no help text`);
+  }
+});
+
+test("rowsInCategory keeps only that category's rows, in display order", () => {
+  const rows = settingRows(sample, "x");
+  assert.deepEqual(
+    rowsInCategory(rows, "Linear").map((r) => r.envKey),
+    ["LINEAR_API_KEY", "ASSIGNEE", "LINEAR_TEAM_NAME", "DEPLOY_STATE_NAME", "TODO_STATE_NAME", "REVIEW_STATE_NAME"],
+  );
+  const total = SETTING_CATEGORIES.reduce((n, c) => n + rowsInCategory(rows, c).length, 0);
+  assert.equal(total, rows.length);
+});
+
+test("categoryDirtyCounts counts edited rows per category", () => {
+  let d = newDraft(sample);
+  d = setEdit(d, "MAX_IN_PROGRESS", "7");
+  d = setEdit(d, "AUTO_CLAIM", "false");
+  d = setEdit(d, "PLAN_MODEL", "sonnet");
+  const counts = categoryDirtyCounts(d, "x");
+  assert.equal(counts.Claim, 2);
+  assert.equal(counts.Models, 1);
+  assert.equal(counts.Linear, 0);
 });

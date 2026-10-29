@@ -1,19 +1,25 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
 import {
+  SETTING_CATEGORIES,
+  categoryDirtyCounts,
   commitDraft,
   dirtyKeys,
   draftRows,
   newDraft,
+  rowsInCategory,
   setEdit,
   validateDraft,
   type Draft,
+  type SettingCategory,
   type SettingRow,
   type YimbotConfig,
 } from "./settings-model.ts";
 import type { ApplyResult } from "./settings-apply.ts";
 
 const LABEL_WIDTH = 20;
+const SIDEBAR_WIDTH = 22;
+const HELP_HEIGHT = 5;
 
 // Bounds a Linear picker fetch so a hung request cannot trap the operator in
 // the panel with no exit but C-c (which quits the board and stops the daemon).
@@ -27,31 +33,62 @@ export function rowsToLines(
   const dirtySet = new Set(dirty);
   return rows.map((r) => {
     const label = r.label.padEnd(LABEL_WIDTH, " ");
+    const shown = r.editor === "toggle" ? `${r.display === "on" ? "[x]" : "[ ]"} ${r.display}` : r.display;
     const error = errors[r.envKey];
-    if (error) return `${label}{red-fg}${r.display}  (${error}){/red-fg}`;
-    if (dirtySet.has(r.envKey)) return `${label}{yellow-fg}${r.display} *{/yellow-fg}`;
-    return `${label}${r.display}`;
+    if (error) return `${label}{red-fg}${shown}  (${error}){/red-fg}`;
+    if (dirtySet.has(r.envKey)) return `${label}{yellow-fg}${shown} *{/yellow-fg}`;
+    return `${label}${shown}`;
+  });
+}
+
+export function categoryLines(counts: Record<SettingCategory, number>, active: number): string[] {
+  return SETTING_CATEGORIES.map((c, i) => {
+    const marker = i === active ? "▸" : " ";
+    const dirty = counts[c] > 0 ? ` {yellow-fg}${counts[c]}*{/yellow-fg}` : "";
+    return `${marker} ${c}${dirty}`;
   });
 }
 
 export function settingsFooterHint(dirty: number, editing: boolean): string {
   if (editing) return "enter accept   esc cancel";
   const write = dirty > 0 ? `   w write + restart (${dirty} changed)` : "";
-  return `j/k move   enter edit${write}   esc back`;
+  return `j/k move   h/l pane   enter edit${write}   esc back`;
 }
 
-export function settingsPanelLayout(): Record<string, unknown> {
+export function settingsLayout(): {
+  sidebar: Record<string, unknown>;
+  detail: Record<string, unknown>;
+  help: Record<string, unknown>;
+} {
+  const pane = { keys: true, vi: true, tags: true, border: { type: "line" } };
   return {
-    top: 1,
-    left: 0,
-    width: "100%",
-    bottom: 1,
-    tags: true,
-    keys: true,
-    vi: true,
-    border: { type: "line" },
-    label: " settings ",
-    style: { selected: { inverse: true } },
+    sidebar: {
+      ...pane,
+      top: 1,
+      left: 0,
+      width: SIDEBAR_WIDTH,
+      bottom: 1,
+      label: " settings ",
+      style: { selected: { inverse: true }, border: { fg: "gray" } },
+    },
+    detail: {
+      ...pane,
+      top: 1,
+      left: SIDEBAR_WIDTH,
+      width: `100%-${SIDEBAR_WIDTH}`,
+      bottom: 1 + HELP_HEIGHT,
+      style: { selected: { inverse: true }, border: { fg: "cyan" } },
+    },
+    help: {
+      tags: true,
+      left: SIDEBAR_WIDTH,
+      width: `100%-${SIDEBAR_WIDTH}`,
+      bottom: 1,
+      height: HELP_HEIGHT,
+      border: { type: "line" },
+      label: " about ",
+      style: { border: { fg: "gray" } },
+    },
   };
 }
 
@@ -88,7 +125,11 @@ export function openSettings(
 ): void {
   const s: any = screen;
 
-  const list: any = blessed.list({ parent: s, items: [], ...settingsPanelLayout() });
+  const layout = settingsLayout();
+  // Attached first so the detail list is the screen's first list child.
+  const list: any = blessed.list({ parent: s, items: [], ...layout.detail });
+  const sidebar: any = blessed.list({ parent: s, items: [], ...layout.sidebar });
+  const help: any = blessed.box({ parent: s, ...layout.help });
   const footer: any = blessed.text({
     parent: s,
     bottom: 0,
@@ -104,6 +145,8 @@ export function openSettings(
   let draft: Draft = newDraft(base);
   let assigneeName = "resolving...";
   let editing = false;
+  let category = 0;
+  let pane: "sidebar" | "detail" = "detail";
   let escArmed = false;
   // Blocks re-entrant edits/writes/escapes while a write is in flight: the
   // list stays focused during that await (no widget steals focus the way an
@@ -122,14 +165,44 @@ export function openSettings(
   // detached list/footer or attach a fresh, focused picker to a screen the
   // panel no longer owns.
   let closed = false;
+  // setItems/select re-emit "select item" while paint rebuilds the lists;
+  // without this the sidebar handler would treat that as the operator moving.
+  let painting = false;
+
+  function visibleRows(): SettingRow[] {
+    return rowsInCategory(draftRows(draft, assigneeName), SETTING_CATEGORIES[category]);
+  }
+
+  function paintHelp(): void {
+    const row = visibleRows()[list.selected];
+    help.setContent(row ? `${row.help}\n{gray-fg}${row.envKey}{/gray-fg}` : "");
+  }
+
+  function focusPane(): void {
+    (pane === "sidebar" ? sidebar : list).focus();
+    list.style.border.fg = pane === "detail" ? "cyan" : "gray";
+    sidebar.style.border.fg = pane === "sidebar" ? "cyan" : "gray";
+  }
 
   function paint(footerOverride?: string): void {
     if (closed) return;
-    const rows = draftRows(draft, assigneeName);
     const dirty = dirtyKeys(draft);
     const errors = validateDraft(draft);
-    list.setItems(rowsToLines(rows, dirty, errors));
+    painting = true;
+    list.setItems(rowsToLines(visibleRows(), dirty, errors));
+    sidebar.setItems(categoryLines(categoryDirtyCounts(draft, assigneeName), category));
+    sidebar.select(category);
+    painting = false;
+    list.setLabel(` ${SETTING_CATEGORIES[category].toLowerCase()} `);
+    paintHelp();
     footer.setContent(footerOverride ?? settingsFooterHint(dirty.length, editing));
+    s.render();
+  }
+
+  function switchPane(next: "sidebar" | "detail"): void {
+    if (applying || editing) return;
+    pane = next;
+    focusPane();
     s.render();
   }
 
@@ -145,7 +218,7 @@ export function openSettings(
   function endEdit(): void {
     if (closed) return;
     editing = false;
-    list.focus();
+    focusPane();
     paint();
   }
 
@@ -157,6 +230,8 @@ export function openSettings(
   function closePanel(): void {
     closed = true;
     list.detach();
+    sidebar.detach();
+    help.detach();
     footer.detach();
     s.render();
     onClose(daemonStopped);
@@ -382,7 +457,18 @@ export function openSettings(
     if (applying || editing) return;
     resetEscArm();
     const errors = validateDraft(draft);
-    if (Object.keys(errors).length > 0) {
+    const firstError = Object.keys(errors)[0];
+    if (firstError) {
+      const rows = draftRows(draft, assigneeName);
+      const bad = rows.find((r) => r.envKey === firstError);
+      if (bad) {
+        category = SETTING_CATEGORIES.indexOf(bad.category);
+        paint();
+        list.select(rowsInCategory(rows, bad.category).indexOf(bad));
+        paintHelp();
+        s.render();
+        return;
+      }
       paint();
       return;
     }
@@ -432,24 +518,50 @@ export function openSettings(
   }
 
   list.on("select", () => {
-    const row = draftRows(draft, assigneeName)[list.selected];
+    const row = visibleRows()[list.selected];
     if (row) dispatchEdit(row);
   });
 
-  list.on("cancel", onEscape);
+  list.on("select item", () => {
+    if (!closed && !painting) {
+      paintHelp();
+      s.render();
+    }
+  });
 
-  list.on("keypress", (_ch: string, key: any) => {
+  sidebar.on("select", () => switchPane("detail"));
+
+  sidebar.on("select item", (_item: unknown, index: number) => {
+    if (closed || painting || index === category) return;
+    category = index;
+    list.select(0);
+    paint();
+  });
+
+  list.on("cancel", onEscape);
+  sidebar.on("cancel", onEscape);
+
+  function onKeypress(target: "sidebar" | "detail", key: any): void {
     if (key.full === "w") {
       onWrite();
       return;
     }
+    if (key.name === "tab") {
+      switchPane(target === "detail" ? "sidebar" : "detail");
+      return;
+    }
+    if (target === "detail" && (key.name === "h" || key.name === "left")) switchPane("sidebar");
+    if (target === "sidebar" && (key.name === "l" || key.name === "right")) switchPane("detail");
     // escape/q drive the double-esc discard prompt themselves (via the
     // "cancel" event below); any other key means the operator moved on,
     // so a stale arm must not silently discard on the next plain esc.
     if (key.name !== "escape" && key.name !== "q") resetEscArm();
-  });
+  }
 
-  list.focus();
+  list.on("keypress", (_ch: string, key: any) => onKeypress("detail", key));
+  sidebar.on("keypress", (_ch: string, key: any) => onKeypress("sidebar", key));
+
+  focusPane();
   paint();
 
   deps

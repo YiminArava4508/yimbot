@@ -72,6 +72,8 @@ test("helpLines carries every keybind the footer no longer shows", () => {
     assert.ok(text.includes(needle), `help must mention ${needle}`);
   }
   assert.doesNotMatch(text, /review pane/);
+  assert.match(text, /switch column \(tab cycles\)/);
+  assert.doesNotMatch(text, /pane|row/);
   assert.doesNotMatch(text, /\{bold\}q\s*\{\/bold\}/, "q is no longer a quit key");
 });
 

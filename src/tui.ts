@@ -53,11 +53,11 @@ export function footerHint(): string {
 export function helpLines(key: string): string[] {
   const binds: [string, string][] = [
     ["j/k", "move selection"],
-    ["^j/^k", "switch pane (tab cycles)"],
-    ["enter", "open the row's tmux session"],
-    ["f", "flag/unflag the selected row"],
-    ["r", "queue the selected row's PR to merge (also inside R)"],
-    ["R", "review the selected row's PR"],
+    ["^j/^k", "switch column (tab cycles)"],
+    ["enter", "open the selected card's tmux session"],
+    ["f", "flag/unflag the selected card"],
+    ["r", "queue the selected card's PR to merge (also inside R)"],
+    ["R", "review the selected card's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
     [`prefix+${key}`, "return here from a session"],
@@ -214,12 +214,12 @@ export function rowForAction(card: Card | undefined): { row: BoardRow } | { noti
   return { row: card.row };
 }
 
-// The setter for the mouse focus sync. A click reaches blessed first: list.js
-// focuses the clicked list and repaints, but the pane highlight and footer are
-// only fitted by render(), so without this the board waits for the refresh
-// timer to catch up. The repaint is deferred past blessed's own click handler
-// and dropped if the focus moved on before the tick (hidePanesKeepingFocus's
-// rewind).
+// The setter for the mouse focus sync. A click on a card or the parents list
+// moves blessed focus without going through focusPane, so this records the
+// clicked column as focused and repaints; the column borders and footer are
+// only fitted by render(), and without it the board waits for the refresh
+// timer. The repaint is deferred past blessed's own click handler and dropped
+// if the focus moved on before the tick (hidePanesKeepingFocus's rewind).
 export function onPaneFocusChange(
   get: () => string,
   set: (id: string) => void,

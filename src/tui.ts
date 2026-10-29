@@ -487,7 +487,7 @@ export function boardTable(
     return [
       grey(fmtTime(r.ts)),
       grey(fmtDuration(durMs)),
-      r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
+      r.terminal ? grey(r.status) : r.status,
       r.label,
       r.pr != null ? `#${r.pr}` : "",
       grey(repoDisplayName(r, codebaseName)),

@@ -43,6 +43,7 @@ export function createTableView(opts: {
       right: 0,
       bottom: 1,
       height: 4,
+      hidden: true,
       tags: true,
       align: "left",
       keys: true,
@@ -64,6 +65,7 @@ export function createTableView(opts: {
   const counts: Record<TableId, number> = { tasks: 0, review: 0, merge: 0 };
   let last: Pick<TableViewInput, "tasks" | "review" | "merge"> = { tasks: [], review: [], merge: [] };
   let visible = true;
+  let syncing = false;
 
   const selectedRow: TableView["selectedRow"] = (id, input) => {
     const index = widgets[id].selected - 1;
@@ -72,14 +74,20 @@ export function createTableView(opts: {
   };
 
   const syncVisibility = () => {
+    // Hiding a focused widget makes blessed rewind focus onto another one;
+    // that focus event is ours, not the operator's.
+    syncing = true;
     for (const id of TABLE_IDS) {
-      if (visible && (id === "tasks" || counts[id] > 0)) widgets[id].show();
+      if (visible) widgets[id].show();
       else widgets[id].hide();
     }
+    syncing = false;
   };
 
   for (const id of TABLE_IDS) {
-    widgets[id].on("focus", () => opts.onFocus(id));
+    widgets[id].on("focus", () => {
+      if (!syncing) opts.onFocus(id);
+    });
     widgets[id].on("select", () => {
       const picked = selectedRow(id, last);
       if (picked) opts.onOpen(picked);

@@ -124,11 +124,34 @@ test("hide and show toggle all three panes", () => {
   for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
 });
 
-test("empty review and merge panes are hidden, tasks always shows", () => {
+test("empty panes stay visible with their zero-count label", () => {
   const { view, input } = setup({ tasks: 0, review: 0, merge: 0 });
-  assert.equal(view.widgets.tasks.hidden, false);
-  assert.equal(view.widgets.review.hidden, true);
-  assert.equal(view.widgets.merge.hidden, true);
-  view.render({ ...input, review: [{ row: row("R-0"), reason: "" }] });
+  for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
+  assert.equal(view.widgets.review._label.content, " ready to review 0 ");
+  view.hide();
+  view.show();
   assert.equal(view.widgets.review.hidden, false);
+  view.render(input);
+  assert.equal(view.widgets.merge.hidden, false);
+});
+
+test("hiding or emptying the focused pane does not report a focus", () => {
+  const { view, input, focused } = setup();
+  view.widgets.review.focus();
+  focused.length = 0;
+  view.hide();
+  view.show();
+  view.widgets.review.focus();
+  focused.length = 0;
+  view.render({ ...input, review: [] });
+  view.hide();
+  assert.deepEqual(focused, []);
+});
+
+test("a fresh view keeps its panes hidden until the first render", () => {
+  const screen = testScreen();
+  const view = createTableView({ parent: screen, onFocus: () => {}, onOpen: () => {} });
+  for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, true);
+  view.render({ tasks: [], review: [], merge: [], now: 0, boxes: tableBoxes(30, 100), focusedId: "tasks" });
+  for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
 });

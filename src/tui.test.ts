@@ -3,8 +3,8 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
-import { DEFAULT_VIEW, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
-import type { Card, Column } from "./kanban.ts";
+import { DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -690,6 +690,58 @@ test("bindPaneNavKeys maps ctrl-jk (and the linefeed alias) to moves, gated by o
   overlay = true;
   handlers["C-j"]();
   assert.equal(moves.length, 3);
+});
+
+function fakeScreen() {
+  const handlers: Record<string, () => void> = {};
+  return { handlers, screen: { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } } };
+}
+
+test("bindColumnKeys moves left on h and right on l while active", () => {
+  const { handlers, screen } = fakeScreen();
+  const moves: string[] = [];
+  bindColumnKeys(screen, () => false, () => true, (dir) => moves.push(dir));
+  handlers["h"]();
+  handlers["l"]();
+  assert.deepEqual(moves, ["left", "right"]);
+});
+
+test("bindColumnKeys does nothing while inactive or while an overlay is open", () => {
+  const { handlers, screen } = fakeScreen();
+  const moves: string[] = [];
+  let overlay = false;
+  let active = false;
+  bindColumnKeys(screen, () => overlay, () => active, (dir) => moves.push(dir));
+  handlers["h"]();
+  handlers["l"]();
+  active = true;
+  overlay = true;
+  handlers["h"]();
+  handlers["l"]();
+  assert.deepEqual(moves, []);
+});
+
+test("stepping past either end keeps the focus and an empty board is a no-op", () => {
+  const order = ["a", "b", "parents"];
+  assert.equal(stepFocus(order, "parents", "next"), "parents");
+  assert.equal(stepFocus(order, "a", "prev"), "a");
+  assert.equal(stepFocus([], "", "next"), "");
+  assert.equal(stepFocus([], "", "prev"), "");
+});
+
+test("makeSelectGuard consumes an armed flag once", () => {
+  const guard = makeSelectGuard();
+  assert.equal(guard.consume(), false);
+  guard.arm();
+  assert.equal(guard.consume(), true);
+  assert.equal(guard.consume(), false);
+});
+
+test("makeSelectGuard clears itself on the next tick", async () => {
+  const guard = makeSelectGuard();
+  guard.arm();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(guard.consume(), false);
 });
 
 test("the pane-switch keys moved to the help overlay", () => {

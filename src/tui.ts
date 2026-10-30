@@ -340,6 +340,39 @@ export function bindPaneNavKeys(
   bind(["C-k"], "up");
 }
 
+export function bindColumnKeys(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  active: () => boolean,
+  move: (dir: "left" | "right") => void,
+): void {
+  const bind = (key: string, dir: "left" | "right") =>
+    screen.key([key], () => {
+      if (active() && !isOverlayOpen()) move(dir);
+    });
+  bind("h", "left");
+  bind("l", "right");
+}
+
+// Screen-level keys run before the focused widget's own listener, so arming
+// here lets a widget handler drop the same keypress's vi-mode "select".
+export function makeSelectGuard(): { arm(): void; consume(): boolean } {
+  let armed = false;
+  return {
+    arm() {
+      armed = true;
+      setImmediate(() => {
+        armed = false;
+      });
+    },
+    consume() {
+      const was = armed;
+      armed = false;
+      return was;
+    },
+  };
+}
+
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
 // legible at a glance: supervised (human gates flagged PRs) in yellow,
 // autonomous (the bot self-resolves everything) in green.
@@ -936,6 +969,18 @@ export function runTui(opts: {
     if (next !== focusedId) focusPane(next);
   });
 
+  const selectGuard = makeSelectGuard();
+  bindColumnKeys(
+    screen,
+    isOverlayOpen,
+    () => view === "kanban",
+    (dir) => {
+      if (dir === "right") selectGuard.arm();
+      const next = stepFocus(currentOrder(), focusedId, dir === "right" ? "next" : "prev");
+      if (next !== focusedId) focusPane(next);
+    },
+  );
+
   bindReviewKey(screen, isOverlayOpen, () => {
     const r = prActionRow();
     if (!r) return;
@@ -954,6 +999,7 @@ export function runTui(opts: {
   });
 
   parentsPane.on("select", () => {
+    if (selectGuard.consume()) return;
     const r = selectedParent();
     if (r) opts.onOpenSession(r.key, r.label);
   });

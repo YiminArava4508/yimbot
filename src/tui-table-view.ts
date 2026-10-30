@@ -2,7 +2,7 @@ import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { paneLabel } from "./board-format.ts";
 import type { BoardRow } from "./events.ts";
-import { alignTables, boardTable, type ReviewEntry, type TableBoxes, type TableId } from "./table-view.ts";
+import { TABLE_IDS, alignTables, boardTable, type ReviewEntry, type TableBoxes, type TableId } from "./table-view.ts";
 
 export type TableViewInput = {
   tasks: BoardRow[];
@@ -20,8 +20,6 @@ export type TableView = {
   show(): void;
   hide(): void;
 };
-
-const TABLE_IDS: readonly TableId[] = ["tasks", "review", "merge"];
 
 const TABLE_BORDER: Record<TableId, string> = { tasks: "grey", review: "yellow", merge: "green" };
 

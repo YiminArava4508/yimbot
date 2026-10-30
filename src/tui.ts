@@ -9,7 +9,7 @@ import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel } from "./board-format.ts";
-import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, applyOrder, partitionTable, tableBoxes, tableFocusOrder, type ReviewEntry, type TableId } from "./table-view.ts";
+import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, applyOrder, partitionTable, isTableId, tableBoxes, tableFocusOrder, type ReviewEntry, type TableId } from "./table-view.ts";
 import { makeOrderFetcher, type OrderSourceDeps } from "./review-order.ts";
 import { createTableView } from "./tui-table-view.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
@@ -56,12 +56,12 @@ export function footerHint(): string {
 export function helpLines(key: string): string[] {
   const binds: [string, string][] = [
     ["j/k", "move selection"],
-    ["^j/^k", "switch column (tab cycles)"],
+    ["^j/^k", "switch pane (tab cycles)"],
     ["h/l", "move between columns (kanban)"],
-    ["enter", "open the selected card's tmux session"],
-    ["f", "flag/unflag the selected card"],
-    ["r", "queue the selected card's PR to merge (also inside R)"],
-    ["R", "review the selected card's PR"],
+    ["enter", "open the selected row's tmux session"],
+    ["f", "flag/unflag the selected row"],
+    ["r", "queue the selected row's PR to merge (also inside R)"],
+    ["R", "review the selected row's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
     ["v", "toggle kanban view"],
@@ -114,15 +114,18 @@ export function viewFocusOrder(
   return focusOrder(columns, hasParents);
 }
 
-const TABLE_STOPS = new Set(["tasks", "review", "merge", "parents"]);
-
 // A column id carried over from the kanban means nothing to the table, and
 // with every table pane empty resolveFocus would keep it; the table then
-// falls back to the tasks pane, as it did before the kanban existed.
-export function viewFocus(view: View, order: string[], current: string): string {
+// falls back to the tasks pane, as it did before the kanban existed. Entering
+// the kanban before its first board lands clears a stale id, so focus waits
+// for the first column instead of settling on the parents pane.
+export function viewFocus(view: View, order: string[], current: string, boardLoaded = true): string {
+  if (view === "kanban") {
+    const waiting = !boardLoaded && !order.includes(current);
+    return resolveFocus(order, waiting ? "" : current);
+  }
   const id = resolveFocus(order, current);
-  if (view === "kanban" || TABLE_STOPS.has(id)) return id;
-  return "tasks";
+  return isTableId(id) || id === "parents" ? id : "tasks";
 }
 
 export function headerBoard(view: View, board: CycleBoard | null): CycleBoard | null {
@@ -202,8 +205,9 @@ export function styleParentsPane(
   pane.style.selected.inverse = focused;
 }
 
-// The focus id is a column id or "parents". A focused column that left the
-// board hands the focus to the first entry; an empty board keeps the id. An
+// The focus id is a column id, a table pane id or "parents". A focused stop
+// that left the board hands the focus to the first entry; an empty board
+// keeps the id. An
 // unset focus waits for the first column rather than settling on the parents
 // pane before the first Linear board lands.
 export function resolveFocus(order: string[], current: string): string {
@@ -620,7 +624,6 @@ export function runTui(opts: {
   let daemonStopped = false;
   let notice: Notice | null = null;
 
-  const isTableId = (id: string): id is TableId => id === "tasks" || id === "review" || id === "merge";
   const focusedWidget = (): any => {
     if (focusedId === "parents") return parentsPane;
     if (view === "table") return isTableId(focusedId) ? tableView.widgets[focusedId] : undefined;
@@ -670,7 +673,7 @@ export function runTui(opts: {
       column.widget.destroy();
       columnWidgets.delete(id);
     }
-    focusedId = viewFocus("kanban", currentOrder(), keep);
+    focusedId = viewFocus("kanban", currentOrder(), keep, lastBoard !== null);
     const { start, slots } = placeColumns(ids, focusedId, windowStart, area.left, screenWidth - area.left - area.right);
     windowStart = start;
     const now = Date.now();

@@ -6,6 +6,12 @@ import { researchWords } from "./ticket-type.ts";
 
 export type TableId = "tasks" | "review" | "merge";
 
+export const TABLE_IDS: readonly TableId[] = ["tasks", "review", "merge"];
+
+export function isTableId(id: string): id is TableId {
+  return (TABLE_IDS as readonly string[]).includes(id);
+}
+
 // Below this the board's nine columns no longer fit beside the queue, so the
 // queue gives way rather than squeezing the rows it exists to annotate.
 export const QUEUE_MIN_SCREEN_WIDTH = 80;
@@ -132,7 +138,7 @@ export function tableBoxes(screenHeight: number, screenWidth: number): TableBoxe
 }
 
 export function tableFocusOrder(counts: Record<TableId, number>, hasParents: boolean): string[] {
-  const order: string[] = (["tasks", "review", "merge"] as const).filter((id) => counts[id] > 0);
+  const order: string[] = TABLE_IDS.filter((id) => counts[id] > 0);
   if (hasParents) order.push("parents");
   return order;
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
+import { TABLE_IDS, isTableId } from "./table-view.ts";
 import { DEFAULT_VIEW, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import type { Card, Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
@@ -72,8 +73,9 @@ test("helpLines carries every keybind the footer no longer shows", () => {
     assert.ok(text.includes(needle), `help must mention ${needle}`);
   }
   assert.doesNotMatch(text, /review pane/);
-  assert.match(text, /switch column \(tab cycles\)/);
-  assert.doesNotMatch(text, /pane|row/);
+  assert.match(text, /switch pane \(tab cycles\)/);
+  assert.doesNotMatch(text, /card/, "the default table view has rows, not cards");
+  assert.match(text, /flag\/unflag the selected row/);
   assert.doesNotMatch(text, /\{bold\}q\s*\{\/bold\}/, "q is no longer a quit key");
 });
 
@@ -908,4 +910,27 @@ test("onlyInView runs the callback only while that view shows", () => {
   view = "kanban";
   tick();
   assert.equal(calls, 1);
+});
+
+test("switching into kanban before the board loads waits for the first column instead of the parents pane", () => {
+  assert.equal(viewFocus("kanban", ["parents"], "tasks", false), "");
+  assert.equal(viewFocus("kanban", ["a", "b", "parents"], "", true), "a");
+});
+
+test("a loaded kanban board still hands a stale table id to its first stop", () => {
+  assert.equal(viewFocus("kanban", ["a", "parents"], "tasks", true), "a");
+  assert.equal(viewFocus("kanban", ["parents"], "parents", false), "parents");
+});
+
+test("switching back to the table from parents or a column lands on the first table stop", () => {
+  assert.equal(viewFocus("table", ["tasks", "review"], "parents"), "tasks");
+  assert.equal(viewFocus("table", ["tasks", "review"], "col-1"), "tasks");
+  assert.equal(viewFocus("table", ["tasks", "parents"], ""), "tasks");
+  assert.equal(viewFocus("table", ["parents"], ""), "tasks");
+});
+
+test("isTableId accepts exactly the table pane ids", () => {
+  for (const id of TABLE_IDS) assert.equal(isTableId(id), true);
+  assert.equal(isTableId("parents"), false);
+  assert.equal(isTableId("col-1"), false);
 });

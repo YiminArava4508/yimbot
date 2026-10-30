@@ -248,3 +248,13 @@ test("a card line wider than the card is clipped instead of wrapped", () => {
   assert.equal(text.findIndex((l) => l.includes("tail")), 3);
   screen.destroy();
 });
+
+test("setCards does not throw when no element on the screen has focus", () => {
+  const { screen, col } = column();
+  col.setCards(cards(2));
+  // A rewind past hidden widgets leaves blessed's focus history empty.
+  screen.history.length = 0;
+  assert.doesNotThrow(() => col.setCards(cards(3)));
+  assert.equal(col.selectedKey(), "ENG-0");
+  screen.destroy();
+});

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { BoardRow } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 import { cellWidth, fmtDuration } from "./board-format.ts";
-import { buildColumns, cardLines, columnColor, cycleFocus, focusOrder, pickRow, stepFocus, visibleWindow, type Card } from "./kanban.ts";
+import { buildColumns, cardLines, columnColor, cycleFocus, focusOrder, pickRow, statusTone, stepFocus, visibleWindow, type Card } from "./kanban.ts";
 
 function row(over: Partial<BoardRow> = {}): BoardRow {
   return {
@@ -211,6 +211,93 @@ test("cardLines for a card with no row shows the Linear state name in grey and n
   assert.deepEqual(lines, ["ENG-1", "Fix the thing", "{grey-fg}Todo{/grey-fg}"]);
 });
 
+test("statusTone maps each emitted status to a tone", () => {
+  const table: Record<string, string> = {
+    working: "ok",
+    "working (manual)": "ok",
+    "ci green": "ok",
+    "ready to merge": "ok",
+    merged: "ok",
+    "fixing CI": "ok",
+    "addressing review": "ok",
+    unblocking: "ok",
+    "resolving conflict": "ok",
+    refining: "ok",
+    "qa: in session": "ok",
+    "ready to review": "wait",
+    "in review": "wait",
+    "draft pr": "wait",
+    "ready: r to queue": "wait",
+    "waiting on slices": "wait",
+    "merged, waiting on slices": "wait",
+    "merged, waiting on ticket": "wait",
+    "qa: waiting on children": "wait",
+    "qa: awaiting deploy": "wait",
+    "CI failing": "alert",
+    "merge queue blocked": "alert",
+    "unresolved threads": "alert",
+    "needs input": "alert",
+    "needs decision": "alert",
+    "review findings": "alert",
+    "qa failed": "alert",
+    "tracker ticket": "idle",
+    refined: "idle",
+    "qa posted": "idle",
+    coding: "idle",
+    "": "idle",
+  };
+  for (const [status, tone] of Object.entries(table)) assert.equal(statusTone(status, false), tone, status);
+});
+
+test("statusTone is alert for a flagged row whatever the status, and the worse part wins a combined status", () => {
+  assert.equal(statusTone("working", true), "alert");
+  assert.equal(statusTone("coding", true), "alert");
+  assert.equal(statusTone("ready to merge, CI failing", false), "alert");
+  assert.equal(statusTone("ready to review, addressing review", false), "wait");
+  assert.equal(statusTone("ready to merge, working", false), "ok");
+  assert.equal(statusTone("ready to merge, coding", false), "ok");
+});
+
+test("cardLines colors the key bold in the accent", () => {
+  const hex = cardLines(card(), 30, 0, "c", "#f2c94c");
+  assert.equal(hex[0], "{bold}{#f2c94c-fg}ENG-1{/#f2c94c-fg}{/bold} {grey-fg}0s{/grey-fg}");
+  assert.equal(strip(hex[0]), "ENG-1 0s");
+  assert.ok(cardLines(card(), 30, 0, "c", "green")[0].startsWith("{bold}{green-fg}ENG-1{/green-fg}{/bold}"));
+});
+
+test("cardLines leaves the key uncolored when no accent is given or the accent is malformed", () => {
+  for (const accent of [undefined, "", "#zzz", "red}{", "{bold}"]) {
+    const line = cardLines(card({ row: null }), 30, 0, "c", accent)[0];
+    assert.equal(line, "ENG-1", String(accent));
+  }
+});
+
+test("cardLines keeps tags balanced and every line in width with an accent", () => {
+  for (const width of [3, 6, 12, 30]) {
+    for (const line of cardLines(card({ key: "ENG-123456", row: row({ pr: 42, flagged: true }) }), width, 0, "c", "#f2c94c")) {
+      assert.ok(cellWidth(line) <= width, `${width}: ${line}`);
+      assert.equal((line.match(/\{[^/}][^}]*\}/g) ?? []).length, (line.match(/\{\/[^}]*\}/g) ?? []).length, line);
+    }
+  }
+});
+
+test("cardLines colors #PR cyan and the age grey", () => {
+  assert.ok(cardLines(card({ row: row({ pr: 42 }) }), 30, 0, "c")[0].includes("{cyan-fg}#42{/cyan-fg}"));
+  assert.ok(cardLines(card(), 30, 5 * 60_000, "c")[0].includes("{grey-fg}5m{/grey-fg}"));
+});
+
+test("cardLines colors the status line by tone", () => {
+  const status = (r: BoardRow | null) => cardLines(card({ row: r, stateName: "Todo" }), 40, 0, "c").filter((l) => !l.includes("ENG-1"))[1];
+  assert.equal(status(row({ status: "working" })), "{green-fg}working{/green-fg}");
+  assert.equal(status(row({ section: "review", status: "draft pr" })), "{yellow-fg}ready to review{/yellow-fg}");
+  assert.equal(status(row({ section: "merge", status: "ready to merge" })), "{green-fg}ready to merge{/green-fg}");
+  assert.equal(status(row({ status: "CI failing" })), "{red-fg}CI failing{/red-fg}");
+  assert.equal(status(row({ status: "working", flagged: true, flagReasons: ["x"] })), "{red-fg}working{/red-fg}");
+  assert.equal(status(row({ status: "coding" })), "{grey-fg}coding{/grey-fg}");
+  assert.equal(status(row({ section: "merge", status: "CI failing" })), "{red-fg}ready to merge, CI failing{/red-fg}");
+  assert.equal(status(null), "{grey-fg}Todo{/grey-fg}");
+});
+
 test("cardLines wraps the title to two lines at width 36 or more and truncates with an ellipsis, one line below 36", () => {
   const title = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi";
   const wide = cardLines(card({ title, row: null }), 36, 0, "c");
@@ -252,11 +339,13 @@ test("cardLines omits the repo line when the repo is unknown", () => {
   assert.equal(withPr.length, 4);
 });
 
-test("cardLines keeps the row status out of grey but greys the no-row state name", () => {
+test("cardLines colors a row status by tone and greys the no-row state name", () => {
   const withRow = cardLines(card({ row: row({ status: "coding" }) }), 30, 0, "c");
-  assert.equal(withRow.at(-1), "coding");
+  assert.equal(strip(withRow.at(-1) ?? ""), "coding");
+  assert.equal(withRow.at(-1), "{grey-fg}coding{/grey-fg}");
   const review = cardLines(card({ row: row({ section: "review", status: "draft pr" }) }), 30, 0, "c");
-  assert.equal(review.at(-1), "ready to review");
+  assert.equal(strip(review.at(-1) ?? ""), "ready to review");
+  assert.equal(review.at(-1), "{yellow-fg}ready to review{/yellow-fg}");
   const noRow = cardLines(card({ row: null, stateName: "Todo" }), 30, 0, "c");
   assert.equal(noRow.at(-1), "{grey-fg}Todo{/grey-fg}");
 });

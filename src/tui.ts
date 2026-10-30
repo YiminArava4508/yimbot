@@ -729,7 +729,7 @@ export function runTui(opts: {
       widget.setLabel(paneLabel(column.title, column.cards.length));
       widget.setAccent(column.color);
       // Less the column border and the card border.
-      widget.setCards(column.cards.map((card) => ({ key: card.key, lines: cardLines(card, slot.width - 4, now, codebase) })));
+      widget.setCards(column.cards.map((card) => ({ key: card.key, lines: cardLines(card, slot.width - 4, now, codebase, column.color) })));
       widget.setFocused(column.id === focusedId);
       widget.widget.show();
     }

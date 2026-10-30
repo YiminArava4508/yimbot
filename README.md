@@ -319,8 +319,10 @@ claude pane is focused, where `ctrl+c` goes to claude as its interrupt; leave
 that pane first.
 
 The board opens as a table: three stacked panes (in progress, ready to
-review, ready to merge), with the parent tickets box of a split and the
-background jobs in a rail on the left. Press `v` to switch to the kanban view
+review, ready to merge). In both views, at 80 columns and wider, a rail on the
+left holds the background jobs and the parent tickets box of a split. On a
+narrower screen there is no rail: the table folds the parent tickets into the
+in progress pane, and the kanban does not show them. Press `v` to switch to the kanban view
 and `v` again to come back. The choice is not remembered across launches; the
 board always opens as the table.
 
@@ -337,8 +339,8 @@ cyan, and the status is green when healthy, yellow when waiting, red when it
 needs attention and grey when idle.
 
 In both views `j`/`k` move within a pane or column and `ctrl+j`/`ctrl+k` (or
-`tab`) switch panes or columns. `h`/`l` move across the kanban columns and do
-nothing in the table. The footer reads `r ready   R review   v view   ? help   ^c quit`,
+`tab`) switch panes or columns. `h`/`l` move across the kanban columns; in
+the table `h` does nothing and `l` opens the selected row like `enter`. The footer reads `r ready   R review   v view   ? help   ^c quit`,
 and `?` lists every key.
 
 GitHub decides whether a card reads **ready to review** or **ready to merge**,

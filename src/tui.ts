@@ -128,6 +128,17 @@ export function viewFocus(view: View, order: string[], current: string, boardLoa
   return isTableId(id) || id === "parents" ? id : "tasks";
 }
 
+// The widget blessed focus should move to, or null to leave it. With no
+// visible pane for the focus id (the kanban waiting for its first column)
+// focus parks on a neutral widget: a hide rewinds it onto whatever pane is
+// left in blessed's history, which would then take j/k and enter while styled
+// unfocused.
+export function focusMove<W extends { hidden: boolean }>(target: W | undefined, focused: W | undefined, neutral: W): W | null {
+  if (target && !target.hidden) return focused === target ? null : target;
+  if (focused === undefined || focused === neutral) return null;
+  return neutral;
+}
+
 export function headerBoard(view: View, board: CycleBoard | null): CycleBoard | null {
   return view === "kanban" ? board : null;
 }
@@ -796,8 +807,7 @@ export function runTui(opts: {
       focusedId = keep;
       if (view === "table") renderTable(screenHeight, screenWidth);
       else renderColumns(layout.board, screenWidth);
-      const widget = focusedWidget();
-      if (widget && !widget.hidden && screen.focused !== widget) widget.focus();
+      focusMove(focusedWidget(), screen.focused, title)?.focus();
     }
     title.setContent(titleContent(headerBoard(view, lastBoard)));
     styleParentsPane(parentsPane, focusedId === "parents");

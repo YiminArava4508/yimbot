@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
-import { DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -985,4 +985,26 @@ test("isTableId accepts exactly the table pane ids", () => {
   for (const id of TABLE_IDS) assert.equal(isTableId(id), true);
   assert.equal(isTableId("parents"), false);
   assert.equal(isTableId("col-1"), false);
+});
+
+test("focusMove focuses the resolved pane when it is visible and not already focused", () => {
+  const pane = { hidden: false };
+  const other = { hidden: false };
+  const neutral = { hidden: false };
+  assert.equal(focusMove(pane, other, neutral), pane);
+  assert.equal(focusMove(pane, pane, neutral), null);
+});
+
+test("focusMove parks blessed focus on the neutral widget while kanban waits for its first column", () => {
+  const parents = { hidden: false };
+  const neutral = { hidden: false };
+  assert.equal(focusMove(undefined, parents, neutral), neutral, "keys must not reach a parents pane styled unfocused");
+  assert.equal(focusMove(undefined, neutral, neutral), null);
+  assert.equal(focusMove(undefined, undefined, neutral), null);
+});
+
+test("focusMove parks focus when the resolved pane is hidden", () => {
+  const parents = { hidden: false };
+  const neutral = { hidden: false };
+  assert.equal(focusMove({ hidden: true }, parents, neutral), neutral);
 });

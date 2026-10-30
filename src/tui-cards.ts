@@ -79,6 +79,9 @@ export function createCardColumn(opts: { parent: any; onOpen: (key: string) => v
 
   const setCards = (next: CardView[]) => {
     const key = cards[selected]?.key;
+    // With no focused element blessed focuses the first box appended to a
+    // scrollable parent before the box has a position, and throws.
+    if (!widget.screen.focused) widget.focus();
     for (const box of boxes) box.destroy();
     cards = next;
     tops = [];

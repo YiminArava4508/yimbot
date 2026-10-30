@@ -165,3 +165,10 @@ test("the tasks pane stretches from the title to the review pane", () => {
   const boxes = tableBoxes(30, 100);
   assert.equal(view.widgets.tasks.height, 30 - boxes.tasks.top - boxes.tasks.bottom);
 });
+
+test("render does not throw when no element on the screen has focus", () => {
+  const { screen, view, input } = setup();
+  screen.history.length = 0;
+  assert.doesNotThrow(() => view.render({ ...input, tasks: rows("T", 3) }));
+  screen.destroy();
+});

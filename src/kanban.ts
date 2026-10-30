@@ -3,7 +3,22 @@ import { HELD_MERGED_STATUS, HELD_SLICE_STATUS, MERGED_STATUS, isFlagged, isPare
 import type { CycleBoard } from "./linear-api.ts";
 
 export type Card = { key: string; title: string; stateName: string; row: BoardRow | null };
-export type Column = { id: string; title: string; cards: Card[] };
+export type Column = { id: string; title: string; color: string; cards: Card[] };
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+const TYPE_COLORS: Record<string, string> = {
+  triage: "magenta",
+  backlog: "grey",
+  unstarted: "white",
+  started: "yellow",
+  completed: "green",
+  canceled: "red",
+};
+
+export function columnColor(state: { type: string; color: string }): string {
+  if (HEX_COLOR.test(state.color)) return state.color;
+  return TYPE_COLORS[state.type] ?? "grey";
+}
 
 const TYPE_ORDER = ["triage", "backlog", "unstarted", "started", "completed", "canceled"];
 const HIDDEN_WHEN_EMPTY = new Set(["triage", "canceled"]);
@@ -34,7 +49,7 @@ export function buildColumns(board: CycleBoard, rows: BoardRow[]): Column[] {
         row: pickRow(rows, i.identifier),
       }));
     if (cards.length === 0 && HIDDEN_WHEN_EMPTY.has(state.type)) continue;
-    columns.push({ id: state.id, title: state.name, cards });
+    columns.push({ id: state.id, title: state.name, color: columnColor(state), cards });
   }
   return columns;
 }
@@ -90,20 +105,73 @@ function statusText(row: BoardRow): string {
   return `${label}, ${row.status}`;
 }
 
-export function cardLines(card: Card, width: number, now: number, codebaseName: string): string[] {
+export type Tone = "ok" | "wait" | "alert" | "idle";
+
+const TONE_RANK: Record<Tone, number> = { idle: 0, ok: 1, wait: 2, alert: 3 };
+const TONE_COLOR: Record<Tone, string> = { ok: "green", wait: "yellow", alert: "red", idle: "grey" };
+
+const STATUS_TONES: Record<string, Tone> = {
+  working: "ok",
+  "working (manual)": "ok",
+  "ci green": "ok",
+  "ready to merge": "ok",
+  merged: "ok",
+  "fixing CI": "ok",
+  "addressing review": "ok",
+  unblocking: "ok",
+  "resolving conflict": "ok",
+  refining: "ok",
+  "qa: in session": "ok",
+  "ready to review": "wait",
+  "in review": "wait",
+  "draft pr": "wait",
+  "ready: r to queue": "wait",
+  "qa: awaiting deploy": "wait",
+  "CI failing": "alert",
+  "merge queue blocked": "alert",
+  "unresolved threads": "alert",
+  "needs input": "alert",
+  "needs decision": "alert",
+  "review findings": "alert",
+  "qa failed": "alert",
+};
+
+function partTone(part: string): Tone {
+  if (part.startsWith("waiting on ") || part.startsWith("qa: waiting on ")) return "wait";
+  return STATUS_TONES[part] ?? "idle";
+}
+
+export function statusTone(status: string, flagged: boolean): Tone {
+  if (flagged) return "alert";
+  return status.split(", ").map(partTone).reduce<Tone>((worst, t) => (TONE_RANK[t] > TONE_RANK[worst] ? t : worst), "idle");
+}
+
+const ACCENT = /^(#[0-9a-fA-F]{6}|[a-z]+)$/;
+
+function tag(color: string, text: string): string {
+  return text ? `{${color}-fg}${text}{/${color}-fg}` : "";
+}
+
+function keyCell(key: string, accent: string | undefined): string {
+  if (!key || !accent || !ACCENT.test(accent)) return key;
+  return `{bold}${tag(accent, key)}{/bold}`;
+}
+
+export function cardLines(card: Card, width: number, now: number, codebaseName: string, accent?: string): string[] {
   const row = card.row;
   const extras: string[] = [];
   if (row) {
     const showPr = row.pr != null && !isParentRow(row);
-    extras.push(showPr ? grey(`#${row.pr}`) : grey(fmtDuration((row.terminal ? row.ts : now) - row.startTs)));
+    extras.push(showPr ? tag("cyan", `#${row.pr}`) : grey(fmtDuration((row.terminal ? row.ts : now) - row.startTs)));
     if (isFlagged(row)) extras.push("{red-fg}⚑{/red-fg}");
   }
   const suffix = extras.join(" ");
   const keyRoom = width - cellWidth(suffix) - 1;
-  const head = keyRoom >= 1 ? [fitCell(card.key, keyRoom), ...extras] : [fitCell(card.key, width)];
+  const head = keyRoom >= 1 ? [keyCell(fitCell(card.key, keyRoom), accent), ...extras] : [keyCell(fitCell(card.key, width), accent)];
   const lines = [head.join(" "), ...wrapTitle(titleCell({ key: card.key, title: card.title }), width)];
   if (!row) return [...lines, grey(fitCell(card.stateName, width))];
-  lines.push(fitCell(statusText(row), width));
+  const status = statusText(row);
+  lines.push(tag(TONE_COLOR[statusTone(status, isFlagged(row))], fitCell(status, width)));
   const repo = repoDisplayName(row, codebaseName);
   if (repo) lines.push(grey(fitCell(repo, width)));
   return lines;

@@ -66,3 +66,7 @@ export function fitCell(text: string, room: number): string {
 export function cellWidth(cell: string): number {
   return blessed.unicode.strWidth(blessed.helpers.stripTags(cell));
 }
+
+export function paneLabel(name: string, count: number): string {
+  return ` ${name} ${count} `;
+}

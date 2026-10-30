@@ -191,20 +191,34 @@ test("a click on a card in the focused column keeps the keys on the column", () 
   screen.destroy();
 });
 
-test("setFocused toggles the border color between cyan and grey and keeps the selection dimmed", () => {
+test("setAccent colors the column border and label regardless of focus", () => {
   const { screen, col } = column();
   col.setLabel("Todo");
+  col.setAccent("#f2c94c");
+  assert.equal(col.widget.style.border.fg, "#f2c94c");
+  assert.equal(col.widget.style.label.fg, "#f2c94c");
+  col.setFocused(true);
+  assert.equal(col.widget.style.border.fg, "#f2c94c");
+  assert.equal(col.widget.style.label.fg, "#f2c94c");
+  col.setFocused(false);
+  assert.equal(col.widget.style.border.fg, "#f2c94c");
+  screen.destroy();
+});
+
+test("setFocused changes only the selected card's outline (cyan focused, white unfocused) and leaves the column border on its accent", () => {
+  const { screen, col } = column();
+  col.setLabel("Todo");
+  col.setAccent("#f2c94c");
   col.setCards(cards(2));
   col.setFocused(true);
-  assert.equal(col.widget.style.border.fg, FOCUS_BORDER);
   const [selected, other] = col.widget.children.filter((c: any) => !c._isLabel);
+  assert.equal(col.widget.style.border.fg, "#f2c94c");
   assert.equal(selected.style.border.fg, FOCUS_BORDER);
   assert.equal(other.style.border.fg, "grey");
   col.setFocused(false);
-  assert.equal(col.widget.style.border.fg, "grey");
+  assert.equal(col.widget.style.border.fg, "#f2c94c");
+  assert.equal(selected.style.border.fg, "white");
   assert.equal(other.style.border.fg, "grey");
-  assert.notEqual(selected.style.border.fg, other.style.border.fg);
-  assert.notEqual(selected.style.border.fg, FOCUS_BORDER);
   screen.destroy();
 });
 

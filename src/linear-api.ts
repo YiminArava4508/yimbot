@@ -436,7 +436,7 @@ export async function fetchCycleTodoIssues(
   }));
 }
 
-export type CycleBoardState = { id: string; name: string; type: string; position: number };
+export type CycleBoardState = { id: string; name: string; type: string; position: number; color: string };
 export type CycleBoardIssue = {
   identifier: string;
   title: string;
@@ -462,7 +462,7 @@ export async function fetchCycleBoard(
     teams: {
       nodes: {
         id: string;
-        states: { nodes: CycleBoardState[] };
+        states: { nodes: (Omit<CycleBoardState, "color"> & { color?: string | null })[] };
         activeCycle: { number: number } | null;
       }[];
     };
@@ -474,7 +474,7 @@ export async function fetchCycleBoard(
       teams(filter: { name: { eqIgnoreCase: $teamName } }) {
         nodes {
           id
-          states { nodes { id name type position } }
+          states { nodes { id name type position color } }
           activeCycle { number }
         }
       }
@@ -489,6 +489,7 @@ export async function fetchCycleBoard(
     name: s.name,
     type: s.type,
     position: s.position,
+    color: s.color ?? "",
   }));
   if (!team.activeCycle) return { cycleNumber: null, states, issues: [] };
 

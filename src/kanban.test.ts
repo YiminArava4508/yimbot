@@ -152,7 +152,7 @@ const card = (over: Partial<Card> = {}): Card => ({
 test("cardLines puts the key first, then the age for a live row", () => {
   const lines = cardLines(card({ row: row({ startTs: 1000 }) }), 30, 1000 + 5 * 60_000, "codebase");
   assert.ok(lines[0].startsWith("ENG-1"));
-  assert.ok(lines[0].includes(`{grey-fg}${fmtDuration(5 * 60_000)}{/grey-fg}`));
+  assert.ok(lines[0].endsWith(` ${fmtDuration(5 * 60_000)}`));
 });
 
 test("cardLines shows #PR instead of the age once the row has a PR", () => {
@@ -194,7 +194,7 @@ test("cardLines freezes a terminal row's age at its last event", () => {
   const lines = cardLines(card({ row: done }), 30, 60 * 60_000, "c");
   assert.ok(lines[0].includes(`{grey-fg}${fmtDuration(10 * 60_000)}{/grey-fg}`));
   const live = cardLines(card({ row: row({ startTs: 0, ts: 10 * 60_000 }) }), 30, 60 * 60_000, "c");
-  assert.ok(live[0].includes(`{grey-fg}${fmtDuration(60 * 60_000)}{/grey-fg}`));
+  assert.ok(live[0].endsWith(` ${fmtDuration(60 * 60_000)}`));
 });
 
 test("cardLines shows a split parent's own status and age, never the section or PR its pre-split PR left behind", () => {
@@ -260,7 +260,7 @@ test("statusTone is alert for a flagged row whatever the status, and the worse p
 
 test("cardLines colors the key bold in the accent", () => {
   const hex = cardLines(card(), 30, 0, "c", "#f2c94c");
-  assert.equal(hex[0], "{bold}{#f2c94c-fg}ENG-1{/#f2c94c-fg}{/bold} {grey-fg}0s{/grey-fg}");
+  assert.equal(hex[0], "{bold}{#f2c94c-fg}ENG-1{/#f2c94c-fg}{/bold} 0s");
   assert.equal(strip(hex[0]), "ENG-1 0s");
   assert.ok(cardLines(card(), 30, 0, "c", "green")[0].startsWith("{bold}{green-fg}ENG-1{/green-fg}{/bold}"));
 });
@@ -281,9 +281,9 @@ test("cardLines keeps tags balanced and every line in width with an accent", () 
   }
 });
 
-test("cardLines colors #PR cyan and the age grey", () => {
+test("cardLines colors #PR cyan and leaves a live age uncolored", () => {
   assert.ok(cardLines(card({ row: row({ pr: 42 }) }), 30, 0, "c")[0].includes("{cyan-fg}#42{/cyan-fg}"));
-  assert.ok(cardLines(card(), 30, 5 * 60_000, "c")[0].includes("{grey-fg}5m{/grey-fg}"));
+  assert.ok(cardLines(card(), 30, 5 * 60_000, "c")[0].endsWith(" 5m"));
 });
 
 test("cardLines colors the status line by tone", () => {
@@ -329,6 +329,13 @@ test("cardLines keeps the research chip on the first title line and in width", (
   const lines = cardLines(card({ title: "research the thing in depth please", row: null }), 36, 0, "c");
   assert.ok(lines[1].startsWith("{magenta-fg}[research]{/magenta-fg}"));
   for (const line of lines) assert.ok(cellWidth(line) <= 36);
+});
+
+test("cardLines greys the repo line only for a terminal row", () => {
+  const live = cardLines(card({ row: row({ pr: 3 }) }), 30, 0, "codebase");
+  assert.equal(live.at(-1), "codebase");
+  const done = cardLines(card({ row: row({ pr: 3, terminal: true }) }), 30, 0, "codebase");
+  assert.equal(done.at(-1), "{grey-fg}codebase{/grey-fg}");
 });
 
 test("cardLines omits the repo line when the repo is unknown", () => {

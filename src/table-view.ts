@@ -1,4 +1,4 @@
-import { cellWidth, codebaseRepoName, fmtDuration, fmtTime, grey, repoDisplayName, titleCell } from "./board-format.ts";
+import { cellWidth, codebaseRepoName, dimWhenDone, fmtDuration, fmtTime, grey, repoDisplayName, titleCell } from "./board-format.ts";
 import { isFlagged, isParentRow, type BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
 import type { OrderEntry } from "./review-order.ts";
@@ -81,11 +81,11 @@ export function boardTable(
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
     return [
       grey(fmtTime(r.ts)),
-      grey(fmtDuration(durMs)),
-      r.terminal ? grey(r.status) : r.status,
+      dimWhenDone(r.terminal, fmtDuration(durMs)),
+      dimWhenDone(r.terminal, r.status),
       r.label,
       r.pr != null ? `#${r.pr}` : "",
-      grey(repoDisplayName(r, codebaseName)),
+      dimWhenDone(r.terminal, repoDisplayName(r, codebaseName)),
       titleCell(r, words),
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
       r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",

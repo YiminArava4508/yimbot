@@ -121,10 +121,13 @@ export function boardReadyKind(isDraft: boolean, hasLabel: boolean, mode: Mode):
 // placement has to be sticky so a queued PR stays in the merge pane while its
 // status walks through a CI fix or a review round, and the ready label is the
 // only fact that says "queued". A draft outranks the label because a draft
-// cannot merge whatever its labels say.
-export function boardSection(isDraft: boolean, hasLabel: boolean): Section {
+// cannot merge whatever its labels say. An open PR with no label is still
+// waiting on a human, so it shares the review pane with the drafts. A blocked
+// PR has left the merge queue and is yimbot's to fix, so it stays in tasks.
+export function boardSection(isDraft: boolean, hasLabel: boolean, isBlocked = false): Section {
   if (isDraft) return "review";
-  return hasLabel ? "merge" : "tasks";
+  if (hasLabel) return "merge";
+  return isBlocked ? "tasks" : "review";
 }
 
 // Reads short-circuit in cheap-first order (an unresolved thread returns before
@@ -199,7 +202,7 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     const isBlocked = live.labels.includes(deps.blockedLabel);
     if (hasLabel) state.latched.add(pr.number); // latch in every mode, blocked PRs included
     if (hasLabel || isBlocked) queueOccupied = true; // queued now, or blocked and due a re-queue
-    deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel));
+    deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel, isBlocked));
 
     let verdict: ReadyVerdict;
     let reason: RegressReason | undefined;

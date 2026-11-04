@@ -565,8 +565,12 @@ test("boardSection: a labeled non-draft belongs to the merge pane", () => {
   assert.equal(boardSection(false, true), "merge");
 });
 
-test("boardSection: everything else belongs to the tasks pane", () => {
-  assert.equal(boardSection(false, false), "tasks");
+test("boardSection: an unlabeled open PR waits in the review pane with the drafts", () => {
+  assert.equal(boardSection(false, false), "review");
+});
+
+test("boardSection: a blocked PR stays in the tasks pane for the fix", () => {
+  assert.equal(boardSection(false, false, true), "tasks");
 });
 
 test("boardReadyKind: a draft says draft pr whatever the label or mode", () => {

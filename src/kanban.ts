@@ -1,4 +1,4 @@
-import { cellWidth, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
+import { cellWidth, dimWhenDone, fitCell, fmtDuration, grey, repoDisplayName, titleCell } from "./board-format.ts";
 import { HELD_MERGED_STATUS, HELD_SLICE_STATUS, MERGED_STATUS, isFlagged, isParentRow, isReadyClaim, type BoardRow, type Section } from "./events.ts";
 import type { CycleBoard } from "./linear-api.ts";
 
@@ -162,7 +162,7 @@ export function cardLines(card: Card, width: number, now: number, codebaseName: 
   const extras: string[] = [];
   if (row) {
     const showPr = row.pr != null && !isParentRow(row);
-    extras.push(showPr ? tag("cyan", `#${row.pr}`) : grey(fmtDuration((row.terminal ? row.ts : now) - row.startTs)));
+    extras.push(showPr ? tag("cyan", `#${row.pr}`) : dimWhenDone(row.terminal, fmtDuration((row.terminal ? row.ts : now) - row.startTs)));
     if (isFlagged(row)) extras.push("{red-fg}⚑{/red-fg}");
   }
   const suffix = extras.join(" ");
@@ -173,7 +173,7 @@ export function cardLines(card: Card, width: number, now: number, codebaseName: 
   const status = statusText(row);
   lines.push(tag(TONE_COLOR[statusTone(status, isFlagged(row))], fitCell(status, width)));
   const repo = repoDisplayName(row, codebaseName);
-  if (repo) lines.push(grey(fitCell(repo, width)));
+  if (repo) lines.push(dimWhenDone(row.terminal, fitCell(repo, width)));
   return lines;
 }
 

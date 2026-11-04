@@ -57,9 +57,9 @@ test("boardTable prefixes a ticketless PR row with a cyan pr chip", () => {
 
 test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
   const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
-  assert.equal(extra[5], "{grey-fg}terraform-x{/grey-fg}");
+  assert.equal(extra[5], "terraform-x");
   const codebase = boardTable([{ row: row({ pr: 5970 }) }], 0, "gemini")[1];
-  assert.equal(codebase[5], "{grey-fg}gemini{/grey-fg}");
+  assert.equal(codebase[5], "gemini");
   const none = boardTable([{ row: row({}) }], 0, "gemini")[1];
   assert.equal(none[5], "");
 });
@@ -71,12 +71,19 @@ test("boardTable leaves the PR cell blank when pr is absent", () => {
 
 test("boardTable DUR uses now - startTs for an active row", () => {
   const [, body] = boardTable([{ row: row({ startTs: 0, ts: 0 }) }], 65_000);
-  assert.equal(body[1], "{grey-fg}1m{/grey-fg}");
+  assert.equal(body[1], "1m");
 });
 
 test("boardTable DUR is frozen at ts - startTs for a terminal row", () => {
   const [, body] = boardTable([{ row: row({ terminal: true, startTs: 0, ts: 60_000 }) }], 999_999);
   assert.equal(body[1], "{grey-fg}1m{/grey-fg}");
+});
+
+test("boardTable greys REPO only on a terminal row", () => {
+  const live = boardTable([{ row: row({ pr: 1, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
+  assert.equal(live[5], "terraform-x");
+  const done = boardTable([{ row: row({ pr: 1, repo: "acme/terraform-x", terminal: true }) }], 0, "gemini")[1];
+  assert.equal(done[5], "{grey-fg}terraform-x{/grey-fg}");
 });
 
 test("boardTable marks a flagged row and leaves others blank", () => {

@@ -47,6 +47,9 @@ export function titleCell(row: Pick<BoardRow, "key" | "title">, words: string[] 
 
 export const grey = (text: string): string => (text ? `{grey-fg}${text}{/grey-fg}` : "");
 
+// Finished rows read as history; live ones stay at full brightness.
+export const dimWhenDone = (terminal: boolean, text: string): string => (terminal ? grey(text) : text);
+
 export function fitCell(text: string, room: number): string {
   if (room <= 0) return "";
   if (cellWidth(text) <= room) return text;

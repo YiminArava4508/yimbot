@@ -140,7 +140,8 @@ flowchart TD
   the comment stops it being re-added. Reference, related and follow-up mentions
   are ignored, and a prerequisite named without a ticket number is never linked.
   *(optional; settings: `AUTO_CLAIM`, `MAX_IN_PROGRESS`, defaults to 3, set to 1
-  for one at a time; `MERGED_STATE_NAME`, defaults to `Merged`;
+  for one at a time; `CLAIMS_PER_HEARTBEAT`, defaults to 1, how many tickets one
+  heartbeat may claim (the WIP cap still applies); `MERGED_STATE_NAME`, defaults to `Merged`;
   `AUTO_DEPENDENCY_SCAN`, on by default; `AC_JUDGE_MODEL`, blank uses the claude
   default)*
 - **Handle review comments (amber):** every heartbeat, for each of your open PRs

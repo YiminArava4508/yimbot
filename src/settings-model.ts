@@ -19,6 +19,7 @@ export type YimbotConfig = {
   autoClaim: boolean;
   riskLabels: string[];
   maxInProgress: number;
+  claimsPerHeartbeat: number;
   autoCleanup: boolean;
   autoContinue: boolean;
   maxContinuations: number;
@@ -81,6 +82,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     TODO_STATE_NAME: c.todoStateName,
     RISK_LABELS: c.riskLabels.join(","),
     MAX_IN_PROGRESS: String(c.maxInProgress),
+    CLAIMS_PER_HEARTBEAT: String(c.claimsPerHeartbeat),
     LABEL_FILTER: c.labelFilter,
     MAX_ESTIMATE: c.maxEstimate,
     AUTO_CLEANUP: String(c.autoCleanup),
@@ -111,6 +113,7 @@ const OWNED_ENV_KEYS = new Set([
   "TODO_STATE_NAME",
   "RISK_LABELS",
   "MAX_IN_PROGRESS",
+  "CLAIMS_PER_HEARTBEAT",
   "LABEL_FILTER",
   "MAX_ESTIMATE",
   "AUTO_CLEANUP",
@@ -158,6 +161,7 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `TODO_STATE_NAME=${r.TODO_STATE_NAME}`,
     `RISK_LABELS=${r.RISK_LABELS}`,
     `MAX_IN_PROGRESS=${r.MAX_IN_PROGRESS}`,
+    `CLAIMS_PER_HEARTBEAT=${r.CLAIMS_PER_HEARTBEAT}`,
     `LABEL_FILTER=${r.LABEL_FILTER}`,
     `MAX_ESTIMATE=${r.MAX_ESTIMATE}`,
     "",
@@ -234,6 +238,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     autoClaim: !isOff(or("AUTO_CLAIM", or("AUTO_PICK", "true"))),
     riskLabels: parseCommaList(or("RISK_LABELS", "migration,infra,security,breaking")),
     maxInProgress: Number(or("MAX_IN_PROGRESS", "3")),
+    claimsPerHeartbeat: Number(or("CLAIMS_PER_HEARTBEAT", "1")),
     autoCleanup: !isOff(or("AUTO_CLEANUP", "true")),
     autoContinue: !isOff(or("AUTO_CONTINUE", "true")),
     maxContinuations: Number(or("MAX_CONTINUATIONS", "5")),
@@ -291,6 +296,7 @@ const ROW_SPECS: RowSpec[] = [
   { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter", category: "Claim", help: "Which tickets auto-claim may take: all, only a label, or all except a label." },
   { envKey: "MAX_ESTIMATE", label: "max estimate", editor: "number", category: "Claim", help: "Skip tickets estimated above this. Empty means no cap." },
   { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number", category: "Claim", help: "Most tickets yimbot works at once." },
+  { envKey: "CLAIMS_PER_HEARTBEAT", label: "claims per beat", editor: "number", category: "Claim", help: "Most tickets auto-claim takes in one heartbeat. The wip cap still applies." },
   { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle", category: "Claim", help: "Pick up Todo tickets on each heartbeat without being asked." },
   { envKey: "RISK_LABELS", label: "risk labels", editor: "list", category: "Claim", help: "Comma-separated labels that make a ticket wait for a human." },
   { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle", category: "Refine", help: "Size unestimated tickets and split large ones on their own." },
@@ -378,6 +384,7 @@ export function validateDraft(draft: Draft): Record<string, string> {
   for (const [envKey, raw] of Object.entries(draft.edits)) {
     switch (envKey) {
       case "MAX_IN_PROGRESS":
+      case "CLAIMS_PER_HEARTBEAT":
       case "MAX_CONTINUATIONS":
       case "MAX_REFINING":
         if (!isPositiveInt(raw)) errors[envKey] = "must be a positive integer";

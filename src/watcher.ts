@@ -10,7 +10,7 @@ import {
   renderAcComment,
 } from "./acceptance.ts";
 import { isClearedState, mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
-import { selectNextClaim } from "./claim.ts";
+import { selectClaims } from "./claim.ts";
 import { filterByLabel, type LabelFilter } from "./labels.ts";
 import {
   candidateLines,
@@ -319,6 +319,8 @@ export type ClaimDeps = {
   // Ceiling on the personal In-Progress WIP: the claim step acts only while the
   // count is below this. 1 restores the old one-at-a-time behavior.
   maxInProgress: number;
+  // Most tickets one heartbeat may claim; the WIP cap still bounds the total.
+  claimsPerHeartbeat: number;
   // Viewer-wide count (across all teams) of the personal In-Progress WIP.
   countInProgress: () => Promise<number>;
   // The watched team's active-cycle Todo issues assigned to the viewer.
@@ -436,10 +438,11 @@ function splitInFlight(todo: CycleTodoIssue, cleared: Set<string>): boolean {
 
 // One tick of the claim step. Gated by the WIP cap: acts while fewer than
 // maxInProgress tickets are In Progress (there is no review-queue cap — in-review
-// PRs are worked automatically by the review step). It claims at most one ticket
-// per tick, so the count climbs toward the cap one heartbeat at a time. When the
-// gate is open it selects the top eligible current-cycle Todo and moves it to In
-// Progress — it never launches anything itself.
+// PRs are worked automatically by the review step). It claims at most
+// claimsPerHeartbeat tickets per tick (default 1), so the count climbs toward the
+// cap at that pace. When the gate is open it selects the top eligible
+// current-cycle Todos and moves them to In Progress; it never launches anything
+// itself.
 //
 // Known limitation: launching relies on the deploy step detecting the Todo→In
 // Progress transition, and that step only fires once per issue per daemon
@@ -451,12 +454,14 @@ function splitInFlight(todo: CycleTodoIssue, cleared: Set<string>): boolean {
 export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<void> {
   if (!deps.autoClaim) return;
 
+  let slots: number;
   try {
-    if ((await deps.countInProgress()) >= deps.maxInProgress) return; // at WIP cap
+    slots = Math.min(deps.claimsPerHeartbeat, deps.maxInProgress - (await deps.countInProgress()));
   } catch (err) {
     deps.log(`claim failed: ${err}`);
     return;
   }
+  if (slots < 1) return; // at WIP cap
 
   let todos: CycleTodoIssue[];
   try {
@@ -498,7 +503,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     }
   }
 
-  const next = selectNextClaim(inSlice, {
+  const ranked = selectClaims(inSlice, {
     riskLabels: deps.riskLabels,
     merged,
     clearedStates: deps.clearedStates,
@@ -506,21 +511,22 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     requireEstimate,
     maxEstimate: deps.maxEstimate,
   });
-  if (!next) return;
 
-  // Runs on this one ticket only. claimOnce already returned early at the WIP
-  // cap, so this is at most one adjudication per heartbeat.
-  if (deps.dependencyScan) {
-    const verdict = await recordInferredBlockers(deps.dependencyScan, next, deps.log);
-    if (verdict === "skip") state.skip.add(next.id);
-    if (verdict !== "claim") return;
-  }
+  for (const next of ranked.slice(0, slots)) {
+    // Adjudicates each ticket about to be claimed, so at most `slots` per heartbeat.
+    if (deps.dependencyScan) {
+      const verdict = await recordInferredBlockers(deps.dependencyScan, next, deps.log);
+      if (verdict === "skip") state.skip.add(next.id);
+      if (verdict !== "claim") return;
+    }
 
-  try {
-    await deps.moveToInProgress(next);
-    deps.log(`claimed ${next.identifier} → In Progress`);
-  } catch (err) {
-    deps.log(`failed to move ${next.identifier}: ${err}`);
+    try {
+      await deps.moveToInProgress(next);
+      deps.log(`claimed ${next.identifier} → In Progress`);
+    } catch (err) {
+      deps.log(`failed to move ${next.identifier}: ${err}`);
+      return;
+    }
   }
 }
 
@@ -581,6 +587,7 @@ export type ClaimConfig = {
   riskLabels: string[];
   labelFilter: LabelFilter;
   maxInProgress: number;
+  claimsPerHeartbeat: number;
   // Inclusive estimate ceiling (MAX_ESTIMATE); null claims any size.
   maxEstimate: number | null;
   // Watched-team Todo context (team + Todo state + viewer) for cycle queries.
@@ -1680,6 +1687,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     requireEstimate: refineEnabled,
     maxEstimate: claim.maxEstimate,
     maxInProgress: claim.maxInProgress,
+    claimsPerHeartbeat: claim.claimsPerHeartbeat,
     countInProgress: () =>
       countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),

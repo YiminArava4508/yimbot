@@ -41,6 +41,7 @@ const sample: YimbotConfig = {
   autoClaim: false,
   riskLabels: ["migration", "infra"],
   maxInProgress: 5,
+  claimsPerHeartbeat: 1,
   autoCleanup: true,
   autoContinue: true,
   maxContinuations: 5,

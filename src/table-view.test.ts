@@ -111,6 +111,37 @@ test("boardTable dims a terminal row's status", () => {
   assert.equal(body[2], "{grey-fg}merged{/grey-fg}");
 });
 
+const STATUS_COLORS: [string, string][] = [
+  ["working", "cyan"],
+  ["addressing review", "cyan"],
+  ["fixing CI", "cyan"],
+  ["resolving conflict", "cyan"],
+  ["unblocking", "cyan"],
+  ["refining", "cyan"],
+  ["CI failing", "red"],
+  ["merge queue blocked", "red"],
+  ["unresolved threads", "red"],
+  ["needs decision", "red"],
+  ["review findings", "yellow"],
+  ["ready to merge", "green"],
+  ["ready: r to queue", "green"],
+  ["draft pr", "green"],
+  ["waiting on slices", "yellow"],
+  ["tracker ticket", "yellow"],
+];
+
+for (const [status, color] of STATUS_COLORS) {
+  test(`boardTable colors the "${status}" status ${color}`, () => {
+    const [, body] = boardTable([{ row: row({ status }) }], 0);
+    assert.equal(body[2], `{${color}-fg}${status}{/${color}-fg}`);
+  });
+}
+
+test("boardTable leaves an unmapped status uncolored", () => {
+  const [, body] = boardTable([{ row: row({ status: "something new" }) }], 0);
+  assert.equal(body[2], "something new");
+});
+
 test("boardTable has no column past REASON", () => {
   const [, body] = boardTable([{ row: row({ pr: 11 }) }], 0);
   assert.equal(body.length, BOARD_HEADER.length);

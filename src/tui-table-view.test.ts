@@ -92,6 +92,15 @@ test("the focused pane takes the focus color and only it inverses its selected r
   assert.equal(view.widgets.review.style.selected.inverse, true);
 });
 
+test("only the focused pane drops tag colors on its selected row", () => {
+  const { view, input } = setup();
+  assert.notEqual(view.widgets.tasks.options.invertSelected, false);
+  assert.equal(view.widgets.review.options.invertSelected, false);
+  view.render({ ...input, focusedId: "review" });
+  assert.equal(view.widgets.tasks.options.invertSelected, false);
+  assert.notEqual(view.widgets.review.options.invertSelected, false);
+});
+
 test("selectedRow reads each pane's selection (review through the entries)", () => {
   const { view, input } = setup();
   view.widgets.tasks.select(2);

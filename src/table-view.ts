@@ -71,6 +71,31 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 // wherever it sits.
 export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];
 
+const STATUS_COLOR: Record<string, string> = {
+  working: "cyan",
+  "addressing review": "cyan",
+  "fixing CI": "cyan",
+  "resolving conflict": "cyan",
+  unblocking: "cyan",
+  refining: "cyan",
+  "CI failing": "red",
+  "merge queue blocked": "red",
+  "unresolved threads": "red",
+  "needs decision": "red",
+  "review findings": "yellow",
+  "ready to merge": "green",
+  "ready: r to queue": "green",
+  "draft pr": "green",
+  "waiting on slices": "yellow",
+  "tracker ticket": "yellow",
+};
+
+function statusCell(row: Pick<BoardRow, "status" | "terminal">): string {
+  if (row.terminal) return grey(row.status);
+  const color = STATUS_COLOR[row.status];
+  return color ? `{${color}-fg}${row.status}{/${color}-fg}` : row.status;
+}
+
 export function boardTable(
   entries: { row: BoardRow }[],
   now: number = Date.now(),
@@ -82,7 +107,7 @@ export function boardTable(
     return [
       grey(fmtTime(r.ts)),
       dimWhenDone(r.terminal, fmtDuration(durMs)),
-      dimWhenDone(r.terminal, r.status),
+      statusCell(r),
       r.label,
       r.pr != null ? `#${r.pr}` : "",
       dimWhenDone(r.terminal, repoDisplayName(r, codebaseName)),

@@ -128,6 +128,9 @@ export function createTableView(opts: {
         // neo-blessed aliases style.selected to style.cell.selected on a
         // listtable and resolves it at paint time, so mutating it is enough.
         widgets[id].style.selected.inverse = id === input.focusedId;
+        // neo-blessed strips foreground tags from a list's selected row unless
+        // invertSelected is false; only the focused pane's inverse row wants that.
+        widgets[id].options.invertSelected = id === input.focusedId;
       }
       syncVisibility();
     },

@@ -121,13 +121,15 @@ export function boardReadyKind(isDraft: boolean, hasLabel: boolean, mode: Mode):
 // placement has to be sticky so a queued PR stays in the merge pane while its
 // status walks through a CI fix or a review round, and the ready label is the
 // only fact that says "queued". A draft outranks the label because a draft
-// cannot merge whatever its labels say. An open PR with no label is still
-// waiting on a human, so it shares the review pane with the drafts. A blocked
-// PR has left the merge queue and is yimbot's to fix, so it stays in tasks.
-export function boardSection(isDraft: boolean, hasLabel: boolean, isBlocked = false): Section {
+// cannot merge whatever its labels say. In supervised mode an open PR with no
+// label is waiting on a human, so it shares the review pane with the drafts;
+// autonomous mode labels it itself after the soak, so it stays in tasks. A
+// blocked PR has left the merge queue and is yimbot's to fix, so it stays in
+// tasks too.
+export function boardSection(isDraft: boolean, hasLabel: boolean, isBlocked: boolean, mode: Mode): Section {
   if (isDraft) return "review";
   if (hasLabel) return "merge";
-  return isBlocked ? "tasks" : "review";
+  return isBlocked || mode === "autonomous" ? "tasks" : "review";
 }
 
 // Reads short-circuit in cheap-first order (an unresolved thread returns before
@@ -202,7 +204,7 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     const isBlocked = live.labels.includes(deps.blockedLabel);
     if (hasLabel) state.latched.add(pr.number); // latch in every mode, blocked PRs included
     if (hasLabel || isBlocked) queueOccupied = true; // queued now, or blocked and due a re-queue
-    deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel, isBlocked));
+    deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel, isBlocked, deps.mode()));
 
     let verdict: ReadyVerdict;
     let reason: RegressReason | undefined;

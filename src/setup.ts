@@ -992,6 +992,7 @@ export async function runSetup(): Promise<YimbotConfig> {
     autoClaim,
     riskLabels,
     maxInProgress,
+    claimsPerHeartbeat: current.claimsPerHeartbeat,
     autoCleanup,
     autoContinue,
     maxContinuations,

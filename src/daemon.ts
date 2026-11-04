@@ -84,6 +84,8 @@ export async function startDaemon(): Promise<() => void> {
   // How many of the viewer's tickets may sit In Progress before the claim step
   // stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
   const maxInProgress = Number(envOr("MAX_IN_PROGRESS", "3"));
+  // How many tickets one heartbeat may claim; the WIP cap still bounds the total.
+  const claimsPerHeartbeat = Number(envOr("CLAIMS_PER_HEARTBEAT", "1"));
   // Inclusive estimate ceiling on claims; unset claims any size.
   const maxEstimate = parseMaxEstimate(process.env.MAX_ESTIMATE);
 
@@ -106,6 +108,9 @@ export async function startDaemon(): Promise<() => void> {
   if (!apiKey) throw new Error("LINEAR_API_KEY is required");
   if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
     throw new Error("MAX_IN_PROGRESS must be a positive integer");
+  }
+  if (!Number.isInteger(claimsPerHeartbeat) || claimsPerHeartbeat < 1) {
+    throw new Error("CLAIMS_PER_HEARTBEAT must be a positive integer");
   }
   if (!Number.isFinite(heartbeatIntervalMinutes) || heartbeatIntervalMinutes <= 0) {
     throw new Error("HEARTBEAT_INTERVAL_MINUTES must be a positive number");
@@ -477,7 +482,7 @@ export async function startDaemon(): Promise<() => void> {
   );
   console.log(
     autoClaim
-      ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]${maxEstimate !== null ? `; estimates <= ${maxEstimate}` : ""}`
+      ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress, ${claimsPerHeartbeat} per heartbeat; skipping labels [${riskLabels.join(", ")}]${maxEstimate !== null ? `; estimates <= ${maxEstimate}` : ""}`
       : "[yimbot] auto-claim OFF",
   );
   console.log(
@@ -500,6 +505,7 @@ export async function startDaemon(): Promise<() => void> {
       riskLabels,
       labelFilter,
       maxInProgress,
+      claimsPerHeartbeat,
       maxEstimate,
       todoContext,
       progressStateName: stateName,

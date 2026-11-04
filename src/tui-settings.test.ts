@@ -117,6 +117,7 @@ const baseConfig: YimbotConfig = {
   autoClaim: true,
   riskLabels: ["migration"],
   maxInProgress: 3,
+  claimsPerHeartbeat: 1,
   autoCleanup: true,
   autoContinue: true,
   maxContinuations: 5,

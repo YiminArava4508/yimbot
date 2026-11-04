@@ -34,13 +34,10 @@ function priorityRank(priority: number): number {
   return priority === 0 ? Number.POSITIVE_INFINITY : priority;
 }
 
-// Choose the next Todo ticket to claim: drop risk-labeled tickets, then order
-// by priority (Urgent first, None last), breaking ties on the manual cycle
-// order. Returns null when nothing qualifies.
-export function selectNextClaim(
-  todos: CycleTodoIssue[],
-  opts: SelectOptions,
-): CycleTodoIssue | null {
+// Rank the Todo tickets that may be claimed: drop risk-labeled tickets, then
+// order by priority (Urgent first, None last), breaking ties on the manual
+// cycle order.
+export function selectClaims(todos: CycleTodoIssue[], opts: SelectOptions): CycleTodoIssue[] {
   const risky = new Set(opts.riskLabels.map((l) => l.toLowerCase()));
   const eligible = todos.filter(
     (t) =>
@@ -51,8 +48,15 @@ export function selectNextClaim(
       !(opts.requireEstimate && t.estimate === null) &&
       !(opts.maxEstimate !== null && t.estimate !== null && t.estimate > opts.maxEstimate),
   );
-  eligible.sort(
+  return eligible.sort(
     (a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.sortOrder - b.sortOrder,
   );
-  return eligible[0] ?? null;
+}
+
+// The next ticket to claim, or null when nothing qualifies.
+export function selectNextClaim(
+  todos: CycleTodoIssue[],
+  opts: SelectOptions,
+): CycleTodoIssue | null {
+  return selectClaims(todos, opts)[0] ?? null;
 }

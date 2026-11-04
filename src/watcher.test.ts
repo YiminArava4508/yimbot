@@ -741,6 +741,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     requireEstimate: () => false,
     maxEstimate: null,
     maxInProgress: 3,
+    claimsPerHeartbeat: 1,
     countInProgress: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
     clearedStates: cleared,
@@ -793,6 +794,57 @@ test("claimOnce skips (no pick) when In-Progress count is at the cap", async () 
   const { deps, moved } = claimDeps({ maxInProgress: 2, countInProgress: async () => 2 });
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0);
+});
+
+test("claimOnce claims up to claimsPerHeartbeat tickets in priority order", async () => {
+  const { deps, moved } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 2,
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", priority: 3 }),
+      cycleTodo({ id: "2", priority: 1 }),
+      cycleTodo({ id: "3", priority: 2 }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.id), ["2", "3"]);
+});
+
+test("claimOnce never claims past the WIP cap even when claimsPerHeartbeat is higher", async () => {
+  const { deps, moved } = claimDeps({
+    maxInProgress: 3,
+    claimsPerHeartbeat: 5,
+    countInProgress: async () => 2,
+    fetchCycleTodos: async () => [cycleTodo({ id: "1" }), cycleTodo({ id: "2" }), cycleTodo({ id: "3" })],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 1);
+});
+
+test("claimOnce claims what is eligible when fewer todos than claimsPerHeartbeat qualify", async () => {
+  const { deps, moved } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 4,
+    fetchCycleTodos: async () => [cycleTodo({ id: "1" }), cycleTodo({ id: "2", labels: ["migration"] })],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.id), ["1"]);
+});
+
+test("claimOnce stops the batch when a move fails", async () => {
+  const attempted: string[] = [];
+  const { deps, logs } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 3,
+    fetchCycleTodos: async () => [cycleTodo({ id: "1" }), cycleTodo({ id: "2" }), cycleTodo({ id: "3" })],
+    moveToInProgress: async (issue) => {
+      attempted.push(issue.id);
+      throw new Error("linear down");
+    },
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(attempted, ["1"]);
+  assert.ok(logs.some((l) => l.includes("failed to move ENG-1")));
 });
 
 test("claimOnce defers a blocked todo and logs its blocker's state", async () => {
@@ -1264,6 +1316,26 @@ test("claimOnce fails closed and does not claim when the relation write errors",
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0, "the ticket is known blocked, so claiming anyway is the bug this prevents");
   assert.ok(logs.some((l) => /failed to record blockers/.test(l)));
+});
+
+test("claimOnce moves on to the next ticket in the batch when the scan skips one", async () => {
+  const { scan } = scanDeps({
+    scan: async (identifier) => (identifier === "ENG-1320" ? ["ENG-1319"] : []),
+    createRelation: async () => {
+      throw new Error("linear 500");
+    },
+  });
+  const { deps, moved } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 2,
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", priority: 1, identifier: "ENG-1320", description: "Must land after ENG-1319." }),
+      cycleTodo({ id: "2", priority: 2, identifier: "ENG-1321" }),
+    ],
+    dependencyScan: scan,
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.identifier), ["ENG-1321"]);
 });
 
 test("claimOnce latches a write-failed ticket into the skip set so a later tick claims the next one instead", async () => {

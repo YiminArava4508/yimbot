@@ -1318,6 +1318,26 @@ test("claimOnce fails closed and does not claim when the relation write errors",
   assert.ok(logs.some((l) => /failed to record blockers/.test(l)));
 });
 
+test("claimOnce moves on to the next ticket in the batch when the scan skips one", async () => {
+  const { scan } = scanDeps({
+    scan: async (identifier) => (identifier === "ENG-1320" ? ["ENG-1319"] : []),
+    createRelation: async () => {
+      throw new Error("linear 500");
+    },
+  });
+  const { deps, moved } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 2,
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", priority: 1, identifier: "ENG-1320", description: "Must land after ENG-1319." }),
+      cycleTodo({ id: "2", priority: 2, identifier: "ENG-1321" }),
+    ],
+    dependencyScan: scan,
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.identifier), ["ENG-1321"]);
+});
+
 test("claimOnce latches a write-failed ticket into the skip set so a later tick claims the next one instead", async () => {
   const state = freshClaimState();
   let scansOfTicket1 = 0;

@@ -517,7 +517,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     if (deps.dependencyScan) {
       const verdict = await recordInferredBlockers(deps.dependencyScan, next, deps.log);
       if (verdict === "skip") state.skip.add(next.id);
-      if (verdict !== "claim") return;
+      if (verdict !== "claim") continue;
     }
 
     try {

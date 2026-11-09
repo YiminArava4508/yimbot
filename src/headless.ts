@@ -7,16 +7,25 @@ import { observeReach } from "./reach.ts";
 
 const TIMEOUT_MS = 120_000;
 
+// A stale ANTHROPIC_API_KEY in the shell outranks claude's own sign-in and
+// fails every call with "Invalid API key". Callers that want the sign-in pass
+// this as `env`.
+export function withoutApiKey(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const { ANTHROPIC_API_KEY: _drop, ...rest } = env;
+  return rest;
+}
+
 export function runHeadless(
   model: string,
   cwd: string,
   timeoutMs: number = TIMEOUT_MS,
+  env: NodeJS.ProcessEnv = process.env,
 ): (prompt: string) => Promise<string> {
   const run = (prompt: string) =>
     new Promise<string>((resolve, reject) => {
       const args = ["-p"];
       if (model) args.push("--model", model);
-      const child = spawn("claude", args, { cwd });
+      const child = spawn("claude", args, { cwd, env });
       let out = "";
       let err = "";
       let timedOut = false;

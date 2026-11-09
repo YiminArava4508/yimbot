@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "./test-temp.ts";
-import { runHeadless } from "./headless.ts";
+import { runHeadless, withoutApiKey } from "./headless.ts";
 
 // A stand-in `claude` on PATH, so a test can see which channel the prompt
 // arrived on and what argv it was called with.
@@ -36,4 +36,15 @@ test("runHeadless rejects with what claude printed when it exits nonzero", async
 test("runHeadless says so when it kills a call that overran its timeout", async () => {
   onPath("sleep 5");
   await assert.rejects(runHeadless("", process.cwd(), 50)("hi"), /timed out after 50ms/);
+});
+
+test("runHeadless runs the child on the env it is given", async () => {
+  onPath('printf "%s" "${ANTHROPIC_API_KEY-unset}"; cat >/dev/null');
+  process.env.ANTHROPIC_API_KEY = "sk-bad";
+  try {
+    assert.equal(await runHeadless("", process.cwd(), 5000)("hi"), "sk-bad");
+    assert.equal(await runHeadless("", process.cwd(), 5000, withoutApiKey())("hi"), "unset");
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
 });

@@ -22,7 +22,7 @@ import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
 import { archMapPath, readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
-import { runHeadless } from "./src/headless.ts";
+import { runHeadless, withoutApiKey } from "./src/headless.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
 import {
@@ -118,7 +118,7 @@ if (process.stdout.isTTY) {
   };
   // Same headless claude -p shape as the daemon's judgeRun; the given model env
   // overrides, falling back to the judge's model knob.
-  const headless = (model: string) => runHeadless(model, currentCodebasePath());
+  const headless = (model: string) => runHeadless(model, currentCodebasePath(), undefined, withoutApiKey());
   const claudeRegistry = makeSessionRegistry(spawnClaudePty);
   // The claude session runs in the PR's worktree so it can read the actual
   // branch; a PR-only row with no worktree falls back to the main checkout.

@@ -455,14 +455,16 @@ export async function checkAll(severity?: Severity): Promise<CheckResult[]> {
 }
 
 export type NeedsSetupDeps = {
-  checkRequired: () => Promise<CheckResult[]>;
+  commandExists: (name: string) => boolean;
   isGitRepo: (path: string) => boolean;
 };
 
-const defaultNeedsSetupDeps: NeedsSetupDeps = {
-  checkRequired: () => checkAll("required"),
-  isGitRepo: defaultIsGitRepo,
-};
+const defaultNeedsSetupDeps: NeedsSetupDeps = { commandExists, isGitRepo: defaultIsGitRepo };
+
+// Auth and plugin probes can fail by mistake (offline, a GitHub blip), so only
+// the wizard's prerequisites step checks them; boot would otherwise lock a
+// configured user out of the board.
+const NOT_BOOT_CHECKED = new Set(["gh-auth", "claude-auth", "superpowers"]);
 
 export async function needsSetup(
   env: NodeJS.ProcessEnv,
@@ -476,8 +478,9 @@ export async function needsSetup(
   } else if (!deps.isGitRepo(expandTilde(codebase))) {
     reasons.push(`CODEBASE_PATH is not a git repository: ${codebase}`);
   }
-  for (const { pr, ok } of await deps.checkRequired()) {
-    if (pr.severity === "required" && !ok) reasons.push(`Missing prerequisite: ${pr.label}`);
+  for (const pr of PREREQUISITES) {
+    if (pr.severity !== "required" || NOT_BOOT_CHECKED.has(pr.key)) continue;
+    if (!deps.commandExists(pr.key)) reasons.push(`Missing prerequisite: ${pr.label}`);
   }
   return { needed: reasons.length > 0, reasons };
 }

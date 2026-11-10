@@ -453,7 +453,9 @@ pnpm start   # first run opens the setup wizard in the TUI, writes .env, then st
 
 `pnpm start` opens a setup wizard in the TUI when yimbot is not fully set up:
 no `LINEAR_API_KEY`, a `CODEBASE_PATH` that is unset or not a git repository,
-or a required prerequisite missing. It has four steps (prerequisites, Linear
+or a required tool (`git`, `tmux`, `gh`, `node`, `pnpm`, `claude`) missing from
+`PATH`. The auth and plugin checks run only inside the wizard, so being offline
+never blocks the board. It has four steps (prerequisites, Linear
 key, configure, confirm) and needs at least an 80x24 terminal. `ctrl+c` quits.
 Without a usable terminal (stdout or stdin not a TTY, or `TERM=dumb`) the same
 questions come up as plain CLI prompts instead.

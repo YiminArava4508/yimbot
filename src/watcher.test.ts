@@ -50,6 +50,8 @@ import {
   type WatchState,
   worktreeFullyPushed,
   worktreeKeysUnder,
+  parsePaneInfo,
+  resumeClaudeInPane,
 } from "./watcher.ts";
 
 function issue(id: string, identifier: string, title: string): LinearIssue {
@@ -1423,4 +1425,44 @@ test("reportSplitParentRows: leaves a row with any other status alone", () => {
   const { report, emitted } = splitReporter({ "ENG-1929": "ready to merge" });
   report({ awaiting: [], tracking: ["eng-1929-parent"] });
   assert.deepEqual(emitted, []);
+});
+
+test("parsePaneInfo reads pane id, foreground command and activity seconds as ms", () => {
+  const out = "%1\tclaude\t1700000000\teng-1-task\n%2\tzsh\t1700000100\tmain\n\n";
+  assert.deepEqual([...parsePaneInfo(out)], [
+    ["%1", { cmd: "claude", activityMs: 1700000000000, session: "eng-1-task" }],
+    ["%2", { cmd: "zsh", activityMs: 1700000100000, session: "main" }],
+  ]);
+});
+
+test("resumeClaudeInPane types the resume command into a pane whose foreground is a shell", () => {
+  const calls: string[][] = [];
+  const exec = (file: string, args: string[]) => {
+    calls.push([file, ...args]);
+    if (file === "tmux" && args[0] === "display") return "zsh\n";
+    if (file === "bash") return "claude --permission-mode auto --continue";
+    return "";
+  };
+  assert.equal(resumeClaudeInPane("%3", exec), true);
+  const sent = calls.find((c) => c[0] === "tmux" && c[1] === "send-keys");
+  assert.deepEqual(sent, ["tmux", "send-keys", "-t", "%3", "claude --permission-mode auto --continue", "C-m"]);
+});
+
+test("resumeClaudeInPane types nothing when the pane is running claude or something else", () => {
+  for (const fg of ["claude", "node", "vim"]) {
+    const calls: string[][] = [];
+    const exec = (file: string, args: string[]) => {
+      calls.push([file, ...args]);
+      return file === "tmux" && args[0] === "display" ? `${fg}\n` : "";
+    };
+    assert.equal(resumeClaudeInPane("%3", exec), false, fg);
+    assert.equal(calls.some((c) => c[1] === "send-keys"), false, fg);
+  }
+});
+
+test("resumeClaudeInPane returns false when the pane is gone", () => {
+  const exec = () => {
+    throw new Error("can't find pane");
+  };
+  assert.equal(resumeClaudeInPane("%9", exec), false);
 });

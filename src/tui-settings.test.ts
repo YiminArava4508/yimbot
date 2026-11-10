@@ -740,3 +740,37 @@ test("openSettings: collect mode failed apply stays open and shows the error wit
   assert.equal(daemonStopped, false);
   screen.destroy();
 });
+
+async function pickRemote(screen: any, rowLabel: string, value: string) {
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith(rowLabel.padEnd(20, " "))));
+  press(screen, "enter");
+  await new Promise((r) => setImmediate(r));
+  const picker = screen.children.filter((c: any) => c.type === "list").at(-1);
+  picker.select(picker.ritems.indexOf(value));
+  press(screen, "enter");
+  return list;
+}
+
+const rowText = (list: any, label: string) => list.ritems.find((l: string) => l.startsWith(label.padEnd(20, " ")));
+
+test("openSettings: picking a different team drops the state edits made for the old one", async () => {
+  const screen = testScreen();
+  openSettings(screen, testDeps(), () => {});
+  let list = await pickRemote(screen, "deploy state", "Todo");
+  assert.match(rowText(list, "deploy state"), /Todo \*/);
+  list = await pickRemote(screen, "team", "Design");
+  assert.match(rowText(list, "team"), /Design \*/);
+  assert.doesNotMatch(rowText(list, "deploy state"), /\*/);
+  assert.match(rowText(list, "deploy state"), /In Progress/);
+  screen.destroy();
+});
+
+test("openSettings: re-picking the same team keeps the state edits", async () => {
+  const screen = testScreen();
+  openSettings(screen, testDeps(), () => {});
+  let list = await pickRemote(screen, "deploy state", "Todo");
+  list = await pickRemote(screen, "team", "Engineering");
+  assert.match(rowText(list, "deploy state"), /Todo \*/);
+  screen.destroy();
+});

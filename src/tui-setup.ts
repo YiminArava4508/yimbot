@@ -76,6 +76,32 @@ export function configureError(c: YimbotConfig, apiKey: string): string | null {
   return null;
 }
 
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+// The daemon resolves the team and each state by name on start and throws on
+// a miss, so a first-run .env must name ones Linear has (case-insensitive,
+// like resolveContext).
+export async function linearConfigError(
+  c: YimbotConfig,
+  linear: Pick<SettingsDeps, "teams" | "states">,
+): Promise<string | null> {
+  try {
+    const team = (await linear.teams()).find((t) => sameName(t, c.teamName));
+    if (!team) return `Linear has no team named "${c.teamName}"`;
+    const states = await linear.states(team);
+    const wanted: Array<[string, string]> = [
+      ["deploy state", c.deployStateName],
+      ["todo state", c.todoStateName],
+      ["review state", c.reviewStateName],
+    ];
+    const missing = wanted.find(([, name]) => !states.some((st) => sameName(st, name)));
+    if (missing) return `team "${team}" has no ${missing[0]} named "${missing[1]}"`;
+    return null;
+  } catch (err) {
+    return `could not check the team against Linear: ${errMsg(err)}`;
+  }
+}
+
 export function summaryLines(c: YimbotConfig, viewerName: string): string[] {
   const rows = settingRows(c, viewerName).filter((r) => r.envKey !== "LINEAR_API_KEY" && r.envKey !== "ASSIGNEE");
   return rows.map((r) => `  ${r.label.padEnd(LABEL_WIDTH, " ")}${blessed.escape(r.display)}`);
@@ -487,16 +513,17 @@ export function openSetup(
     goTo("configure");
   }
 
-  function applyConfigure(next: YimbotConfig): Promise<ApplyResult> {
-    const error = configureError(next, apiKey);
-    if (error) return Promise.resolve({ ok: false, error, rolledBack: false });
+  async function applyConfigure(next: YimbotConfig, linear: SettingsDeps): Promise<ApplyResult> {
+    const error = configureError(next, apiKey) ?? (await linearConfigError(next, linear));
+    if (error) return { ok: false, error: redact(error, apiKey), rolledBack: false };
     configured = next;
-    return Promise.resolve({ ok: true });
+    return { ok: true };
   }
 
   function openConfigure(): void {
     const seed = { ...(configured ?? deps.initial), apiKey };
-    const settingsDeps: SettingsDeps = { ...deps.settings(apiKey), loadConfig: () => seed, apply: applyConfigure };
+    const linear = deps.settings(apiKey);
+    const settingsDeps: SettingsDeps = { ...linear, loadConfig: () => seed, apply: (next) => applyConfigure(next, linear) };
     openSettings(
       s,
       settingsDeps,

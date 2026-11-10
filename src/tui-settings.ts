@@ -4,6 +4,7 @@ import {
   SETTING_CATEGORIES,
   categoryDirtyCounts,
   commitDraft,
+  configToEnvRecord,
   dirtyKeys,
   draftRows,
   newDraft,
@@ -102,6 +103,8 @@ export type SettingsDeps = {
   labels: (teamName: string) => Promise<string[]>;
   apply: (next: YimbotConfig, prev: YimbotConfig) => Promise<ApplyResult>;
 };
+
+const TEAM_STATE_KEYS = ["DEPLOY_STATE_NAME", "TODO_STATE_NAME", "REVIEW_STATE_NAME"];
 
 const LABEL_MODES = ["every ticket", "only tickets labelled", "every ticket except labelled"];
 
@@ -365,6 +368,11 @@ export function openSettings(
       deps.teams,
       row.value,
       (value) => {
+        // State names belong to a team, so edits picked for the old one would
+        // point the daemon at states the new team may not have.
+        if (value.toLowerCase() !== currentTeamName().toLowerCase()) {
+          for (const key of TEAM_STATE_KEYS) draft = setEdit(draft, key, configToEnvRecord(draft.base)[key]);
+        }
         draft = setEdit(draft, row.envKey, value);
       },
       "teams",

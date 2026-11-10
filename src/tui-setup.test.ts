@@ -7,7 +7,7 @@ import type { ApplyResult } from "./settings-apply.ts";
 import type { YimbotConfig } from "./settings-model.ts";
 import { PREREQUISITES, fixCommandFor, type CheckResult } from "./setup-core.ts";
 import type { SettingsDeps } from "./tui-settings.ts";
-import { configureError, linkLines, openSetup, tooSmallMessage, type SetupDeps } from "./tui-setup.ts";
+import { configureError, linearConfigError, linkLines, openSetup, tooSmallMessage, type SetupDeps } from "./tui-setup.ts";
 
 const KEY = "lin_api_SECRETKEY0123456789";
 
@@ -207,6 +207,34 @@ test("configureError requires the unset rows and the verified key", () => {
   assert.equal(configureError(baseConfig, "lin_api_other"), "change the key on the Linear key step");
 });
 
+const linear = (teams: string[], states: string[]) => ({
+  teams: () => Promise.resolve(teams),
+  states: () => Promise.resolve(states),
+});
+
+test("linearConfigError accepts a team and states Linear has, matching case like the daemon", async () => {
+  assert.equal(await linearConfigError(baseConfig, linear(["engineering"], ["todo", "IN PROGRESS", "In Review"])), null);
+});
+
+test("linearConfigError names a team Linear does not have", async () => {
+  const error = await linearConfigError(baseConfig, linear(["Platform"], ["Todo", "In Progress", "In Review"]));
+  assert.equal(error, 'Linear has no team named "Engineering"');
+});
+
+test("linearConfigError names the first state the team does not have", async () => {
+  const c = { ...baseConfig, teamName: "Platform" };
+  const error = await linearConfigError(c, linear(["Platform"], ["Backlog", "Doing", "In Review"]));
+  assert.equal(error, 'team "Platform" has no deploy state named "In Progress"');
+});
+
+test("linearConfigError reports a failed lookup instead of rejecting", async () => {
+  const error = await linearConfigError(baseConfig, {
+    teams: () => Promise.reject(new Error("network down")),
+    states: () => Promise.resolve([]),
+  });
+  assert.equal(error, "could not check the team against Linear: network down");
+});
+
 test("tooSmallMessage is null at the minimum and names the size below it", () => {
   const min = { cols: 80, rows: 24 };
   assert.equal(tooSmallMessage(80, 24, min), null);
@@ -368,6 +396,22 @@ test("configure: a codebase path that is not a git repo blocks the save and esc 
   press(h.screen, "escape");
   await flush();
   assert.match(screenText(h.screen), /Step 2 of 4/);
+  h.screen.destroy();
+});
+
+test("configure: a team whose states do not match Linear blocks the save", async () => {
+  const h = harness({
+    initial: { ...baseConfig, teamName: "Platform" },
+    settings: () => ({ ...settingsDeps(), teams: () => Promise.resolve(["Platform"]), states: () => Promise.resolve(["Backlog"]) }),
+  });
+  await toConfigure(h);
+  press(h.screen, "w");
+  await flush();
+  const text = screenText(h.screen);
+  assert.match(text, /has no deploy state named "In Progress"/);
+  press(h.screen, "escape");
+  await flush();
+  assert.doesNotMatch(screenText(h.screen), /Step 4 of 4/);
   h.screen.destroy();
 });
 

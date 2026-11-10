@@ -592,6 +592,12 @@ export function bindSetupKey(
   });
 }
 
+// s and W both restart the daemon, so neither may open while W's apply is
+// still restarting it: two overlapping restarts can orphan a daemon.
+export function settingsGate(isOverlayOpen: () => boolean, isApplying: () => boolean): () => boolean {
+  return () => isOverlayOpen() || isApplying();
+}
+
 // The board notice after W's apply, mirroring the settings panel's footer:
 // "daemon stopped" only when the rollback restart failed too.
 export function setupApplyOutcome(result: ApplyResult): { text: string; isError: boolean; daemonStopped: boolean } {
@@ -942,7 +948,8 @@ export function runTui(opts: {
     queuePane.hide();
   };
 
-  bindSettingsKey(screen, isOverlayOpen, () => {
+  const applyBlocked = settingsGate(isOverlayOpen, () => setupApplying);
+  bindSettingsKey(screen, applyBlocked, () => {
     settingsOpen = true;
     hidePanes();
     openSettings(
@@ -957,7 +964,7 @@ export function runTui(opts: {
     );
   });
 
-  bindSetupKey(screen, () => isOverlayOpen() || setupApplying, () => {
+  bindSetupKey(screen, applyBlocked, () => {
     setupOpen = true;
     hidePanes();
     const prev = opts.settings.loadConfig();

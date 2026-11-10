@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { homedir } from "node:os";
-import { relative } from "node:path";
+import { mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 import {
+  writeEnvFile,
   configFromEnv,
   configToEnvRecord,
   expandTilde,
@@ -384,4 +386,13 @@ test("categoryDirtyCounts counts edited rows per category", () => {
   assert.equal(counts.Claim, 2);
   assert.equal(counts.Models, 1);
   assert.equal(counts.Linear, 0);
+});
+
+test("writeEnvFile makes the .env.bak private even when the old .env was world-readable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "write-env-"));
+  const path = join(dir, ".env");
+  writeFileSync(path, "LINEAR_API_KEY=old\n", { mode: 0o644 });
+  writeEnvFile("LINEAR_API_KEY=new\n", path);
+  assert.equal(statSync(`${path}.bak`).mode & 0o777, 0o600);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
 });

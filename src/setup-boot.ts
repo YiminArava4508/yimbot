@@ -3,12 +3,19 @@ import blessed from "neo-blessed";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnPty } from "./claude-sessions.ts";
 import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./linear-api.ts";
-import { configFromEnv, envPath, writeEnvFile, type YimbotConfig } from "./settings-model.ts";
-import { checkAll, detectPackageManager, ensureHostLinks } from "./setup-core.ts";
+import { configFromEnv, envPath, isConfigured, writeEnvFile, type YimbotConfig } from "./settings-model.ts";
+import { checkAll, detectPackageManager, ensureHostLinks, type SetupMode } from "./setup-core.ts";
 import { finishWizard, validateKey, type FinishResult } from "./setup-wizard.ts";
 import { screenTerm } from "./tui.ts";
 import type { SettingsDeps } from "./tui-settings.ts";
 import { openSetup, type SetupDeps, type SpawnArgv } from "./tui-setup.ts";
+
+// Headless starts (nohup, systemd, `pnpm start > log &`) with a key already set
+// go straight to the daemon, which reports a missing prerequisite itself;
+// the CLI prompts would hang or bail there.
+export function shouldRunCliSetup(mode: SetupMode, env: NodeJS.ProcessEnv): boolean {
+  return mode === "cli" && !isConfigured(env);
+}
 
 // Fix commands (installers, gh auth login) have no use for the Linear key.
 export function fixCommandEnv(env: NodeJS.ProcessEnv): Record<string, string> {

@@ -14,7 +14,7 @@ import { loadQaState } from "./src/qa-state.ts";
 import { writeRefineEnabled } from "./src/refine-toggle.ts";
 import { runSetup, configToEnvRecord } from "./src/setup.ts";
 import { needsSetup, setupMode } from "./src/setup-core.ts";
-import { linearSettingsDeps, reconfigureFinish, runTuiSetup, setupDeps } from "./src/setup-boot.ts";
+import { linearSettingsDeps, reconfigureFinish, runTuiSetup, setupDeps, shouldRunCliSetup } from "./src/setup-boot.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
 import { fetchCycleBoard } from "./src/linear-api.ts";
@@ -46,7 +46,7 @@ const firstRun = setupMode({
   term: process.env.TERM,
   needed: (await needsSetup(process.env)).needed,
 });
-if (firstRun !== "none") {
+if (firstRun === "tui" || shouldRunCliSetup(firstRun, process.env)) {
   const config = firstRun === "tui" ? await runTuiSetup() : await runSetup();
   if (!config) process.exit(0);
   for (const [key, value] of Object.entries(configToEnvRecord(config))) {

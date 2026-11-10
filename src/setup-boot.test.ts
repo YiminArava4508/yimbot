@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { configFromEnv } from "./settings-model.ts";
-import { firstRunFinish, fixCommandEnv, linearSettingsDeps, reconfigureFinish } from "./setup-boot.ts";
+import { firstRunFinish, fixCommandEnv, linearSettingsDeps, reconfigureFinish, shouldRunCliSetup } from "./setup-boot.ts";
 
 test("fixCommandEnv drops the Linear key and keeps the rest", () => {
   const env = fixCommandEnv({ LINEAR_API_KEY: "lin_api_secret", PATH: "/usr/bin", HOME: "/home/u" });
@@ -78,4 +78,18 @@ test("firstRunFinish leaves no backup when there was no .env", () => {
 
 test("reconfigureFinish writes nothing so the board's apply path owns the .env write", () => {
   assert.deepEqual(reconfigureFinish(), { ok: true, linkResults: [] });
+});
+
+test("shouldRunCliSetup leaves a headless start with a key to the daemon", () => {
+  assert.equal(shouldRunCliSetup("cli", { LINEAR_API_KEY: "lin_api_x" }), false);
+});
+
+test("shouldRunCliSetup prompts on the CLI when the key is missing", () => {
+  assert.equal(shouldRunCliSetup("cli", {}), true);
+  assert.equal(shouldRunCliSetup("cli", { LINEAR_API_KEY: "  " }), true);
+});
+
+test("shouldRunCliSetup is false for the TUI and when no setup is needed", () => {
+  assert.equal(shouldRunCliSetup("tui", {}), false);
+  assert.equal(shouldRunCliSetup("none", {}), false);
 });

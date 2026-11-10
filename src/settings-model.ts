@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
@@ -190,7 +190,11 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
 // Write .env, backing up any existing file to .env.bak first. Mode 0600 because
 // it holds the Linear API key.
 export function writeEnvFile(contents: string, path: string = envPath): void {
-  if (existsSync(path)) renameSync(path, `${path}.bak`);
+  // rename keeps the old mode, and a hand-made .env is often 0644.
+  if (existsSync(path)) {
+    renameSync(path, `${path}.bak`);
+    chmodSync(`${path}.bak`, 0o600);
+  }
   writeFileSync(path, contents, { mode: 0o600 });
 }
 

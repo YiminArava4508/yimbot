@@ -448,18 +448,26 @@ go when the board owns the terminal, default `daemon.log`).
 
 ```bash
 pnpm install
-pnpm start   # first run walks you through onboarding, writes .env, then starts
+pnpm start   # first run opens the setup wizard in the TUI, writes .env, then starts
 ```
 
-On first launch (no `.env`), `pnpm start` drops into an interactive wizard that
-begins with a two-tier prerequisite pre-flight:
+`pnpm start` opens a setup wizard in the TUI when yimbot is not fully set up:
+no `LINEAR_API_KEY`, a `CODEBASE_PATH` that is unset or not a git repository,
+or a required prerequisite missing. It has four steps (prerequisites, Linear
+key, configure, confirm) and needs at least an 80x24 terminal. `ctrl+c` quits.
+Without a usable terminal (stdout or stdin not a TTY, or `TERM=dumb`) the same
+questions come up as plain CLI prompts instead.
+
+The wizard begins with a two-tier prerequisite pre-flight:
 
 - **Required (blocks setup until satisfied):** the tools the daemon and session
   launcher shell out to (`git`, `tmux`, `gh`, `claude`, `node`, `pnpm`), `gh`
   authentication, the `superpowers` plugin (every skill invokes it), and Claude
   Code authentication. The wizard offers to install what it can (detected package
   manager, or `npm`/`corepack` for `claude`/`pnpm`, `gh auth login` for auth) and
-  re-checks; the rest show exact instructions and loop until fixed.
+  re-checks; the rest show exact instructions and loop until fixed. Fixes and
+  logins run in a command pane inside the TUI (`ctrl+]` leaves it), either one
+  at a time (`f`) or all in a row ("Fix everything for me").
 - **Recommended (warns, never blocks):** `gh` token `repo`+`workflow` scopes and
   git identity (both offered as one-command fixes), the `shortcut` MCP server
   the `sc-*` sessions fetch through, and a tmux status line that shows
@@ -468,9 +476,16 @@ begins with a two-tier prerequisite pre-flight:
   `~/move-ticket.sh`, which use the daemon's `LINEAR_API_KEY`.
 
 Then it authenticates your Linear API key, lets you pick your team and workflow
-states from the real Linear data, validates the codebase path is a git repo,
-links the session launcher and pickup-ticket skill into place, then writes `.env`
-and continues into the daemon. Re-run it anytime with `pnpm onboard` (backs up the
+states from the real Linear data (the configure step is the settings screen),
+validates the codebase path is a git repo, links the session launcher and
+pickup-ticket skill into place, then writes `.env` and continues into the
+daemon and the board.
+
+Press `W` on the board to re-run the wizard. Its finish goes through the same
+path as a settings save: it writes `.env` (the old one moves to `.env.bak`) and
+restarts the daemon in place, rolling back if the new config does not start.
+`ctrl+c`, `q` or cancelling returns to the board and writes nothing.
+`pnpm onboard` stays as the CLI version of the same wizard (also backs up the
 old `.env`). You can still hand-edit `.env` from `.env.example` if you prefer.
 
 Spawned sessions launch `claude` with `--permission-mode auto` so the pickup /
@@ -527,9 +542,9 @@ its local worktree and any running fix session behind for a human to clear up.
 ## Usage
 
 ```bash
-pnpm onboard   # (re)configure via the interactive wizard
+pnpm onboard   # (re)configure via the CLI prompts (W on the board does it in the TUI)
 pnpm check     # one-shot: print the issues the deploy state and label filter currently match
-pnpm start     # run the daemon (Ctrl+C to stop); onboards first if unconfigured
+pnpm start     # run the daemon (Ctrl+C to stop); opens the setup wizard first if not set up
 ```
 
 ## Session launcher & skill

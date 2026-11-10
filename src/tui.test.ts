@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
-import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -1007,4 +1007,55 @@ test("focusMove parks focus when the resolved pane is hidden", () => {
   const parents = { hidden: false };
   const neutral = { hidden: false };
   assert.equal(focusMove({ hidden: true }, parents, neutral), neutral);
+});
+
+test("bindSetupKey opens the wizard on W only when no overlay is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let open = false;
+  let openCalls = 0;
+  bindSetupKey(fakeScreen, () => open, () => {
+    open = true;
+    openCalls++;
+  });
+  handlers["S-w"]();
+  assert.equal(openCalls, 1);
+  handlers["S-w"]();
+  assert.equal(openCalls, 1, "a second W while the wizard is open must not stack another");
+  open = false;
+  handlers["S-w"]();
+  assert.equal(openCalls, 2);
+});
+
+test("helpLines lists W for re-running setup", () => {
+  assert.match(helpLines("Y").join("\n"), /\{bold\}W\s*\{\/bold\}  re-run setup/);
+});
+
+test("setupApplyOutcome reports a restart on success", () => {
+  assert.deepEqual(setupApplyOutcome({ ok: true }), { text: "setup saved, daemon restarted", isError: false, daemonStopped: false });
+});
+
+test("setupApplyOutcome keeps the daemon running after a rollback", () => {
+  assert.deepEqual(setupApplyOutcome({ ok: false, error: "bad key", rolledBack: true }), {
+    text: "{red-fg}setup not applied: bad key{/red-fg}",
+    isError: true,
+    daemonStopped: false,
+  });
+});
+
+test("setupApplyOutcome marks the daemon stopped when the rollback failed too", () => {
+  assert.deepEqual(setupApplyOutcome({ ok: false, error: "boom", rolledBack: false }), {
+    text: "{red-fg}setup not applied: boom, daemon stopped{/red-fg}",
+    isError: true,
+    daemonStopped: true,
+  });
+});
+
+test("setupApplyOutcome escapes tags in the error text", () => {
+  const out = setupApplyOutcome({ ok: false, error: "{bold}x", rolledBack: true });
+  assert.doesNotMatch(out.text, /\{bold\}x/);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type CheckResult, needsSetup, PREREQUISITES } from "./setup-core.ts";
+import { type CheckResult, needsSetup, PREREQUISITES, setupMode } from "./setup-core.ts";
 
 const required = PREREQUISITES.filter((pr) => pr.severity === "required");
 const recommended = PREREQUISITES.filter((pr) => pr.severity === "recommended");
@@ -54,4 +54,22 @@ test("a failing recommended check alone never sets needed", async () => {
     isGitRepo: () => true,
   });
   assert.deepEqual(r, { needed: false, reasons: [] });
+});
+
+test("setupMode is none when setup is not needed, even without a TTY", () => {
+  assert.equal(setupMode({ isTTY: true, term: "xterm-256color", needed: false }), "none");
+  assert.equal(setupMode({ isTTY: false, term: undefined, needed: false }), "none");
+});
+
+test("setupMode falls back to the CLI prompts without a TTY", () => {
+  assert.equal(setupMode({ isTTY: false, term: "xterm-256color", needed: true }), "cli");
+});
+
+test("setupMode falls back to the CLI prompts on a dumb terminal", () => {
+  assert.equal(setupMode({ isTTY: true, term: "dumb", needed: true }), "cli");
+});
+
+test("setupMode opens the TUI wizard on a usable terminal", () => {
+  assert.equal(setupMode({ isTTY: true, term: "xterm-256color", needed: true }), "tui");
+  assert.equal(setupMode({ isTTY: true, term: undefined, needed: true }), "tui");
 });

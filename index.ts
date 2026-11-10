@@ -12,10 +12,12 @@ import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
 import { loadQaState } from "./src/qa-state.ts";
 import { writeRefineEnabled } from "./src/refine-toggle.ts";
-import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
+import { runSetup, configToEnvRecord } from "./src/setup.ts";
+import { needsSetup, setupMode } from "./src/setup-core.ts";
+import { linearSettingsDeps, reconfigureFinish, runTuiSetup, setupDeps } from "./src/setup-boot.ts";
 import { startDaemon } from "./src/daemon.ts";
 import { returnKey, runTui } from "./src/tui.ts";
-import { fetchCycleBoard, fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src/linear-api.ts";
+import { fetchCycleBoard } from "./src/linear-api.ts";
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
@@ -39,8 +41,14 @@ import {
   unbindReturnKey,
 } from "./src/watcher.ts";
 
-if (!isConfigured(process.env)) {
-  const config = await runSetup();
+const firstRun = setupMode({
+  isTTY: Boolean(process.stdout.isTTY && process.stdin.isTTY),
+  term: process.env.TERM,
+  needed: (await needsSetup(process.env)).needed,
+});
+if (firstRun !== "none") {
+  const config = firstRun === "tui" ? await runTuiSetup() : await runSetup();
+  if (!config) process.exit(0);
   for (const [key, value] of Object.entries(configToEnvRecord(config))) {
     process.env[key] = value;
   }
@@ -84,19 +92,7 @@ if (process.stdout.isTTY) {
   const apiKey = () => process.env.LINEAR_API_KEY?.trim() ?? "";
   const settings: SettingsDeps = {
     loadConfig: () => configFromEnv(process.env),
-    assignee: async () => (await fetchViewer(apiKey())).name,
-    teams: async () => (await fetchTeams(apiKey())).map((t) => t.name),
-    states: async (teamName) => {
-      // Matched case-insensitively, same as the daemon's own resolveContext
-      // (eqIgnoreCase in linear-api.ts), so a team name that differs only in
-      // case from Linear's still resolves instead of silently returning [].
-      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
-      return team ? (await fetchTeamStates(apiKey(), team.id)).map((s) => s.name) : [];
-    },
-    labels: async (teamName) => {
-      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
-      return team ? await fetchTeamLabels(apiKey(), team.id) : [];
-    },
+    ...linearSettingsDeps(apiKey),
     apply: async (next, prev) => {
       const result = await applySettings(next, prev, {
         readEnv: () => (existsSync(envPath) ? readFileSync(envPath, "utf8") : null),
@@ -232,6 +228,7 @@ if (process.stdout.isTTY) {
     mode: readMode,
     onToggleMode: toggleMode,
     settings,
+    setupDeps: () => setupDeps(reconfigureFinish),
     reviewDeps,
     fetchBoard: () => fetchCycleBoard(apiKey(), configFromEnv(process.env).teamName),
     orderDeps: {

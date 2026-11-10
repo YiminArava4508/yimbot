@@ -13,6 +13,9 @@ import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, applyOrder, 
 import { makeOrderFetcher, type OrderSourceDeps } from "./review-order.ts";
 import { createTableView } from "./tui-table-view.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
+import { openSetup, type SetupDeps } from "./tui-setup.ts";
+import { errMsg } from "./setup-core.ts";
+import type { ApplyResult } from "./settings-apply.ts";
 import { createCardColumn, type CardColumn } from "./tui-cards.ts";
 import { buildColumns, cardLines, cycleFocus, focusOrder, stepFocus, visibleWindow, type Card, type Column } from "./kanban.ts";
 import type { CycleBoard } from "./linear-api.ts";
@@ -64,6 +67,7 @@ export function helpLines(key: string): string[] {
     ["R", "review the selected row's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
+    ["W", "re-run setup"],
     ["v", "toggle kanban view"],
     [`prefix+${key}`, "return here from a session"],
     ["?", "toggle this help"],
@@ -576,6 +580,30 @@ export function bindReviewKey(
   });
 }
 
+// W (shift-w) re-runs the setup wizard on the live board, gated like s: a
+// second W while any overlay is open would stack widgets.
+export function bindSetupKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  open: () => void,
+): void {
+  screen.key(["S-w"], () => {
+    if (!isOverlayOpen()) open();
+  });
+}
+
+// The board notice after W's apply, mirroring the settings panel's footer:
+// "daemon stopped" only when the rollback restart failed too.
+export function setupApplyOutcome(result: ApplyResult): { text: string; isError: boolean; daemonStopped: boolean } {
+  if (result.ok) return { text: "setup saved, daemon restarted", isError: false, daemonStopped: false };
+  const suffix = result.rolledBack ? "" : ", daemon stopped";
+  return {
+    text: `{red-fg}setup not applied: ${blessed.escape(result.error)}${suffix}{/red-fg}`,
+    isError: true,
+    daemonStopped: !result.rolledBack,
+  };
+}
+
 export function runTui(opts: {
   onQuit: () => void;
   liveKeys: () => Set<string>;
@@ -597,6 +625,8 @@ export function runTui(opts: {
   mode: () => Mode;
   onToggleMode: () => Mode;
   settings: SettingsDeps;
+  // The wizard behind W; its finish writes nothing, settings.apply does.
+  setupDeps: () => SetupDeps;
   reviewDeps: (pr: number, key: string, label: string, repo?: string) => ReviewDeps;
   // The watched team's active cycle for the kanban columns.
   fetchBoard: () => Promise<CycleBoard>;
@@ -863,11 +893,15 @@ export function runTui(opts: {
   let settingsOpen = false;
   let reviewOpen = false;
   let helpOpen = false;
-  const isOverlayOpen = () => settingsOpen || reviewOpen || helpOpen;
+  let setupOpen = false;
+  // Set while W's apply restarts the daemon, so a second W cannot race it.
+  let setupApplying = false;
+  const isOverlayOpen = () => settingsOpen || reviewOpen || helpOpen || setupOpen;
   // Swapped in by bindReviewKey's open below; openReview's getter reports
   // false once the overlay closes, so no reset is needed here.
   let reviewClaudeFocused: () => boolean = () => false;
-  bindQuitKeys(screen, () => reviewClaudeFocused(), quit);
+  // C-c inside the wizard cancels it back to the board instead of quitting.
+  bindQuitKeys(screen, () => reviewClaudeFocused() || setupOpen, quit);
 
   // The help box floats over the board (panes stay visible under it), owns
   // the keyboard while open, and closes on ?, q or escape.
@@ -921,6 +955,30 @@ export function runTui(opts: {
       },
       daemonStopped,
     );
+  });
+
+  bindSetupKey(screen, () => isOverlayOpen() || setupApplying, () => {
+    setupOpen = true;
+    hidePanes();
+    const prev = opts.settings.loadConfig();
+    openSetup(screen, opts.setupDeps(), (result) => {
+      setupOpen = false;
+      if (!result) {
+        render();
+        return;
+      }
+      setupApplying = true;
+      setNotice("applying setup...", NOTICE_ERROR_TTL_MS);
+      void opts.settings
+        .apply(result.config, prev)
+        .catch((err: unknown): ApplyResult => ({ ok: false, error: errMsg(err), rolledBack: false }))
+        .then((applied) => {
+          setupApplying = false;
+          const outcome = setupApplyOutcome(applied);
+          daemonStopped = outcome.daemonStopped;
+          setNotice(outcome.text, outcome.isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);
+        });
+    });
   });
 
   const selectedParent = () => currentParents[parentsPane.selected - 1];

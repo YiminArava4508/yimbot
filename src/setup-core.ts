@@ -481,3 +481,13 @@ export async function needsSetup(
   }
   return { needed: reasons.length > 0, reasons };
 }
+
+export type SetupMode = "tui" | "cli" | "none";
+
+// The wizard needs a real terminal; without one (pipes, ssh with no pty,
+// TERM=dumb) the clack prompts in runSetup still work.
+export function setupMode(opts: { isTTY: boolean; term: string | undefined; needed: boolean }): SetupMode {
+  if (!opts.needed) return "none";
+  if (!opts.isTTY || opts.term === "dumb") return "cli";
+  return "tui";
+}

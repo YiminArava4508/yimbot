@@ -110,7 +110,7 @@ export function ticketKeyOf(key: string): string {
 // with the repo only in `repo`. Fold them onto the row they would get today,
 // so a replayed events log neither duplicates the row nor leaks the PR onto
 // the ticket row.
-function rowKeyOf(e: YimbotEvent): string {
+export function rowKeyOf(e: YimbotEvent): string {
   if (e.repo && !e.key.includes("@")) return `${e.key}@${e.repo}`;
   return e.key;
 }

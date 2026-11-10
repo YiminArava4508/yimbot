@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { needsSetup, PREREQUISITES, setupMode } from "./setup-core.ts";
+import { fixCommandFor, needsSetup, PREREQUISITES, setupMode } from "./setup-core.ts";
 
 const binaries = ["git", "tmux", "gh", "node", "pnpm", "claude"];
 const allOk = { commandExists: () => true, isGitRepo: () => true };
@@ -65,4 +65,31 @@ test("setupMode falls back to the CLI prompts on a dumb terminal", () => {
 test("setupMode opens the TUI wizard on a usable terminal", () => {
   assert.equal(setupMode({ isTTY: true, term: "xterm-256color", needed: true }), "tui");
   assert.equal(setupMode({ isTTY: true, term: undefined, needed: true }), "tui");
+});
+
+const prereq = (key: string) => {
+  const pr = PREREQUISITES.find((p) => p.key === key);
+  if (!pr) throw new Error(key);
+  return pr;
+};
+
+test("fixCommandFor logs in to gh and installs package tools through the package manager", () => {
+  assert.deepEqual(fixCommandFor(prereq("gh-auth"), null), ["gh", "auth", "login"]);
+  assert.deepEqual(fixCommandFor(prereq("tmux"), "pacman"), ["sudo", "pacman", "-S", "--needed", "tmux"]);
+  assert.equal(fixCommandFor(prereq("tmux"), null), null);
+});
+
+test("fixCommandFor runs the Claude Code login for claude-auth", () => {
+  assert.deepEqual(fixCommandFor(prereq("claude-auth"), null), ["claude", "auth", "login"]);
+});
+
+test("fixCommandFor installs superpowers from the official marketplace, adding it when missing", () => {
+  assert.deepEqual(fixCommandFor(prereq("superpowers"), null), [
+    "claude",
+    "plugin",
+    "install",
+    "superpowers",
+    "--marketplace",
+    "anthropics/claude-plugins-official",
+  ]);
 });

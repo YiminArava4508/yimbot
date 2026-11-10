@@ -466,7 +466,8 @@ The wizard begins with a two-tier prerequisite pre-flight:
   launcher shell out to (`git`, `tmux`, `gh`, `claude`, `node`, `pnpm`), `gh`
   authentication, the `superpowers` plugin (every skill invokes it), and Claude
   Code authentication. The wizard offers to install what it can (detected package
-  manager, or `npm`/`corepack` for `claude`/`pnpm`, `gh auth login` for auth) and
+  manager, or `npm`/`corepack` for `claude`/`pnpm`, `gh auth login` and
+  `claude auth login` for auth, `claude plugin install` for `superpowers`) and
   re-checks; the rest show exact instructions and loop until fixed. Fixes and
   logins run in a command pane inside the TUI (`ctrl+]` leaves it), either one
   at a time (`f`) or all in a row ("Fix everything for me").

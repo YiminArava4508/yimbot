@@ -399,10 +399,16 @@ export function linkState(source: string, target: string): "ours" | "other" | "m
   return "other";
 }
 
-// The argv that satisfies a prerequisite interactively: the gh login for the
-// auth check, otherwise its install command (may be null when unfixable here).
+// The argv that satisfies a prerequisite interactively: a login for the auth
+// checks, the plugin install for superpowers (--marketplace adds the official
+// marketplace when it is missing), otherwise the install command (may be null
+// when unfixable here).
 export function fixCommandFor(pr: Prerequisite, pm: PackageManager | null): string[] | null {
   if (pr.key === "gh-auth") return ["gh", "auth", "login"];
+  if (pr.key === "claude-auth") return ["claude", "auth", "login"];
+  if (pr.key === "superpowers") {
+    return ["claude", "plugin", "install", "superpowers", "--marketplace", "anthropics/claude-plugins-official"];
+  }
   return installCommand(pr.key, pm);
 }
 

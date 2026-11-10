@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import * as p from "@clack/prompts";
@@ -23,7 +23,6 @@ import {
 import {
   commandExists,
   configReferencesFeatureStatus,
-  createLink,
   detectPackageManager,
   ensureHostLinks,
   errMsg,
@@ -34,6 +33,7 @@ import {
   hostLinks,
   installCommand,
   installHint,
+  installHostLink,
   isSatisfied,
   linkState,
   PREREQUISITES,
@@ -212,31 +212,17 @@ async function installHostLinks(): Promise<void> {
   );
   if (!link) return;
   const results: string[] = [];
-  for (const { source, target, label } of hostLinks) {
-    try {
-      const state = linkState(source, target);
-      if (state === "ours") {
-        results.push(`[ok] ${label} already linked`);
-        continue;
-      }
-      if (state === "other") {
-        const replace = bail(
-          await p.confirm({
-            message: `${target} exists and isn't a yimbot link. Back it up (.bak) and replace with a link to the repo copy?`,
-            initialValue: false,
-          }),
-        );
-        if (!replace) {
-          results.push(`[skip] ${label} left as-is`);
-          continue;
-        }
-        renameSync(target, `${target}.bak`);
-      }
-      createLink(source, target);
-      results.push(`[ok] ${label} linked`);
-    } catch (err) {
-      results.push(`[fail] ${label}: ${errMsg(err)}`);
+  for (const link of hostLinks) {
+    let replace = false;
+    if (linkState(link.source, link.target) === "other") {
+      replace = bail(
+        await p.confirm({
+          message: `${link.target} exists and isn't a yimbot link. Back it up (.bak) and replace with a link to the repo copy?`,
+          initialValue: false,
+        }),
+      );
     }
+    results.push(installHostLink(link, replace));
   }
   p.note(results.join("\n"), "Install");
 }

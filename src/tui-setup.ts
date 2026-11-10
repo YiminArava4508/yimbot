@@ -8,7 +8,9 @@ import {
   fixCommandFor,
   hostLinks,
   installHint,
+  installHostLink,
   linkState,
+  type HostLink,
   type checkAll,
   type CheckResult,
   type PackageManager,
@@ -32,6 +34,7 @@ export type SetupDeps = {
   settings: (apiKey: string) => SettingsDeps;
   finish: (c: YimbotConfig) => ReturnType<typeof finishWizard>;
   minSize?: { cols: number; rows: number };
+  links?: HostLink[];
 };
 
 const DEFAULT_MIN_SIZE = { cols: 80, rows: 24 };
@@ -109,7 +112,7 @@ export function summaryLines(c: YimbotConfig, viewerName: string): string[] {
 
 // Counts first, then only the links finishing will create or leave alone, so
 // the summary still fits on one screen on a machine that is already linked.
-export function linkLines(links: typeof hostLinks = hostLinks): string[] {
+export function linkLines(links: HostLink[] = hostLinks): string[] {
   const states = links.map((l) => ({ label: l.label, state: linkState(l.source, l.target) }));
   const count = (state: string) => states.filter((x) => x.state === state).length;
   return [
@@ -196,6 +199,10 @@ export function openSetup(
   let configured: YimbotConfig | null = null;
   let keyInput: any = null;
   let finished = false;
+  // Set once finish wrote .env but some host links failed: the confirm step
+  // shows them and the next enter hands over without writing again.
+  let handover: { config: YimbotConfig } | null = null;
+  const links = deps.links ?? hostLinks;
 
   function setVisible(el: any, visible: boolean): void {
     if (visible) el.show();
@@ -226,11 +233,21 @@ export function openSetup(
   function footerHint(): string {
     if (paneFocused) return "keys go to the command   ctrl+] back to the wizard";
     if (step === "key") return "enter check key   esc back   ctrl+c quit";
-    if (step === "confirm") return "j/k scroll   enter write .env and finish   esc back   ctrl+c quit";
+    if (step === "confirm") return confirmHint();
     if (mode === "checking") return "ctrl+c quit";
     if (mode === "choice") return "j/k move   enter choose   q quit";
     const tab = paneRunning ? "   tab command" : "";
     return `j/k move   f fix   r re-check   enter next${tab}   q quit`;
+  }
+
+  function foreignLinks(): HostLink[] {
+    return links.filter((l) => linkState(l.source, l.target) === "other");
+  }
+
+  function confirmHint(): string {
+    if (handover) return "enter continue";
+    const replace = foreignLinks().length > 0 ? "   l replace [other] links (.bak)" : "";
+    return `j/k scroll   enter write .env and finish${replace}   esc back   ctrl+c quit`;
   }
 
   function prereqBody(): string {
@@ -302,7 +319,7 @@ export function openSetup(
   }
 
   function onCtrlC(): void {
-    if (!paneFocused) teardown(null);
+    if (!paneFocused) teardown(handover);
   }
 
   function onResize(): void {
@@ -536,6 +553,10 @@ export function openSetup(
   }
 
   function finishNow(): void {
+    if (handover) {
+      teardown(handover);
+      return;
+    }
     if (!configured) return;
     const config = configured;
     let result: ReturnType<typeof finishWizard>;
@@ -549,7 +570,25 @@ export function openSetup(
       paint();
       return;
     }
-    teardown({ config });
+    const failures = result.linkResults.filter((line) => line.startsWith("[fail]"));
+    if (failures.length === 0) {
+      teardown({ config });
+      return;
+    }
+    handover = { config };
+    statusText = `{yellow-fg}.env written, but ${failures.length} host link(s) failed; enter to continue{/yellow-fg}`;
+    bodyText = ["Host links that could not be created:", ...failures].map((line) => blessed.escape(line)).join("\n");
+    paint();
+  }
+
+  function replaceForeignLinks(): void {
+    const foreign = foreignLinks();
+    if (foreign.length === 0) return;
+    const failures = foreign.map((l) => installHostLink(l, true)).filter((line) => line.startsWith("[fail]"));
+    goTo("confirm");
+    if (failures.length > 0) statusText = `{red-fg}${blessed.escape(failures.join("; "))}{/red-fg}`;
+    else statusText = `{green-fg}replaced ${foreign.length} link(s); old files moved to .bak{/green-fg}`;
+    paint();
   }
 
   function goTo(next: WizardStep): void {
@@ -575,7 +614,7 @@ export function openSetup(
       case "confirm":
         statusText = "";
         body.setLabel(" confirm ");
-        const [linkCounts, ...linkDetails] = linkLines();
+        const [linkCounts, ...linkDetails] = linkLines(links);
         bodyText = [
           `signed in as ${blessed.escape(viewerName)}`,
           linkCounts,
@@ -595,7 +634,9 @@ export function openSetup(
   body.on("keypress", (_ch: string, key: { name?: string }) => {
     if (step !== "confirm") return;
     if (key.name === "enter") finishNow();
+    if (handover) return;
     if (key.name === "escape") goTo("configure");
+    if (key.name === "l") replaceForeignLinks();
   });
   paneBox.on("keypress", (_ch: string, key: { sequence?: string; ch?: string }) => {
     if (!pane || !paneRunning) {

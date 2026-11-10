@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import type { PtyLike } from "./claude-sessions.ts";
 import type { ApplyResult } from "./settings-apply.ts";
 import type { YimbotConfig } from "./settings-model.ts";
 import { PREREQUISITES, fixCommandFor, type CheckResult } from "./setup-core.ts";
+import { tempDir } from "./test-temp.ts";
 import type { SettingsDeps } from "./tui-settings.ts";
 import { configureError, linearConfigError, linkLines, openSetup, tooSmallMessage, type SetupDeps } from "./tui-setup.ts";
 
@@ -430,6 +433,63 @@ test("confirm: lists link states and the summary without the key; enter finishes
   assert.equal(h.finished.length, 1);
   assert.equal(h.finished[0].apiKey, KEY);
   assert.deepEqual(h.done, [{ config: h.finished[0] }]);
+  h.screen.destroy();
+});
+
+test("confirm: l backs up a foreign host link file and links it, then refreshes the counts", async () => {
+  const dir = tempDir("yimbot-wizard-links-");
+  const source = join(dir, "launcher.sh");
+  const target = join(dir, "home-launcher.sh");
+  writeFileSync(source, "#!/bin/bash\n");
+  writeFileSync(target, "mine");
+  const h = harness({ links: [{ source, target, label: "test launcher" }], rows: 50 });
+  await toConfirm(h);
+  let text = screenText(h.screen);
+  assert.match(text, /\[other\] test launcher/);
+  assert.match(text, /l replace/);
+  press(h.screen, "l");
+  await flush();
+  assert.equal(readlinkSync(target), source);
+  assert.equal(readFileSync(`${target}.bak`, "utf8"), "mine");
+  text = screenText(h.screen);
+  assert.match(text, /Host links: 1 linked, 0 to create, 0 left as-is/);
+  assert.doesNotMatch(text, /\[other\]/);
+  assert.deepEqual(h.finished, []);
+  h.screen.destroy();
+});
+
+test("confirm: l leaves missing links for finish to create", async () => {
+  const dir = tempDir("yimbot-wizard-links-missing-");
+  const source = join(dir, "launcher.sh");
+  writeFileSync(source, "#!/bin/bash\n");
+  const target = join(dir, "home-launcher.sh");
+  const h = harness({ links: [{ source, target, label: "test launcher" }] });
+  await toConfirm(h);
+  press(h.screen, "l");
+  await flush();
+  assert.throws(() => lstatSync(target));
+  h.screen.destroy();
+});
+
+test("confirm: failed host links from finish show before handing over", async () => {
+  const finished: YimbotConfig[] = [];
+  const h = harness({
+    finish: (c) => {
+      finished.push(c);
+      return { ok: true, linkResults: ["[ok] a linked", "[fail] b: disk on fire"] };
+    },
+  });
+  await toConfirm(h);
+  press(h.screen, "enter");
+  await flush();
+  const text = screenText(h.screen);
+  assert.match(text, /\[fail\] b: disk on fire/);
+  assert.doesNotMatch(text, /\[ok\] a linked/);
+  assert.deepEqual(h.done, []);
+  press(h.screen, "enter");
+  await flush();
+  assert.equal(finished.length, 1, "the second enter hands over without writing again");
+  assert.deepEqual(h.done, [{ config: finished[0] }]);
   h.screen.destroy();
 });
 

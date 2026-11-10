@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fixCommandFor, needsSetup, PREREQUISITES, setupMode } from "./setup-core.ts";
+import { lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fixCommandFor, installHostLink, needsSetup, PREREQUISITES, setupMode } from "./setup-core.ts";
+import { tempDir } from "./test-temp.ts";
 
 const binaries = ["git", "tmux", "gh", "node", "pnpm", "claude"];
 const allOk = { commandExists: () => true, isGitRepo: () => true };
@@ -92,4 +95,37 @@ test("fixCommandFor installs superpowers from the official marketplace, adding i
     "--marketplace",
     "anthropics/claude-plugins-official",
   ]);
+});
+
+function linkFixture() {
+  const dir = tempDir("yimbot-install-link-");
+  const source = join(dir, "source.sh");
+  writeFileSync(source, "#!/bin/bash\n");
+  return { dir, source, target: join(dir, "home", "launcher.sh") };
+}
+
+test("installHostLink creates a missing link and reports one already ours", () => {
+  const { source, target } = linkFixture();
+  assert.equal(installHostLink({ source, target, label: "launcher" }, false), "[ok] launcher linked");
+  assert.equal(readlinkSync(target), source);
+  assert.equal(installHostLink({ source, target, label: "launcher" }, false), "[ok] launcher already linked");
+});
+
+test("installHostLink leaves a foreign file alone unless told to replace it", () => {
+  const { dir, source } = linkFixture();
+  const target = join(dir, "foreign.sh");
+  writeFileSync(target, "mine");
+  assert.equal(installHostLink({ source, target, label: "launcher" }, false), "[skip] launcher left as-is");
+  assert.equal(lstatSync(target).isSymbolicLink(), false);
+  assert.equal(installHostLink({ source, target, label: "launcher" }, true), "[ok] launcher linked");
+  assert.equal(readlinkSync(target), source);
+  assert.equal(readFileSync(`${target}.bak`, "utf8"), "mine");
+});
+
+test("installHostLink reports a failure instead of throwing", () => {
+  const { dir, source } = linkFixture();
+  const blocker = join(dir, "blocked");
+  writeFileSync(blocker, "file, not a dir");
+  const result = installHostLink({ source, target: join(blocker, "child"), label: "launcher" }, false);
+  assert.match(result, /^\[fail\] launcher: /);
 });

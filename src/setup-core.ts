@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -251,7 +251,7 @@ export const errMsg = (e: unknown): string => (e instanceof Error ? e.message : 
 // Repo root, so the wizard can link the vendored launcher + skill into place.
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
-type HostLink = { source: string; target: string; label: string };
+export type HostLink = { source: string; target: string; label: string };
 export const hostLinks: HostLink[] = [
   {
     source: join(repoRoot, "scripts/new-session.sh"),
@@ -418,6 +418,24 @@ export function fixCommandFor(pr: Prerequisite, pm: PackageManager | null): stri
 export function createLink(source: string, target: string): void {
   mkdirSync(dirname(target), { recursive: true });
   symlinkSync(source, target);
+}
+
+// Link one host file, moving a foreign file at the target to <target>.bak only
+// when replaceOther is set. Shared by the CLI installer and the wizard's
+// confirm step.
+export function installHostLink({ source, target, label }: HostLink, replaceOther: boolean): string {
+  try {
+    const state = linkState(source, target);
+    if (state === "ours") return `[ok] ${label} already linked`;
+    if (state === "other") {
+      if (!replaceOther) return `[skip] ${label} left as-is`;
+      renameSync(target, `${target}.bak`);
+    }
+    createLink(source, target);
+    return `[ok] ${label} linked`;
+  } catch (err) {
+    return `[fail] ${label}: ${errMsg(err)}`;
+  }
 }
 
 // Non-interactive host-link healer: create only missing links, never prompting

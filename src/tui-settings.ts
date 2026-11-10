@@ -4,6 +4,7 @@ import {
   SETTING_CATEGORIES,
   categoryDirtyCounts,
   commitDraft,
+  configToEnvRecord,
   dirtyKeys,
   draftRows,
   newDraft,
@@ -49,9 +50,11 @@ export function categoryLines(counts: Record<SettingCategory, number>, active: n
   });
 }
 
-export function settingsFooterHint(dirty: number, editing: boolean): string {
+const DEFAULT_SAVE_LABEL = "write + restart";
+
+export function settingsFooterHint(dirty: number, editing: boolean, saveLabel = DEFAULT_SAVE_LABEL): string {
   if (editing) return "enter accept   esc cancel";
-  const write = dirty > 0 ? `   w write + restart (${dirty} changed)` : "";
+  const write = dirty > 0 ? `   w ${saveLabel} (${dirty} changed)` : "";
   return `j/k move   h/l pane   enter edit${write}   esc back`;
 }
 
@@ -101,6 +104,8 @@ export type SettingsDeps = {
   apply: (next: YimbotConfig, prev: YimbotConfig) => Promise<ApplyResult>;
 };
 
+const TEAM_STATE_KEYS = ["DEPLOY_STATE_NAME", "TODO_STATE_NAME", "REVIEW_STATE_NAME"];
+
 const LABEL_MODES = ["every ticket", "only tickets labelled", "every ticket except labelled"];
 
 // Strip the leading "!" so a negated filter still seeds the label picker with
@@ -122,8 +127,10 @@ export function openSettings(
   deps: SettingsDeps,
   onClose: (daemonStopped: boolean) => void,
   initialDaemonStopped = false,
+  opts: { saveLabel?: string } = {},
 ): void {
   const s: any = screen;
+  const collect = opts.saveLabel !== undefined;
 
   const layout = settingsLayout();
   // Attached first so the detail list is the screen's first list child.
@@ -195,7 +202,7 @@ export function openSettings(
     painting = false;
     list.setLabel(` ${SETTING_CATEGORIES[category].toLowerCase()} `);
     paintHelp();
-    footer.setContent(footerOverride ?? settingsFooterHint(dirty.length, editing));
+    footer.setContent(footerOverride ?? settingsFooterHint(dirty.length, editing, opts.saveLabel));
     s.render();
   }
 
@@ -361,6 +368,11 @@ export function openSettings(
       deps.teams,
       row.value,
       (value) => {
+        // State names belong to a team, so edits picked for the old one would
+        // point the daemon at states the new team may not have.
+        if (value.toLowerCase() !== currentTeamName().toLowerCase()) {
+          for (const key of TEAM_STATE_KEYS) draft = setEdit(draft, key, configToEnvRecord(draft.base)[key]);
+        }
         draft = setEdit(draft, row.envKey, value);
       },
       "teams",
@@ -483,11 +495,11 @@ export function openSettings(
           base = next;
           draft = newDraft(base);
           daemonStopped = false;
-          paint("saved, daemon restarted");
+          paint(collect ? "saved" : "saved, daemon restarted");
           return;
         }
-        daemonStopped = !result.rolledBack;
-        const suffix = result.rolledBack ? "" : ", daemon stopped";
+        daemonStopped = !collect && !result.rolledBack;
+        const suffix = collect || result.rolledBack ? "" : ", daemon stopped";
         paint(`${result.error}${suffix}`);
       })
       .catch((err) => {

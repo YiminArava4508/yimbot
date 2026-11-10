@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
@@ -190,7 +190,11 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
 // Write .env, backing up any existing file to .env.bak first. Mode 0600 because
 // it holds the Linear API key.
 export function writeEnvFile(contents: string, path: string = envPath): void {
-  if (existsSync(path)) renameSync(path, `${path}.bak`);
+  // rename keeps the old mode, and a hand-made .env is often 0644.
+  if (existsSync(path)) {
+    renameSync(path, `${path}.bak`);
+    chmodSync(`${path}.bak`, 0o600);
+  }
   writeFileSync(path, contents, { mode: 0o600 });
 }
 
@@ -396,7 +400,8 @@ export function validateDraft(draft: Draft): Record<string, string> {
         if (raw.trim() && !isPositiveInt(raw)) errors[envKey] = "must be a positive integer or empty";
         break;
       case "CODEBASE_PATH":
-        if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
+        if (!isAbsolute(expandTilde(raw.trim()))) errors[envKey] = "must be an absolute path";
+        else if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
         break;
       // These non-empty rules match the wizard's Required validators.
       case "LINEAR_API_KEY":

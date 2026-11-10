@@ -8,7 +8,7 @@ set -uo pipefail
 
 TICKET=${1:-}
 [ -n "$TICKET" ] || { echo "Usage: $0 <ticket-identifier>"; exit 1; }
-CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
+: "${CODEBASE_PATH:?CODEBASE_PATH is not set; run pnpm onboard or export it}"
 
 SESSION="refine-$(printf '%s' "$TICKET" | tr '[:upper:]' '[:lower:]')"
 if tmux has-session -t "=$SESSION" 2>/dev/null; then

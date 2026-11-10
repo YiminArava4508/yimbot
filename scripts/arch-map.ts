@@ -4,14 +4,13 @@
 // written into yimbot's own state dir, never into the repo being reviewed.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { archMapPath } from "../src/review-state.ts";
 import { mapPrompt, parseGeneratedMap, sourcePaths } from "../src/arch-generate.ts";
-import { envOr } from "../src/env.ts";
+import { codebasePath, envOr } from "../src/env.ts";
 import { runHeadless } from "../src/headless.ts";
 
-const codebase = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+const codebase = codebasePath();
 const git = (...args: string[]): string =>
   execFileSync("git", args, { cwd: codebase, encoding: "utf8" }).trim();
 

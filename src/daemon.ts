@@ -1,6 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
@@ -9,7 +8,7 @@ import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
-import { envCsvSet, envOr } from "./env.ts";
+import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
 import {
   addLabel,
   blockedInfo,
@@ -65,7 +64,7 @@ export async function startDaemon(): Promise<() => void> {
   const heartbeatIntervalMinutes = Number(
     envOr("HEARTBEAT_INTERVAL_MINUTES", envOr("POLL_INTERVAL_MINUTES", "3")),
   );
-  const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+  const codebasePath = requireCodebasePath();
 
   // Claim step config. AUTO_CLAIM is on unless explicitly disabled with a
   // recognized off-value (false/off/no/0), so an intuitive toggle can't silently

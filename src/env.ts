@@ -17,3 +17,11 @@ export function envCsvSet(name: string, fallback: string): Set<string> {
       .filter(Boolean),
   );
 }
+
+// The repo worktrees are cut from. No built-in default: it is machine specific,
+// so an unset value is a setup problem, not something to guess.
+export function codebasePath(): string {
+  const value = envOr("CODEBASE_PATH", "");
+  if (!value) throw new Error("CODEBASE_PATH is not set; run `pnpm onboard` or set it in .env");
+  return value;
+}

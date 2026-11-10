@@ -11,8 +11,8 @@ it runs launch sessions. Each issue launches at most once per run, and a
 failed launch is retried on the next poll.
 
 The daemon also keeps the main codebase fresh: every poll interval it runs
-`git pull --rebase origin main` in `CODEBASE_PATH` (default
-`~/Work/gemini`), so new worktree sessions branch off up-to-date code. Pull
+`git pull --rebase origin main` in `CODEBASE_PATH` (required;
+must be set), so new worktree sessions branch off up-to-date code. Pull
 failures are logged and never crash the daemon.
 
 ## How it works

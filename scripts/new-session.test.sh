@@ -220,5 +220,7 @@ assert_eq "$(printf '%s' "$NOTIFY_CMD" | grep -c 'then emit_notification_event')
 # unconditional flag rather than silently disabling the hook.
 assert_eq "$(printf '%s' "$NOTIFY_CMD" | grep -c 'elif command -v emit_hook_event .* then emit_hook_event needs_input')" "1" "Notification hook falls back to the generic emitter"
 assert_eq "$(grep -c 'emit_hook_event input_received' "$SETTINGS_JSON")" "1" "UserPromptSubmit hook emits input_received"
+SESSION_END_CMD=$(node -e 'process.stdout.write(require(process.argv[1]).hooks.SessionEnd[0].hooks[0].command)' "$SETTINGS_JSON")
+assert_eq "$(printf '%s' "$SESSION_END_CMD" | grep -c 'emit_hook_event session_ended')" "1" "SessionEnd hook emits session_ended"
 
 if [ "$fail" -eq 0 ]; then echo "PASS: new-session.sh helper tests"; else exit 1; fi

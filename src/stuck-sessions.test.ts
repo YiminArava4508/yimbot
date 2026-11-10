@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BoardRow, YimbotEvent } from "./events.ts";
-import { MAX_RESUME_ATTEMPTS, detectStuckSessions, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
+import { MAX_RESUME_ATTEMPTS, detectStuckSessions, stuckIdleMs, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
 
 const MIN = 60_000;
 const NOW = 100 * MIN;
@@ -131,4 +131,10 @@ test("a recovered session gets a fresh resume budget", () => {
   run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("bash") }, state);
   run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("claude", 1) }, state);
   assert.equal(state.resumeAttempts.get("ENG-1") ?? 0, 0);
+});
+
+test("stuckIdleMs defaults to 30 minutes and ignores a bad value", () => {
+  assert.equal(stuckIdleMs(undefined), 30 * MIN);
+  assert.equal(stuckIdleMs("45"), 45 * MIN);
+  for (const bad of ["abc", "0", "-5", ""]) assert.equal(stuckIdleMs(bad), 30 * MIN, bad);
 });

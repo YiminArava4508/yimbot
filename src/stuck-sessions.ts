@@ -9,7 +9,12 @@ import { STUCK_STATUS, isWorkingStatus, rowKeyOf, type BoardRow, type YimbotEven
 export const MAX_RESUME_ATTEMPTS = 3;
 
 const CLAUDE_COMMANDS = new Set(["claude", "node"]);
-const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash"]);
+export const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash"]);
+
+export function stuckIdleMs(raw: string | undefined): number {
+  const minutes = Number(raw);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 30 * 60_000;
+}
 
 export type PaneInfo = { cmd: string; activityMs: number };
 

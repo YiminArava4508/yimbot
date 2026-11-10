@@ -35,6 +35,7 @@ import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import { clearDeadRaises, type StaleRaiseDeps } from "./stale-raise.ts";
+import { SHELL_COMMANDS, detectStuckSessions, freshStuckState, stuckIdleMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
@@ -1184,6 +1185,50 @@ export function listTmuxPaneIds(): Set<string> | null {
   }
 }
 
+export function parsePaneInfo(out: string): Map<string, PaneInfo> {
+  const panes = new Map<string, PaneInfo>();
+  for (const line of out.split("\n")) {
+    const [id, cmd, activity] = line.split("\t");
+    if (!id || !cmd) continue;
+    panes.set(id, { cmd, activityMs: Number(activity) * 1000 });
+  }
+  return panes;
+}
+
+// Every pane with its foreground command and last-output time, or null when no
+// tmux server is reachable.
+export function listTmuxPaneInfo(): Map<string, PaneInfo> | null {
+  try {
+    const out = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{window_activity}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return parsePaneInfo(out);
+  } catch {
+    return null;
+  }
+}
+
+type Exec = (file: string, args: string[]) => string;
+const runExec: Exec = (file, args) => execFileSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+
+// Type `claude --continue` (the same command new-session.sh builds for a resume)
+// into a pane whose Claude exited and left a shell. Returns false, typing
+// nothing, when the pane is gone or its foreground is not a shell: a recycled
+// %N id or an editor would run the keystrokes as something unintended.
+export function resumeClaudeInPane(pane: string, exec: Exec = runExec): boolean {
+  try {
+    const fg = exec("tmux", ["display", "-p", "-t", pane, "#{pane_current_command}"]).trim();
+    if (!SHELL_COMMANDS.has(fg)) return false;
+    const cmd = exec("bash", ["-c", 'source "$1" && SESSION_RESUME=1 build_claude_cmd', "_", sessionScriptPath]).trim();
+    if (!cmd) return false;
+    exec("tmux", ["send-keys", "-t", pane, cmd, "C-m"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Deliver the autonomous-mode nudge into a pane: Escape first (declines a
 // pending permission dialog; a no-op at an idle prompt), then the prompt text,
 // then Enter. Returns false without typing anything when the pane is gone or
@@ -1759,6 +1804,21 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: (msg) => console.log(`[stale] ${msg}`),
   };
 
+  // Stuck-session step: a working row whose Claude is gone or silent shows as
+  // stuck, and an exited Claude in a surviving pane is resumed in place.
+  const stuckState = freshStuckState();
+  const stuckDeps: StuckDeps = {
+    events: readEvents,
+    rows: () => reduceRows(readEvents(), Date.now()),
+    panes: listTmuxPaneInfo,
+    hasSessionFor: (key) => hasSessionForWorktree(key.toLowerCase(), listTmuxSessions()),
+    now: Date.now,
+    idleMs: stuckIdleMs(process.env.STUCK_IDLE_MINUTES),
+    emit: (e) => emitEvent(e),
+    resume: resumeClaudeInPane,
+    log: (msg) => console.log(`[stuck] ${msg}`),
+  };
+
   let running = false;
   const heartbeat = async () => {
     if (running) return;
@@ -1766,6 +1826,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     attentionSnapshot = null;
     try {
       clearDeadRaises(staleRaiseDeps);
+      detectStuckSessions(stuckState, stuckDeps);
       nudgeOnce(nudgeState, nudgeDeps);
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);

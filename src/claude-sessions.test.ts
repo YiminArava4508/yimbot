@@ -11,12 +11,13 @@ import {
   makeSessionRegistry,
   seedPrompt,
   sessionCwd,
+  spawnPty,
   type PtyLike,
 } from "./claude-sessions.ts";
 
 function fakePty(): PtyLike & { killed: boolean; emitData(d: string): void; emitExit(): void } {
   let dataCb: ((d: string) => void) | null = null;
-  let exitCb: (() => void) | null = null;
+  let exitCb: ((code: number | undefined) => void) | null = null;
   return {
     killed: false,
     write() {},
@@ -36,7 +37,7 @@ function fakePty(): PtyLike & { killed: boolean; emitData(d: string): void; emit
       dataCb?.(d);
     },
     emitExit() {
-      exitCb?.();
+      exitCb?.(0);
     },
   };
 }
@@ -135,4 +136,17 @@ test("killAll kills live sessions and forgets them", () => {
   assert.equal(spawned[1].killed, false);
   reg.getOrSpawn(1, "/tmp/x");
   assert.equal(spawned.length, 3);
+});
+
+test("spawnPty reports output and exit code", async () => {
+  const pty = spawnPty("sh", ["-c", "echo hi; exit 3"], process.cwd(), 80, 24);
+  let out = "";
+  pty.onData((d) => {
+    out += d;
+  });
+  const code = await new Promise<number | undefined>((resolve) => {
+    pty.onExit(resolve);
+  });
+  assert.match(out, /hi/);
+  assert.equal(code, 3);
 });

@@ -407,7 +407,7 @@ function testDeps(
 function fakeClaudeSession() {
   const writes: string[] = [];
   const dataSubs: { disposed: boolean }[] = [];
-  const exitCbs: (() => void)[] = [];
+  const exitCbs: ((code: number | undefined) => void)[] = [];
   let killed = false;
   const session: ClaudeSession = {
     pr: 42,
@@ -423,7 +423,7 @@ function fakeClaudeSession() {
         dataSubs.push(sub);
         return { dispose: () => { sub.disposed = true; } };
       },
-      onExit: (cb: () => void) => {
+      onExit: (cb: (code: number | undefined) => void) => {
         exitCbs.push(cb);
         return { dispose: () => {} };
       },
@@ -431,7 +431,7 @@ function fakeClaudeSession() {
   };
   const emitExit = () => {
     session.exited = true;
-    for (const cb of exitCbs) cb();
+    for (const cb of exitCbs) cb(0);
   };
   return { session, writes, dataSubs, wasKilled: () => killed, emitExit };
 }

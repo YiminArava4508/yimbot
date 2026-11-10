@@ -22,7 +22,7 @@ export type PtyLike = {
   resize(cols: number, rows: number): void;
   kill(): void;
   onData(cb: (data: string) => void): { dispose(): void };
-  onExit(cb: () => void): { dispose(): void };
+  onExit(cb: (code: number | undefined) => void): { dispose(): void };
 };
 
 export type ClaudeSession = {
@@ -96,19 +96,23 @@ export function makeSessionRegistry(
   };
 }
 
-export const spawnClaudePty: SpawnPty = (cwd, args, cols, rows) => {
-  const p = nodePtySpawn("claude", args, {
-    name: "xterm-256color",
-    cwd,
-    cols,
-    rows,
-    env: process.env as Record<string, string>,
-  });
+export function spawnPty(
+  command: string,
+  args: string[],
+  cwd: string,
+  cols: number,
+  rows: number,
+  env: Record<string, string> = process.env as Record<string, string>,
+): PtyLike {
+  const p = nodePtySpawn(command, args, { name: "xterm-256color", cwd, cols, rows, env });
   return {
     write: (data) => p.write(data),
     resize: (c, r) => p.resize(c, r),
     kill: () => p.kill(),
     onData: (cb) => p.onData(cb),
-    onExit: (cb) => p.onExit(() => cb()),
+    onExit: (cb) => p.onExit((e) => cb(e.exitCode)),
   };
-};
+}
+
+export const spawnClaudePty: SpawnPty = (cwd, args, cols, rows) =>
+  spawnPty("claude", args, cwd, cols, rows);

@@ -688,3 +688,55 @@ test("openSettings: w with an error in another category jumps to that category",
   assert.equal(detail.ritems.some((l: string) => /must be a positive integer/.test(l)), true);
   screen.destroy();
 });
+
+test("settingsFooterHint uses a custom save label and keeps write + restart by default", () => {
+  assert.match(settingsFooterHint(2, false, "save"), /w save \(2 changed\)/);
+  assert.match(settingsFooterHint(2, false), /w write \+ restart \(2 changed\)/);
+});
+
+test("openSettings: collect mode shows the save label and a plain saved message", async () => {
+  const screen = testScreen();
+  openSettings(screen, testDeps(), () => {}, false, { saveLabel: "save" });
+  showCategory(screen, "Claim");
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter");
+  const footer = screen.children.find((c: any) => c.type === "text");
+  assert.match(footer.getContent(), /w save \(1 changed\)/);
+  press(screen, "w");
+  await new Promise((r) => setImmediate(r));
+  assert.match(footer.getContent(), /saved/);
+  assert.equal(footer.getContent().includes("restart"), false);
+  screen.destroy();
+});
+
+test("openSettings: collect mode failed apply stays open and shows the error without daemon text", async () => {
+  const screen = testScreen();
+  let closed = false;
+  let daemonStopped: boolean | undefined;
+  const error = "codebase path is not a git repository";
+  openSettings(
+    screen,
+    testDeps({ apply: () => Promise.resolve({ ok: false, error, rolledBack: false } as ApplyResult) }),
+    (stopped: boolean) => {
+      closed = true;
+      daemonStopped = stopped;
+    },
+    false,
+    { saveLabel: "save" },
+  );
+  showCategory(screen, "Claim");
+  const list = screen.children.find((c: any) => c.type === "list");
+  list.select(list.ritems.findIndex((l: string) => l.startsWith("auto-claim".padEnd(20, " "))));
+  press(screen, "enter");
+  press(screen, "w");
+  await new Promise((r) => setImmediate(r));
+  const footer = screen.children.find((c: any) => c.type === "text");
+  assert.match(footer.getContent(), /codebase path is not a git repository/);
+  assert.equal(footer.getContent().includes("daemon"), false);
+  assert.equal(closed, false);
+  press(screen, "escape");
+  press(screen, "escape");
+  assert.equal(daemonStopped, false);
+  screen.destroy();
+});

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
@@ -400,7 +400,8 @@ export function validateDraft(draft: Draft): Record<string, string> {
         if (raw.trim() && !isPositiveInt(raw)) errors[envKey] = "must be a positive integer or empty";
         break;
       case "CODEBASE_PATH":
-        if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
+        if (!isAbsolute(expandTilde(raw.trim()))) errors[envKey] = "must be an absolute path";
+        else if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
         break;
       // These non-empty rules match the wizard's Required validators.
       case "LINEAR_API_KEY":

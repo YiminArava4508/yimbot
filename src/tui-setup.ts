@@ -1,8 +1,9 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
+import { isAbsolute } from "node:path";
 import type { PtyLike } from "./claude-sessions.ts";
 import type { ApplyResult } from "./settings-apply.ts";
-import { isGitRepo, settingRows, type YimbotConfig } from "./settings-model.ts";
+import { expandTilde, isGitRepo, settingRows, type YimbotConfig } from "./settings-model.ts";
 import {
   errMsg,
   fixCommandFor,
@@ -10,6 +11,7 @@ import {
   installHint,
   installHostLink,
   linkState,
+  resetMcpCache,
   type HostLink,
   type checkAll,
   type CheckResult,
@@ -35,6 +37,7 @@ export type SetupDeps = {
   finish: (c: YimbotConfig) => ReturnType<typeof finishWizard>;
   minSize?: { cols: number; rows: number };
   links?: HostLink[];
+  resetCache?: () => void;
 };
 
 const DEFAULT_MIN_SIZE = { cols: 80, rows: 24 };
@@ -75,6 +78,7 @@ export function configureError(c: YimbotConfig, apiKey: string): string | null {
   ];
   const empty = required.find(([, value]) => !value.trim());
   if (empty) return `${empty[0]} cannot be empty`;
+  if (!isAbsolute(expandTilde(c.codebasePath.trim()))) return "codebase path must be an absolute path";
   if (!isGitRepo(c.codebasePath)) return "codebase path must be an existing git repository";
   return null;
 }
@@ -328,6 +332,7 @@ export function openSetup(
   }
 
   async function refreshChecks(): Promise<CheckResult[]> {
+    (deps.resetCache ?? resetMcpCache)();
     const r = await deps.checkAll();
     if (!finished) {
       checks = r;

@@ -252,6 +252,16 @@ test("validateDraft rejects a codebase path that is not a git repository", () =>
   assert.match(errors.CODEBASE_PATH, /git repository/i);
 });
 
+test("validateDraft rejects a relative codebase path even inside a git repository", () => {
+  const errors = validateDraft(setEdit(newDraft(sample), "CODEBASE_PATH", "."));
+  assert.equal(errors.CODEBASE_PATH, "must be an absolute path");
+});
+
+test("validateDraft accepts a tilde codebase path that expands to a git repository", () => {
+  const errors = validateDraft(setEdit(newDraft(sample), "CODEBASE_PATH", `~/${relative(homedir(), process.cwd())}`));
+  assert.equal(errors.CODEBASE_PATH, undefined);
+});
+
 test("commitDraft throws rather than committing an invalid draft", () => {
   assert.throws(() => commitDraft(setEdit(newDraft(sample), "MAX_IN_PROGRESS", "0")));
 });

@@ -208,6 +208,7 @@ test("configureError requires the unset rows and the verified key", () => {
   assert.equal(configureError({ ...baseConfig, todoStateName: "" }, KEY), "todo state cannot be empty");
   assert.equal(configureError({ ...baseConfig, codebasePath: "" }, KEY), "codebase path cannot be empty");
   assert.equal(configureError(baseConfig, "lin_api_other"), "change the key on the Linear key step");
+  assert.equal(configureError({ ...baseConfig, codebasePath: "." }, KEY), "codebase path must be an absolute path");
 });
 
 const linear = (teams: string[], states: string[]) => ({
@@ -571,6 +572,23 @@ test("a rejected re-check during fix everything shows the error and frees the st
   press(h.screen, "f");
   await flush();
   assert.equal(h.spawned.length, 2, "walking was reset, so f starts a new fix");
+  h.screen.destroy();
+});
+
+test("r clears the MCP cache before re-checking", async () => {
+  const order: string[] = [];
+  const h = harness({
+    checkAll: async () => {
+      order.push("check");
+      return results([]);
+    },
+    resetCache: () => void order.push("reset"),
+  });
+  await flush();
+  order.length = 0;
+  press(h.screen, "r");
+  await flush();
+  assert.deepEqual(order, ["reset", "check"]);
   h.screen.destroy();
 });
 

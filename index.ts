@@ -1,10 +1,9 @@
 // index.ts
 import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { format } from "node:util";
 import { execFile } from "node:child_process";
-import { envOr } from "./src/env.ts";
+import { codebasePath, envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
 import { worktreeSyncStatus } from "./src/worktree-sync.ts";
 import { applyReadyLabel, ghRunner, prDiff, prHeadSha, prReviewMeta } from "./src/gh.ts";
@@ -72,7 +71,7 @@ function redirectConsoleToFile(): void {
 // Read fresh rather than captured once: the settings panel can restart the
 // daemon on a new CODEBASE_PATH mid-session, and callers that closed over a
 // stale value would keep filtering/opening sessions against the old repo.
-const currentCodebasePath = () => envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+const currentCodebasePath = () => codebasePath();
 
 if (process.stdout.isTTY) {
   redirectConsoleToFile();

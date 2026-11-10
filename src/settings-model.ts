@@ -232,7 +232,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     reviewStateName: or("REVIEW_STATE_NAME", "In Review"),
     todoStateName: or("TODO_STATE_NAME", "Todo"),
     heartbeatIntervalMinutes: Number(or("HEARTBEAT_INTERVAL_MINUTES", or("POLL_INTERVAL_MINUTES", "3"))),
-    codebasePath: or("CODEBASE_PATH", join(homedir(), "Work/gemini")),
+    codebasePath: or("CODEBASE_PATH", ""),
     planModel: or("PLAN_MODEL", "opus"),
     implModel: or("IMPL_MODEL", "sonnet"),
     autoClaim: !isOff(or("AUTO_CLAIM", or("AUTO_PICK", "true"))),

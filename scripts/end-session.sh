@@ -13,7 +13,7 @@
 #   end-session.sh <name>       tear down the named session (headless)
 #
 # Config (all overridable via the environment):
-#   CODEBASE_PATH          base git repo the worktree belongs to     (~/Work/gemini)
+#   CODEBASE_PATH          base git repo the worktree belongs to     
 #   WORKTREES_DIR          where worktrees live                      (~/Work/worktrees)
 #   SESSION_TEARDOWN_HOOK  script run before the worktree is removed,
 #                          receiving "<worktree_path> <name>". Put
@@ -37,11 +37,10 @@ sanitize_worktree_dir() {
   echo "$1" | sed 's/[^a-zA-Z0-9-]/-/g' | cut -c1-50
 }
 
-# The git repo the worktree belongs to. Defaults to ~/Work/gemini (matching the
-# daemon's index.ts default) so an interactive teardown works without the env
-# var; export CODEBASE_PATH to override. Pure; unit-tested via sourcing.
+# The git repo the worktree belongs to, from CODEBASE_PATH (no default: it is
+# machine specific). Pure; unit-tested via sourcing.
 codebase_path() {
-  echo "${CODEBASE_PATH:-$HOME/Work/gemini}"
+  echo "${CODEBASE_PATH:?CODEBASE_PATH is not set; run pnpm onboard or export it}"
 }
 
 # git branch delete flag. Headless callers (the daemon) have already confirmed

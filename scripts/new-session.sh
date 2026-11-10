@@ -9,7 +9,7 @@
 #     ln -s "$PWD/scripts/new-session.sh" ~/new-session.sh
 #
 # Config (all overridable via the environment):
-#   CODEBASE_PATH          base git repo to branch from             (~/Work/gemini)
+#   CODEBASE_PATH          base git repo to branch from (required)
 #   DEFAULT_BRANCH         branch new feature branches are cut from;
 #                          auto-detected from origin/HEAD when unset (main)
 #   WORKTREES_DIR          where worktrees are created              (~/Work/worktrees)
@@ -296,7 +296,7 @@ NAME=${1:-}
 # is keyed by (and reuses) the branch's existing worktree.
 BRANCH=${2:-$NAME}
 
-CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
+: "${CODEBASE_PATH:?CODEBASE_PATH is not set; run pnpm onboard or export it}"
 git -C "$CODEBASE_PATH" rev-parse --git-dir >/dev/null 2>&1 ||
   die "CODEBASE_PATH is not a git repo: $CODEBASE_PATH"
 

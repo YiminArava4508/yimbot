@@ -221,14 +221,14 @@ export const WORKING_STATUS = STATUS.task_started!.status;
 
 export const STUCK_STATUS = "stuck";
 
+// Refine and QA sessions run in the main checkout under their own names, so
+// their panes cannot be matched to the row: they are left to their own reapers.
 const WORKING_FAMILY = new Set([
   STATUS.task_started!.status,
   STATUS.review_started!.status,
   STATUS.ci_fix_started!.status,
   STATUS.conflict_fix_started!.status,
   STATUS.blocked_fix_started!.status,
-  STATUS.refine_started!.status,
-  STATUS.qa_started!.status,
   "working (manual)",
 ]);
 

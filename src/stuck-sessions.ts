@@ -7,6 +7,7 @@
 import { STUCK_STATUS, isWorkingStatus, rowKeyOf, type BoardRow, type YimbotEvent } from "./events.ts";
 
 export const MAX_RESUME_ATTEMPTS = 3;
+const RESUME_WINDOW_MS = 60 * 60_000;
 
 const CLAUDE_COMMANDS = new Set(["claude", "node"]);
 export const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash"]);
@@ -16,7 +17,7 @@ export function stuckIdleMs(raw: string | undefined): number {
   return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 30 * 60_000;
 }
 
-export type PaneInfo = { cmd: string; activityMs: number };
+export type PaneInfo = { cmd: string; activityMs: number; session: string };
 
 export type StuckDeps = {
   events: () => YimbotEvent[];
@@ -24,6 +25,8 @@ export type StuckDeps = {
   // null when tmux is unreachable: every pane would look gone, so do nothing.
   panes: () => Map<string, PaneInfo> | null;
   hasSessionFor: (key: string) => boolean;
+  // Whether a tmux session name belongs to the ticket behind this row key.
+  ownsSession: (session: string, key: string) => boolean;
   now: () => number;
   idleMs: number;
   emit: (e: { kind: "session_stuck" | "session_resumed"; key: string; label: string; reason?: string }) => void;
@@ -31,39 +34,45 @@ export type StuckDeps = {
   log: (msg: string) => void;
 };
 
-export type StuckState = { resumeAttempts: Map<string, number> };
+// Resume attempt times per key. Not refunded when a session looks healthy again,
+// so a Claude that crashes minutes after each relaunch still hits the cap.
+export type StuckState = { resumeAttempts: Map<string, number[]> };
 
 export function freshStuckState(): StuckState {
   return { resumeAttempts: new Map() };
 }
 
-function knownPanes(events: YimbotEvent[]): Map<string, string[]> {
-  const byKey = new Map<string, string[]>();
+type LastPane = { pane: string; ended: boolean };
+
+// The newest pane each row's events came from, and whether that pane's last
+// word was a SessionEnd (a deliberate exit rather than a crash).
+function lastPanes(events: YimbotEvent[]): Map<string, LastPane> {
+  const byKey = new Map<string, LastPane>();
   for (const e of events) {
     if (!e.pane) continue;
-    const list = byKey.get(rowKeyOf(e)) ?? [];
-    if (!list.includes(e.pane)) list.push(e.pane);
-    byKey.set(rowKeyOf(e), list);
+    const key = rowKeyOf(e);
+    const prev = byKey.get(key);
+    const ended = e.kind === "session_ended";
+    byKey.set(key, { pane: e.pane, ended: prev?.pane === e.pane && !ended ? false : ended });
   }
   return byKey;
 }
 
 type Verdict = { reason: string; resumePane?: string };
 
-function judge(
-  key: string,
-  panes: string[],
-  live: Map<string, PaneInfo>,
-  deps: StuckDeps,
-): Verdict | null {
-  const alive = panes.filter((p) => live.has(p));
-  const shell = alive.find((p) => SHELL_COMMANDS.has(live.get(p)!.cmd));
-  if (shell) return { reason: "claude exited", resumePane: shell };
-  if (alive.length === 0) return deps.hasSessionFor(key) ? null : { reason: "session ended" };
-  const claude = alive.filter((p) => CLAUDE_COMMANDS.has(live.get(p)!.cmd));
-  if (claude.length === 0) return null;
-  const lastActivity = Math.max(...claude.map((p) => live.get(p)!.activityMs));
-  const quietMs = deps.now() - lastActivity;
+function judge(key: string, last: LastPane | undefined, live: Map<string, PaneInfo>, deps: StuckDeps): Verdict | null {
+  const gone = (): Verdict | null => (deps.hasSessionFor(key) ? null : { reason: "session ended" });
+  const info = last && live.get(last.pane);
+  if (!last || !info) return gone();
+  if (!deps.ownsSession(info.session, key)) return gone();
+  const sameSession = [...live.entries()].filter(([, p]) => p.session === info.session);
+  const claudePanes = sameSession.filter(([, p]) => CLAUDE_COMMANDS.has(p.cmd));
+  if (SHELL_COMMANDS.has(info.cmd)) {
+    if (claudePanes.length > 0) return null;
+    return { reason: "claude exited", resumePane: last.ended ? undefined : last.pane };
+  }
+  if (claudePanes.length === 0) return null;
+  const quietMs = deps.now() - Math.max(...claudePanes.map(([, p]) => p.activityMs));
   if (quietMs <= deps.idleMs) return null;
   return { reason: `no activity ${Math.round(quietMs / 60_000)}m` };
 }
@@ -74,15 +83,14 @@ const sameReason = (a: string, b: string) => a.replace(/\d+m$/, "") === b.replac
 export function detectStuckSessions(state: StuckState, deps: StuckDeps): void {
   const live = deps.panes();
   if (live === null) return;
-  const panesByKey = knownPanes(deps.events());
+  const lastByKey = lastPanes(deps.events());
   for (const row of deps.rows()) {
     const currentlyStuck = row.status === STUCK_STATUS;
     if (row.terminal || !(currentlyStuck || isWorkingStatus(row.status))) continue;
-    const verdict = judge(row.key, panesByKey.get(row.key) ?? [], live, deps);
+    const verdict = judge(row.key, lastByKey.get(row.key), live, deps);
     if (!verdict) {
       if (currentlyStuck) {
         deps.emit({ kind: "session_resumed", key: row.key, label: row.label });
-        state.resumeAttempts.delete(row.key);
         deps.log(`${row.key} session is healthy again`);
       }
       continue;
@@ -92,10 +100,14 @@ export function detectStuckSessions(state: StuckState, deps: StuckDeps): void {
       deps.log(`${row.key} stuck: ${verdict.reason}`);
     }
     if (!verdict.resumePane) continue;
-    const attempts = state.resumeAttempts.get(row.key) ?? 0;
-    if (attempts >= MAX_RESUME_ATTEMPTS) continue;
-    state.resumeAttempts.set(row.key, attempts + 1);
+    const now = deps.now();
+    const recent = (state.resumeAttempts.get(row.key) ?? []).filter((t) => now - t < RESUME_WINDOW_MS);
+    if (recent.length >= MAX_RESUME_ATTEMPTS) {
+      state.resumeAttempts.set(row.key, recent);
+      continue;
+    }
+    state.resumeAttempts.set(row.key, [...recent, now]);
     deps.resume(verdict.resumePane);
-    deps.log(`${row.key} resuming claude in ${verdict.resumePane} (attempt ${attempts + 1})`);
+    deps.log(`${row.key} resuming claude in ${verdict.resumePane} (attempt ${recent.length + 1})`);
   }
 }

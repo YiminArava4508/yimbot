@@ -19,13 +19,14 @@ const row = (over: Partial<BoardRow> = {}): BoardRow => ({
   ...over,
 });
 
-const paneEvent = (pane: string, key = "ENG-1"): YimbotEvent => ({ ts: 1, kind: "needs_input", key, label: key, pane });
+const paneEvent = (pane: string, key = "ENG-1", kind: YimbotEvent["kind"] = "needs_input"): YimbotEvent => ({ ts: 1, kind, key, label: key, pane });
 
 type Setup = {
   rows?: BoardRow[];
   events?: YimbotEvent[];
-  panes?: Map<string, { cmd: string; activityMs: number }> | null;
+  panes?: Map<string, { cmd: string; activityMs: number; session: string }> | null;
   hasSession?: boolean;
+  now?: number;
 };
 
 function run(setup: Setup, state = freshStuckState()) {
@@ -36,7 +37,8 @@ function run(setup: Setup, state = freshStuckState()) {
     rows: () => setup.rows ?? [row()],
     panes: () => (setup.panes === undefined ? new Map() : setup.panes),
     hasSessionFor: () => setup.hasSession ?? false,
-    now: () => NOW,
+    ownsSession: (session, key) => session.toLowerCase().startsWith(key.toLowerCase()),
+    now: () => setup.now ?? NOW,
     idleMs: 30 * MIN,
     emit: (e) => emitted.push(e),
     resume: (pane) => resumed.push(pane),
@@ -46,7 +48,8 @@ function run(setup: Setup, state = freshStuckState()) {
   return { emitted, resumed, state };
 }
 
-const pane = (cmd: string, ageMin = 0) => new Map([["%1", { cmd, activityMs: NOW - ageMin * MIN }]]);
+const info = (cmd: string, ageMin = 0, session = "eng-1-task") => ({ cmd, activityMs: NOW - ageMin * MIN, session });
+const pane = (cmd: string, ageMin = 0, session = "eng-1-task") => new Map([["%1", info(cmd, ageMin, session)]]);
 
 test("dead pane and no tmux session emits session_stuck 'session ended'", () => {
   const { emitted } = run({ events: [paneEvent("%1")], panes: new Map() });
@@ -115,7 +118,7 @@ test("unreachable tmux emits nothing and resumes nothing", () => {
   assert.deepEqual(resumed, []);
 });
 
-test("resume stops after MAX_RESUME_ATTEMPTS and the row stays stuck", () => {
+test("resume stops after MAX_RESUME_ATTEMPTS within the window and the row stays stuck", () => {
   const state = freshStuckState();
   const stuck = row({ status: "stuck", stuckReason: "claude exited" });
   let total = 0;
@@ -125,12 +128,54 @@ test("resume stops after MAX_RESUME_ATTEMPTS and the row stays stuck", () => {
   assert.equal(total, MAX_RESUME_ATTEMPTS);
 });
 
-test("a recovered session gets a fresh resume budget", () => {
+test("a healthy pass in between does not refund the resume budget (crash loop)", () => {
   const state = freshStuckState();
   const stuck = row({ status: "stuck", stuckReason: "claude exited" });
-  run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("bash") }, state);
-  run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("claude", 1) }, state);
-  assert.equal(state.resumeAttempts.get("ENG-1") ?? 0, 0);
+  let total = 0;
+  for (let i = 0; i < 6; i++) {
+    total += run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("bash") }, state).resumed.length;
+    run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("claude", 1) }, state);
+  }
+  assert.equal(total, MAX_RESUME_ATTEMPTS);
+});
+
+test("the resume budget refreshes once the window has passed", () => {
+  const state = freshStuckState();
+  const stuck = row({ status: "stuck", stuckReason: "claude exited" });
+  for (let i = 0; i < MAX_RESUME_ATTEMPTS; i++) run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("bash") }, state);
+  const later = run({ rows: [stuck], events: [paneEvent("%1")], panes: pane("bash"), now: NOW + 2 * 60 * MIN }, state);
+  assert.equal(later.resumed.length, 1);
+});
+
+test("a refining or qa row with no known pane is never judged", () => {
+  for (const status of ["refining", "qa: in session"]) {
+    assert.deepEqual(run({ rows: [row({ status })], events: [], hasSession: false }).emitted, [], status);
+  }
+});
+
+test("a recycled pane id now in an unrelated session gets no keystrokes", () => {
+  const { resumed } = run({ events: [paneEvent("%1")], panes: pane("zsh", 0, "main"), hasSession: true });
+  assert.deepEqual(resumed, []);
+});
+
+test("a shell pane beside a live claude in the same session (fix window) is healthy", () => {
+  const panes = new Map([["%1", info("zsh")], ["%2", info("claude", 1)]]);
+  const { emitted, resumed } = run({ events: [paneEvent("%1")], panes });
+  assert.deepEqual(emitted, []);
+  assert.deepEqual(resumed, []);
+});
+
+test("only the newest known pane of a row is judged", () => {
+  const events = [paneEvent("%1"), { ...paneEvent("%2"), ts: 2 }];
+  const panes = new Map([["%2", info("claude", 1)]]);
+  assert.deepEqual(run({ events, panes }).emitted, []);
+});
+
+test("a deliberate exit (session_ended) shows stuck but is not resumed", () => {
+  const events = [paneEvent("%1"), { ...paneEvent("%1", "ENG-1", "session_ended"), ts: 2 }];
+  const { emitted, resumed } = run({ events, panes: pane("zsh") });
+  assert.deepEqual(emitted.map((e) => e.reason), ["claude exited"]);
+  assert.deepEqual(resumed, []);
 });
 
 test("stuckIdleMs defaults to 30 minutes and ignores a bad value", () => {

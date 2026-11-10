@@ -1428,10 +1428,10 @@ test("reportSplitParentRows: leaves a row with any other status alone", () => {
 });
 
 test("parsePaneInfo reads pane id, foreground command and activity seconds as ms", () => {
-  const out = "%1\tclaude\t1700000000\n%2\tzsh\t1700000100\n\n";
+  const out = "%1\tclaude\t1700000000\teng-1-task\n%2\tzsh\t1700000100\tmain\n\n";
   assert.deepEqual([...parsePaneInfo(out)], [
-    ["%1", { cmd: "claude", activityMs: 1700000000000 }],
-    ["%2", { cmd: "zsh", activityMs: 1700000100000 }],
+    ["%1", { cmd: "claude", activityMs: 1700000000000, session: "eng-1-task" }],
+    ["%2", { cmd: "zsh", activityMs: 1700000100000, session: "main" }],
   ]);
 });
 

@@ -1188,9 +1188,9 @@ export function listTmuxPaneIds(): Set<string> | null {
 export function parsePaneInfo(out: string): Map<string, PaneInfo> {
   const panes = new Map<string, PaneInfo>();
   for (const line of out.split("\n")) {
-    const [id, cmd, activity] = line.split("\t");
+    const [id, cmd, activity, session] = line.split("\t");
     if (!id || !cmd) continue;
-    panes.set(id, { cmd, activityMs: Number(activity) * 1000 });
+    panes.set(id, { cmd, activityMs: Number(activity) * 1000, session: session ?? "" });
   }
   return panes;
 }
@@ -1199,7 +1199,7 @@ export function parsePaneInfo(out: string): Map<string, PaneInfo> {
 // tmux server is reachable.
 export function listTmuxPaneInfo(): Map<string, PaneInfo> | null {
   try {
-    const out = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{window_activity}"], {
+    const out = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{window_activity}\t#{session_name}"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -1812,6 +1812,10 @@ export function startWatcher(config: WatcherConfig): () => void {
     rows: () => reduceRows(readEvents(), Date.now()),
     panes: listTmuxPaneInfo,
     hasSessionFor: (key) => hasSessionForWorktree(key.toLowerCase(), listTmuxSessions()),
+    ownsSession: (session, key) => {
+      const m = WORKTREE_IDENTIFIER_RE.exec(key.toLowerCase());
+      return m !== null && findExistingSession(m[0], [session], []) !== null;
+    },
     now: Date.now,
     idleMs: stuckIdleMs(process.env.STUCK_IDLE_MINUTES),
     emit: (e) => emitEvent(e),

@@ -69,6 +69,11 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 
 // One header for all three panes, in one order, so a row reads the same
 // wherever it sits.
+function reasonCell(r: BoardRow): string {
+  const reasons = r.stuckReason ? [...r.flagReasons, r.stuckReason] : r.flagReasons;
+  return reasons.length > 0 ? `{red-fg}${reasons.join(",")}{/red-fg}` : "";
+}
+
 export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];
 
 const STATUS_COLOR: Record<string, string> = {
@@ -78,6 +83,7 @@ const STATUS_COLOR: Record<string, string> = {
   "resolving conflict": "cyan",
   unblocking: "cyan",
   refining: "cyan",
+  stuck: "red",
   "CI failing": "red",
   "merge queue blocked": "red",
   "unresolved threads": "red",
@@ -113,7 +119,7 @@ export function boardTable(
       dimWhenDone(r.terminal, repoDisplayName(r, codebaseName)),
       titleCell(r, words),
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
-      r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
+      reasonCell(r),
     ];
   });
   return [BOARD_HEADER, ...body];

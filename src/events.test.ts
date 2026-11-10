@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, isParentRow, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, isParentRow, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1286,4 +1286,53 @@ test("isParentRow is true for the tracker and waiting-on-slices statuses only", 
   assert.equal(isParentRow({ status: AWAITING_SLICES_STATUS }), true);
   assert.equal(isParentRow({ status: "needs decision" }), false);
   assert.equal(isParentRow({ status: "working" }), false);
+});
+
+test("foldStuck: session_stuck marks a key and session_resumed clears it", () => {
+  const stuck = ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1", reason: "claude exited" });
+  assert.equal(foldStuck([ev({ ts: 1, kind: "task_started", key: "ENG-1", label: "ENG-1" }), stuck]).get("ENG-1"), "claude exited");
+  const resumed = ev({ ts: 3, kind: "session_resumed", key: "ENG-1", label: "ENG-1" });
+  assert.equal(foldStuck([stuck, resumed]).has("ENG-1"), false);
+});
+
+test("foldStuck: input_received or a later status event clears it", () => {
+  const stuck = ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1" });
+  assert.equal(foldStuck([stuck]).get("ENG-1"), "session ended");
+  assert.equal(foldStuck([stuck, ev({ ts: 3, kind: "input_received", key: "ENG-1", label: "ENG-1" })]).has("ENG-1"), false);
+  assert.equal(foldStuck([stuck, ev({ ts: 3, kind: "draft_pr", key: "ENG-1", label: "ENG-1" })]).has("ENG-1"), false);
+});
+
+test("reduceRows: a stuck working row shows the stuck status and reason", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-1", label: "ENG-1" }),
+      ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1", reason: "no activity 45m" }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].status, STUCK_STATUS);
+  assert.equal(rows[0].stuckReason, "no activity 45m");
+});
+
+test("reduceRows: a terminal row is never shown as stuck", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "merged", key: "ENG-1", label: "ENG-1" }),
+      ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1" }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].status, "merged");
+  assert.equal(rows[0].stuckReason, undefined);
+});
+
+test("reduceRows: a non-working status (draft pr) is not overridden by stuck", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "draft_pr", key: "ENG-1", label: "ENG-1" }),
+      ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1" }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].status, "draft pr");
 });

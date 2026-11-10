@@ -24,6 +24,9 @@ export type EventKind =
   | "unflagged"
   | "needs_input"
   | "input_received"
+  | "session_ended"
+  | "session_stuck"
+  | "session_resumed"
   | "needs_decision"
   | "review_findings"
   | "refine_started"
@@ -215,6 +218,35 @@ export const HELD_MERGED_STATUS = "merged, waiting on ticket";
 export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
 export const TRACKING_STATUS = STATUS.tracking!.status;
 export const WORKING_STATUS = STATUS.task_started!.status;
+
+export const STUCK_STATUS = "stuck";
+
+const WORKING_FAMILY = new Set([
+  STATUS.task_started!.status,
+  STATUS.review_started!.status,
+  STATUS.ci_fix_started!.status,
+  STATUS.conflict_fix_started!.status,
+  STATUS.blocked_fix_started!.status,
+  STATUS.refine_started!.status,
+  STATUS.qa_started!.status,
+  "working (manual)",
+]);
+
+export function isWorkingStatus(status: string): boolean {
+  return WORKING_FAMILY.has(status);
+}
+
+// Keys whose session is currently stuck, with the reason. A stuck mark lasts
+// until the session resumes, the person answers it, or any status event lands.
+export function foldStuck(events: YimbotEvent[]): Map<string, string> {
+  const stuck = new Map<string, string>();
+  for (const e of events) {
+    const key = rowKeyOf(e);
+    if (e.kind === "session_stuck") stuck.set(key, e.reason ?? "session ended");
+    else if (e.kind === "session_resumed" || e.kind === "input_received" || statusFor(e.kind)) stuck.delete(key);
+  }
+  return stuck;
+}
 
 // The statuses that only claim the PR is ready (queued, waiting on r, or a
 // clean draft). Anything else on a review or merge row is progress worth
@@ -494,6 +526,8 @@ export type BoardRow = {
   flagged: boolean;
   // The pending raise reasons, in raise order; flagged === (length > 0).
   flagReasons: string[];
+  // Why the row shows "stuck": its session ended or went quiet.
+  stuckReason?: string;
 };
 
 function keepMergedMsDefault(): number {
@@ -587,8 +621,15 @@ export function reduceRows(
     }
     return r;
   };
+  const stuck = foldStuck(events);
+  const stuckRow = (r: BoardRow): BoardRow => {
+    const reason = stuck.get(r.key);
+    if (r.terminal || reason === undefined || !isWorkingStatus(r.status)) return r;
+    return { ...r, status: STUCK_STATUS, stuckReason: reason };
+  };
   let rows = [...byKey.values()]
     .map(holdRow)
+    .map(stuckRow)
     .filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
   rows.sort((a, b) => b.ts - a.ts);
 

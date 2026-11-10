@@ -332,3 +332,8 @@ test("tableFocusOrder skips empty panes and appends parents only when present", 
   assert.deepEqual(tableFocusOrder({ tasks: 0, review: 0, merge: 0 }, false), []);
   assert.deepEqual(tableFocusOrder({ tasks: 1, review: 1, merge: 1 }, true), ["tasks", "review", "merge", "parents"]);
 });
+
+test("boardTable: a stuck row shows its stuck reason in the REASON column", () => {
+  const [, stuck] = boardTable([{ row: row({ status: "stuck", stuckReason: "claude exited" }) }], 0);
+  assert.match(stuck[stuck.length - 1], /claude exited/);
+});

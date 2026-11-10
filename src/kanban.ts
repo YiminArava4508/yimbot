@@ -131,6 +131,7 @@ const STATUS_TONES: Record<string, Tone> = {
   "merge queue blocked": "alert",
   "unresolved threads": "alert",
   "needs input": "alert",
+  stuck: "alert",
   "needs decision": "alert",
   "review findings": "alert",
   "qa failed": "alert",

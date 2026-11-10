@@ -246,6 +246,7 @@ test("statusTone maps each emitted status to a tone", () => {
     coding: "idle",
     "": "idle",
   };
+  assert.equal(statusTone("stuck", false), "alert");
   for (const [status, tone] of Object.entries(table)) assert.equal(statusTone(status, false), tone, status);
 });
 

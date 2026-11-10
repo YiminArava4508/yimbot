@@ -349,14 +349,22 @@ export function openSetup(
     paint();
   }
 
+  function showCheckError(err: unknown): void {
+    if (finished) return;
+    statusText = `{red-fg}checks failed: ${blessed.escape(errMsg(err))} (r to retry){/red-fg}`;
+    paint();
+  }
+
   async function fixEverything(): Promise<void> {
     walking = true;
     mode = "list";
     paint();
-    const { stoppedAt } = await walkFixes(checks ?? [], { pm: deps.pm, run: runInPane, recheck, emit: onFixEvent });
-    walking = false;
-    if (finished) return;
-    if (!stoppedAt) await refreshChecks();
+    try {
+      const { stoppedAt } = await walkFixes(checks ?? [], { pm: deps.pm, run: runInPane, recheck, emit: onFixEvent });
+      if (!stoppedAt && !finished) await refreshChecks();
+    } finally {
+      walking = false;
+    }
     paint();
   }
 
@@ -375,7 +383,7 @@ export function openSetup(
       if (finished) return;
       statusText = fixed ? `{green-fg}${blessed.escape(item.pr.label)} fixed{/green-fg}` : failedText(item.pr.label, code);
       paint();
-    });
+    }).catch(showCheckError);
   }
 
   function onPrereqKey(key: { name?: string }): void {
@@ -396,10 +404,12 @@ export function openSetup(
     if (key.name === "r") {
       statusText = "checking...";
       paint();
-      void refreshChecks().then(() => {
-        statusText = "";
-        paint();
-      });
+      void refreshChecks()
+        .then(() => {
+          statusText = "";
+          paint();
+        })
+        .catch(showCheckError);
     }
   }
 
@@ -407,7 +417,7 @@ export function openSetup(
     if (walking || paneRunning) return;
     if (mode === "choice") {
       if (index === 0) {
-        void fixEverything();
+        void fixEverything().catch(showCheckError);
         return;
       }
       mode = "list";
@@ -589,8 +599,7 @@ export function openSetup(
     .catch((err) => {
       if (finished) return;
       mode = "list";
-      statusText = `{red-fg}checks failed: ${blessed.escape(errMsg(err))} (r to retry){/red-fg}`;
-      paint();
+      showCheckError(err);
       focusWizard();
     });
 }

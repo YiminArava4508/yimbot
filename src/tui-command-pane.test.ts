@@ -103,3 +103,12 @@ test("resize ignores tiny sizes and resizes the pty otherwise", () => {
   pane.resize(60, 20);
   assert.deepEqual(f.resizes, [[60, 20]]);
 });
+
+test("resize is a no-op once the child exited, since node-pty throws EBADF then", () => {
+  const { f, pane } = setup();
+  f.pty.resize = () => {
+    throw new Error("ioctl(2) failed, EBADF");
+  };
+  f.exit(0);
+  assert.doesNotThrow(() => pane.resize(60, 20));
+});

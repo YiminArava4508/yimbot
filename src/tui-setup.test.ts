@@ -434,6 +434,58 @@ test("a running pane resizes its pty with the screen", async () => {
   h.screen.destroy();
 });
 
+test("a screen resize after a finished fix does not touch the exited pty", async () => {
+  const h = harness({ checks: [results(["tmux"]), results([])] });
+  await flush();
+  press(h.screen, "enter");
+  await flush();
+  h.ptys[0].exit(0);
+  await flush();
+  h.ptys[0].pty.resize = () => {
+    throw new Error("ioctl(2) failed, EBADF");
+  };
+  assert.doesNotThrow(() => resize(h.screen, 100, 40));
+  h.screen.destroy();
+});
+
+test("a rejected re-check during fix everything shows the error and frees the step", async () => {
+  let calls = 0;
+  const h = harness({
+    checkAll: async () => {
+      calls++;
+      if (calls === 1) return results(["tmux"]);
+      throw new Error("probe exploded");
+    },
+  });
+  await flush();
+  press(h.screen, "enter");
+  await flush();
+  h.ptys[0].exit(0);
+  await flush();
+  assert.match(screenText(h.screen), /probe exploded/);
+  press(h.screen, "j");
+  press(h.screen, "f");
+  await flush();
+  assert.equal(h.spawned.length, 2, "walking was reset, so f starts a new fix");
+  h.screen.destroy();
+});
+
+test("a rejected r re-check shows the error", async () => {
+  let calls = 0;
+  const h = harness({
+    checkAll: async () => {
+      calls++;
+      if (calls === 1) return results([]);
+      throw new Error("probe exploded");
+    },
+  });
+  await flush();
+  press(h.screen, "r");
+  await flush();
+  assert.match(screenText(h.screen), /probe exploded/);
+  h.screen.destroy();
+});
+
 test("finishing detaches every widget the wizard added", async () => {
   const h = harness();
   const before = h.screen.children.length;

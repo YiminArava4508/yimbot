@@ -56,7 +56,9 @@ export function openCommandPane(opts: {
       pty.write(key.sequence ?? key.ch ?? "");
       return "forwarded";
     },
-    resize: out.resize,
+    resize(cols, rows) {
+      if (!exited) out.resize(cols, rows);
+    },
     kill,
     dispose() {
       if (disposed) return;

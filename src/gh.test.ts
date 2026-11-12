@@ -36,6 +36,7 @@ import {
   prReviewMeta,
   removeLabel,
   repoLabelExists,
+  repoMergesManually,
   repoSlug,
   humanChangesRequested,
   parseHumanChangesRequested,
@@ -678,4 +679,24 @@ test("defaultBranch asks gh for the named repo's default branch and trims it", a
   assert.deepEqual(seen[0], [
     "repo", "view", "acme/app", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name",
   ]);
+});
+
+test("repoMergesManually is false when the repo has an Aviator config", async () => {
+  const { run, calls } = capturingRunner(["{}"]);
+  assert.equal(await repoMergesManually(run, "o/r"), false);
+  assert.deepEqual(calls[0], ["api", "repos/o/r/contents/.aviator/config.yml", "--silent"]);
+});
+
+test("repoMergesManually is true when the Aviator config is not found", async () => {
+  const run: GhRunner = async () => {
+    throw new Error("gh: Not Found (HTTP 404)");
+  };
+  assert.equal(await repoMergesManually(run, "o/r"), true);
+});
+
+test("repoMergesManually rethrows any other failure", async () => {
+  const run: GhRunner = async () => {
+    throw new Error("gh: Server Error (HTTP 502)");
+  };
+  await assert.rejects(repoMergesManually(run, "o/r"), /502/);
 });

@@ -694,3 +694,62 @@ test("readyOnce does not label a PR the live read still shows as a draft", async
   await readyOnce(h.state, h.deps);
   assert.deepEqual(h.added, []);
 });
+
+test("boardReadyKind: a repo without a merge queue says merge manually, label or not", () => {
+  assert.equal(boardReadyKind(false, true, "supervised", true), "ready_manual");
+  assert.equal(boardReadyKind(false, false, "supervised", true), "ready_manual");
+  assert.equal(boardReadyKind(false, true, "autonomous", true), "ready_manual");
+  assert.equal(boardReadyKind(true, true, "supervised", true), "draft_pr");
+});
+
+test("readyOnce tells onVerdict whether the PR's repo merges manually", async () => {
+  const seen: { n: number; manual: boolean }[] = [];
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(1), pr(2)],
+      mergesManually: async (n) => n === 2,
+      onVerdict: (n, _v, _hasLabel, _isDraft, _reason, manual) => void seen.push({ n, manual }),
+    },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [
+    { n: 1, manual: false },
+    { n: 2, manual: true },
+  ]);
+});
+
+test("readyOnce skips the verdict when the merge-queue read fails", async () => {
+  const seen: boolean[] = [];
+  const h = harness(
+    {
+      mergesManually: async () => {
+        throw new Error("boom");
+      },
+      onVerdict: (_n, _v, _hasLabel, _isDraft, _reason, manual) => void seen.push(manual),
+    },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, []);
+});
+
+test("readyOnce never labels a PR in a repo without a merge queue", async () => {
+  const h = harness({ mergesManually: async () => true, soakMs: 0 }, []);
+  await readyOnce(h.state, h.deps);
+  assert.equal(h.added.length, 0);
+});
+
+test("readyOnce does not let a labeled manual-merge PR hold the queue slot", async () => {
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(1), pr(2)],
+      prState: async (n: number) => ({ labels: n === 1 ? [LABEL] : [], isDraft: false }),
+      mergesManually: async (n) => n === 1,
+      soakMs: 0,
+    },
+    [],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, [{ n: 2, label: LABEL }]);
+});

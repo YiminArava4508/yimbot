@@ -374,6 +374,18 @@ export async function repoLabelExists(run: GhRunner, label: string): Promise<boo
   return names.includes(label);
 }
 
+// Whether a repo merges by hand: it has no Aviator config, so the ready label
+// queues nothing there. Only a 404 means "no queue"; any other failure throws.
+export async function repoMergesManually(run: GhRunner, slug: string): Promise<boolean> {
+  try {
+    await run(["api", `repos/${slug}/contents/.aviator/config.yml`, "--silent"]);
+    return false;
+  } catch (err) {
+    if (String(err).includes("HTTP 404")) return true;
+    throw err;
+  }
+}
+
 export function parseIsDraft(json: string): boolean {
   return (JSON.parse(json) as { isDraft: boolean }).isDraft;
 }

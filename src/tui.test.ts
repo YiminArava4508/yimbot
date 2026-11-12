@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
-import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -1080,4 +1080,10 @@ test("settingsGate keeps s closed while W's apply restarts the daemon", () => {
 test("settingsGate is closed while an overlay is open", () => {
   assert.equal(settingsGate(() => true, () => false)(), true);
   assert.equal(settingsGate(() => false, () => false)(), false);
+});
+
+test("readyRefusal refuses r on a manual-merge row and defers to prActionRefusal otherwise", () => {
+  assert.match(readyRefusal({ status: "ready: merge manually" }) ?? "", /merge it by hand/);
+  assert.equal(readyRefusal({ status: "ready to merge" }), undefined);
+  assert.equal(readyRefusal({ status: "tracker ticket" }), prActionRefusal({ status: "tracker ticket" }));
 });

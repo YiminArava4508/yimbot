@@ -91,6 +91,7 @@ const STATUS_COLOR: Record<string, string> = {
   "review findings": "yellow",
   "ready to merge": "green",
   "ready: r to queue": "green",
+  "ready: merge manually": "green",
   "draft pr": "green",
   "waiting on slices": "yellow",
   "fix done": "yellow",

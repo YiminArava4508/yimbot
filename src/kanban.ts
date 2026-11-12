@@ -127,6 +127,7 @@ const STATUS_TONES: Record<string, Tone> = {
   "in review": "wait",
   "draft pr": "wait",
   "ready: r to queue": "wait",
+  "ready: merge manually": "wait",
   "qa: awaiting deploy": "wait",
   "CI failing": "alert",
   "merge queue blocked": "alert",

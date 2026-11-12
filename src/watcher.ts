@@ -28,7 +28,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
-import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, isHoldStatus, isReadyClaim, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, fixStartKind, isFixerStatus, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, yieldsToVerdict, type YimbotEvent } from "./events.ts";
 import { loadFixSeenAt, saveFixSeenAt } from "./fix-timers.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
 import { setHeldMergedKeys } from "./held-merged.ts";
@@ -1463,6 +1463,16 @@ export function startWatcher(config: WatcherConfig): () => void {
     },
     inFlightFixKinds,
     reapFix,
+    settleFixStatus: (prNumber, branch) => {
+      const { key, label } = deriveKey({ branch });
+      if (isFixerStatus(currentStatus(key))) emitStatus({ kind: "fix_ended", key, label, pr: prNumber });
+    },
+    restoreFixStatus: (prNumber, branch, kind) => {
+      const { key, label } = deriveKey({ branch });
+      if (currentStatus(key) === statusFor("fix_ended")?.status) {
+        emitStatus({ kind: fixStartKind(kind), key, label, title: titleFromBranch(branch), pr: prNumber });
+      }
+    },
     now: Date.now,
     reapStaleMs: config.reapStaleMs,
     pendingSpawnMaxMs: 2 * config.heartbeatIntervalMinutes * 60 * 1000,
@@ -1648,10 +1658,10 @@ export function startWatcher(config: WatcherConfig): () => void {
         if (k.repo && status === undefined) {
           emitStatus({ kind: "task_started", key: k.key, label: k.label, pr: n, repo: k.repo });
         }
-        // A row still claiming readiness after a hard failure names the failure.
-        // Only a readiness claim is replaced: a fixer's own status ("fixing CI",
-        // "addressing review") is already the truth and is left alone.
-        if (verdict === "regressed" && reason && isReadyClaim(status)) {
+        // A row still claiming readiness, or one whose fixer has finished, names
+        // the failure after a hard failure. A live fixer's own status ("fixing
+        // CI", "addressing review") is already the truth and is left alone.
+        if (verdict === "regressed" && reason && yieldsToVerdict(status)) {
           const kind = reason === "ci" ? "ci_failing" : "review_unresolved";
           emitStatus({ kind, key: k.key, label: k.label, pr: n, repo: k.repo });
         }

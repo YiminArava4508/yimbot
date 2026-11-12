@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, isParentRow, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, fixStartKind, isFlagged, isFixerStatus, isParentRow, pinEventsLog, yieldsToVerdict, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +118,7 @@ test("titleFromBranch strips ticket prefix and humanizes", () => {
 });
 
 test("statusFor maps kinds; only merged is terminal", () => {
+  assert.deepEqual(statusFor("fix_ended"), { status: "fix done", terminal: false });
   assert.deepEqual(statusFor("task_started"), { status: "working", terminal: false });
   assert.deepEqual(statusFor("review_started"), { status: "addressing review", terminal: false });
   assert.deepEqual(statusFor("ci_fix_started"), { status: "fixing CI", terminal: false });
@@ -1335,4 +1336,28 @@ test("reduceRows: a non-working status (draft pr) is not overridden by stuck", (
     100,
   );
   assert.equal(rows[0].status, "draft pr");
+});
+
+test("isFixerStatus: true only for the statuses a fix session sets", () => {
+  for (const kind of ["review_started", "ci_fix_started", "conflict_fix_started", "blocked_fix_started"]) {
+    assert.equal(isFixerStatus(statusFor(kind)!.status), true, kind);
+  }
+  for (const kind of ["task_started", "ready_to_merge", "ci_failing", "fix_ended", "needs_decision"]) {
+    assert.equal(isFixerStatus(statusFor(kind)!.status), false, kind);
+  }
+  assert.equal(isFixerStatus(undefined), false);
+});
+
+test("yieldsToVerdict: ready claims and a finished fix give way to a regressed verdict, live fixes do not", () => {
+  assert.equal(yieldsToVerdict(statusFor("ready_to_merge")!.status), true);
+  assert.equal(yieldsToVerdict(statusFor("fix_ended")!.status), true);
+  assert.equal(yieldsToVerdict(statusFor("ci_fix_started")!.status), false);
+  assert.equal(yieldsToVerdict(undefined), false);
+});
+
+test("fixStartKind maps each fix kind to the event its session starts with", () => {
+  assert.equal(fixStartKind("fix"), "review_started");
+  assert.equal(fixStartKind("ci"), "ci_fix_started");
+  assert.equal(fixStartKind("conflict"), "conflict_fix_started");
+  assert.equal(fixStartKind("blocked"), "blocked_fix_started");
 });

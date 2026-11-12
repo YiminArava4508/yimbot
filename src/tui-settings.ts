@@ -1,5 +1,6 @@
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
+import { AGENTS } from "./agent.ts";
 import {
   SETTING_CATEGORIES,
   categoryDirtyCounts,
@@ -363,6 +364,13 @@ export function openSettings(
     paint();
   }
 
+  function editChoice(row: SettingRow): void {
+    beginEdit();
+    openPicker(AGENTS, row.value, (value) => {
+      draft = setEdit(draft, row.envKey, value);
+    });
+  }
+
   function editPickTeam(row: SettingRow): void {
     openRemotePicker(
       deps.teams,
@@ -450,6 +458,9 @@ export function openSettings(
         break;
       case "toggle":
         editToggle(row);
+        break;
+      case "choice":
+        editChoice(row);
         break;
       case "pickTeam":
         editPickTeam(row);

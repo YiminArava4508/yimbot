@@ -113,7 +113,7 @@ if (process.stdout.isTTY) {
   };
   // Same headless claude -p shape as the daemon's judgeRun; the given model env
   // overrides, falling back to the judge's model knob.
-  const headless = (model: string) => runHeadless(model, currentCodebasePath(), undefined, withoutApiKey());
+  const headless = (model: string) => runHeadless(model, currentCodebasePath(), undefined, undefined, withoutApiKey());
   const claudeRegistry = makeSessionRegistry(spawnClaudePty);
   // The claude session runs in the PR's worktree so it can read the actual
   // branch; a PR-only row with no worktree falls back to the main checkout.

@@ -45,6 +45,7 @@ const baseConfig: YimbotConfig = {
   reviewStateName: "In Review",
   todoStateName: "Todo",
   heartbeatIntervalMinutes: 3,
+  agent: "claude",
   codebasePath: process.cwd(),
   planModel: "opus",
   implModel: "sonnet",

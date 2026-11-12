@@ -1,7 +1,6 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
@@ -9,6 +8,7 @@ import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
 import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
+import { runHeadless } from "./headless.ts";
 import {
   addLabel,
   blockedInfo,
@@ -45,7 +45,6 @@ import { readMode } from "./mode.ts";
 import { mergeOpenPRs, parseExtraRepos } from "./multi-repo.ts";
 import { setOpenPrKeys } from "./open-prs.ts";
 import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
-import { observeReach } from "./reach.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { QA_MARKER, qaConfigFor } from "./qa.ts";
 import { ensureHostLinks } from "./setup.ts";
@@ -304,21 +303,7 @@ export async function startDaemon(): Promise<() => void> {
     throw new Error("MAX_CONTINUATIONS must be a positive integer");
   }
   const judgeModel = envOr("AC_JUDGE_MODEL", "");
-  const execFileAsync = promisify(execFile);
-  // The second claude path (runHeadless is the other), wrapped the same way so
-  // the board's reachability warning sees every call the daemon makes.
-  const judgeRun: JudgeRunner = async (prompt) => {
-    const args = ["-p", prompt];
-    if (judgeModel) args.push("--model", judgeModel);
-    const { stdout } = await observeReach("claude", () =>
-      execFileAsync("claude", args, {
-        cwd: codebasePath,
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: 120_000,
-      }),
-    );
-    return stdout;
-  };
+  const judgeRun: JudgeRunner = runHeadless(judgeModel, codebasePath);
   // On unless explicitly disabled, matching AUTO_READY_LABEL. Reuses judgeRun,
   // so AC_JUDGE_MODEL selects the model here too.
   const autoDependencyScan = !["false", "off", "no", "0"].includes(

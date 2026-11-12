@@ -53,6 +53,7 @@ const sample: YimbotConfig = {
   refineLabelFilter: "",
   maxRefining: 1,
   splitTickets: true,
+  agent: "claude",
 };
 
 test("isConfigured requires a non-empty API key", () => {

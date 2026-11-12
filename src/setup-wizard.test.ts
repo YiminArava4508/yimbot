@@ -10,6 +10,7 @@ const config: YimbotConfig = {
   reviewStateName: "In Review",
   todoStateName: "Todo",
   heartbeatIntervalMinutes: 3,
+  agent: "claude",
   codebasePath: "/home/u/Work/repo",
   planModel: "opus",
   implModel: "sonnet",

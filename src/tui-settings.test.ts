@@ -129,6 +129,7 @@ const baseConfig: YimbotConfig = {
   refineLabelFilter: "",
   maxRefining: 1,
   splitTickets: true,
+  agent: "claude",
 };
 
 function testDeps(overrides: Partial<SettingsDeps> = {}): SettingsDeps {

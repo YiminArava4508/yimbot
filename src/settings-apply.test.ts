@@ -28,6 +28,7 @@ const prev: YimbotConfig = {
   refineLabelFilter: "",
   maxRefining: 1,
   splitTickets: true,
+  agent: "claude",
 };
 const next: YimbotConfig = { ...prev, maxInProgress: 1, labelFilter: "bot" };
 

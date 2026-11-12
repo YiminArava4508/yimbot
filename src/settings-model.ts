@@ -3,6 +3,7 @@ import { chmodSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
+import { AGENTS, agentOr, type Agent } from "./agent.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
 // collects these; the daemon reads them back via envOr() at startup.
@@ -32,6 +33,7 @@ export type YimbotConfig = {
   refineLabelFilter: string;
   maxRefining: number;
   splitTickets: boolean;
+  agent: Agent;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -94,10 +96,11 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     REFINE_LABEL_FILTER: c.refineLabelFilter,
     MAX_REFINING: String(c.maxRefining),
     SPLIT_TICKETS: String(c.splitTickets),
+    AGENT: c.agent,
   };
 }
 
-// The 23 keys this file's generated sections own. Anything else found in an
+// The 24 keys this file's generated sections own. Anything else found in an
 // existing .env is a hand-edited setting (BLOCKED_LABEL, TUI_*, ...) that a
 // regenerated file must not drop.
 const OWNED_ENV_KEYS = new Set([
@@ -125,6 +128,7 @@ const OWNED_ENV_KEYS = new Set([
   "REFINE_LABEL_FILTER",
   "MAX_REFINING",
   "SPLIT_TICKETS",
+  "AGENT",
 ]);
 
 // The KEY=value lines of an existing .env that this file's generated sections
@@ -152,7 +156,10 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `HEARTBEAT_INTERVAL_MINUTES=${r.HEARTBEAT_INTERVAL_MINUTES}`,
     `CODEBASE_PATH=${r.CODEBASE_PATH}`,
     "",
-    "# --- Session models (Claude Code model alias or id) ---",
+    "# --- Coding agent (claude or codex) ---",
+    `AGENT=${r.AGENT}`,
+    "",
+    "# --- Session models (model alias or id for the agent) ---",
     `PLAN_MODEL=${r.PLAN_MODEL}`,
     `IMPL_MODEL=${r.IMPL_MODEL}`,
     "",
@@ -254,6 +261,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     refineLabelFilter: or("REFINE_LABEL_FILTER", ""),
     maxRefining: Number(or("MAX_REFINING", "1")),
     splitTickets: !isOff(or("SPLIT_TICKETS", "true")),
+    agent: agentOr(or("AGENT", "claude")),
   };
 }
 
@@ -262,6 +270,7 @@ export type EditorKind =
   | "secret"
   | "number"
   | "toggle"
+  | "choice"
   | "list"
   | "pickTeam"
   | "pickState"
@@ -310,10 +319,11 @@ const ROW_SPECS: RowSpec[] = [
   { envKey: "SPLIT_TICKETS", label: "split tickets", editor: "toggle", category: "Refine", help: "Let refinement decompose a ticket into subtickets." },
   { envKey: "AUTO_CONTINUE", label: "auto-continue", editor: "toggle", category: "Advance", help: "Nudge a session forward when it stops before its acceptance criteria pass." },
   { envKey: "MAX_CONTINUATIONS", label: "max continuations", editor: "number", category: "Advance", help: "Nudges per ticket before yimbot gives up and flags it." },
-  { envKey: "AC_JUDGE_MODEL", label: "judge model", editor: "text", category: "Advance", help: "Model that judges acceptance criteria. Empty uses Claude's default." },
+  { envKey: "AC_JUDGE_MODEL", label: "judge model", editor: "text", category: "Advance", help: "Model that judges acceptance criteria. Empty uses the agent's default." },
   { envKey: "AUTO_CLEANUP", label: "auto-cleanup", editor: "toggle", category: "Advance", help: "Remove worktrees and sessions once a ticket is merged." },
-  { envKey: "PLAN_MODEL", label: "plan model", editor: "text", category: "Models", help: "Claude Code model alias or id for planning sessions." },
-  { envKey: "IMPL_MODEL", label: "impl model", editor: "text", category: "Models", help: "Claude Code model alias or id for implementation sessions." },
+  { envKey: "AGENT", label: "agent", editor: "choice", category: "Models", help: "Coding agent CLI yimbot runs: claude or codex. Set the model rows below to names that agent accepts." },
+  { envKey: "PLAN_MODEL", label: "plan model", editor: "text", category: "Models", help: "Model alias or id for planning sessions." },
+  { envKey: "IMPL_MODEL", label: "impl model", editor: "text", category: "Models", help: "Model alias or id for implementation sessions." },
   { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number", category: "System", help: "Minutes between daemon passes over the board." },
   { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", category: "System", help: "Git repo that worktrees are cut from. Must exist." },
 ];
@@ -337,7 +347,7 @@ function displayValue(envKey: string, value: string): string {
     case "SPLIT_TICKETS":
       return isOff(value) ? "off" : "on";
     case "AC_JUDGE_MODEL":
-      return value || "(claude default)";
+      return value || "(agent default)";
     case "REFINE_USERS":
       return value || "(this API key)";
     case "MAX_ESTIMATE":
@@ -402,6 +412,9 @@ export function validateDraft(draft: Draft): Record<string, string> {
       case "CODEBASE_PATH":
         if (!isAbsolute(expandTilde(raw.trim()))) errors[envKey] = "must be an absolute path";
         else if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
+        break;
+      case "AGENT":
+        if (!AGENTS.includes(raw as Agent)) errors[envKey] = `must be ${AGENTS.join(" or ")}`;
         break;
       // These non-empty rules match the wizard's Required validators.
       case "LINEAR_API_KEY":

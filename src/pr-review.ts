@@ -104,7 +104,7 @@ export type PrReviewDeps = {
   // The PR's attention state on the board: whether its flag is up, and when a
   // human last cleared it (epoch ms; null if never). Drives supervised gating
   // and the acknowledged-signal check.
-  flagState: (branch: string) => { flagged: boolean; clearedAt: number | null };
+  flagState: (prNumber: number, branch: string) => { flagged: boolean; clearedAt: number | null };
   // Raise the board's attention flag for a PR. `signalTs` is when the
   // underlying condition last changed, so an acknowledged (unflagged) signal
   // is not re-raised.
@@ -211,7 +211,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
 
   const mode = deps.mode();
   for (const pr of prs) {
-    const att = mode === "supervised" ? deps.flagState(pr.headRefName) : { flagged: false, clearedAt: null };
+    const att = mode === "supervised" ? deps.flagState(pr.number, pr.headRefName) : { flagged: false, clearedAt: null };
     // A signal is acknowledged when a human unflagged the row after it fired;
     // acknowledged signals neither flag nor block (emitFlagged applies the
     // same rule via signalTs, so raiseFlag stays a plain pass-through).

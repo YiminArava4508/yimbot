@@ -1448,27 +1448,30 @@ export function startWatcher(config: WatcherConfig): () => void {
     blockedInfo: config.prReview.blockedInfo,
     mode: readMode,
     humanChangesRequested: config.prReview.humanChangesRequested,
+    // Every hook here keys by prRowKey, never the bare branch: a PR whose branch
+    // has no ticket slug must land on the same pr:<n> row the readiness and
+    // merge steps write, or its fix status strands on a row nothing closes.
     // The PR's attention state, keyed the same way the board keys its rows, so
     // supervised gating and the manual `f` toggle agree on what "flagged" means.
     // Folded once per heartbeat (reset below): a raise for one PR cannot change
     // another key's state, so the snapshot stays valid across the tick's PRs.
-    flagState: (branch) => {
+    flagState: (prNumber, branch) => {
       attentionSnapshot ??= foldAttention(readEvents());
-      const a = attentionSnapshot.get(deriveKey({ branch }).key);
+      const a = attentionSnapshot.get(prRowKey({ branch, pr: prNumber }).key);
       return { flagged: (a?.reasons.size ?? 0) > 0, clearedAt: a?.clearedAt ?? null };
     },
     raiseFlag: (prNumber, branch, reason, signalTs) => {
-      const { key, label } = deriveKey({ branch });
+      const { key, label } = prRowKey({ branch, pr: prNumber });
       emitFlagged({ key, label, title: titleFromBranch(branch), pr: prNumber, reason, signalTs });
     },
     inFlightFixKinds,
     reapFix,
     settleFixStatus: (prNumber, branch) => {
-      const { key, label } = deriveKey({ branch });
+      const { key, label } = prRowKey({ branch, pr: prNumber });
       if (isFixerStatus(currentStatus(key))) emitStatus({ kind: "fix_ended", key, label, pr: prNumber });
     },
     restoreFixStatus: (prNumber, branch, kind) => {
-      const { key, label } = deriveKey({ branch });
+      const { key, label } = prRowKey({ branch, pr: prNumber });
       if (currentStatus(key) === statusFor("fix_ended")?.status) {
         emitStatus({ kind: fixStartKind(kind), key, label, title: titleFromBranch(branch), pr: prNumber });
       }
@@ -1477,22 +1480,22 @@ export function startWatcher(config: WatcherConfig): () => void {
     reapStaleMs: config.reapStaleMs,
     pendingSpawnMaxMs: 2 * config.heartbeatIntervalMinutes * 60 * 1000,
     spawnFix: (name, branch, prNumber) => {
-      const { key, label } = deriveKey({ branch });
+      const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
     spawnCiFix: (name, branch, prNumber) => {
-      const { key, label } = deriveKey({ branch });
+      const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "ci_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
     spawnConflictFix: (name, branch, prNumber) => {
-      const { key, label } = deriveKey({ branch });
+      const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "conflict_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },
     spawnBlockedFix: (name, branch, prNumber) => {
-      const { key, label } = deriveKey({ branch });
+      const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "blocked_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
       spawnFixSession(name, branch);
     },

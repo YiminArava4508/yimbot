@@ -98,15 +98,15 @@ type Classified = { verdict: ReadyVerdict; reason?: RegressReason };
 // every soak, which only delays a label, never adds one early.
 export type ReadyState = { latched: Set<number>; readySince: Map<number, number> };
 
-// A failed read counts as queued: the row then says what it said before this
-// check existed, and the next tick reads again.
-async function mergesManually(prNumber: number, deps: PrReadyDeps): Promise<boolean> {
+// Undefined on a failed read: guessing either way would put a wrong ready
+// status on the row, so the caller skips the PR and the next tick reads again.
+async function mergesManually(prNumber: number, deps: PrReadyDeps): Promise<boolean | undefined> {
   if (!deps.mergesManually) return false;
   try {
     return await deps.mergesManually(prNumber);
   } catch (err) {
     deps.log(`merge queue read failed for PR #${prNumber}: ${err}`);
-    return false;
+    return undefined;
   }
 }
 
@@ -219,8 +219,12 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     }
     const hasLabel = live.labels.includes(deps.label);
     const isBlocked = live.labels.includes(deps.blockedLabel);
+    // A PR in a repo with no merge queue waits on a human whatever its labels
+    // say: its label queues nothing, so it never holds the slot or gets one.
+    // Undefined when the read failed; the PR then sits this tick out below.
+    const manual = await mergesManually(pr.number, deps);
     if (hasLabel) state.latched.add(pr.number); // latch in every mode, blocked PRs included
-    if (hasLabel || isBlocked) queueOccupied = true; // queued now, or blocked and due a re-queue
+    if ((hasLabel || isBlocked) && manual === false) queueOccupied = true; // queued now, or blocked and due a re-queue
     deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel, isBlocked, deps.mode()));
 
     let verdict: ReadyVerdict;
@@ -243,8 +247,10 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
       deps.onBlocked?.(pr.number);
       continue; // blocked-fix flow owns this PR's labels
     }
-    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft, reason, await mergesManually(pr.number, deps));
+    if (manual === undefined) continue;
+    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft, reason, manual);
     if (deps.mode() === "supervised") continue; // the label is a human's to manage
+    if (manual) continue;
     // A draft is a human's to promote: never add the label (which queues it to
     // merge). A stale label on a draft is likewise left for a human to clear.
     if (live.isDraft) continue;

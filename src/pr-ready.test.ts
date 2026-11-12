@@ -719,7 +719,7 @@ test("readyOnce tells onVerdict whether the PR's repo merges manually", async ()
   ]);
 });
 
-test("readyOnce treats a failed merge-queue read as a queued repo", async () => {
+test("readyOnce skips the verdict when the merge-queue read fails", async () => {
   const seen: boolean[] = [];
   const h = harness(
     {
@@ -731,5 +731,25 @@ test("readyOnce treats a failed merge-queue read as a queued repo", async () => 
     [LABEL],
   );
   await readyOnce(h.state, h.deps);
-  assert.deepEqual(seen, [false]);
+  assert.deepEqual(seen, []);
+});
+
+test("readyOnce never labels a PR in a repo without a merge queue", async () => {
+  const h = harness({ mergesManually: async () => true, soakMs: 0 }, []);
+  await readyOnce(h.state, h.deps);
+  assert.equal(h.added.length, 0);
+});
+
+test("readyOnce does not let a labeled manual-merge PR hold the queue slot", async () => {
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(1), pr(2)],
+      prState: async (n: number) => ({ labels: n === 1 ? [LABEL] : [], isDraft: false }),
+      mergesManually: async (n) => n === 1,
+      soakMs: 0,
+    },
+    [],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, [{ n: 2, label: LABEL }]);
 });

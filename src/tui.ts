@@ -3,7 +3,7 @@
 import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
-import { bus, filterToLiveRows, isFlagged, isParentRow, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveRows, isFlagged, isParentRow, readEvents, reduceRows, statusFor, type BoardRow, type YimbotEvent } from "./events.ts";
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
 import { unreachable, type Service } from "./reach.ts";
@@ -280,6 +280,16 @@ export const PARENT_NOTICE = "{red-fg}parent tickets have no PR of their own{/re
 // carries it forward, but nothing about it is actionable any more.
 export function prActionRefusal(row: Pick<BoardRow, "status">): string | undefined {
   return isParentRow(row) ? PARENT_NOTICE : undefined;
+}
+
+export const MANUAL_MERGE_NOTICE = "{red-fg}no merge queue in this repo: merge it by hand{/red-fg}";
+
+// r on top of prActionRefusal: the ready label queues nothing in a repo
+// without a merge queue.
+export function readyRefusal(row: Pick<BoardRow, "status">): string | undefined {
+  const refusal = prActionRefusal(row);
+  if (refusal) return refusal;
+  return row.status === statusFor("ready_manual")?.status ? MANUAL_MERGE_NOTICE : undefined;
 }
 
 export const NO_CARD_NOTICE = "{red-fg}no ticket selected{/red-fg}";
@@ -1008,17 +1018,17 @@ export function runTui(opts: {
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
   });
 
-  const prActionRow = (): BoardRow | undefined => {
+  const prActionRow = (refuse = prActionRefusal): BoardRow | undefined => {
     const r = actionRow();
     if (!r) return undefined;
-    const refusal = prActionRefusal(r);
+    const refusal = refuse(r);
     if (!refusal) return r;
     setNotice(refusal, NOTICE_ERROR_TTL_MS);
     return undefined;
   };
 
   bindReadyKey(screen, isOverlayOpen, () => {
-    const r = prActionRow();
+    const r = prActionRow(readyRefusal);
     if (!r) return;
     void handleReadyPress(r, opts.onAddReadyLabel, setNotice);
   });

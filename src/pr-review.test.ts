@@ -904,3 +904,16 @@ test("reviewOnce restores the status of each fixer it sees in flight", async () 
   await reviewOnce(freshReviewState(), d);
   assert.deepEqual(restored, [{ prNumber: 4706, branch: "eng-4706-x", kind: "ci" }]);
 });
+
+test("reviewOnce reads the flag state by PR number as well as branch", async () => {
+  const seen: [number, string][] = [];
+  const { deps: d } = deps({
+    mode: () => "supervised",
+    flagState: (prNumber, branch) => {
+      seen.push([prNumber, branch]);
+      return { flagged: false, clearedAt: null };
+    },
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(seen, [[4706, "eng-4706-x"]]);
+});

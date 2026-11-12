@@ -115,6 +115,12 @@ export type PrReviewDeps = {
   inFlightFixKinds: (prNumber: number, branch: string) => FixKind[];
   // Tear down a PR's fix of a kind (tmux session/window only, never the worktree).
   reapFix: (prNumber: number, branch: string, kind: FixKind) => void;
+  // Called when no fixer is in flight or starting: move the row off a fix
+  // session's status, since a fixer that closes itself emits nothing.
+  settleFixStatus: (prNumber: number, branch: string) => void;
+  // Called for each fixer seen in flight: put back its status if a settle
+  // fired while it was invisible (slow start, transient tmux read failure).
+  restoreFixStatus: (prNumber: number, branch: string, kind: FixKind) => void;
   // Injected clock (epoch ms) for the stale-reap timer; Date.now in production.
   now: () => number;
   // Stale-reap threshold: reap a fix in flight longer than this regardless of state.
@@ -259,6 +265,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     if (running.length > 0) {
       const now = deps.now();
       for (const kind of running) {
+        deps.restoreFixStatus(pr.number, pr.headRefName, kind);
         // A blocked fix owns its whole lifecycle: the fix-pr-blocked skill fixes the
         // Aviator combined-CI failure, swaps blocked -> ready-to-merge, then closes its
         // own session. The daemon must never reap it, or it races that work -- the label
@@ -290,6 +297,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
     // (which has a different session name the tmux guard can't dedupe) from
     // landing on the shared worktree until this one becomes visible.
     const pending = pendingKind(state, pr.number, deps);
+    if (!pending) deps.settleFixStatus(pr.number, pr.headRefName);
 
     if (info === null) continue; // the read above failed; this PR sits the tick out
     // Supervised: a flagged PR belongs to a human. Spawn nothing (comment,

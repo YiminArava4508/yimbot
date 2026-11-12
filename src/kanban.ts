@@ -123,6 +123,7 @@ const STATUS_TONES: Record<string, Tone> = {
   refining: "ok",
   "qa: in session": "ok",
   "ready to review": "wait",
+  "fix done": "wait",
   "in review": "wait",
   "draft pr": "wait",
   "ready: r to queue": "wait",

@@ -93,6 +93,7 @@ const STATUS_COLOR: Record<string, string> = {
   "ready: r to queue": "green",
   "draft pr": "green",
   "waiting on slices": "yellow",
+  "fix done": "yellow",
   "tracker ticket": "yellow",
 };
 

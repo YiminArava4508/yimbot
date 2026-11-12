@@ -10,6 +10,7 @@ export type EventKind =
   | "ci_fix_started"
   | "conflict_fix_started"
   | "blocked_fix_started"
+  | "fix_ended"
   | "merge_blocked"
   | "ci_failing"
   | "review_unresolved"
@@ -160,6 +161,9 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   ci_fix_started: { status: "fixing CI", terminal: false },
   conflict_fix_started: { status: "resolving conflict", terminal: false },
   blocked_fix_started: { status: "unblocking", terminal: false },
+  // A fix session closed itself (or was reaped) and the PR's verdict has not
+  // replaced it yet, typically CI re-running on the fix push.
+  fix_ended: { status: "fix done", terminal: false },
   merge_blocked: { status: "merge queue blocked", terminal: false },
   ci_failing: { status: "CI failing", terminal: false },
   review_unresolved: { status: "unresolved threads", terminal: false },
@@ -255,6 +259,36 @@ const READY_CLAIM_STATUSES = new Set([STATUS.ready_to_merge!.status, STATUS.read
 
 export function isReadyClaim(status: string | undefined): boolean {
   return status !== undefined && READY_CLAIM_STATUSES.has(status);
+}
+
+const FIXER_STATUSES = new Set([
+  STATUS.review_started!.status,
+  STATUS.ci_fix_started!.status,
+  STATUS.conflict_fix_started!.status,
+  STATUS.blocked_fix_started!.status,
+]);
+
+// The statuses a fix session sets when it starts. Only true while that session
+// lives; once it is gone the row has to move off them.
+export function isFixerStatus(status: string | undefined): boolean {
+  return status !== undefined && FIXER_STATUSES.has(status);
+}
+
+const FIX_START_KIND: Record<"fix" | "ci" | "conflict" | "blocked", EventKind> = {
+  fix: "review_started",
+  ci: "ci_fix_started",
+  conflict: "conflict_fix_started",
+  blocked: "blocked_fix_started",
+};
+
+export function fixStartKind(kind: keyof typeof FIX_START_KIND): EventKind {
+  return FIX_START_KIND[kind];
+}
+
+// Statuses a regressed readiness verdict may replace with the named failure:
+// a readiness claim, or a finished fix whose result is now known.
+export function yieldsToVerdict(status: string | undefined): boolean {
+  return isReadyClaim(status) || status === STATUS.fix_ended!.status;
 }
 
 // A split parent's row: it has no work of its own, only slices to wait on.

@@ -48,6 +48,8 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   conflictSpawned: { name: string; branch: string; prNumber: number }[];
   blockedSpawned: { name: string; branch: string; prNumber: number }[];
   reaped: { prNumber: number; branch: string; kind: string }[];
+  settled: { prNumber: number; branch: string }[];
+  restored: { prNumber: number; branch: string; kind: string }[];
   flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[];
   logs: string[];
 } {
@@ -56,6 +58,8 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   const conflictSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const blockedSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const reaped: { prNumber: number; branch: string; kind: string }[] = [];
+  const settled: { prNumber: number; branch: string }[] = [];
+  const restored: { prNumber: number; branch: string; kind: string }[] = [];
   const flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[] = [];
   const logs: string[] = [];
   const d: PrReviewDeps = {
@@ -70,6 +74,8 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     raiseFlag: (prNumber, branch, reason, signalTs) => void flagRaised.push({ prNumber, branch, reason, signalTs }),
     inFlightFixKinds: () => [],
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
+    settleFixStatus: (prNumber, branch) => void settled.push({ prNumber, branch }),
+    restoreFixStatus: (prNumber, branch, kind) => void restored.push({ prNumber, branch, kind }),
     now: () => 0,
     reapStaleMs: 90 * 60 * 1000,
     pendingSpawnMaxMs: 6 * 60 * 1000,
@@ -80,7 +86,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, flagRaised, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, settled, restored, flagRaised, logs };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -860,4 +866,41 @@ test("a failed thread read does not stop the in-flight fixer from being reaped",
     h.reaped.map((r) => r.kind),
     ["fix"],
   );
+});
+
+test("reviewOnce settles the fix status once no fixer is in flight or starting", async () => {
+  const { deps: d, settled } = deps({ unresolvedInfo: async () => noComments });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(settled, [{ prNumber: 4706, branch: "eng-4706-x" }]);
+});
+
+test("reviewOnce leaves the fix status alone while a fixer is in flight", async () => {
+  const { deps: d, settled } = deps({ inFlightFixKinds: () => ["ci"] });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(settled.length, 0);
+});
+
+test("reviewOnce leaves the fix status alone while a just-spawned fixer is not yet visible", async () => {
+  const { deps: d, ciSpawned, settled } = deps({ unresolvedInfo: async () => noComments, checksInfo: async () => ci("failing", "abc") });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // settles, then spawns the CI fix
+  await reviewOnce(state, d); // fixer still starting: must not settle
+  assert.equal(ciSpawned.length, 1);
+  assert.equal(settled.length, 1);
+});
+
+test("reviewOnce settles the fix status of a flagged PR too", async () => {
+  const { deps: d, settled } = deps({
+    mode: () => "supervised",
+    flagState: () => ({ flagged: true, clearedAt: null }),
+    unresolvedInfo: async () => info(1, 1000, { humanTs: 1000 }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(settled.length, 1);
+});
+
+test("reviewOnce restores the status of each fixer it sees in flight", async () => {
+  const { deps: d, restored } = deps({ inFlightFixKinds: () => ["ci"] });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(restored, [{ prNumber: 4706, branch: "eng-4706-x", kind: "ci" }]);
 });

@@ -17,6 +17,7 @@ export type EventKind =
   | "ready_to_merge"
   | "draft_pr"
   | "ready_unqueued"
+  | "ready_manual"
   | "ready_regressed"
   | "awaiting_slices"
   | "tracking"
@@ -170,6 +171,7 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   ready_to_merge: { status: "ready to merge", terminal: false },
   draft_pr: { status: "draft pr", terminal: false },
   ready_unqueued: { status: "ready: r to queue", terminal: false },
+  ready_manual: { status: "ready: merge manually", terminal: false },
   ready_regressed: { status: "working", terminal: false },
   awaiting_slices: { status: "waiting on slices", terminal: false },
   tracking: { status: "tracker ticket", terminal: false },
@@ -255,7 +257,12 @@ export function foldStuck(events: YimbotEvent[]): Map<string, string> {
 // The statuses that only claim the PR is ready (queued, waiting on r, or a
 // clean draft). Anything else on a review or merge row is progress worth
 // showing next to the section.
-const READY_CLAIM_STATUSES = new Set([STATUS.ready_to_merge!.status, STATUS.ready_unqueued!.status, STATUS.draft_pr!.status]);
+const READY_CLAIM_STATUSES = new Set([
+  STATUS.ready_to_merge!.status,
+  STATUS.ready_unqueued!.status,
+  STATUS.ready_manual!.status,
+  STATUS.draft_pr!.status,
+]);
 
 export function isReadyClaim(status: string | undefined): boolean {
   return status !== undefined && READY_CLAIM_STATUSES.has(status);

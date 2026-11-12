@@ -669,6 +669,7 @@ export type WatcherConfig = {
     checksInfo: (n: number) => Promise<ChecksInfo>;
     prState: (n: number) => Promise<PrState>;
     addLabel: (n: number, label: string) => Promise<void>;
+    mergesManually?: (n: number) => Promise<boolean>;
     label: string;
     blockedLabel: string;
     soakMs: number;
@@ -1651,7 +1652,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     // stale fix status. The label writers stay pure GitHub side effects. A ready
     // draft says "draft pr" instead: it cannot merge until a human marks it
     // ready for review.
-    onVerdict: (n: number, verdict, hasLabel, isDraft, reason) => {
+    onVerdict: (n: number, verdict, hasLabel, isDraft, reason, manual) => {
       const k = keyForPr(n);
       if (!boardReadyToMerge(verdict, hasLabel)) {
         const status = currentStatus(k.key);
@@ -1670,7 +1671,7 @@ export function startWatcher(config: WatcherConfig): () => void {
         }
         return;
       }
-      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode()), key: k.key, label: k.label, pr: n, repo: k.repo });
+      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual), key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     // Where the row sits, reported separately from its status so a queued PR
     // stays in the merge pane while its status walks through a CI fix or a

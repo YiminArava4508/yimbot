@@ -51,8 +51,12 @@ export type PrReadyDeps = {
     verdict: ReadyVerdict,
     hasLabel: boolean,
     isDraft: boolean,
-    reason?: RegressReason,
+    reason: RegressReason | undefined,
+    manual: boolean,
   ) => void;
+  // Whether the PR's repo has no merge queue, so a ready PR waits on a human
+  // to merge it whatever its labels say. Absent means every repo is queued.
+  mergesManually?: (prNumber: number) => Promise<boolean>;
   // Report which board pane a PR belongs in, for every open PR including the
   // blocked ones onVerdict skips: reporting a section is a read, and a blocked
   // PR has lost the ready label, so the board must move it out of the merge
@@ -94,6 +98,18 @@ type Classified = { verdict: ReadyVerdict; reason?: RegressReason };
 // every soak, which only delays a label, never adds one early.
 export type ReadyState = { latched: Set<number>; readySince: Map<number, number> };
 
+// A failed read counts as queued: the row then says what it said before this
+// check existed, and the next tick reads again.
+async function mergesManually(prNumber: number, deps: PrReadyDeps): Promise<boolean> {
+  if (!deps.mergesManually) return false;
+  try {
+    return await deps.mergesManually(prNumber);
+  } catch (err) {
+    deps.log(`merge queue read failed for PR #${prNumber}: ${err}`);
+    return false;
+  }
+}
+
 export function freshReadyState(): ReadyState {
   return { latched: new Set(), readySince: new Map() };
 }
@@ -111,8 +127,9 @@ export function boardReadyToMerge(verdict: ReadyVerdict, hasLabel: boolean): boo
 // merge whatever its labels say. An unlabeled ready PR in supervised mode is
 // waiting on a human to queue it, so the row says so instead of reading like a
 // queued one; autonomous labels it itself after the soak, so no prompt there.
-export function boardReadyKind(isDraft: boolean, hasLabel: boolean, mode: Mode): EventKind {
+export function boardReadyKind(isDraft: boolean, hasLabel: boolean, mode: Mode, manual = false): EventKind {
   if (isDraft) return "draft_pr";
+  if (manual) return "ready_manual";
   if (!hasLabel && mode === "supervised") return "ready_unqueued";
   return "ready_to_merge";
 }
@@ -226,7 +243,7 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
       deps.onBlocked?.(pr.number);
       continue; // blocked-fix flow owns this PR's labels
     }
-    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft, reason);
+    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft, reason, await mergesManually(pr.number, deps));
     if (deps.mode() === "supervised") continue; // the label is a human's to manage
     // A draft is a human's to promote: never add the label (which queues it to
     // merge). A stale label on a draft is likewise left for a human to clear.

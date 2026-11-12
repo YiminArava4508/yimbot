@@ -118,6 +118,7 @@ test("titleFromBranch strips ticket prefix and humanizes", () => {
 });
 
 test("statusFor maps kinds; only merged is terminal", () => {
+  assert.deepEqual(statusFor("ready_manual"), { status: "ready: merge manually", terminal: false });
   assert.deepEqual(statusFor("fix_ended"), { status: "fix done", terminal: false });
   assert.deepEqual(statusFor("task_started"), { status: "working", terminal: false });
   assert.deepEqual(statusFor("review_started"), { status: "addressing review", terminal: false });

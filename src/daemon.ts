@@ -24,6 +24,7 @@ import {
   mergeableInfo,
   prMergeCommit,
   prState,
+  repoMergesManually,
   repoSlug,
   type RepoSlug,
   unresolvedThreadInfo,
@@ -193,6 +194,17 @@ export async function startDaemon(): Promise<() => void> {
   // codebase repo's, which is what every caller assumed before EXTRA_REPOS.
   const repoByNumber = new Map<number, string>();
   const runnerFor = (n: number) => extraRunners.find((r) => r.repo === repoByNumber.get(n))?.run ?? gh;
+  // Per repo, for the daemon's lifetime: whether a repo has a merge queue does
+  // not change under a running board. The codebase repo is assumed queued (the
+  // blocked-label and queue flows already depend on that).
+  const manualByRepo = new Map<string, boolean>();
+  const mergesManually = async (n: number): Promise<boolean> => {
+    const repo = repoByNumber.get(n);
+    const run = extraRunners.find((r) => r.repo === repo)?.run;
+    if (!repo || !run) return false;
+    if (!manualByRepo.has(repo)) manualByRepo.set(repo, await repoMergesManually(run, repo));
+    return manualByRepo.get(repo)!;
+  };
   const listAllOpenPRs = async () => {
     const [primary, ...extras] = await Promise.all([
       listMyOpenPRs(gh),
@@ -431,6 +443,7 @@ export async function startDaemon(): Promise<() => void> {
           checksInfo: prReview.checksInfo,
           prState: (n: number) => prState(runnerFor(n), n),
           addLabel: (n: number, label: string) => addLabel(runnerFor(n), n, label),
+          mergesManually,
           label: readyLabelName,
           blockedLabel: blockedLabelName,
           soakMs: readySoakMs,

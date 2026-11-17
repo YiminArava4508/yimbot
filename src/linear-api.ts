@@ -195,14 +195,17 @@ export async function fetchTeamStates(
 // The viewer's assigned issues in one state of the watched team. Shared by the
 // deploy step (In Progress) and the review step (In Review) — both watch a
 // single state, so this is deliberately state-agnostic.
-export type StateIssue = LinearIssue & { labels: string[] };
+export type StateIssue = LinearIssue & { labels: string[]; people: string[]; creator: string | null };
 
 export async function fetchIssuesInState(
   apiKey: string,
   ctx: LinearContext,
   fetchImpl: typeof fetch = fetch,
 ): Promise<StateIssue[]> {
-  type Node = LinearIssue & { labels: { nodes: { name: string }[] } };
+  type Node = LinearIssue & {
+    labels: { nodes: { name: string }[] };
+    creator?: { id: string; displayName: string } | null;
+  };
   type IssuesData = { issues: { nodes: Node[] } };
   const data = await gql<IssuesData>(
     apiKey,
@@ -215,18 +218,29 @@ export async function fetchIssuesInState(
           assignee: { id: { eq: $viewerId } }
         }
       ) {
-        nodes { id identifier title labels { nodes { name } } }
+        nodes {
+          id identifier title
+          labels { nodes { name } }
+          creator { id displayName }
+        }
       }
     }`,
     { teamId: ctx.teamId, stateId: ctx.stateId, viewerId: ctx.viewerId },
     fetchImpl,
   );
-  return data.issues.nodes.map((n) => ({
-    id: n.id,
-    identifier: n.identifier,
-    title: n.title,
-    labels: n.labels.nodes.map((l) => l.name),
-  }));
+  return data.issues.nodes.map((n) => {
+    // Every issue here is assigned to the viewer, so the only one worth pinging
+    // is a creator other than the viewer.
+    const creator = n.creator && n.creator.id !== ctx.viewerId ? n.creator.displayName : null;
+    return {
+      id: n.id,
+      identifier: n.identifier,
+      title: n.title,
+      labels: n.labels.nodes.map((l) => l.name),
+      people: creator ? [creator] : [],
+      creator,
+    };
+  });
 }
 
 export type IssueWithBlockers = LinearIssue & { blockedBy: Blocker[]; labels: string[] };

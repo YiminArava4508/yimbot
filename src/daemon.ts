@@ -494,6 +494,7 @@ export async function startDaemon(): Promise<() => void> {
     labelFilter,
     progressContext,
     reviewContext,
+    doneStateName: envOr("DONE_STATE_NAME", "Done"),
     heartbeatIntervalMinutes,
     reapStaleMs: reapStaleMinutes * 60 * 1000,
     clearedStates,

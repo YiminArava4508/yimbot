@@ -259,7 +259,7 @@ ticket_owner_alive() {
 
 ticket_stale() {
   local state mtime age limit owner
-  mtime=$(stat -c %Y "$1" 2>/dev/null) || return 0
+  mtime=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) || return 0
   # A ticket naming an owner is answered by that process and nothing else: alive
   # means the job is still going however long it takes, gone means the ticket
   # died with it, whether or not its trap got the chance to run.

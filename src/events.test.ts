@@ -49,6 +49,39 @@ test("reduceRows: a legacy extra-repo event keyed by ticket alone folds into the
   assert.equal(byKey.get("ENG-2063@acme/tf")?.section, "review");
 });
 
+test("reduceRows: a section event's pr fills the row without changing its status or timestamps", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-7", label: "ENG-7" }),
+      ev({ ts: 2, kind: "section_review", key: "ENG-7", label: "ENG-7", pr: 123 }),
+    ],
+    100,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].pr, 123);
+  assert.equal(rows[0].section, "review");
+  assert.equal(rows[0].status, statusFor("task_started")?.status);
+  assert.equal(rows[0].ts, 1);
+  assert.equal(rows[0].startTs, 1);
+});
+
+test("reduceRows: a later section event's pr replaces an older one", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-7", label: "ENG-7" }),
+      ev({ ts: 2, kind: "section_review", key: "ENG-7", label: "ENG-7", pr: 123 }),
+      ev({ ts: 3, kind: "section_review", key: "ENG-7", label: "ENG-7", pr: 456 }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].pr, 456);
+});
+
+test("reduceRows: a section event for a key with no row creates no row", () => {
+  const rows = reduceRows([ev({ ts: 1, kind: "section_review", key: "ENG-8", label: "ENG-8", pr: 9 })], 100);
+  assert.equal(rows.length, 0);
+});
+
 test("mergedRowKeys: a codebase branch is merged once no codebase PR on its ticket is open; extra-repo PRs have their own rows", () => {
   const merged = [{ number: 5970, headRefName: "eng-2063-a" }];
   const openCodebaseSibling = [{ number: 6000, headRefName: "eng-2063-b", isDraft: false }];

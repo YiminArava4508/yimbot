@@ -602,9 +602,17 @@ export function reduceRows(
   const byKey = new Map<string, BoardRow>();
   for (const e of events) {
     const mapped = statusFor(e.kind);
-    if (!mapped) continue; // flag signals + any kind retired in a newer build
     const key = rowKeyOf(e);
     const prev = byKey.get(key);
+    if (!mapped) {
+      // Section events carry the PR before any status event does (a non-draft
+      // PR in review with CI still running), so take the number from them.
+      if (prev && e.pr !== undefined && sectionFor(e.kind)) {
+        prev.pr = e.pr;
+        prev.repo = e.repo ?? prev.repo;
+      }
+      continue; // flag signals + any kind retired in a newer build
+    }
     const startTs = prev ? (prev.terminal ? e.ts : prev.startTs) : e.ts;
     byKey.set(key, {
       key,

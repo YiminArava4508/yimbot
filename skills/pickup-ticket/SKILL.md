@@ -44,13 +44,13 @@ asking for a behavior change.
    the reason to a file (the estimate, your planned size, and the evidence: files
    touched, rough changed LOC) and run
    `~/reject-ticket.sh <TICKET> <planned-points> - < reason.md`. Exit 0 means
-   the ticket was rejected (comment posted, `reject` label added): print one
+   the ticket was rejected (comment posted, `rejected` label added, ticket moved back to Todo): print one
    line saying so and **STOP**, write no code. Exit 3 means the plan is within
    tolerance: continue. Any other exit (1, 127 for a missing script, a network
    error) means the check itself failed: print the error and **STOP**, do not
    implement a ticket whose size check did not complete. For `sc-*` tickets, when your planned size is 2 or more
    steps above the estimate, post the reason with `stories-create-comment`, add
-   the `reject` label with `stories-update`, and STOP. Never change the
+   the `rejected` label with `stories-update`, and STOP. Never change the
    estimate yourself.
 
 2. **Classify** the plan against the Hard-Stop Rubric below.

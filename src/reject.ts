@@ -7,7 +7,7 @@ function stepIndex(points: number): number {
 }
 
 export function parseRejectLabel(raw: string | undefined): string {
-  return raw?.trim() || "reject";
+  return raw?.trim() || "rejected";
 }
 
 export function shouldReject(estimate: number | null, planned: number): boolean {
@@ -21,6 +21,7 @@ export type RejectDeps = {
   ) => Promise<{ id: string; teamId: string; identifier: string; estimate: number | null }>;
   comment: (issueId: string, body: string) => Promise<void>;
   addLabel: (issueId: string, teamId: string, label: string) => Promise<void>;
+  moveToTodo: (identifier: string) => Promise<void>;
 };
 
 export type RejectResult = { rejected: boolean; identifier: string; estimate: number | null };
@@ -37,5 +38,6 @@ export async function rejectTicket(
   if (!shouldReject(t.estimate, planned)) return result;
   await deps.comment(t.id, `${reason.trim()}\n\nEstimate: ${t.estimate}, planned: ${planned}`);
   await deps.addLabel(t.id, t.teamId, label);
+  await deps.moveToTodo(t.identifier);
   return { ...result, rejected: true };
 }

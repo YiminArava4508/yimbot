@@ -36,6 +36,7 @@ export const PREREQUISITES: Prerequisite[] = [
   { key: "gh-scopes", label: "gh token scopes (repo, workflow)", severity: "recommended" },
   { key: "git-identity", label: "git identity (user.name, user.email)", severity: "recommended" },
   { key: "shortcut", label: "Shortcut MCP server (shortcut)", severity: "recommended" },
+  { key: "posthog", label: "PostHog MCP server (posthog)", severity: "recommended" },
   { key: "task", label: "go-task (task), run by repo pre-push hooks", severity: "recommended" },
   { key: "tmux-navigator", label: "tmux vim-tmux-navigator bindings", severity: "recommended" },
   { key: "tmux-status", label: "tmux @feature_status in status line", severity: "recommended" },
@@ -205,6 +206,8 @@ export function isSatisfied(pr: Prerequisite): boolean {
       return claudeAuthenticated();
     case "shortcut":
       return mcpServers().includes("shortcut");
+    case "posthog":
+      return mcpServers().includes("posthog");
     case "git-identity":
       return gitIdentitySet();
     case "tmux-status":
@@ -272,6 +275,8 @@ export function installHint(key: string, pm: PackageManager | null): string {
       return "Authenticate Claude Code: run `claude` and log in, or set ANTHROPIC_API_KEY";
     case "shortcut":
       return "Register the Shortcut MCP under the name 'shortcut' (claude mcp add shortcut -- npx -y @shortcut/mcp@latest)";
+    case "posthog":
+      return "Register the PostHog MCP under the name 'posthog' (claude mcp add --transport http posthog https://mcp.posthog.com/mcp)";
     case "task":
       if (pm === "pacman") {
         return "Run: sudo pacman -S --needed go-task && sudo ln -sf /usr/bin/go-task /usr/local/bin/task (Arch installs the binary as go-task)";

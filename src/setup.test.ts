@@ -235,7 +235,7 @@ test("PREREQUISITES split into blocking required and non-blocking recommended ch
     assert.equal(sev(k), "required", `${k} is required`);
   }
   // Recommended: warn but never block.
-  for (const k of ["gh-scopes", "git-identity", "shortcut", "task", "tmux-navigator", "tmux-status"]) {
+  for (const k of ["gh-scopes", "git-identity", "shortcut", "posthog", "task", "tmux-navigator", "tmux-status"]) {
     assert.equal(sev(k), "recommended", `${k} is recommended`);
   }
   // Every prerequisite declares one of the two severities.

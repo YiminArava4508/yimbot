@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,7 @@ export const PREREQUISITES: Prerequisite[] = [
   { key: "git-identity", label: "git identity (user.name, user.email)", severity: "recommended" },
   { key: "shortcut", label: "Shortcut MCP server (shortcut)", severity: "recommended" },
   { key: "task", label: "go-task (task), run by repo pre-push hooks", severity: "recommended" },
+  { key: "tmux-navigator", label: "tmux vim-tmux-navigator bindings", severity: "recommended" },
   { key: "tmux-status", label: "tmux @feature_status in status line", severity: "recommended" },
 ];
 
@@ -143,9 +144,41 @@ export function configReferencesFeatureStatus(text: string): boolean {
   return text.includes("@feature_status");
 }
 
+function tmuxConfigPaths(): string[] {
+  return [join(homedir(), ".tmux.conf"), join(homedir(), ".config/tmux/tmux.conf")];
+}
+
 function tmuxStatusConfigured(): boolean {
-  const paths = [join(homedir(), ".tmux.conf"), join(homedir(), ".config/tmux/tmux.conf")];
-  return paths.some((p) => existsSync(p) && configReferencesFeatureStatus(readFileSync(p, "utf8")));
+  return tmuxConfigPaths().some((p) => existsSync(p) && configReferencesFeatureStatus(readFileSync(p, "utf8")));
+}
+
+export function configReferencesNavigator(text: string): boolean {
+  return text.includes("vim-tmux-navigator");
+}
+
+function tmuxNavigatorConfigured(): boolean {
+  return tmuxConfigPaths().some((p) => existsSync(p) && configReferencesNavigator(readFileSync(p, "utf8")));
+}
+
+// The tmux config the wizard edits: the first one that exists, else ~/.tmux.conf.
+export function tmuxConfigTarget(): string {
+  const paths = tmuxConfigPaths();
+  return paths.find((p) => existsSync(p)) ?? paths[0];
+}
+
+function separatorBefore(text: string): string {
+  if (text === "" || text.endsWith("\n\n")) return "";
+  if (text.endsWith("\n")) return "\n";
+  return "\n\n";
+}
+
+// Appends the vim-tmux-navigator bindings (vendored in scripts/tmux-navigator.conf)
+// to a tmux config. Returns false, writing nothing, when they are already there.
+export function appendNavigatorSnippet(path: string): boolean {
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  if (configReferencesNavigator(current)) return false;
+  appendFileSync(path, `${separatorBefore(current)}${NAVIGATOR_SNIPPET}`);
+  return true;
 }
 
 function gitConfigGet(key: string): string {
@@ -176,6 +209,8 @@ export function isSatisfied(pr: Prerequisite): boolean {
       return gitIdentitySet();
     case "tmux-status":
       return tmuxStatusConfigured();
+    case "tmux-navigator":
+      return tmuxNavigatorConfigured();
     default:
       return commandExists(pr.key);
   }
@@ -243,6 +278,8 @@ export function installHint(key: string, pm: PackageManager | null): string {
       }
       if (pm === "brew") return "Run: brew install go-task";
       return "Install go-task so `task` is on PATH (https://taskfile.dev/installation)";
+    case "tmux-navigator":
+      return "Add the vim-tmux-navigator bindings from scripts/tmux-navigator.conf to your tmux config, and the christoomey/vim-tmux-navigator plugin to nvim";
     case "tmux-status":
       return "Add @feature_status to your tmux status line so the ready-to-test flag shows";
   }
@@ -257,6 +294,8 @@ export const errMsg = (e: unknown): string => (e instanceof Error ? e.message : 
 
 // Repo root, so the wizard can link the vendored launcher + skill into place.
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+
+export const NAVIGATOR_SNIPPET = readFileSync(join(repoRoot, "scripts/tmux-navigator.conf"), "utf8");
 
 export type HostLink = { source: string; target: string; label: string };
 export const hostLinks: HostLink[] = [

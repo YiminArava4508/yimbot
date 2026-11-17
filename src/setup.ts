@@ -21,8 +21,10 @@ import {
   type YimbotConfig,
 } from "./settings-model.ts";
 import {
+  appendNavigatorSnippet,
   commandExists,
   configReferencesFeatureStatus,
+  configReferencesNavigator,
   detectPackageManager,
   ensureHostLinks,
   errMsg,
@@ -36,6 +38,7 @@ import {
   installHostLink,
   isSatisfied,
   linkState,
+  NAVIGATOR_SNIPPET,
   PREREQUISITES,
   type PackageManager,
   parseGhScopes,
@@ -44,6 +47,7 @@ import {
   type Prerequisite,
   resetMcpCache,
   type Severity,
+  tmuxConfigTarget,
 } from "./setup-core.ts";
 import { endSessionScriptPath, sessionScriptPath } from "./watcher.ts";
 
@@ -59,8 +63,10 @@ export {
 };
 
 export {
+  appendNavigatorSnippet,
   commandExists,
   configReferencesFeatureStatus,
+  configReferencesNavigator,
   detectPackageManager,
   ensureHostLinks,
   ghAuthenticated,
@@ -71,6 +77,7 @@ export {
   installHint,
   isSatisfied,
   linkState,
+  NAVIGATOR_SNIPPET,
   PREREQUISITES,
   type PackageManager,
   parseGhScopes,
@@ -192,8 +199,25 @@ async function reviewRecommended(): Promise<void> {
     if (refresh) runFix(["gh", "auth", "refresh", "-s", "repo,workflow"]);
   }
 
+  if (missing.has("tmux-navigator")) {
+    const target = tmuxConfigTarget();
+    const add = bail(
+      await p.confirm({
+        message: `Add vim-tmux-navigator bindings (Ctrl-h/j/k/l across tmux and nvim) to ${target}?`,
+        initialValue: true,
+      }),
+    );
+    if (add) {
+      appendNavigatorSnippet(target);
+      p.note(
+        `Reload tmux: tmux source-file ${target}\nIn nvim, add the christoomey/vim-tmux-navigator plugin.`,
+        "vim-tmux-navigator",
+      );
+    }
+  }
+
   const guideOnly = checks
-    .filter((c) => !c.ok && !["git-identity", "gh-scopes"].includes(c.pr.key))
+    .filter((c) => !c.ok && !["git-identity", "gh-scopes", "tmux-navigator"].includes(c.pr.key))
     .map((c) => `${c.pr.label}: ${installHint(c.pr.key, null)}`);
   if (guideOnly.length) {
     p.note(guideOnly.join("\n"), "Optional (set these up when convenient)");

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { tempDir } from "./test-temp.ts";
 import {
+  appendNavigatorSnippet,
   commandExists,
   configReferencesFeatureStatus,
+  configReferencesNavigator,
   configToEnvRecord,
   detectPackageManager,
   ensureHostLinks,
@@ -20,6 +22,7 @@ import {
   isConfigured,
   isGitRepo,
   linkState,
+  NAVIGATOR_SNIPPET,
   parseGhScopes,
   parseInstalledPlugins,
   parseMcpServers,
@@ -232,7 +235,7 @@ test("PREREQUISITES split into blocking required and non-blocking recommended ch
     assert.equal(sev(k), "required", `${k} is required`);
   }
   // Recommended: warn but never block.
-  for (const k of ["gh-scopes", "git-identity", "shortcut", "task", "tmux-status"]) {
+  for (const k of ["gh-scopes", "git-identity", "shortcut", "task", "tmux-navigator", "tmux-status"]) {
     assert.equal(sev(k), "recommended", `${k} is recommended`);
   }
   // Every prerequisite declares one of the two severities.
@@ -348,6 +351,32 @@ test("installHint for task names go-task and the pacman task symlink", () => {
   assert.match(installHint("task", "pacman"), /ln -sf \/usr\/bin\/go-task \/usr\/local\/bin\/task/);
   assert.match(installHint("task", "brew"), /brew install go-task/);
   assert.match(installHint("task", null), /taskfile\.dev/);
+});
+
+test("configReferencesNavigator detects the vim-tmux-navigator bindings", () => {
+  assert.equal(configReferencesNavigator(NAVIGATOR_SNIPPET), true);
+  assert.equal(configReferencesNavigator("bind-key -n 'C-h' select-pane -L"), false);
+  assert.equal(configReferencesNavigator(""), false);
+});
+
+test("NAVIGATOR_SNIPPET binds all five keys and defers to a yimbot pane", () => {
+  for (const key of ["C-h", "C-j", "C-k", "C-l"]) assert.match(NAVIGATOR_SNIPPET, new RegExp(`'${key}'`));
+  assert.match(NAVIGATOR_SNIPPET, /@yimbot_keys/);
+});
+
+test("appendNavigatorSnippet creates the file, keeps existing content, and is idempotent", () => {
+  const dir = tempDir("yimbot-nav-");
+  const fresh = join(dir, "fresh.conf");
+  assert.equal(appendNavigatorSnippet(fresh), true);
+  assert.equal(configReferencesNavigator(readFileSync(fresh, "utf8")), true);
+
+  const existing = join(dir, "existing.conf");
+  writeFileSync(existing, "set -g mouse on\n");
+  assert.equal(appendNavigatorSnippet(existing), true);
+  const once = readFileSync(existing, "utf8");
+  assert.ok(once.startsWith("set -g mouse on\n"));
+  assert.equal(appendNavigatorSnippet(existing), false);
+  assert.equal(readFileSync(existing, "utf8"), once);
 });
 
 test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {

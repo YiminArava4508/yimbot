@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   describeLabelFilter,
   filterByLabel,
+  hasLabel,
   labelFilterAllows,
   parseLabelFilter,
 } from "./labels.ts";
@@ -66,4 +67,11 @@ test("describeLabelFilter renders each mode for the startup log", () => {
   assert.equal(describeLabelFilter(null), "every ticket");
   assert.equal(describeLabelFilter(parseLabelFilter("bot")), 'only tickets labelled "bot"');
   assert.equal(describeLabelFilter(parseLabelFilter("!bot")), 'every ticket except those labelled "bot"');
+});
+
+test("hasLabel matches case-insensitively and ignores padding", () => {
+  assert.equal(hasLabel(["Reject"], "reject"), true);
+  assert.equal(hasLabel([" reject "], "Reject"), true);
+  assert.equal(hasLabel(["bot"], "reject"), false);
+  assert.equal(hasLabel([], "reject"), false);
 });

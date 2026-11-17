@@ -31,6 +31,7 @@ const blocker = (identifier: string, stateName = "In Review") => ({
 
 const opts = (merged: Set<string> | null = null, requireEstimate = false) => ({
   riskLabels,
+  rejectLabel: "reject",
   merged,
   clearedStates: clearedStateNames("Merged", "Deployed To Nonprod"),
   labelFilter: null,
@@ -216,4 +217,17 @@ test("parseMaxEstimate reads a positive integer and treats everything else as no
   assert.equal(parseMaxEstimate("-2"), null);
   assert.equal(parseMaxEstimate("abc"), null);
   assert.equal(parseMaxEstimate("2.5"), null);
+});
+
+test("selectNextClaim skips a ticket carrying the reject label in any casing", () => {
+  const picked = selectNextClaim(
+    [todo({ id: "a", priority: 1, labels: ["Reject"] }), todo({ id: "b", priority: 2 })],
+    opts(),
+  );
+  assert.equal(picked?.id, "b");
+});
+
+test("selectNextClaim still skips reject when RISK_LABELS is overridden", () => {
+  const picked = selectNextClaim([todo({ id: "a", labels: ["reject"] })], { ...opts(), riskLabels: [] });
+  assert.equal(picked, null);
 });

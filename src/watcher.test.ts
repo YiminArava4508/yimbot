@@ -883,6 +883,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
   const deps: ClaimDeps = {
     autoClaim: true,
     riskLabels: ["migration"],
+    rejectLabel: "reject",
     labelFilter: null,
     requireEstimate: () => false,
     maxEstimate: null,

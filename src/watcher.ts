@@ -431,6 +431,7 @@ export type ClaimDeps = {
   autoClaim: boolean;
   // Label names that disqualify a ticket from being claimed.
   riskLabels: string[];
+  rejectLabel: string;
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
   // Whether the claim step skips tickets with no estimate. Read per tick so it
@@ -627,6 +628,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
 
   const ranked = selectClaims(inSlice, {
     riskLabels: deps.riskLabels,
+    rejectLabel: deps.rejectLabel,
     merged,
     clearedStates: deps.clearedStates,
     labelFilter: deps.labelFilter,
@@ -707,6 +709,7 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
 export type ClaimConfig = {
   autoClaim: boolean;
   riskLabels: string[];
+  rejectLabel: string;
   labelFilter: LabelFilter;
   maxInProgress: number;
   claimsPerHeartbeat: number;
@@ -1926,6 +1929,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   const claimDeps: ClaimDeps = {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
+    rejectLabel: claim.rejectLabel,
     labelFilter: claim.labelFilter,
     requireEstimate: refineEnabled,
     maxEstimate: claim.maxEstimate,

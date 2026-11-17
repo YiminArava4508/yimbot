@@ -1,10 +1,12 @@
 import { isBlocked } from "./blocked.ts";
-import { labelFilterAllows, type LabelFilter } from "./labels.ts";
+import { hasLabel, labelFilterAllows, type LabelFilter } from "./labels.ts";
 import type { CycleTodoIssue } from "./linear-api.ts";
 
 export type SelectOptions = {
   // Label names (any casing) that disqualify a ticket from being claimed.
   riskLabels: string[];
+  // Label (any casing) a rejected ticket carries; such tickets are never claimed.
+  rejectLabel: string;
   // Merged ticket identifiers. When non-null, todos with a blocker whose work
   // has not landed are dropped; null skips the blocked filter (gh unavailable).
   merged: Set<string> | null;
@@ -43,6 +45,7 @@ export function selectClaims(todos: CycleTodoIssue[], opts: SelectOptions): Cycl
     (t) =>
       labelFilterAllows(opts.labelFilter, t.labels) &&
       !t.labels.some((label) => risky.has(label.toLowerCase())) &&
+      !hasLabel(t.labels, opts.rejectLabel) &&
       !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged, opts.clearedStates)) &&
       t.estimate !== 0 &&
       !(opts.requireEstimate && t.estimate === null) &&

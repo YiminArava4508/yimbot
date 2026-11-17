@@ -232,7 +232,7 @@ test("PREREQUISITES split into blocking required and non-blocking recommended ch
     assert.equal(sev(k), "required", `${k} is required`);
   }
   // Recommended: warn but never block.
-  for (const k of ["gh-scopes", "git-identity", "shortcut", "tmux-status"]) {
+  for (const k of ["gh-scopes", "git-identity", "shortcut", "task", "tmux-status"]) {
     assert.equal(sev(k), "recommended", `${k} is recommended`);
   }
   // Every prerequisite declares one of the two severities.
@@ -341,6 +341,13 @@ test("installHint is a non-empty instruction for every prerequisite", () => {
     assert.equal(typeof hint, "string");
     assert.ok(hint.length > 0, `${pr.key} has a hint`);
   }
+});
+
+test("installHint for task names go-task and the pacman task symlink", () => {
+  assert.match(installHint("task", "pacman"), /go-task/);
+  assert.match(installHint("task", "pacman"), /ln -sf \/usr\/bin\/go-task \/usr\/local\/bin\/task/);
+  assert.match(installHint("task", "brew"), /brew install go-task/);
+  assert.match(installHint("task", null), /taskfile\.dev/);
 });
 
 test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {

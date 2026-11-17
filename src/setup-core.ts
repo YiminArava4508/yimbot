@@ -36,6 +36,7 @@ export const PREREQUISITES: Prerequisite[] = [
   { key: "gh-scopes", label: "gh token scopes (repo, workflow)", severity: "recommended" },
   { key: "git-identity", label: "git identity (user.name, user.email)", severity: "recommended" },
   { key: "shortcut", label: "Shortcut MCP server (shortcut)", severity: "recommended" },
+  { key: "task", label: "go-task (task), run by repo pre-push hooks", severity: "recommended" },
   { key: "tmux-status", label: "tmux @feature_status in status line", severity: "recommended" },
 ];
 
@@ -236,6 +237,12 @@ export function installHint(key: string, pm: PackageManager | null): string {
       return "Authenticate Claude Code: run `claude` and log in, or set ANTHROPIC_API_KEY";
     case "shortcut":
       return "Register the Shortcut MCP under the name 'shortcut' (claude mcp add shortcut -- npx -y @shortcut/mcp@latest)";
+    case "task":
+      if (pm === "pacman") {
+        return "Run: sudo pacman -S --needed go-task && sudo ln -sf /usr/bin/go-task /usr/local/bin/task (Arch installs the binary as go-task)";
+      }
+      if (pm === "brew") return "Run: brew install go-task";
+      return "Install go-task so `task` is on PATH (https://taskfile.dev/installation)";
     case "tmux-status":
       return "Add @feature_status to your tmux status line so the ready-to-test flag shows";
   }

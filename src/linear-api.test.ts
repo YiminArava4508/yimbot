@@ -97,7 +97,21 @@ test("fetchIssuesInState returns issue nodes", async () => {
     { viewerId: "u", teamId: "t", stateId: "s" },
     fetchImpl,
   );
-  assert.deepEqual(issues, [{ id: "i-1", identifier: "ENG-42", title: "Fix login", labels: [] }]);
+  assert.deepEqual(issues, [{ id: "i-1", identifier: "ENG-42", title: "Fix login", labels: [], people: [], creator: null }]);
+});
+
+test("fetchIssuesInState mentions the creator unless the viewer created it", async () => {
+  const node = (creator: unknown) => ({ id: "i", identifier: "ENG-1", title: "t", labels: { nodes: [] }, creator });
+  const body = {
+    data: {
+      issues: {
+        nodes: [node({ id: "s", displayName: "sam" }), node({ id: "u", displayName: "yimin" }), node(null)],
+      },
+    },
+  };
+  const issues = await fetchIssuesInState("k", { viewerId: "u", teamId: "t", stateId: "s" }, fakeFetch(body));
+  assert.deepEqual(issues.map((i) => i.people), [["sam"], [], []]);
+  assert.deepEqual(issues.map((i) => i.creator), ["sam", null, null]);
 });
 
 test("GraphQL errors are surfaced", async () => {

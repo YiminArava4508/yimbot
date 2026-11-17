@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tempDir } from "./test-temp.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { filterByLabel, parseLabelFilter } from "./labels.ts";
-import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
+import type { CycleTodoIssue, LinearIssue, StateIssue } from "./linear-api.ts";
 import type { QaPhase, QaUnit } from "./qa-state.ts";
 import {
   bindReturnKey,
@@ -36,7 +36,10 @@ import {
   reportSplitParentRows,
   splitSliceKeys,
   markFeatureReady,
+  notifyReview,
   parseWorktreePorcelain,
+  pruneSeen,
+  reviewNoticeBody,
   pollOnce,
   porcelainHasNonMarkerChanges,
   reconcileBlockedInProgress,
@@ -49,6 +52,14 @@ import {
   unbindReturnKey,
   type WatchState,
   worktreeFullyPushed,
+  worktreeHasNoCode,
+  isCodelessSpike,
+  type CodelessSpikeDeps,
+  spikeDoneBody,
+  SPIKE_DONE_MARKER,
+  closeCodelessSpikes,
+  freshSpikeSweepState,
+  type SpikeSweepDeps,
   worktreeKeysUnder,
   parsePaneInfo,
   resumeClaudeInPane,
@@ -552,6 +563,33 @@ test("worktreeFullyPushed accepts a branch whose commits are all pushed to its o
   assert.equal(worktreeFullyPushed(clone), true);
 });
 
+test("worktreeHasNoCode accepts a clean branch sitting on main", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "-b", "eng-1104-spike"]);
+  assert.equal(worktreeHasNoCode(clone), true);
+});
+
+test("worktreeHasNoCode rejects a branch whose commits are pushed only to its own origin branch", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "-b", "eng-1104-spike"]);
+  gitIn(clone, ["commit", "--allow-empty", "-m", "kept for reference"]);
+  gitIn(clone, ["push", "-u", "origin", "eng-1104-spike"]);
+  assert.equal(worktreeHasNoCode(clone), false);
+});
+
+test("worktreeHasNoCode rejects a detached HEAD", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "--detach"]);
+  assert.equal(worktreeHasNoCode(clone), false);
+});
+
+test("worktreeHasNoCode rejects a dirty tree and a missing path", () => {
+  const clone = tempClone();
+  writeFileSync(join(clone, "scratch.txt"), "wip");
+  assert.equal(worktreeHasNoCode(clone), false);
+  assert.equal(worktreeHasNoCode(join(clone, "nope")), false);
+});
+
 test("worktreeFullyPushed rejects a dirty working tree", () => {
   const clone = tempClone();
   writeFileSync(join(clone, "scratch.txt"), "wip");
@@ -703,6 +741,112 @@ test("markFeatureReady skips (no flag) when nothing matches", () => {
   });
   assert.deepEqual(flagged, []);
   assert.ok(logs.some((l) => l.includes("ENG-42") && /skip/i.test(l)));
+});
+
+function spikeDeps(over: Partial<CodelessSpikeDeps> = {}): CodelessSpikeDeps {
+  return {
+    worktreeDirs: () => ["eng-7-spike", "eng-70-other"],
+    worktreesDir: "/w",
+    prBranches: async () => new Set(["eng-70-other"]),
+    hasNoCode: () => true,
+    ...over,
+  };
+}
+
+test("isCodelessSpike is true for clean ticket worktrees with no PR", async () => {
+  const checked: string[] = [];
+  const ok = await isCodelessSpike("ENG-7", spikeDeps({ hasNoCode: (p) => (checked.push(p), true) }));
+  assert.equal(ok, true);
+  assert.deepEqual(checked, ["/w/eng-7-spike"]);
+});
+
+test("isCodelessSpike is false when any PR branch belongs to the ticket", async () => {
+  for (const branch of ["eng-7-part-2", "yimin/eng-7-other", "ENG-7"]) {
+    assert.equal(await isCodelessSpike("ENG-7", spikeDeps({ prBranches: async () => new Set([branch]) })), false, branch);
+  }
+});
+
+test("isCodelessSpike checks code before calling gh", async () => {
+  let ghCalls = 0;
+  const deps = spikeDeps({ hasNoCode: () => false, prBranches: async () => (ghCalls++, new Set()) });
+  assert.equal(await isCodelessSpike("ENG-7", deps), false);
+  assert.equal(ghCalls, 0);
+});
+
+test("isCodelessSpike is false with no worktree or a failed PR lookup", async () => {
+  assert.equal(await isCodelessSpike("ENG-7", spikeDeps({ worktreeDirs: () => ["eng-70-other"] })), false);
+  const failing = spikeDeps({ prBranches: async () => { throw new Error("gh down"); } });
+  assert.equal(await isCodelessSpike("ENG-7", failing), false);
+});
+
+test("spikeDoneBody carries the marker, mentions only the creator, and has no em dash", () => {
+  const body = spikeDoneBody("sam");
+  assert.ok(body.includes(SPIKE_DONE_MARKER));
+  assert.match(body, /@sam /);
+  assert.match(body, /Done/);
+  assert.ok(!body.includes("\u2014"));
+  assert.doesNotMatch(spikeDoneBody(null), /@/);
+});
+
+function stateIssue(id: string, identifier: string, creator: string | null): StateIssue {
+  return { id, identifier, title: "T", labels: [], people: creator ? [creator] : [], creator };
+}
+
+function sweepDeps(over: Partial<SpikeSweepDeps> = {}) {
+  const calls: string[] = [];
+  const deps: SpikeSweepDeps = {
+    isCodeless: async () => true,
+    upsertComment: async (id, body) => void calls.push(`comment ${id} ${body}`),
+    moveToDone: async (identifier) => void calls.push(`move ${identifier}`),
+    log: () => {},
+    ...over,
+  };
+  return { calls, deps };
+}
+
+test("closeCodelessSpikes pings the creator, then moves the ticket to Done", async () => {
+  const { calls, deps } = sweepDeps();
+  const handled = await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual([...handled], ["i-1"]);
+  assert.match(calls[0], /^comment i-1 .*@sam /s);
+  assert.equal(calls[1], "move ENG-7");
+});
+
+test("closeCodelessSpikes leaves tickets with code alone", async () => {
+  const { calls, deps } = sweepDeps({ isCodeless: async () => false });
+  const handled = await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual([...handled], []);
+  assert.deepEqual(calls, []);
+});
+
+test("closeCodelessSpikes retries next sweep when the comment fails, without moving", async () => {
+  const { calls, deps } = sweepDeps({ upsertComment: async () => { throw new Error("rate limited"); } });
+  const state = freshSpikeSweepState();
+  const handled = await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], state, deps);
+  assert.deepEqual([...handled], ["i-1"]);
+  assert.deepEqual(calls, []);
+  assert.equal(state.fellBack.size, 0);
+});
+
+test("closeCodelessSpikes rewrites the comment as a review notice when the move fails, once", async () => {
+  const { calls, deps } = sweepDeps({ moveToDone: async () => { throw new Error("no state Done"); } });
+  const state = freshSpikeSweepState();
+  const issues = [stateIssue("i-1", "ENG-7", "sam")];
+  await closeCodelessSpikes(issues, state, deps);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1], /@sam this ticket moved to review/);
+  assert.ok(calls[1].includes(SPIKE_DONE_MARKER));
+  const again = await closeCodelessSpikes(issues, state, deps);
+  assert.deepEqual([...again], ["i-1"]);
+  assert.equal(calls.length, 2);
+});
+
+test("closeCodelessSpikes forgets fallbacks for tickets that left review", async () => {
+  const { deps } = sweepDeps({ moveToDone: async () => { throw new Error("x"); } });
+  const state = freshSpikeSweepState();
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], state, deps);
+  await closeCodelessSpikes([], state, deps);
+  assert.equal(state.fellBack.size, 0);
 });
 
 function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIssue {

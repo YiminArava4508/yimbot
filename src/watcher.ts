@@ -39,6 +39,7 @@ import { SHELL_COMMANDS, detectStuckSessions, freshStuckState, stuckIdleMs, type
 import {
   countAssignedInState,
   createBlocksRelation,
+  createComment,
   type CycleTodoIssue,
   fetchMarkedCommentBody,
   fetchCycleTodoIssues,
@@ -51,6 +52,8 @@ import {
   type LinearContext,
   type LinearIssue,
   moveIssueToState,
+  moveIssueToStateByName,
+  type StateIssue,
   upsertMarkedComment,
   type TicketState,
 } from "./linear-api.ts";
@@ -168,6 +171,124 @@ export function markFeatureReady(issue: LinearIssue, deps: FeatureReadyDeps): vo
   }
   deps.markReady(match);
   deps.log(`flagged ${match} ready to test for ${issue.identifier}`);
+}
+
+export function reviewNoticeBody(people: string[]): string | null {
+  if (people.length === 0) return null;
+  const mentions = people.map((p) => `@${p}`).join(" ");
+  return `${mentions} this ticket moved to review.`;
+}
+
+export type ReviewNoticeDeps = {
+  comment: (issueId: string, body: string) => Promise<void>;
+  log: (msg: string) => void;
+};
+
+export async function notifyReview(issue: LinearIssue & { people: string[] }, deps: ReviewNoticeDeps): Promise<void> {
+  const body = reviewNoticeBody(issue.people);
+  if (!body) {
+    deps.log(`nobody to mention on ${issue.identifier}, skipping review notice`);
+    return;
+  }
+  await deps.comment(issue.id, body);
+  deps.log(`mentioned ${issue.people.join(", ")} on ${issue.identifier}`);
+}
+
+export const SPIKE_DONE_MARKER = "<!-- yimbot:spike-done -->";
+
+export function spikeDoneBody(creator: string | null): string {
+  const text = "findings are in the comments above. No code was needed, so this ticket moved to Done.";
+  return `${SPIKE_DONE_MARKER}\n${creator ? `@${creator} ${text}` : text}`;
+}
+
+export type CodelessSpikeDeps = {
+  // Dir names under worktreesDir, across every repo's worktrees.
+  worktreeDirs: () => string[];
+  worktreesDir: string;
+  // Head branches of the viewer's PRs (open, merged, closed) in the watched repos.
+  prBranches: () => Promise<Set<string>>;
+  hasNoCode: (worktreePath: string) => boolean;
+};
+
+function isTicketBranch(branch: string, identifier: string): boolean {
+  const leaf = (branch.split("/").pop() ?? "").toLowerCase();
+  return leaf === identifier.toLowerCase() || leaf.startsWith(identifierPrefix(identifier));
+}
+
+// A ticket in review whose worktrees all hold no code, and with no PR on any of
+// its branches, is a spike whose whole deliverable is its findings comment. Any
+// doubt (no worktree, a failed lookup) answers false, so code never closes.
+export async function isCodelessSpike(identifier: string, deps: CodelessSpikeDeps): Promise<boolean> {
+  const prefix = identifierPrefix(identifier);
+  const mine = deps.worktreeDirs().filter((name) => name.startsWith(prefix));
+  if (mine.length === 0) return false;
+  if (!mine.every((name) => deps.hasNoCode(join(deps.worktreesDir, name)))) return false;
+  try {
+    const prs = await deps.prBranches();
+    return ![...prs].some((b) => isTicketBranch(b, identifier));
+  } catch {
+    return false;
+  }
+}
+
+export type SpikeSweepDeps = {
+  isCodeless: (identifier: string) => Promise<boolean>;
+  // Idempotent: edits the SPIKE_DONE_MARKER comment in place when it exists.
+  upsertComment: (issueId: string, body: string) => Promise<void>;
+  moveToDone: (identifier: string) => Promise<void>;
+  log: (msg: string) => void;
+};
+
+// Issues whose move to Done failed and got a review notice instead; never retried
+// while they stay in review, so a bad DONE_STATE_NAME can't loop every heartbeat.
+export type SpikeSweepState = { fellBack: Set<string> };
+
+export function freshSpikeSweepState(): SpikeSweepState {
+  return { fellBack: new Set() };
+}
+
+// Every heartbeat, close each codeless spike in review: ping the creator, then
+// move it to Done. Runs on every issue in review (no seen-set), so a restart or
+// a failed write is picked up again on the next sweep. Returns the ids it owns
+// this tick, which the review notice then skips.
+export async function closeCodelessSpikes(
+  issues: StateIssue[],
+  state: SpikeSweepState,
+  deps: SpikeSweepDeps,
+): Promise<Set<string>> {
+  const ids = new Set(issues.map((i) => i.id));
+  for (const id of state.fellBack) if (!ids.has(id)) state.fellBack.delete(id);
+  const handled = new Set<string>();
+  for (const issue of issues) {
+    if (state.fellBack.has(issue.id)) {
+      handled.add(issue.id);
+      continue;
+    }
+    if (!(await deps.isCodeless(issue.identifier))) continue;
+    handled.add(issue.id);
+    try {
+      await deps.upsertComment(issue.id, spikeDoneBody(issue.creator));
+    } catch (err) {
+      deps.log(`spike ping failed on ${issue.identifier}, retrying next heartbeat: ${err}`);
+      continue;
+    }
+    try {
+      await deps.moveToDone(issue.identifier);
+      deps.log(`moved codeless spike ${issue.identifier} to Done`);
+    } catch (err) {
+      deps.log(`move to Done failed on ${issue.identifier}, left in review: ${err}`);
+      state.fellBack.add(issue.id);
+      const notice = reviewNoticeBody(issue.people) ?? "this ticket moved to review.";
+      await deps.upsertComment(issue.id, `${SPIKE_DONE_MARKER}\n${notice}`).catch((e) => deps.log(`${e}`));
+    }
+  }
+  return handled;
+}
+
+// Forget issues that left the watched state so moving back in fires again.
+export function pruneSeen(state: WatchState, current: LinearIssue[]): void {
+  const ids = new Set(current.map((i) => i.id));
+  for (const id of state.seen) if (!ids.has(id)) state.seen.delete(id);
 }
 
 export function detectNewIssues(state: WatchState, issues: LinearIssue[]): LinearIssue[] {
@@ -604,6 +725,8 @@ export type WatcherConfig = {
   progressContext: LinearContext;
   // Context for the In-Review Linear poll that flags a session ready-to-test.
   reviewContext: LinearContext;
+  // State a codeless spike moves to when it enters review (DONE_STATE_NAME).
+  doneStateName: string;
   heartbeatIntervalMinutes: number;
   // How long a fix session may stay in flight before the reaper tears it down as
   // stale, regardless of PR state (backstop for bailed/crashed/stuck sessions and
@@ -1344,6 +1467,23 @@ export function worktreeFullyPushed(worktreePath: string): boolean {
   }
 }
 
+// Whether a worktree carries no code: a clean tree and no commit that is missing
+// from every origin ref other than the branch's own. A spike that pushed its
+// scaffolding for reference still has code. Any git error answers false.
+export function worktreeHasNoCode(worktreePath: string): boolean {
+  try {
+    const git = (args: string[]) =>
+      execFileSync("git", ["-C", worktreePath, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    if (porcelainHasNonMarkerChanges(git(["status", "--porcelain"]))) return false;
+    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+    if (branch === "HEAD") return false;
+    const ahead = git(["rev-list", "--count", "HEAD", "--not", `--exclude=origin/${branch}`, "--remotes=origin"]).trim();
+    return ahead === "0";
+  } catch {
+    return false;
+  }
+}
+
 // Milliseconds since a worktree dir was last modified. A stat failure returns 0
 // (treated as brand-new → spared), so a vanished dir is never swept.
 export function worktreeAgeMs(worktreePath: string): number {
@@ -1432,6 +1572,50 @@ export function startWatcher(config: WatcherConfig): () => void {
         log: reviewIconLog,
       }),
     log: reviewIconLog,
+  };
+
+  // Review-notice poll: every entry into "In Review" mentions the creator. The
+  // seen-set is pruned so a bounce out and back in notifies again. Codeless
+  // spikes are swept first, every heartbeat, and skip the notice.
+  const reviewNoticeLog = (msg: string) => console.log(`[review-notice] ${msg}`);
+  const reviewNoticeState: WatchState = { seen: new Set(), initialized: false };
+  const spikeSweepState = freshSpikeSweepState();
+  const spikeLog = (msg: string) => console.log(`[spike] ${msg}`);
+  const spikeDeps = (): SpikeSweepDeps => {
+    const { cleanup } = config;
+    let prs: Promise<Set<string>> | null = null;
+    const prBranches = () => {
+      prs ??= cleanup
+        ? Promise.all([cleanup.listOpenPRs(), cleanup.listMergedPRs(), cleanup.listClosedUnmergedPRs()]).then(
+            (lists) => new Set(lists.flat().map((p) => p.headRefName)),
+          )
+        : Promise.reject(new Error("cleanup step off, PR lists unavailable"));
+      return prs;
+    };
+    return {
+      isCodeless: (identifier) =>
+        isCodelessSpike(identifier, { worktreeDirs: listWorktreeDirs, worktreesDir, prBranches, hasNoCode: worktreeHasNoCode }),
+      upsertComment: (id, body) => upsertMarkedComment(config.apiKey, id, SPIKE_DONE_MARKER, body),
+      moveToDone: async (identifier) => {
+        await moveIssueToStateByName(config.apiKey, identifier, config.doneStateName);
+      },
+      log: spikeLog,
+    };
+  };
+  const reviewNoticeDeps: WatcherDeps = {
+    fetchIssues: async () => {
+      const issues = filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.reviewContext));
+      const spikes = await closeCodelessSpikes(issues, spikeSweepState, spikeDeps());
+      const rest = issues.filter((i) => !spikes.has(i.id));
+      pruneSeen(reviewNoticeState, rest);
+      return rest;
+    },
+    launch: (_name, issue) =>
+      notifyReview(issue as StateIssue, {
+        comment: (id, body) => createComment(config.apiKey, id, body),
+        log: reviewNoticeLog,
+      }),
+    log: reviewNoticeLog,
   };
 
   // Review step (gh-driven): each heartbeat, address comments on open PRs.
@@ -1849,6 +2033,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
       await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
+      await pollOnce(reviewNoticeState, reviewNoticeDeps);
       if (prReviewDeps) {
         await reviewOnce(reviewState, prReviewDeps);
         saveFixSeenAt(reviewState.fixSeenAt);

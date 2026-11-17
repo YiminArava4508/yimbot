@@ -203,6 +203,14 @@ flowchart TD
 - **Flag ready to test (purple):** when a card moves to **In Review**, it marks
   that card's session with a "ready to test" icon so you know you can run local
   dev there to try it. (yimbot no longer starts the dev env for you.)
+- **Close codeless spikes:** every heartbeat, for each of your cards in
+  **In Review**, yimbot checks its worktrees. Clean trees, no commits of their
+  own, and no PR on any of the ticket's branches in any watched repo means the
+  findings comment was the whole deliverable: yimbot mentions the creator, then
+  moves the ticket to Done. Any other card entering review gets one comment
+  mentioning its creator (never you). Any failed lookup leaves the card in
+  review, and a failed write is retried next heartbeat. *(setting:
+  `DONE_STATE_NAME`, defaults to `Done`)*
 - **Clean up finished work (red):** every heartbeat, once one of your PRs is
   merged, yimbot tears down that branch's workspace (its worktree) and closes its
   tmux session via `~/end-session.sh`, but only once no PR on that branch is

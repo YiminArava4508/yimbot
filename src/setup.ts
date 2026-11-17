@@ -69,6 +69,7 @@ export {
   configReferencesNavigator,
   detectPackageManager,
   ensureHostLinks,
+  fixCommandFor,
   ghAuthenticated,
   ghHasScopes,
   hasClaudeAuth,

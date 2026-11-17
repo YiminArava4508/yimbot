@@ -38,6 +38,9 @@ export const PREREQUISITES: Prerequisite[] = [
   { key: "shortcut", label: "Shortcut MCP server (shortcut)", severity: "recommended" },
   { key: "posthog", label: "PostHog MCP server (posthog)", severity: "recommended" },
   { key: "task", label: "go-task (task), run by repo pre-push hooks", severity: "recommended" },
+  { key: "docker", label: "Docker CLI (docker), for repos with a compose stack", severity: "recommended" },
+  { key: "docker-running", label: "Docker daemon running", severity: "recommended" },
+  { key: "atlas", label: "Atlas (atlas), for repo DB migrations", severity: "recommended" },
   { key: "tmux-navigator", label: "tmux vim-tmux-navigator bindings", severity: "recommended" },
   { key: "tmux-status", label: "tmux @feature_status in status line", severity: "recommended" },
 ];
@@ -194,8 +197,19 @@ function gitIdentitySet(): boolean {
   return Boolean(gitConfigGet("user.name")) && Boolean(gitConfigGet("user.email"));
 }
 
+function dockerRunning(): boolean {
+  try {
+    execFileSync("docker", ["info"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isSatisfied(pr: Prerequisite): boolean {
   switch (pr.key) {
+    case "docker-running":
+      return dockerRunning();
     case "gh-auth":
       return ghAuthenticated();
     case "gh-scopes":
@@ -254,6 +268,12 @@ export function installCommand(key: string, pm: PackageManager | null): string[]
   if (key === "claude") return ["npm", "install", "-g", "@anthropic-ai/claude-code"];
   if (key === "pnpm") return ["corepack", "enable", "pnpm"];
   if (key === "gh-scopes") return ["gh", "auth", "refresh", "-s", "repo,workflow"];
+  if (key === "docker") {
+    if (pm === "brew") return ["brew", "install", "colima", "docker", "docker-compose"];
+    if (pm === "pacman") return ["sudo", "pacman", "-S", "--needed", "docker", "docker-compose"];
+    return null;
+  }
+  if (key === "atlas") return pm === "brew" ? ["brew", "install", "ariga/tap/atlas"] : null;
   const pkg = pmPackage[key];
   if (!pkg || !pm) return null;
   return pmInstall[pm](pkg[pm] ?? pkg.default);
@@ -283,6 +303,16 @@ export function installHint(key: string, pm: PackageManager | null): string {
       }
       if (pm === "brew") return "Run: brew install go-task";
       return "Install go-task so `task` is on PATH (https://taskfile.dev/installation)";
+    case "docker":
+      if (pm === "brew") return "Run: brew install colima docker docker-compose";
+      if (pm === "pacman") return "Run: sudo pacman -S --needed docker docker-compose";
+      return "Install Docker Engine so `docker` is on PATH (https://docs.docker.com/engine/install/)";
+    case "docker-running":
+      if (pm === "brew") return "Run: colima start";
+      return "Start the Docker daemon: sudo systemctl enable --now docker";
+    case "atlas":
+      if (pm === "brew") return "Run: brew install ariga/tap/atlas";
+      return "Install Atlas so `atlas` is on PATH (https://atlasgo.io/getting-started)";
     case "tmux-navigator":
       return "Add the vim-tmux-navigator bindings from scripts/tmux-navigator.conf to your tmux config, and the christoomey/vim-tmux-navigator plugin to nvim";
     case "tmux-status":
@@ -467,6 +497,7 @@ export function linkState(source: string, target: string): "ours" | "other" | "m
 export function fixCommandFor(pr: Prerequisite, pm: PackageManager | null): string[] | null {
   if (pr.key === "gh-auth") return ["gh", "auth", "login"];
   if (pr.key === "claude-auth") return ["claude", "auth", "login"];
+  if (pr.key === "docker-running") return pm === "brew" ? ["colima", "start"] : null;
   if (pr.key === "superpowers") {
     return ["claude", "plugin", "install", "superpowers", "--marketplace", "anthropics/claude-plugins-official"];
   }

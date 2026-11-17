@@ -481,7 +481,7 @@ The wizard begins with a two-tier prerequisite pre-flight:
   at a time (`f`) or all in a row ("Fix everything for me").
 - **Recommended (warns, never blocks):** `gh` token `repo`+`workflow` scopes and
   git identity (both offered as one-command fixes), the `shortcut` MCP server
-  the `sc-*` sessions fetch through, the `posthog` MCP server, `go-task` (`task`, which repo pre-push hooks run), the vim-tmux-navigator tmux bindings (the wizard offers to append `scripts/tmux-navigator.conf` to your tmux config), and a tmux status line that shows
+  the `sc-*` sessions fetch through, the `posthog` MCP server, `go-task` (`task`, which repo pre-push hooks run), Docker (`docker`, plus a running daemon; Colima on macOS) and `atlas` for repos with a compose stack and DB migrations, the vim-tmux-navigator tmux bindings (the wizard offers to append `scripts/tmux-navigator.conf` to your tmux config), and a tmux status line that shows
   `@feature_status` (the ready-to-test flag). Linear sessions need no MCP: they
   read and write tickets through `~/get-ticket.sh`, `~/comment-ticket.sh` and
   `~/move-ticket.sh`, which use the daemon's `LINEAR_API_KEY`.

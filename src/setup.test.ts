@@ -393,6 +393,9 @@ test("hostLinks installs the session deny-list settings", () => {
   const queueLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/heavy-queue.sh"));
   assert.ok(queueLink, "heavy-queue.sh host link is present");
   assert.ok(queueLink!.source.endsWith("scripts/heavy-queue.sh"), "sourced from scripts/heavy-queue.sh");
+  const rebaseLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/no-self-rebase.sh"));
+  assert.ok(rebaseLink, "no-self-rebase.sh host link is present");
+  assert.ok(rebaseLink!.source.endsWith("scripts/no-self-rebase.sh"), "sourced from scripts/no-self-rebase.sh");
   const confLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/heavy-jobs.conf"));
   assert.ok(confLink, "heavy-jobs.conf host link is present");
   assert.ok(confLink!.source.endsWith("settings/heavy-jobs.conf"), "sourced from settings/heavy-jobs.conf");

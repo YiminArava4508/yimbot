@@ -553,6 +553,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       label: "~/.config/yimbot/heavy-queue.sh",
       role: "serializes CPU-heavy jobs across sessions (recommended; needs jq and flock on PATH)",
     },
+    {
+      path: join(homedir(), ".config/yimbot/no-self-rebase.sh"),
+      label: "~/.config/yimbot/no-self-rebase.sh",
+      role: "PreToolUse hook that blocks rebasing a branch onto its own remote (recommended)",
+    },
   ];
   p.note(
     preflight.map((c) => `${existsSync(c.path) ? "[ok]" : "[missing]"} ${c.label} — ${c.role}`).join("\n"),

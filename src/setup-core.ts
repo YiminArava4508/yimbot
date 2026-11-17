@@ -374,6 +374,11 @@ export const hostLinks: HostLink[] = [
     label: "heavy job queue (~/.config/yimbot/heavy-queue.sh)",
   },
   {
+    source: join(repoRoot, "scripts/no-self-rebase.sh"),
+    target: join(homedir(), ".config/yimbot/no-self-rebase.sh"),
+    label: "no-self-rebase hook (~/.config/yimbot/no-self-rebase.sh)",
+  },
+  {
     source: join(repoRoot, "settings/heavy-jobs.conf"),
     target: join(homedir(), ".config/yimbot/heavy-jobs.conf"),
     label: "heavy job patterns (~/.config/yimbot/heavy-jobs.conf)",

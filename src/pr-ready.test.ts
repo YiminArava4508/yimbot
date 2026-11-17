@@ -557,24 +557,20 @@ test("boardReadyToMerge: ready always, hold only when already labeled, never reg
 });
 
 test("boardSection: a draft always belongs to the review pane, label or not", () => {
-  assert.equal(boardSection(true, false, false, "supervised"), "review");
-  assert.equal(boardSection(true, true, false, "supervised"), "review");
+  assert.equal(boardSection(true, false, false), "review");
+  assert.equal(boardSection(true, true, false), "review");
 });
 
 test("boardSection: a labeled non-draft belongs to the merge pane", () => {
-  assert.equal(boardSection(false, true, false, "supervised"), "merge");
+  assert.equal(boardSection(false, true, false), "merge");
 });
 
-test("boardSection: an unlabeled open PR waits in the review pane with the drafts", () => {
-  assert.equal(boardSection(false, false, false, "supervised"), "review");
-});
-
-test("boardSection: autonomous mode keeps an unlabeled open PR in tasks while the bot works it", () => {
-  assert.equal(boardSection(false, false, false, "autonomous"), "tasks");
+test("boardSection: an unlabeled open PR waits in the review pane with the drafts, in either mode", () => {
+  assert.equal(boardSection(false, false, false), "review");
 });
 
 test("boardSection: a blocked PR stays in the tasks pane for the fix", () => {
-  assert.equal(boardSection(false, false, true, "supervised"), "tasks");
+  assert.equal(boardSection(false, false, true), "tasks");
 });
 
 test("boardReadyKind: a draft says draft pr whatever the label or mode", () => {

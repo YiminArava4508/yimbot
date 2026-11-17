@@ -340,6 +340,11 @@ export const hostLinks: HostLink[] = [
     label: "blocks-relation writer (~/relate-tickets.sh)",
   },
   {
+    source: join(repoRoot, "scripts/reject-ticket.sh"),
+    target: join(homedir(), "reject-ticket.sh"),
+    label: "mis-estimate rejecter (~/reject-ticket.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/estimate-ticket.sh"),
     target: join(homedir(), "estimate-ticket.sh"),
     label: "estimate setter (~/estimate-ticket.sh)",

@@ -1939,7 +1939,14 @@ export function startWatcher(config: WatcherConfig): () => void {
     maxInProgress: claim.maxInProgress,
     claimsPerHeartbeat: claim.claimsPerHeartbeat,
     countInProgress: () =>
-      countAssignedInState(config.apiKey, viewerId, claim.progressStateName, claim.labelFilter),
+      countAssignedInState(
+        config.apiKey,
+        viewerId,
+        claim.progressStateName,
+        claim.labelFilter,
+        fetch,
+        claim.rejectLabel,
+      ),
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     fetchMergedIdentifiers,
     clearedStates: config.clearedStates,

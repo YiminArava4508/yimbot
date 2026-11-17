@@ -1,5 +1,5 @@
 import type { Blocker } from "./blocked.ts";
-import { labelFilterAllows, type LabelFilter } from "./labels.ts";
+import { hasLabel, labelFilterAllows, type LabelFilter } from "./labels.ts";
 import { observeReach } from "./reach.ts";
 import type { Ticket } from "./ticket-format.ts";
 import { readFileSync } from "node:fs";
@@ -563,6 +563,7 @@ export async function countAssignedInState(
   stateName: string,
   filter: LabelFilter = null,
   fetchImpl: typeof fetch = fetch,
+  rejectLabel: string | null = null,
 ): Promise<number> {
   type IssuesData = { issues: { nodes: { id: string; labels: { nodes: { name: string }[] } }[] } };
   const data = await gql<IssuesData>(
@@ -581,7 +582,10 @@ export async function countAssignedInState(
     { viewerId, stateName },
     fetchImpl,
   );
-  return data.issues.nodes.filter((n) => labelFilterAllows(filter, n.labels.nodes.map((l) => l.name))).length;
+  return data.issues.nodes.filter((n) => {
+    const names = n.labels.nodes.map((l) => l.name);
+    return labelFilterAllows(filter, names) && !(rejectLabel !== null && hasLabel(names, rejectLabel));
+  }).length;
 }
 
 // Move an issue to a new workflow state. Throws if Linear reports the update

@@ -518,6 +518,11 @@ export async function runSetup(): Promise<YimbotConfig> {
       role: "sets estimates during refine (required for refine)",
     },
     {
+      path: join(homedir(), "reject-ticket.sh"),
+      label: "~/reject-ticket.sh",
+      role: "rejects tickets whose planned size is far above the estimate (pickup size check)",
+    },
+    {
       path: join(homedir(), "attach-ticket.sh"),
       label: "~/attach-ticket.sh",
       role: "uploads screenshots during QA sessions (required for the QA step)",

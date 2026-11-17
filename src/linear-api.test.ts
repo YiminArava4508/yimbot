@@ -1049,3 +1049,18 @@ test("addIssueLabel throws when the add mutation reports failure", async () => {
   ]);
   await assert.rejects(addIssueLabel("k", "issue-1", "team-1", "reject", impl), /issueAddLabel failed/);
 });
+
+test("countAssignedInState leaves out issues carrying the reject label", async () => {
+  const body = {
+    data: {
+      issues: {
+        nodes: [
+          { id: "1", labels: { nodes: [{ name: "Reject" }] } },
+          { id: "2", labels: { nodes: [] } },
+        ],
+      },
+    },
+  };
+  assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body), "reject"), 1);
+  assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body)), 2);
+});

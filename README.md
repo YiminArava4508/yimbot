@@ -491,7 +491,9 @@ runs `~/reject-ticket.sh <TICKET> <planned-points> <reason | ->`. When the
 planned size is 2 or more steps above the human estimate (scale 1, 2, 3, 5, 8,
 13, 21), it comments the reason, adds the `reject` label (`REJECT_LABEL`
 overrides the name) and stops. The daemon skips labelled tickets when claiming
-and when launching In Progress sessions. Remove the label to re-queue.
+and when launching In Progress sessions, and leaves them out of the In Progress
+capacity count. A rejected ticket stays In Progress with its worktree: to retry,
+re-estimate it, remove the label, end its session, and move it back to Todo.
 
 Then it authenticates your Linear API key, lets you pick your team and workflow
 states from the real Linear data (the configure step is the settings screen),

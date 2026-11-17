@@ -344,7 +344,7 @@ export async function startDaemon(): Promise<() => void> {
           },
           judge: (open: AC[]) => judgeAcceptance(judgeRun, open),
           writeAcComment: (issueId: string, body: string) => upsertMarkedComment(apiKey, issueId, AC_COMMENT_MARKER, body),
-          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
+          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter, fetch, rejectLabel),
           maxInProgress,
           maxRounds: maxContinuations,
         }
@@ -417,7 +417,7 @@ export async function startDaemon(): Promise<() => void> {
         }
       },
       hasMarker: async (issueId: string) => (await fetchMarkedCommentBody(apiKey, issueId, QA_MARKER)) !== "",
-      activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
+      activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter, fetch, rejectLabel),
       maxInProgress,
       sessionTimeoutMs: qaTimeoutMinutes * 60_000,
     };

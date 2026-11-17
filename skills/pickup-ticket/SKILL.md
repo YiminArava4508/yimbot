@@ -39,14 +39,16 @@ asking for a behavior change.
    Limits** below, plan it as a series of shippable slices up front (see that
    section).
 
-1a. **Size check.** Size the plan on the 1, 2, 3, 5, 8 scale. Skip this step
+1a. **Size check.** Size the plan on the 1, 2, 3, 5, 8, 13, 21 scale. Skip this step
    when the ticket has no estimate or a 0 estimate. For `eng-*` tickets, write
    the reason to a file (the estimate, your planned size, and the evidence: files
    touched, rough changed LOC) and run
    `~/reject-ticket.sh <TICKET> <planned-points> - < reason.md`. Exit 0 means
    the ticket was rejected (comment posted, `reject` label added): print one
    line saying so and **STOP**, write no code. Exit 3 means the plan is within
-   tolerance: continue. For `sc-*` tickets, when your planned size is 2 or more
+   tolerance: continue. Any other exit (1, 127 for a missing script, a network
+   error) means the check itself failed: print the error and **STOP**, do not
+   implement a ticket whose size check did not complete. For `sc-*` tickets, when your planned size is 2 or more
    steps above the estimate, post the reason with `stories-create-comment`, add
    the `reject` label with `stories-update`, and STOP. Never change the
    estimate yourself.

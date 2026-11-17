@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixCommandFor, installHostLink, needsSetup, PREREQUISITES, setupMode } from "./setup-core.ts";
+import { fixCommandFor, hostLinks, installHostLink, needsSetup, PREREQUISITES, setupMode } from "./setup-core.ts";
 import { tempDir } from "./test-temp.ts";
 
 const binaries = ["git", "tmux", "gh", "node", "pnpm", "claude"];
@@ -128,4 +128,10 @@ test("installHostLink reports a failure instead of throwing", () => {
   writeFileSync(blocker, "file, not a dir");
   const result = installHostLink({ source, target: join(blocker, "child"), label: "launcher" }, false);
   assert.match(result, /^\[fail\] launcher: /);
+});
+
+test("hostLinks installs ~/reject-ticket.sh from the repo script", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/reject-ticket.sh"));
+  assert.ok(link);
+  assert.ok(link.source.endsWith("/scripts/reject-ticket.sh"));
 });

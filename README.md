@@ -486,6 +486,13 @@ The wizard begins with a two-tier prerequisite pre-flight:
   read and write tickets through `~/get-ticket.sh`, `~/comment-ticket.sh` and
   `~/move-ticket.sh`, which use the daemon's `LINEAR_API_KEY`.
 
+**Rejecting mis-estimated tickets.** After planning, pickup sizes the work and
+runs `~/reject-ticket.sh <TICKET> <planned-points> <reason | ->`. When the
+planned size is 2 or more steps above the human estimate (scale 1, 2, 3, 5, 8,
+13, 21), it comments the reason, adds the `reject` label (`REJECT_LABEL`
+overrides the name) and stops. The daemon skips labelled tickets when claiming
+and when launching In Progress sessions. Remove the label to re-queue.
+
 Then it authenticates your Linear API key, lets you pick your team and workflow
 states from the real Linear data (the configure step is the settings screen),
 validates the codebase path is a git repo, links the session launcher and

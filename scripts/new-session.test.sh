@@ -28,6 +28,9 @@ assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" 
 assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
 assert_eq "$(SPLIT_TICKETS=false build_claude_cmd | grep -c 'SPLIT_TICKETS=false')" "1" "passes SPLIT_TICKETS through"
 assert_eq "$(build_claude_cmd | grep -c 'SPLIT_TICKETS')" "0" "omits SPLIT_TICKETS when unset"
+assert_eq "$(EVENTS_LOG=/tmp/x/events.jsonl build_claude_cmd | grep -c 'EVENTS_LOG=/tmp/x/events.jsonl')" "1" "passes EVENTS_LOG through"
+assert_eq "$(EVENTS_LOG="/tmp/a b/events.jsonl" build_claude_cmd | grep -c 'EVENTS_LOG=/tmp/a\\ b/events.jsonl')" "1" "quotes EVENTS_LOG with spaces"
+assert_eq "$(unset EVENTS_LOG; build_claude_cmd | grep -c 'EVENTS_LOG')" "0" "omits EVENTS_LOG when unset"
 
 # Resume mode (SESSION_RESUME) reattaches to the prior conversation with
 # --continue and, in launch_claude_in, sends no seed prompt.

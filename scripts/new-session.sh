@@ -244,6 +244,7 @@ build_claude_cmd() {
   [ -n "${SESSION_RESUME:-}" ] && cmd="$cmd --continue"
   [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
   [ -n "${SPLIT_TICKETS:-}" ] && cmd="SPLIT_TICKETS=$SPLIT_TICKETS $cmd"
+  [ -n "${EVENTS_LOG:-}" ] && cmd="EVENTS_LOG=$(printf '%q' "$EVENTS_LOG") $cmd"
   printf '%s' "$cmd"
 }
 

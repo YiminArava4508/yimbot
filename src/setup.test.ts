@@ -449,7 +449,9 @@ test("installCommand installs the docker toolchain per manager", () => {
   assert.equal(installCommand("docker", "apt"), null);
   assert.equal(installCommand("docker", null), null);
   assert.deepEqual(installCommand("atlas", "brew"), ["brew", "install", "ariga/tap/atlas"]);
-  assert.equal(installCommand("atlas", "pacman"), null);
+  const script = ["sh", "-c", "curl -sSf https://atlasgo.sh | sh"];
+  assert.deepEqual(installCommand("atlas", "pacman"), script);
+  assert.deepEqual(installCommand("atlas", null), script);
 });
 
 test("fixCommandFor starts colima on brew and has no fix for the docker daemon elsewhere", () => {
@@ -465,5 +467,5 @@ test("installHint for docker, docker-running and atlas names the fix", () => {
   assert.match(installHint("docker-running", "brew"), /colima start/);
   assert.match(installHint("docker-running", "pacman"), /systemctl enable --now docker/);
   assert.match(installHint("atlas", "brew"), /brew install ariga\/tap\/atlas/);
-  assert.match(installHint("atlas", "pacman"), /atlasgo\.io/);
+  assert.match(installHint("atlas", "pacman"), /atlasgo\.sh/);
 });

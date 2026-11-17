@@ -273,7 +273,9 @@ export function installCommand(key: string, pm: PackageManager | null): string[]
     if (pm === "pacman") return ["sudo", "pacman", "-S", "--needed", "docker", "docker-compose"];
     return null;
   }
-  if (key === "atlas") return pm === "brew" ? ["brew", "install", "ariga/tap/atlas"] : null;
+  if (key === "atlas") {
+    return pm === "brew" ? ["brew", "install", "ariga/tap/atlas"] : ["sh", "-c", "curl -sSf https://atlasgo.sh | sh"];
+  }
   const pkg = pmPackage[key];
   if (!pkg || !pm) return null;
   return pmInstall[pm](pkg[pm] ?? pkg.default);
@@ -312,7 +314,7 @@ export function installHint(key: string, pm: PackageManager | null): string {
       return "Start the Docker daemon: sudo systemctl enable --now docker";
     case "atlas":
       if (pm === "brew") return "Run: brew install ariga/tap/atlas";
-      return "Install Atlas so `atlas` is on PATH (https://atlasgo.io/getting-started)";
+      return "Run: curl -sSf https://atlasgo.sh | sh (https://atlasgo.io/getting-started)";
     case "tmux-navigator":
       return "Add the vim-tmux-navigator bindings from scripts/tmux-navigator.conf to your tmux config, and the christoomey/vim-tmux-navigator plugin to nvim";
     case "tmux-status":

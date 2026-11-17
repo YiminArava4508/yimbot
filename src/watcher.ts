@@ -11,7 +11,7 @@ import {
 } from "./acceptance.ts";
 import { isClearedState, mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
 import { selectClaims } from "./claim.ts";
-import { filterByLabel, type LabelFilter } from "./labels.ts";
+import { dropRejected, filterByLabel, type LabelFilter } from "./labels.ts";
 import {
   candidateLines,
   DEPENDENCY_COMMENT_MARKER,
@@ -1548,7 +1548,10 @@ export function startWatcher(config: WatcherConfig): () => void {
   const deployState = freshDeployState();
   const deployDeps: DeployDeps = {
     fetchIssues: async () =>
-      filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.progressContext)),
+      dropRejected(
+        filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.progressContext)),
+        config.claim.rejectLabel,
+      ),
     listSessions: listTmuxSessions,
     listWorktrees: listWorktreeDirs,
     launch: (name, issue) => {

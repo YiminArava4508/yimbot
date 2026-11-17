@@ -764,6 +764,51 @@ export async function setIssueEstimate(
   }
 }
 
+export async function addIssueLabel(
+  apiKey: string,
+  issueId: string,
+  teamId: string,
+  labelName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  type ListData = { team: { labels: { nodes: { id: string; name: string }[] } } };
+  const list = await gql<ListData>(
+    apiKey,
+    `query TeamLabelIds($teamId: String!) {
+      team(id: $teamId) { labels(first: 250) { nodes { id name } } }
+    }`,
+    { teamId },
+    fetchImpl,
+  );
+  const want = labelName.trim().toLowerCase();
+  let labelId = list.team.labels.nodes.find((l) => l.name.trim().toLowerCase() === want)?.id;
+  if (!labelId) {
+    type CreateData = { issueLabelCreate: { success: boolean; issueLabel: { id: string } | null } };
+    const created = await gql<CreateData>(
+      apiKey,
+      `mutation CreateLabel($name: String!, $teamId: String!) {
+        issueLabelCreate(input: { name: $name, teamId: $teamId }) { success issueLabel { id } }
+      }`,
+      { name: labelName, teamId },
+      fetchImpl,
+    );
+    if (!created.issueLabelCreate.success || !created.issueLabelCreate.issueLabel) {
+      throw new Error(`issueLabelCreate failed for "${labelName}"`);
+    }
+    labelId = created.issueLabelCreate.issueLabel.id;
+  }
+  type AddData = { issueAddLabel: { success: boolean } };
+  const added = await gql<AddData>(
+    apiKey,
+    `mutation AddLabel($id: String!, $labelId: String!) {
+      issueAddLabel(id: $id, labelId: $labelId) { success }
+    }`,
+    { id: issueId, labelId },
+    fetchImpl,
+  );
+  if (!added.issueAddLabel.success) throw new Error(`issueAddLabel failed for ${issueId}`);
+}
+
 export async function upsertMarkedComment(
   apiKey: string,
   issueId: string,

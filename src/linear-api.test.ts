@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { resetReach, unreachable } from "./reach.ts";
 import {
+  addIssueLabel,
   countAssignedInState,
   createBlocksRelation,
   createComment,
@@ -1005,4 +1006,46 @@ test("fetchCycleBoard returns cycleNumber null and no issues, without a second r
 test("fetchCycleBoard throws for an unknown team name", async () => {
   const { fetchImpl } = sequencedFetch([{ data: { viewer: { id: "u" }, teams: { nodes: [] } } }]);
   await assert.rejects(fetchCycleBoard("key", "Nope", fetchImpl), /No Linear team named "Nope"/);
+});
+
+function sequenceFetch(bodies: JsonBody[]): { impl: typeof fetch; sent: { query: string; variables: JsonBody }[] } {
+  const sent: { query: string; variables: JsonBody }[] = [];
+  const impl = (async (_url: unknown, init: { body: string }) => {
+    sent.push(JSON.parse(init.body));
+    const body = bodies[sent.length - 1]!;
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+  }) as unknown as typeof fetch;
+  return { impl, sent };
+}
+
+test("addIssueLabel reuses an existing team label matched case-insensitively", async () => {
+  const { impl, sent } = sequenceFetch([
+    { data: { team: { labels: { nodes: [{ id: "l-1", name: "Reject" }] } } } },
+    { data: { issueAddLabel: { success: true } } },
+  ]);
+  await addIssueLabel("k", "issue-1", "team-1", "reject", impl);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1]!.query, /issueAddLabel/);
+  assert.deepEqual(sent[1]!.variables, { id: "issue-1", labelId: "l-1" });
+});
+
+test("addIssueLabel creates the label when the team lacks it", async () => {
+  const { impl, sent } = sequenceFetch([
+    { data: { team: { labels: { nodes: [{ id: "l-9", name: "bot" }] } } } },
+    { data: { issueLabelCreate: { success: true, issueLabel: { id: "l-new" } } } },
+    { data: { issueAddLabel: { success: true } } },
+  ]);
+  await addIssueLabel("k", "issue-1", "team-1", "reject", impl);
+  assert.equal(sent.length, 3);
+  assert.match(sent[1]!.query, /issueLabelCreate/);
+  assert.deepEqual(sent[1]!.variables, { name: "reject", teamId: "team-1" });
+  assert.deepEqual(sent[2]!.variables, { id: "issue-1", labelId: "l-new" });
+});
+
+test("addIssueLabel throws when the add mutation reports failure", async () => {
+  const { impl } = sequenceFetch([
+    { data: { team: { labels: { nodes: [{ id: "l-1", name: "reject" }] } } } },
+    { data: { issueAddLabel: { success: false } } },
+  ]);
+  await assert.rejects(addIssueLabel("k", "issue-1", "team-1", "reject", impl), /issueAddLabel failed/);
 });

@@ -35,3 +35,7 @@ export function hasLabel(labels: string[], label: string): boolean {
   const want = label.trim().toLowerCase();
   return labels.some((l) => l.trim().toLowerCase() === want);
 }
+
+export function dropRejected<T extends { labels: string[] }>(items: T[], rejectLabel: string): T[] {
+  return items.filter((item) => !hasLabel(item.labels, rejectLabel));
+}

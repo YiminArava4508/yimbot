@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   describeLabelFilter,
+  dropRejected,
   filterByLabel,
   hasLabel,
   labelFilterAllows,
@@ -74,4 +75,12 @@ test("hasLabel matches case-insensitively and ignores padding", () => {
   assert.equal(hasLabel([" reject "], "Reject"), true);
   assert.equal(hasLabel(["bot"], "reject"), false);
   assert.equal(hasLabel([], "reject"), false);
+});
+
+test("dropRejected removes tickets carrying the reject label and keeps the rest", () => {
+  const items = [
+    { id: "a", labels: ["Reject"] },
+    { id: "b", labels: ["bot"] },
+  ];
+  assert.deepEqual(dropRejected(items, "reject"), [{ id: "b", labels: ["bot"] }]);
 });

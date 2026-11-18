@@ -13,7 +13,7 @@ UPDATE_EXIT=75
 
 crashed_on_boot() {
   local code=$1 elapsed=$2
-  [ "$code" -ne 0 ] && [ "$code" -ne "$UPDATE_EXIT" ] && [ "$elapsed" -lt "$CRASH_WINDOW" ]
+  [ "$code" -ne 0 ] && [ "$code" -ne "$UPDATE_EXIT" ] && [ "$code" -le 128 ] && [ "$elapsed" -lt "$CRASH_WINDOW" ]
 }
 
 can_roll_back() {
@@ -38,11 +38,15 @@ main() {
   unset YIMBOT_UPDATED_FROM YIMBOT_ROLLED_BACK YIMBOT_SKIP_SHA
 
   local prev="" cur start code
+  interrupted=""
+  trap 'interrupted=1' INT TERM
   while true; do
     cur=$(git rev-parse HEAD)
     start=$SECONDS
     pnpm start
     code=$?
+
+    [ -n "$interrupted" ] && exit "$code"
 
     if [ "$code" -eq 0 ]; then
       exit 0

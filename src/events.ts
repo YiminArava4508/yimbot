@@ -446,9 +446,7 @@ export function emitQueuedToMerge(ev: { key: string; label: string; pr: number; 
 export function emitSection(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
   let last: Section | undefined;
   for (const e of readEvents()) {
-    if (e.key !== ev.key) continue;
-    const mapped = sectionFor(e.kind);
-    if (mapped) last = mapped;
+    if (e.key === ev.key) last = foldSection(last, e);
   }
   if (last !== undefined && last === sectionFor(ev.kind)) return;
   emitEvent(ev);
@@ -510,12 +508,21 @@ export function foldAttention(events: YimbotEvent[]): Map<string, Attention> {
 // Fold each key's placement timeline into its current section: last section
 // event wins. A key the daemon has never reported on (a task row with no PR,
 // or a log written before section events existed) is absent, and reduceRows
-// defaults it to the tasks pane.
+// defaults it to the tasks pane. A task start with no PR is fresh work on the
+// ticket, so it drops the section an earlier, now closed PR left behind: the
+// daemon only reports open PRs and would never move the row back.
+function foldSection(prev: Section | undefined, e: YimbotEvent): Section | undefined {
+  if (e.kind === "task_started" && e.pr === undefined) return undefined;
+  return sectionFor(e.kind) ?? prev;
+}
+
 export function foldSections(events: YimbotEvent[]): Map<string, Section> {
   const sections = new Map<string, Section>();
   for (const e of events) {
-    const mapped = sectionFor(e.kind);
-    if (mapped) sections.set(rowKeyOf(e), mapped);
+    const key = rowKeyOf(e);
+    const next = foldSection(sections.get(key), e);
+    if (next === undefined) sections.delete(key);
+    else sections.set(key, next);
   }
   return sections;
 }

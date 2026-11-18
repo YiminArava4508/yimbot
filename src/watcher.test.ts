@@ -406,6 +406,10 @@ test("findExistingSession matches a tmux session by identifier prefix", () => {
   assert.equal(match, "eng-42-fix-login");
 });
 
+test("findExistingSession ignores yimbot-review sessions", () => {
+  assert.equal(findExistingSession("ENG-123", ["yimbot-review-123"], []), null);
+});
+
 test("findExistingSession falls back to a worktree dir when no session matches", () => {
   const match = findExistingSession("ENG-42", ["eng-7-other"], ["eng-42-old-slug", "eng-99-x"]);
   assert.equal(match, "eng-42-old-slug");

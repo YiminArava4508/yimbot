@@ -614,16 +614,22 @@ test("prReviewMeta views the PR once with every field the review and order flows
 
 test("parsePrState reads the labels and the draft flag from one view", () => {
   assert.deepEqual(
-    parsePrState(JSON.stringify({ labels: [{ name: "ready-to-merge" }], isDraft: true })),
-    { labels: ["ready-to-merge"], isDraft: true },
+    parsePrState(JSON.stringify({ labels: [{ name: "ready-to-merge" }], isDraft: true, reviewDecision: "APPROVED" })),
+    { labels: ["ready-to-merge"], isDraft: true, approved: true },
   );
-  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false });
+  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false, approved: false });
 });
 
-test("prState asks for both fields in a single call", async () => {
+test("parsePrState treats any review decision but APPROVED as not approved", () => {
+  for (const reviewDecision of ["REVIEW_REQUIRED", "CHANGES_REQUESTED", "", null]) {
+    assert.equal(parsePrState(JSON.stringify({ isDraft: false, reviewDecision })).approved, false);
+  }
+});
+
+test("prState asks for labels, draft flag and review decision in a single call", async () => {
   const { run, calls } = capturingRunner([JSON.stringify({ labels: [], isDraft: false })]);
   await prState(run, 4706);
-  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels,isDraft"]);
+  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels,isDraft,reviewDecision"]);
 });
 
 test("parseRunHeadShas lists head shas in gh order", () => {

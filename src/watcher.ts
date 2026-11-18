@@ -786,8 +786,9 @@ export type WatcherConfig = {
   // gh unavailable). When set, each heartbeat adds the ready label (autonomous
   // mode only) to a non-draft open PR that has been clean on all three signals
   // (no unresolved threads, mergeable, CI passing/none) for soakMs straight,
-  // one PR in the queue at a time. Add-only: the step never removes the label,
-  // and supervised mode never touches it.
+  // every eligible PR in one tick, limited by maxQueued (approved + labeled PRs
+  // in the queue) and maxAwaitingReview. Add-only: the step never removes the
+  // label, and supervised mode never touches it.
   ready: {
     listOpenPRs: () => Promise<OpenPR[]>;
     unresolvedInfo: (n: number) => Promise<UnresolvedInfo>;
@@ -799,6 +800,8 @@ export type WatcherConfig = {
     label: string;
     blockedLabel: string;
     soakMs: number;
+    maxQueued: number;
+    maxAwaitingReview?: number;
   } | null;
   // gh-backed source for the blocked-by handling (claim deferral + reconcile
   // move-back); null disables both (gh unavailable). Reuses listMyMergedPRs.

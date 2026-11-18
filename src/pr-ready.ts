@@ -11,7 +11,7 @@ export type PrReadyDeps = {
   mergeableInfo: (prNumber: number) => Promise<MergeableInfo>;
   // CI summary for a PR: rollup state + head SHA.
   checksInfo: (prNumber: number) => Promise<ChecksInfo>;
-  // A PR's labels and draft flag, read together and live. Both have to be
+  // A PR's labels, draft flag and approval, read together and live. Both have to be
   // fresh: listOpenPRs is a snapshot taken at tick start, and an operator
   // queueing a PR mid-tick promotes it out of draft and labels it, which the
   // snapshot's isDraft would then contradict for a whole heartbeat.
@@ -24,6 +24,12 @@ export type PrReadyDeps = {
   // The merge-queue "blocked" label. A PR carrying it is owned by the blocked-fix
   // flow, so the ready step leaves its labels untouched (never re-queues it).
   blockedLabel: string;
+  // How many labeled-and-approved (or blocked) PRs the bot lets sit in the merge
+  // queue at once. Only those are batched by the queue, so only they take a slot.
+  maxQueued: number;
+  // Optional cap on open PRs that carry the ready label but are not approved yet
+  // (each one is a standing review request). Undefined means no cap.
+  maxAwaitingReview?: number;
   // How long a PR's ready verdict must hold, uninterrupted, before the label
   // goes on. A PR that just went green is often about to change again (late
   // review comment, rebase, sibling merge), so readiness has to soak first.
@@ -177,16 +183,20 @@ async function classify(prNumber: number, deps: PrReadyDeps): Promise<Classified
 // latched PR is never re-labeled, so a human or the merge queue taking the
 // label off is final.
 //
-// Adds are also soaked and serialized. Soaked: a PR labels only after its ready
-// verdict has held for soakMs straight (the clock resets on any lapse). Serialized:
-// while any open PR carries the ready or blocked label the step adds nothing --
-// one PR in the queue at a time keeps bot-queued PRs from ever batching against
-// each other -- and at most one PR labels per tick. Humans can still queue more
-// by hand; the bot then waits for the queue to drain.
+// Adds are soaked, then every eligible candidate is labeled in one tick. Soaked:
+// a PR labels only after its ready verdict has held for soakMs straight (the
+// clock resets on any lapse). The label also pings reviewers, so it goes on
+// before approval. The merge queue only batches PRs that are labeled AND
+// approved, so only those (plus blocked PRs, due a re-queue) take one of the
+// maxQueued slots. An unapproved candidate is labeled whatever the slot count; an
+// approved unlabeled one (approved before the bot got to it) needs a free slot.
+// maxAwaitingReview, when set, caps how many labeled-but-unapproved PRs may be
+// outstanding. Candidates go oldest-ready first. Manual-merge repos never take a
+// slot or count toward the cap.
 //
 // A readiness read that errors skips the PR for this tick; an addLabel that
-// errors is logged, left unlatched, and the next candidate is tried (a failed
-// add queued nothing, so the slot is still free).
+// errors is logged, left unlatched, and the loop moves on (a failed add queued
+// nothing, so it uses up neither a slot nor cap room).
 export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -201,8 +211,9 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
   const open = new Set(prs.map((p) => p.number));
   for (const n of state.readySince.keys()) if (!open.has(n)) state.readySince.delete(n);
 
-  let queueOccupied = false;
-  const candidates: number[] = [];
+  let occupied = 0;
+  let awaitingReview = 0;
+  const candidates: { n: number; approved: boolean }[] = [];
   for (const pr of prs) {
     // Labels come first because the board's section depends on them and nothing
     // else: a PR whose readiness reads fail still has to be placed. Reading them
@@ -222,7 +233,10 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     // Undefined when the read failed; the PR then sits this tick out below.
     const manual = await mergesManually(pr.number, deps);
     if (hasLabel) state.latched.add(pr.number); // latch in every mode, blocked PRs included
-    if ((hasLabel || isBlocked) && manual === false) queueOccupied = true; // queued now, or blocked and due a re-queue
+    if (manual === false) {
+      if (isBlocked || (hasLabel && live.approved)) occupied++; // batched now, or blocked and due a re-queue
+      else if (hasLabel) awaitingReview++;
+    }
     deps.onSection?.(pr.number, boardSection(live.isDraft, hasLabel, isBlocked));
 
     let verdict: ReadyVerdict;
@@ -254,16 +268,21 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     if (live.isDraft) continue;
     if (verdict !== "ready" || state.latched.has(pr.number)) continue;
     const soaked = deps.now() - (state.readySince.get(pr.number) ?? deps.now()) >= deps.soakMs;
-    if (soaked) candidates.push(pr.number);
+    if (soaked) candidates.push({ n: pr.number, approved: live.approved });
   }
 
-  if (queueOccupied) return; // one PR in the queue at a time
-  for (const n of candidates) {
+  const sinceOf = (n: number) => state.readySince.get(n) ?? 0;
+  candidates.sort((x, y) => sinceOf(x.n) - sinceOf(y.n));
+  let freeSlots = deps.maxQueued - occupied;
+  const reviewRoom = () => (deps.maxAwaitingReview === undefined ? Infinity : deps.maxAwaitingReview - awaitingReview);
+  for (const { n, approved } of candidates) {
+    if (approved ? freeSlots <= 0 : reviewRoom() <= 0) continue;
     try {
       await deps.addLabel(n, deps.label);
       state.latched.add(n);
+      if (approved) freeSlots--;
+      else awaitingReview++;
       deps.log(`labeled PR #${n} ${deps.label} (ready to merge)`);
-      return; // at most one add per tick
     } catch (err) {
       deps.log(`add label failed for PR #${n}: ${err}`);
     }

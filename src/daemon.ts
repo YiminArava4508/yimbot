@@ -443,6 +443,10 @@ export async function startDaemon(): Promise<() => void> {
   const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
   const readySoakMinutes = Number(envOr("READY_SOAK_MINUTES", "10"));
   const readySoakMs = (Number.isFinite(readySoakMinutes) && readySoakMinutes >= 0 ? readySoakMinutes : 10) * 60_000;
+  const readyMaxQueued = Number(envOr("READY_MAX_QUEUED", "3"));
+  const maxQueued = Number.isInteger(readyMaxQueued) && readyMaxQueued >= 0 ? readyMaxQueued : 3;
+  const readyMaxAwaiting = Number(envOr("READY_MAX_AWAITING_REVIEW", "-1"));
+  const maxAwaitingReview = Number.isInteger(readyMaxAwaiting) && readyMaxAwaiting >= 0 ? readyMaxAwaiting : undefined;
   const ready =
     autoReadyLabel && prReview
       ? {
@@ -456,11 +460,13 @@ export async function startDaemon(): Promise<() => void> {
           label: readyLabelName,
           blockedLabel: blockedLabelName,
           soakMs: readySoakMs,
+          maxQueued,
+          maxAwaitingReview,
         }
       : null;
   console.log(
     ready
-      ? `[yimbot] ready step ON: adding "${readyLabelName}" label to clean PRs (autonomous only, ${readySoakMs / 60_000}m soak, one queued PR at a time, never removed)`
+      ? `[yimbot] ready step ON: adding "${readyLabelName}" label to clean PRs (autonomous only, ${readySoakMs / 60_000}m soak, up to ${maxQueued} approved PRs queued, ${maxAwaitingReview === undefined ? "no cap" : `max ${maxAwaitingReview}`} awaiting review, never removed)`
       : `[yimbot] ready step OFF${autoReadyLabel ? " (gh unavailable)" : ""}`,
   );
 

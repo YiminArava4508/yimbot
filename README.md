@@ -249,22 +249,28 @@ flowchart TD
   per extra repo; `QA_SESSION_TIMEOUT_MINUTES`, defaults to 45)* Needs `gh`,
   Chrome with the Claude extension signed in to nonprod, and `~/attach-ticket.sh`
   linked by setup.
-- **Flag ready to merge (lime):** every heartbeat, for each of your open
-  non-draft PRs that is clean on all three signals (no unresolved review threads,
-  no merge conflicts, and CI passing or no CI at all), it adds a `ready-to-merge`
-  label so you or an automerge system can see at a glance that it's mergeable. The
-  label is removed again only on a hard regression (a new comment, a broken build),
-  which the fixers then handle; an in-flight state (CI still running, mergeability
-  not yet computed) or a merge conflict holds the label as-is, so a merge queue
-  that queues on the label is never yanked back out mid-merge. Conflicts hold
-  rather than regress because label-driven conflict sweeps (like gemini's
-  resolve-generated-conflicts workflow) discover PRs by this label, and stripping
-  it would hide the PR from the auto-heal; the conflict fixer still runs either way. If your merge queue
-  posts its own gating check that only completes once the PR is queued (e.g.
-  Aviator's `aviator/checks`), list it in `IGNORE_CHECKS` so it isn't counted as
-  perpetually-pending CI and deadlock the label. *(optional; settings:
-  `AUTO_READY_LABEL`, on by default; `READY_MERGE_LABEL`, defaults to
-  `ready-to-merge` and must already exist in the repo; `IGNORE_CHECKS`, empty by
+- **Flag ready to merge (lime):** in autonomous mode, every heartbeat, each of
+  your open non-draft PRs that has stayed clean on all three signals (no
+  unresolved review threads, no merge conflicts, and CI passing or no CI at all)
+  for the soak gets a `ready-to-merge` label. The label goes on before approval,
+  since it also pings reviewers. The bot never removes it: a PR that regresses
+  keeps its label while the fixers work, and a removal by a human or the merge
+  queue is final (the PR is not re-labeled). Every eligible PR is labeled in one
+  tick. Only labeled PRs that are also approved (and blocked PRs, which are due
+  a re-queue) count against `READY_MAX_QUEUED`; an approved PR that is still
+  unlabeled waits for a free slot. `READY_MAX_AWAITING_REVIEW` optionally caps
+  how many labeled PRs may sit unapproved, so reviewers are not pinged for a
+  whole backlog at once. Oldest-ready goes first under either limit. PRs in
+  repos with no merge queue are never labeled and take no slot. Conflicts and
+  in-flight states hold rather than regress because label-driven conflict
+  sweeps (like gemini's resolve-generated-conflicts workflow) discover PRs by
+  this label. If your merge queue posts its own gating check that only completes
+  once the PR is queued (e.g. Aviator's `aviator/checks`), list it in
+  `IGNORE_CHECKS` so it isn't counted as perpetually-pending CI and deadlock the
+  label. *(optional; settings: `AUTO_READY_LABEL`, on by default;
+  `READY_MERGE_LABEL`, defaults to `ready-to-merge` and must already exist in the
+  repo; `READY_SOAK_MINUTES`, defaults to 10; `READY_MAX_QUEUED`, defaults to 3;
+  `READY_MAX_AWAITING_REVIEW`, no cap by default; `IGNORE_CHECKS`, empty by
   default)* Needs `gh` installed and authenticated.
 
 ## Heavy job queue

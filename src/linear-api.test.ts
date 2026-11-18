@@ -1070,7 +1070,8 @@ test("fetchCycleParents asks only for top-level Remove tickets with all their ch
   let query = "";
   const fetchImpl = (async (_u: string, init: { body: string }) => {
     query = (JSON.parse(init.body) as { query: string }).query;
-    return { ok: true, status: 200, text: async () => JSON.stringify({ data: { issues: { nodes: [] } } }) };
+    const body = { data: { issues: { nodes: [] } } };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
   }) as unknown as typeof fetch;
   await fetchCycleParents("k", "team-1", fetchImpl);
   assert.match(query, /parent: \{ null: true \}/);

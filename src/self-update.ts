@@ -159,3 +159,96 @@ export async function withUpdateLock<T>(dir: string, fn: () => Promise<T>): Prom
     }
   }
 }
+
+export type SelfUpdaterDeps = {
+  check(): Promise<UpdateState>;
+  isSafe(): boolean;
+  stillValid(target: string): Promise<boolean>;
+  restart(): void;
+  onState(s: UpdateState): void;
+  setTimer(fn: () => void, ms: number): { clear(): void };
+};
+
+export function selfUpdateEnabled(env: NodeJS.ProcessEnv): boolean {
+  return !["false", "off", "no", "0"].includes((env.SELF_UPDATE ?? "true").toLowerCase());
+}
+
+export function pollIntervalMs(env: NodeJS.ProcessEnv): number {
+  const minutes = Number(env.SELF_UPDATE_INTERVAL_MINUTES ?? "5");
+  return (Number.isFinite(minutes) && minutes > 0 ? minutes : 5) * 60_000;
+}
+
+export function startSelfUpdater(
+  deps: SelfUpdaterDeps,
+  opts: { pollMs: number; safeCheckMs: number },
+): () => void {
+  let state: UpdateState | undefined;
+  let stopped = false;
+  let checking = false;
+  let ticking = false;
+  let pollTimer: { clear(): void } | undefined;
+  let safeTimer: { clear(): void } | undefined;
+
+  const setState = (next: UpdateState) => {
+    if (state && JSON.stringify(state) === JSON.stringify(next)) return;
+    state = next;
+    deps.onState(next);
+  };
+
+  const armSafe = () => {
+    if (stopped || safeTimer) return;
+    safeTimer = deps.setTimer(() => {
+      safeTimer = undefined;
+      void safeTick();
+    }, opts.safeCheckMs);
+  };
+
+  const safeTick = async () => {
+    if (ticking || stopped) return;
+    ticking = true;
+    try {
+      if (state?.kind !== "ready") return;
+      const target = state.target;
+      if (!deps.isSafe()) return armSafe();
+      if (!(await deps.stillValid(target))) {
+        setState({ kind: "blocked", reason: "dirty tree" });
+        return;
+      }
+      if (stopped || !deps.isSafe()) return armSafe();
+      deps.restart();
+    } catch {
+      armSafe();
+    } finally {
+      ticking = false;
+    }
+  };
+
+  const runCheck = async () => {
+    if (checking || stopped) return;
+    checking = true;
+    try {
+      setState(await deps.check());
+    } catch {
+      // Keep the previous state and try again on the next poll.
+    } finally {
+      checking = false;
+    }
+    if (state?.kind === "ready") armSafe();
+  };
+
+  const schedulePoll = () => {
+    if (stopped) return;
+    pollTimer = deps.setTimer(() => {
+      void runCheck().finally(schedulePoll);
+    }, opts.pollMs);
+  };
+
+  void runCheck();
+  schedulePoll();
+
+  return () => {
+    stopped = true;
+    pollTimer?.clear();
+    safeTimer?.clear();
+  };
+}

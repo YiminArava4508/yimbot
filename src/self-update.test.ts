@@ -8,6 +8,11 @@ import { tempDir } from "./test-temp.ts";
 import {
   checkForUpdate,
   gitProbe,
+  pollIntervalMs,
+  selfUpdateEnabled,
+  startSelfUpdater,
+  type SelfUpdaterDeps,
+  type UpdateState,
   withUpdateLock,
   type GitProbe,
   type PrepDeps,
@@ -182,4 +187,161 @@ test("withUpdateLock reclaims a lock left by a dead pid", async () => {
   const dead = execFileSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"]).toString();
   writeFileSync(join(dir, "yimbot-update.lock"), dead);
   assert.equal(await withUpdateLock(dir, async () => "ran"), "ran");
+});
+
+function fakeUpdater(over: Partial<SelfUpdaterDeps> & { states?: UpdateState[] } = {}) {
+  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
+  const seen: UpdateState[] = [];
+  const log = { checks: 0, restarts: 0 };
+  const states = over.states ?? [{ kind: "current" }];
+  const deps: SelfUpdaterDeps = {
+    async check() {
+      const s = states[Math.min(log.checks, states.length - 1)];
+      log.checks++;
+      return s;
+    },
+    isSafe: () => true,
+    stillValid: async () => true,
+    restart: () => {
+      log.restarts++;
+    },
+    onState: (s) => seen.push(s),
+    setTimer: (fn, ms) => {
+      const t = { fn, ms, cleared: false };
+      timers.push(t);
+      return { clear: () => (t.cleared = true) };
+    },
+    ...over,
+  };
+  const flush = () => new Promise((r) => setImmediate(r));
+  const fire = async (ms: number) => {
+    const t = timers.find((x) => x.ms === ms && !x.cleared);
+    assert.ok(t, `no active timer for ${ms}`);
+    t.cleared = true;
+    t.fn();
+    await flush();
+  };
+  const opts = { pollMs: 300_000, safeCheckMs: 10_000 };
+  return { deps, timers, seen, log, fire, flush, opts };
+}
+
+const READY: UpdateState = { kind: "ready", target: ORIGIN };
+
+test("checks once at start and every pollMs", async () => {
+  const f = fakeUpdater();
+  const stop = startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  assert.equal(f.log.checks, 1);
+  await f.fire(300_000);
+  assert.equal(f.log.checks, 2);
+  await f.fire(300_000);
+  assert.equal(f.log.checks, 3);
+  stop();
+});
+
+test("restarts on the first safe tick when ready", async () => {
+  const f = fakeUpdater({ states: [READY] });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  assert.equal(f.log.restarts, 0);
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 1);
+});
+
+test("waits while unsafe and restarts once safe", async () => {
+  let safe = false;
+  const f = fakeUpdater({ states: [READY], isSafe: () => safe });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(10_000);
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 0);
+  safe = true;
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 1);
+});
+
+test("does not restart when unsafe at the restart moment", async () => {
+  const answers = [true, false];
+  const f = fakeUpdater({ states: [READY], isSafe: () => answers.shift() ?? true });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 0);
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 1);
+});
+
+test("does not restart when stillValid is false", async () => {
+  const f = fakeUpdater({ states: [READY], stillValid: async () => false });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 0);
+  assert.deepEqual(f.seen.at(-1), { kind: "blocked", reason: "dirty tree" });
+});
+
+test("onState fires on every state change, not on repeats", async () => {
+  const blockedState: UpdateState = { kind: "blocked", reason: "dirty tree" };
+  const f = fakeUpdater({ states: [{ kind: "current" }, { kind: "current" }, blockedState, blockedState] });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(300_000);
+  await f.fire(300_000);
+  await f.fire(300_000);
+  assert.deepEqual(f.seen, [{ kind: "current" }, blockedState]);
+});
+
+test("never runs two checks at once", async () => {
+  let release: (s: UpdateState) => void = () => {};
+  let calls = 0;
+  const f = fakeUpdater({
+    check: () => {
+      calls++;
+      return new Promise<UpdateState>((r) => (release = r));
+    },
+  });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(300_000);
+  assert.equal(calls, 1);
+  release({ kind: "current" });
+  await f.flush();
+});
+
+test("a rejected check keeps polling and the previous state", async () => {
+  let n = 0;
+  const f = fakeUpdater({
+    check: async () => {
+      n++;
+      if (n === 2) throw new Error("pnpm install failed");
+      return { kind: "current" };
+    },
+  });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(300_000);
+  await f.fire(300_000);
+  assert.equal(n, 3);
+  assert.deepEqual(f.seen, [{ kind: "current" }]);
+});
+
+test("stop clears the timers", async () => {
+  const f = fakeUpdater({ states: [READY] });
+  const stop = startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  stop();
+  assert.ok(f.timers.every((t) => t.cleared || t.ms === 0));
+  assert.equal(f.timers.filter((t) => !t.cleared).length, 0);
+});
+
+test("selfUpdateEnabled and pollIntervalMs read the env", () => {
+  assert.equal(selfUpdateEnabled({}), true);
+  assert.equal(selfUpdateEnabled({ SELF_UPDATE: "off" }), false);
+  assert.equal(selfUpdateEnabled({ SELF_UPDATE: "FALSE" }), false);
+  assert.equal(selfUpdateEnabled({ SELF_UPDATE: "0" }), false);
+  assert.equal(selfUpdateEnabled({ SELF_UPDATE: "true" }), true);
+  assert.equal(pollIntervalMs({}), 300_000);
+  assert.equal(pollIntervalMs({ SELF_UPDATE_INTERVAL_MINUTES: "2" }), 120_000);
+  assert.equal(pollIntervalMs({ SELF_UPDATE_INTERVAL_MINUTES: "junk" }), 300_000);
 });

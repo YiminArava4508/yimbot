@@ -1,4 +1,11 @@
-import { createSubIssue, fetchIssueSplitInfo, fetchTeamStates, setIssueEstimate } from "./linear-api.ts";
+import {
+  createBlocksRelation,
+  createSubIssue,
+  fetchIssueSplitInfo,
+  fetchTeamStates,
+  resolveTeamLabelId,
+  setIssueEstimate,
+} from "./linear-api.ts";
 
 // Mirrors the worktree-dir sanitation in split-pr.sh (alnum/dash, 50 chars) so
 // the branch, worktree dir, and tmux session all share one name.
@@ -18,6 +25,11 @@ export type SliceOptions = {
   claimable?: boolean;
   todoStateName?: string;
   zeroParent?: boolean;
+  // Gate the subticket on the parent being completed: adds the after-release
+  // label, records "parent blocks subticket", and implies claimable and no
+  // parent zeroing.
+  afterRelease?: boolean;
+  afterReleaseLabel?: string;
 };
 
 // Create one split-slice subticket under a parent ticket: a Linear sub-issue
@@ -37,8 +49,15 @@ export async function createSliceSubticket(
   fetchImpl: typeof fetch = fetch,
 ): Promise<SliceSubticket> {
   const parent = await fetchIssueSplitInfo(apiKey, parentIdentifier, fetchImpl);
+  const claimable = opts.claimable || opts.afterRelease;
+  const zeroParent = opts.zeroParent !== false && !opts.afterRelease;
+  let labelIds = parent.labelIds;
+  if (opts.afterRelease) {
+    const gateId = await resolveTeamLabelId(apiKey, parent.teamId, opts.afterReleaseLabel ?? "after-release", fetchImpl);
+    labelIds = [...new Set([...labelIds, gateId])];
+  }
   let placement: { stateId?: string; cycleId?: string; labelIds?: string[] } = {};
-  if (opts.claimable) {
+  if (claimable) {
     const wanted = opts.todoStateName ?? "Todo";
     const states = await fetchTeamStates(apiKey, parent.teamId, fetchImpl);
     const todo = states.find((s) => s.name.toLowerCase() === wanted.toLowerCase());
@@ -46,7 +65,7 @@ export async function createSliceSubticket(
     placement = {
       stateId: todo.id,
       ...(parent.activeCycleId ? { cycleId: parent.activeCycleId } : {}),
-      ...(parent.labelIds.length ? { labelIds: parent.labelIds } : {}),
+      ...(labelIds.length ? { labelIds } : {}),
     };
   }
   const created = await createSubIssue(
@@ -61,6 +80,7 @@ export async function createSliceSubticket(
     },
     fetchImpl,
   );
-  if (opts.zeroParent !== false) await setIssueEstimate(apiKey, parent.id, 0, fetchImpl);
+  if (opts.afterRelease) await createBlocksRelation(apiKey, parent.id, created.id, fetchImpl);
+  if (zeroParent) await setIssueEstimate(apiKey, parent.id, 0, fetchImpl);
   return { identifier: created.identifier, branch: sliceBranchName(created.identifier, title) };
 }

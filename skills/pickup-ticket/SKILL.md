@@ -118,6 +118,19 @@ asking for a behavior change.
      that checkout (`gh pr create` in that directory). The board links a PR to
      this session by the ticket slug in its branch name, so a differently
      named branch leaves the row without a PR.
+   - **Defer post-release work.** If the ticket asks for work that can only
+     happen after the change ships (for example "after it deploys", "after
+     release", archiving a flag in prod), do NOT do that work. Before moving the
+     ticket to Review, run
+     `~/create-subticket.sh <TICKET> "<follow-up title>" <points> --after-release`.
+     Put everything the follow-up needs in its description: the verified
+     PostHog project and flag ID, the exact key, the dependency checks still
+     outstanding (experiments, surveys, dependent flags, scheduled changes,
+     tours, early-access features, replay settings, external consumers), and
+     the readback to record. Link the follow-up in the final summary and in a
+     comment on the parent ticket. Use "Part of" rather than "Closes" in the
+     PR body, so merging does not close the ticket. Archiving in prod stays
+     hard to reverse and needs a human "go".
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
      PR, or in a split the whole series, is open.

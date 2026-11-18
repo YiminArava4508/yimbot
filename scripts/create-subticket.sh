@@ -3,15 +3,17 @@
 # ticket and zero the parent ticket's estimate (unless --no-zero-parent, which
 # leaves the parent's estimate alone). Prints two lines: the new
 # subticket identifier, then the slice branch name derived from it.
+# --after-release adds the after-release label, makes the parent block the new
+# subticket, and implies --claimable and --no-zero-parent.
 # Runs from anywhere (symlinked to ~/create-subticket.sh); resolves back to the
 # yimbot repo so its .env supplies LINEAR_API_KEY.
 #
-# Usage: create-subticket.sh <parent-ticket> <title> [points] [--claimable] [--no-zero-parent]
+# Usage: create-subticket.sh <parent-ticket> <title> [points] [--claimable] [--no-zero-parent] [--after-release]
 set -euo pipefail
 
 # The flags add no positional args, so the count check still just needs parent + title.
 if [ $# -lt 2 ]; then
-  echo "Usage: $0 <parent-ticket> <title> [points] [--claimable] [--no-zero-parent]" >&2
+  echo "Usage: $0 <parent-ticket> <title> [points] [--claimable] [--no-zero-parent] [--after-release]" >&2
   exit 1
 fi
 

@@ -126,8 +126,9 @@ flowchart TD
   moved back to to-do. A blocker counts as landed once it reaches the merge state
   (`MERGED_STATE_NAME`, defaults to `Merged`) or the review state, once it is
   closed out in any Done/Canceled state, or once its own PR merges even if nobody
-  moved the ticket. Waiting for Done would be too late: that column means
-  released. While the refine step is on, an unestimated ticket is left alone
+  moved the ticket. Waiting for Done would be too late for normal tickets: that
+  column means released. Tickets labeled `after-release` are the exception (see
+  [After-release gating](#after-release-gating)). While the refine step is on, an unestimated ticket is left alone
   as well: it is the refine step's to size first. A 0-point ticket is always
   skipped, estimated or not, because a zero marks a decomposed container whose
   subtickets carry the actual work. A Todo sub-issue whose parent is In Progress
@@ -272,6 +273,30 @@ flowchart TD
   repo; `READY_SOAK_MINUTES`, defaults to 10; `READY_MAX_QUEUED`, defaults to 3;
   `READY_MAX_AWAITING_REVIEW`, no cap by default; `IGNORE_CHECKS`, empty by
   default)* Needs `gh` installed and authenticated.
+
+## After-release gating
+
+A ticket labeled `after-release` (the `AFTER_RELEASE_LABEL` env var renames it)
+waits for its blockers to be **released**, not just merged. Each blocker counts
+as satisfied only when its Linear state type is `completed`, `canceled` or
+`duplicate`. The Merged and review states and a merged PR do not count. Tickets
+without the label behave as before.
+
+- **Claim and reconcile:** the claim step defers the ticket, logging
+  `ENG-1 (In Review, waiting for release)`, and the reconcile step moves it back
+  to Todo if it is already In Progress.
+- **No blockers:** an `after-release` ticket with no blockers is never claimed,
+  and the claim step logs that once per ticket.
+- **Creating one:** `~/create-subticket.sh <PARENT> "<title>" <points> --after-release`
+  adds the label on top of the inherited ones, makes the parent block the new
+  subticket, and implies `--claimable` and `--no-zero-parent`. The pickup-ticket
+  skill uses it for work that can only happen once the change ships (archiving a
+  flag in prod, say).
+
+**Assumption:** the parent reaches a completed state (Done) only once it has
+been released. If tickets are not moved to Done when a release ships, the gate
+waits forever. If someone moves a ticket to Done early, the follow-up runs
+before the release. Check this holds before relying on the label.
 
 ## Heavy job queue
 

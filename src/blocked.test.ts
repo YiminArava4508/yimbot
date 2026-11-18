@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   clearedStateNames,
+  isAfterReleaseOrphan,
   isBlocked,
   mergedIdentifierSet,
   ticketIdentifierFromBranch,
@@ -89,4 +90,36 @@ test("ticketIdentifierFromBranch reads the leading identifier, uppercased", () =
   assert.equal(ticketIdentifierFromBranch("eng-1104-do-a-thing"), "ENG-1104");
   assert.equal(ticketIdentifierFromBranch("SC-42-thing"), "SC-42");
   assert.equal(ticketIdentifierFromBranch("hotfix-login"), null);
+});
+
+test("an after-release ticket stays blocked while its parent is In Review, Merged, or has a merged PR", () => {
+  assert.equal(isBlocked([blocker("ENG-4", "In Review")], new Set(), cleared, true), true);
+  assert.equal(isBlocked([blocker("ENG-4", "Merged")], new Set(), cleared, true), true);
+  assert.equal(isBlocked([blocker("ENG-4", "Deployed To Nonprod")], new Set(), cleared, true), true);
+  assert.equal(isBlocked([blocker("ENG-4", "In Progress")], new Set(["ENG-4"]), cleared, true), true);
+});
+
+test("an after-release ticket clears once the parent is completed, canceled or a duplicate", () => {
+  assert.equal(isBlocked([blocker("ENG-4", "Done", "completed")], new Set(), cleared, true), false);
+  assert.equal(isBlocked([blocker("ENG-4", "Canceled", "canceled")], new Set(), cleared, true), false);
+  assert.equal(isBlocked([blocker("ENG-4", "Duplicate", "duplicate")], new Set(), cleared, true), false);
+});
+
+test("an after-release ticket with no blockers is always blocked", () => {
+  assert.equal(isBlocked([], new Set(), cleared, true), true);
+  assert.equal(isAfterReleaseOrphan(true, []), true);
+  assert.equal(isAfterReleaseOrphan(true, [blocker("ENG-4", "Done", "completed")]), false);
+  assert.equal(isAfterReleaseOrphan(false, []), false);
+});
+
+test("tickets without the label behave as before", () => {
+  assert.equal(isBlocked([blocker("ENG-4", "Merged")], new Set(), cleared, false), false);
+  assert.equal(isBlocked([blocker("ENG-4", "In Review")], new Set(["ENG-4"]), cleared), false);
+});
+
+test("unsatisfiedBlockers says an after-release holdout is waiting for release", () => {
+  assert.equal(
+    unsatisfiedBlockers([blocker("ENG-1", "In Review")], new Set(), cleared, true),
+    "ENG-1 (In Review, waiting for release)",
+  );
 });

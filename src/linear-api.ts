@@ -768,13 +768,13 @@ export async function setIssueEstimate(
   }
 }
 
-export async function addIssueLabel(
+// The id of a team label by name (case-insensitive), created when missing.
+export async function resolveTeamLabelId(
   apiKey: string,
-  issueId: string,
   teamId: string,
   labelName: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<void> {
+): Promise<string> {
   type ListData = { team: { labels: { nodes: { id: string; name: string }[] } } };
   const list = await gql<ListData>(
     apiKey,
@@ -785,22 +785,31 @@ export async function addIssueLabel(
     fetchImpl,
   );
   const want = labelName.trim().toLowerCase();
-  let labelId = list.team.labels.nodes.find((l) => l.name.trim().toLowerCase() === want)?.id;
-  if (!labelId) {
-    type CreateData = { issueLabelCreate: { success: boolean; issueLabel: { id: string } | null } };
-    const created = await gql<CreateData>(
-      apiKey,
-      `mutation CreateLabel($name: String!, $teamId: String!) {
-        issueLabelCreate(input: { name: $name, teamId: $teamId }) { success issueLabel { id } }
-      }`,
-      { name: labelName, teamId },
-      fetchImpl,
-    );
-    if (!created.issueLabelCreate.success || !created.issueLabelCreate.issueLabel) {
-      throw new Error(`issueLabelCreate failed for "${labelName}"`);
-    }
-    labelId = created.issueLabelCreate.issueLabel.id;
+  const existing = list.team.labels.nodes.find((l) => l.name.trim().toLowerCase() === want)?.id;
+  if (existing) return existing;
+  type CreateData = { issueLabelCreate: { success: boolean; issueLabel: { id: string } | null } };
+  const created = await gql<CreateData>(
+    apiKey,
+    `mutation CreateLabel($name: String!, $teamId: String!) {
+      issueLabelCreate(input: { name: $name, teamId: $teamId }) { success issueLabel { id } }
+    }`,
+    { name: labelName, teamId },
+    fetchImpl,
+  );
+  if (!created.issueLabelCreate.success || !created.issueLabelCreate.issueLabel) {
+    throw new Error(`issueLabelCreate failed for "${labelName}"`);
   }
+  return created.issueLabelCreate.issueLabel.id;
+}
+
+export async function addIssueLabel(
+  apiKey: string,
+  issueId: string,
+  teamId: string,
+  labelName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const labelId = await resolveTeamLabelId(apiKey, teamId, labelName, fetchImpl);
   type AddData = { issueAddLabel: { success: boolean } };
   const added = await gql<AddData>(
     apiKey,

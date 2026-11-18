@@ -884,6 +884,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     autoClaim: true,
     riskLabels: ["migration"],
     rejectLabel: "reject",
+    afterReleaseLabel: "after-release",
     labelFilter: null,
     requireEstimate: () => false,
     maxEstimate: null,
@@ -1192,6 +1193,7 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
     fetchInProgress: async () => [],
     fetchMergedIdentifiers: async () => new Set<string>(),
     clearedStates: cleared,
+    afterReleaseLabel: "after-release",
     moveToTodo: async (id) => void movedBack.push(id),
     unlatchDeploy: (id) => void unlatched.push(id),
     log: (msg) => void logs.push(msg),
@@ -1213,6 +1215,63 @@ test("reconcile moves a blocked In-Progress ticket back and unlatches, never tea
   assert.ok(
     logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4 (In Review)")),
   );
+});
+
+test("reconcile moves an In-Progress after-release ticket back while its parent has not shipped", async () => {
+  const { deps, movedBack, logs } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [blocker("ENG-4", "Merged")],
+      },
+    ],
+    fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.deepEqual(movedBack, ["i-5"]);
+  assert.ok(logs.some((l) => l.includes("ENG-4 (Merged, waiting for release)")));
+});
+
+test("reconcile leaves an after-release ticket alone once its parent is completed", async () => {
+  const { deps, movedBack } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [{ identifier: "ENG-4", stateName: "Done", stateType: "completed" }],
+      },
+    ],
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.equal(movedBack.length, 0);
+});
+
+test("claimOnce defers an after-release ticket with the waiting-for-release log and skips it", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", labels: ["after-release"], blockedBy: [blocker("ENG-9")] }),
+    ],
+    fetchMergedIdentifiers: async () => new Set(["ENG-9"]),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l.includes("ENG-9 (In Review, waiting for release)")));
+});
+
+test("claimOnce logs an after-release ticket with no blockers once per ticket", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", labels: ["after-release"] })],
+  });
+  const state = freshClaimState();
+  await claimOnce(state, deps);
+  await claimOnce(state, deps);
+  assert.equal(moved.length, 0);
+  assert.equal(logs.filter((l) => /after-release.*no blockers/.test(l)).length, 1);
 });
 
 test("reconcile leaves unblocked and no-blocker tickets alone", async () => {

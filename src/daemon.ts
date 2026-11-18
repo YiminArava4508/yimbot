@@ -32,7 +32,7 @@ import {
   viewerLogin,
 } from "./gh.ts";
 import { judgeAcceptance, type JudgeRunner } from "./judge.ts";
-import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
+import { describeLabelFilter, parseAfterReleaseLabel, parseLabelFilter } from "./labels.ts";
 import { parseRejectLabel } from "./reject.ts";
 import {
   countAssignedInState,
@@ -79,6 +79,7 @@ export async function startDaemon(): Promise<() => void> {
     .map((l) => l.trim())
     .filter(Boolean);
   const rejectLabel = parseRejectLabel(process.env.REJECT_LABEL);
+  const afterReleaseLabel = parseAfterReleaseLabel(process.env.AFTER_RELEASE_LABEL);
   // Which slice of the board this instance works. Two daemons on one Linear
   // account partition the work by running opposite filters ("bot" / "!bot").
   const labelFilter = parseLabelFilter(process.env.LABEL_FILTER);
@@ -517,6 +518,7 @@ export async function startDaemon(): Promise<() => void> {
       autoClaim,
       riskLabels,
       rejectLabel,
+      afterReleaseLabel,
       labelFilter,
       maxInProgress,
       claimsPerHeartbeat,

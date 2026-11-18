@@ -46,25 +46,40 @@ export function isClearedState(stateName: string, cleared: Set<string>): boolean
 
 // A blocker stops blocking once its work has landed: it reached the merge state
 // (or one past it), it was closed out, or its PR is merged even though nobody
-// moved the ticket.
-function isSatisfied(b: Blocker, merged: Set<string>, cleared: Set<string>): boolean {
+// moved the ticket. An after-release ticket waits for the blocker to be closed
+// out (completed, canceled or duplicate): merged work has not shipped yet.
+function isSatisfied(
+  b: Blocker,
+  merged: Set<string>,
+  cleared: Set<string>,
+  afterRelease: boolean,
+): boolean {
+  const closedOut =
+    b.stateType === "completed" || b.stateType === "canceled" || b.stateType === "duplicate";
+  if (afterRelease) return closedOut;
   return (
-    isClearedState(b.stateName, cleared) ||
-    b.stateType === "completed" ||
-    b.stateType === "canceled" ||
-    b.stateType === "duplicate" ||
-    merged.has(b.identifier.toUpperCase())
+    isClearedState(b.stateName, cleared) || closedOut || merged.has(b.identifier.toUpperCase())
   );
 }
 
+// An after-release ticket with nothing to wait on is almost always a mistake, so
+// it is never claimable.
+export function isAfterReleaseOrphan(afterRelease: boolean, blockedBy: Blocker[]): boolean {
+  return afterRelease && blockedBy.length === 0;
+}
+
 // A ticket is blocked while any of its blockers is unsatisfied. No blockers
-// means never blocked.
+// means never blocked, except for an after-release ticket.
 export function isBlocked(
   blockedBy: Blocker[],
   merged: Set<string>,
   cleared: Set<string>,
+  afterRelease = false,
 ): boolean {
-  return blockedBy.some((b) => !isSatisfied(b, merged, cleared));
+  return (
+    isAfterReleaseOrphan(afterRelease, blockedBy) ||
+    blockedBy.some((b) => !isSatisfied(b, merged, cleared, afterRelease))
+  );
 }
 
 // The blockers still holding a ticket back, each with its current state, for the
@@ -73,9 +88,11 @@ export function unsatisfiedBlockers(
   blockedBy: Blocker[],
   merged: Set<string>,
   cleared: Set<string>,
+  afterRelease = false,
 ): string {
+  const suffix = afterRelease ? ", waiting for release" : "";
   return blockedBy
-    .filter((b) => !isSatisfied(b, merged, cleared))
-    .map((b) => `${b.identifier} (${b.stateName})`)
+    .filter((b) => !isSatisfied(b, merged, cleared, afterRelease))
+    .map((b) => `${b.identifier} (${b.stateName}${suffix})`)
     .join(", ");
 }

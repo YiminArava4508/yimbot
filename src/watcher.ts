@@ -9,9 +9,14 @@ import {
   parseAcceptanceCriteria,
   renderAcComment,
 } from "./acceptance.ts";
-import { isClearedState, mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
+import {
+  isAfterReleaseOrphan,
+  isClearedState,
+  mergedIdentifierSet,
+  unsatisfiedBlockers,
+} from "./blocked.ts";
 import { selectClaims } from "./claim.ts";
-import { dropRejected, filterByLabel, type LabelFilter } from "./labels.ts";
+import { dropRejected, filterByLabel, hasLabel, type LabelFilter } from "./labels.ts";
 import {
   candidateLines,
   DEPENDENCY_COMMENT_MARKER,
@@ -432,6 +437,8 @@ export type ClaimDeps = {
   // Label names that disqualify a ticket from being claimed.
   riskLabels: string[];
   rejectLabel: string;
+  // Label that gates a ticket on its blockers being completed (AFTER_RELEASE_LABEL).
+  afterReleaseLabel: string;
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
   // Whether the claim step skips tickets with no estimate. Read per tick so it
@@ -544,10 +551,10 @@ async function recordInferredBlockers(
 // fails closed on the same write, and the claim step never reaches any other
 // ticket. Latching it here lets the next tick fall through to the
 // next-priority ticket instead, so only the broken ticket stalls.
-export type ClaimState = { skip: Set<string> };
+export type ClaimState = { skip: Set<string>; orphansLogged: Set<string> };
 
 export function freshClaimState(): ClaimState {
-  return { skip: new Set() };
+  return { skip: new Set(), orphansLogged: new Set() };
 }
 
 // A started parent means its session may still be carving slices. A parent in
@@ -620,15 +627,25 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
       deps.log(`claim failed: ${err}`);
       return;
     }
-    for (const t of inSlice) {
-      const holdouts = unsatisfiedBlockers(t.blockedBy, merged, deps.clearedStates);
-      if (holdouts) deps.log(`deferring ${t.identifier}: blocked by ${holdouts}`);
+  }
+  for (const t of inSlice) {
+    const afterRelease = hasLabel(t.labels, deps.afterReleaseLabel);
+    if (isAfterReleaseOrphan(afterRelease, t.blockedBy)) {
+      if (!state.orphansLogged.has(t.id)) {
+        state.orphansLogged.add(t.id);
+        deps.log(`deferring ${t.identifier}: ${deps.afterReleaseLabel} but has no blockers (nothing to wait on)`);
+      }
+      continue;
     }
+    if (merged === null && !afterRelease) continue;
+    const holdouts = unsatisfiedBlockers(t.blockedBy, merged ?? new Set(), deps.clearedStates, afterRelease);
+    if (holdouts) deps.log(`deferring ${t.identifier}: blocked by ${holdouts}`);
   }
 
   const ranked = selectClaims(inSlice, {
     riskLabels: deps.riskLabels,
     rejectLabel: deps.rejectLabel,
+    afterReleaseLabel: deps.afterReleaseLabel,
     merged,
     clearedStates: deps.clearedStates,
     labelFilter: deps.labelFilter,
@@ -661,6 +678,8 @@ export type ReconcileDeps = {
   fetchMergedIdentifiers: () => Promise<Set<string>>;
   // State names that count as a blocker's work having landed (clearedStateNames).
   clearedStates: Set<string>;
+  // Label that gates a ticket on its blockers being completed (AFTER_RELEASE_LABEL).
+  afterReleaseLabel: string;
   // Move a blocked issue back to Todo.
   moveToTodo: (issueId: string) => Promise<void>;
   // Drop an issue id from the deploy latch so it relaunches once unblocked.
@@ -694,7 +713,12 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
   }
 
   for (const issue of issues) {
-    const holdouts = unsatisfiedBlockers(issue.blockedBy, merged, deps.clearedStates);
+    const holdouts = unsatisfiedBlockers(
+      issue.blockedBy,
+      merged,
+      deps.clearedStates,
+      hasLabel(issue.labels, deps.afterReleaseLabel),
+    );
     if (!holdouts) continue;
     try {
       await deps.moveToTodo(issue.id);
@@ -710,6 +734,7 @@ export type ClaimConfig = {
   autoClaim: boolean;
   riskLabels: string[];
   rejectLabel: string;
+  afterReleaseLabel: string;
   labelFilter: LabelFilter;
   maxInProgress: number;
   claimsPerHeartbeat: number;
@@ -1936,6 +1961,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
     rejectLabel: claim.rejectLabel,
+    afterReleaseLabel: claim.afterReleaseLabel,
     labelFilter: claim.labelFilter,
     requireEstimate: refineEnabled,
     maxEstimate: claim.maxEstimate,
@@ -1991,6 +2017,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       ),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     clearedStates: config.clearedStates,
+    afterReleaseLabel: config.claim.afterReleaseLabel,
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,

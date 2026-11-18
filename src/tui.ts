@@ -470,14 +470,14 @@ export function updateChip(state: UpdateState | null): string {
 }
 
 export function bootNotice(env: NodeJS.ProcessEnv, head: string, now: number = Date.now()): Notice | null {
+  const rolledBack = env.YIMBOT_ROLLED_BACK;
+  if (rolledBack) {
+    return { text: `update rolled back: ${rolledBack.slice(0, 7)} crashed on boot`, until: now + NOTICE_ERROR_TTL_MS };
+  }
   const from = env.YIMBOT_UPDATED_FROM;
   if (from && from !== head) {
     const minutes = Number(env.HEARTBEAT_INTERVAL_MINUTES ?? env.POLL_INTERVAL_MINUTES ?? "3");
     return { text: `updated ${from.slice(0, 7)} → ${head.slice(0, 7)}`, until: now + minutes * 60_000 };
-  }
-  const rolledBack = env.YIMBOT_ROLLED_BACK;
-  if (rolledBack && !from) {
-    return { text: `update rolled back: ${rolledBack.slice(0, 7)} crashed on boot`, until: now + NOTICE_ERROR_TTL_MS };
   }
   return null;
 }

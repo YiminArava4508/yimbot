@@ -1140,3 +1140,10 @@ test("bootNotice is null when head is unchanged or env is empty", () => {
   assert.equal(bootNotice({ YIMBOT_UPDATED_FROM: "2222222" }, "2222222"), null);
   assert.equal(bootNotice({}, "2222222"), null);
 });
+
+test("bootNotice prefers the rollback notice when a stale UPDATED_FROM is also set", () => {
+  const same = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123", YIMBOT_UPDATED_FROM: "2222222" }, "2222222", 0);
+  assert.equal(same?.text, "update rolled back: deadbee crashed on boot");
+  const diff = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123", YIMBOT_UPDATED_FROM: "1111111" }, "2222222", 0);
+  assert.equal(diff?.until, NOTICE_ERROR_TTL_MS);
+});

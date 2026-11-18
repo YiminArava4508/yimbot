@@ -890,6 +890,7 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     riskLabels: ["migration"],
     rejectLabel: "reject",
     afterReleaseLabel: "after-release",
+    doneStateName: "Done",
     labelFilter: null,
     requireEstimate: () => false,
     maxEstimate: null,
@@ -1199,6 +1200,7 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
     fetchMergedIdentifiers: async () => new Set<string>(),
     clearedStates: cleared,
     afterReleaseLabel: "after-release",
+    doneStateName: "Done",
     moveToTodo: async (id) => void movedBack.push(id),
     unlatchDeploy: (id) => void unlatched.push(id),
     log: (msg) => void logs.push(msg),
@@ -1240,7 +1242,23 @@ test("reconcile moves an In-Progress after-release ticket back while its parent 
   assert.ok(logs.some((l) => l.includes("ENG-4 (Merged, waiting for release)")));
 });
 
-test("reconcile leaves an after-release ticket alone once its parent is completed", async () => {
+test("reconcile moves an after-release ticket back while its parent is Ready To Release", async () => {
+  const { deps, movedBack } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [{ identifier: "ENG-4", stateName: "Ready To Release", stateType: "completed" }],
+      },
+    ],
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.deepEqual(movedBack, ["i-5"]);
+});
+
+test("reconcile leaves an after-release ticket alone once its parent is Done", async () => {
   const { deps, movedBack } = reconcileDeps({
     fetchInProgress: async () => [
       {

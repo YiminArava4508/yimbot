@@ -439,6 +439,8 @@ export type ClaimDeps = {
   rejectLabel: string;
   // Label that gates a ticket on its blockers being completed (AFTER_RELEASE_LABEL).
   afterReleaseLabel: string;
+  // State an after-release ticket's blockers must be in (DONE_STATE_NAME).
+  doneStateName: string;
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
   // Whether the claim step skips tickets with no estimate. Read per tick so it
@@ -638,7 +640,12 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
       continue;
     }
     if (merged === null && !afterRelease) continue;
-    const holdouts = unsatisfiedBlockers(t.blockedBy, merged ?? new Set(), deps.clearedStates, afterRelease);
+    const holdouts = unsatisfiedBlockers(
+      t.blockedBy,
+      merged ?? new Set(),
+      deps.clearedStates,
+      afterRelease ? deps.doneStateName : null,
+    );
     if (holdouts) deps.log(`deferring ${t.identifier}: blocked by ${holdouts}`);
   }
 
@@ -646,6 +653,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     riskLabels: deps.riskLabels,
     rejectLabel: deps.rejectLabel,
     afterReleaseLabel: deps.afterReleaseLabel,
+    doneStateName: deps.doneStateName,
     merged,
     clearedStates: deps.clearedStates,
     labelFilter: deps.labelFilter,
@@ -680,6 +688,8 @@ export type ReconcileDeps = {
   clearedStates: Set<string>;
   // Label that gates a ticket on its blockers being completed (AFTER_RELEASE_LABEL).
   afterReleaseLabel: string;
+  // State an after-release ticket's blockers must be in (DONE_STATE_NAME).
+  doneStateName: string;
   // Move a blocked issue back to Todo.
   moveToTodo: (issueId: string) => Promise<void>;
   // Drop an issue id from the deploy latch so it relaunches once unblocked.
@@ -717,7 +727,7 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
       issue.blockedBy,
       merged,
       deps.clearedStates,
-      hasLabel(issue.labels, deps.afterReleaseLabel),
+      hasLabel(issue.labels, deps.afterReleaseLabel) ? deps.doneStateName : null,
     );
     if (!holdouts) continue;
     try {
@@ -1968,6 +1978,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     riskLabels: claim.riskLabels,
     rejectLabel: claim.rejectLabel,
     afterReleaseLabel: claim.afterReleaseLabel,
+    doneStateName: config.doneStateName,
     labelFilter: claim.labelFilter,
     requireEstimate: refineEnabled,
     maxEstimate: claim.maxEstimate,
@@ -2024,6 +2035,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     clearedStates: config.clearedStates,
     afterReleaseLabel: config.claim.afterReleaseLabel,
+    doneStateName: config.doneStateName,
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,

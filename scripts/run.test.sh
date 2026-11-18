@@ -68,7 +68,7 @@ n=$(( $(cat "$FAKE_DIR/count" 2>/dev/null || echo 0) + 1 ))
 echo $n > "$FAKE_DIR/count"
 echo "launch $n updated=${YIMBOT_UPDATED_FROM:-} rolled=${YIMBOT_ROLLED_BACK:-}" >> "$FAKE_DIR/log"
 case "$FAKE_MODE:$n" in
-  *:1) echo x >> f.txt; git commit -qam update; git push -q origin master 2>/dev/null; exit 75 ;;
+  *:1) echo x >> f.txt; git commit -qam update; git push -qf origin master 2>/dev/null; exit 75 ;;
   int:2) trap 'exit 1' INT; touch "$FAKE_DIR/ready"; sleep 30 & wait; exit 1 ;;
   *) exit 0 ;;
 esac
@@ -84,7 +84,8 @@ assert_eq "$(sed -n 2p "$tmp/log")" "launch 2 updated=$before rolled=" "relaunch
 
 git reset -q --hard "$before"
 rm -f "$tmp/count" "$tmp/log" "$tmp/ready"
-FAKE_MODE=int setsid bash scripts/run.sh >/dev/null 2>&1 &
+# A backgrounded shell ignores SIGINT, so reset it to default before exec.
+FAKE_MODE=int python3 -c 'import os,signal,sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.setsid(); os.execvp("bash", ["bash", "scripts/run.sh"])' >/dev/null 2>&1 &
 wpid=$!
 for _ in $(seq 100); do [ -e "$tmp/ready" ] && break; sleep 0.1; done
 after_update=$(git rev-parse HEAD)

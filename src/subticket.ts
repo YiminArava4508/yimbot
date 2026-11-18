@@ -82,7 +82,15 @@ export async function createSliceSubticket(
     },
     fetchImpl,
   );
-  if (opts.afterRelease) await createBlocksRelation(apiKey, parent.id, created.id, fetchImpl);
+  if (opts.afterRelease) {
+    try {
+      await createBlocksRelation(apiKey, parent.id, created.id, fetchImpl);
+    } catch (err) {
+      throw new Error(
+        `created ${created.identifier} but could not relate it to ${parentIdentifier} (${err}); run ~/relate-tickets.sh ${parentIdentifier} ${created.identifier}`,
+      );
+    }
+  }
   if (zeroParent) await setIssueEstimate(apiKey, parent.id, 0, fetchImpl);
   return { identifier: created.identifier, branch: sliceBranchName(created.identifier, title) };
 }

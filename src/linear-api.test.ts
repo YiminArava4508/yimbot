@@ -1066,6 +1066,18 @@ test("countAssignedInState leaves out issues carrying the reject label", async (
   assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body)), 2);
 });
 
+test("fetchCycleParents asks only for top-level Remove tickets with all their children", async () => {
+  let query = "";
+  const fetchImpl = (async (_u: string, init: { body: string }) => {
+    query = (JSON.parse(init.body) as { query: string }).query;
+    return { ok: true, status: 200, text: async () => JSON.stringify({ data: { issues: { nodes: [] } } }) };
+  }) as unknown as typeof fetch;
+  await fetchCycleParents("k", "team-1", fetchImpl);
+  assert.match(query, /parent: \{ null: true \}/);
+  assert.match(query, /startsWith: "Remove"/);
+  assert.match(query, /children\(first: 250\)/);
+});
+
 test("fetchCycleParents lists active-cycle issues with their children's label names", async () => {
   const fetchImpl = fakeFetch({
     data: {

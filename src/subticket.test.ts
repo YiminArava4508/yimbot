@@ -353,3 +353,30 @@ test("createSliceSubticket passes a description through to the sub-issue", async
     input: { teamId: "team-1", parentId: "uuid-p", title: "slice", description: "do the thing" },
   });
 });
+
+test("createSliceSubticket --after-release names the orphan when the relation write fails", async () => {
+  const { fetchImpl } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null, labels: { nodes: [] } },
+        },
+      },
+    },
+    {
+      match: /TeamStates/,
+      body: { data: { team: { states: { nodes: [{ id: "st-todo", name: "Todo", type: "unstarted" }] } } } },
+    },
+    { match: /TeamLabelIds/, body: { data: { team: { labels: { nodes: [{ id: "lab-ar", name: "after-release" }] } } } } },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+    { match: /issueRelationCreate/, body: { data: { issueRelationCreate: { success: false } } } },
+  ]);
+  await assert.rejects(
+    createSliceSubticket("k", "ENG-42", "slice", { afterRelease: true }, fetchImpl),
+    /ENG-43.*relate-tickets\.sh ENG-42 ENG-43/s,
+  );
+});

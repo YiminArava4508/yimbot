@@ -28,16 +28,26 @@ const plan = planBackfill(
   afterReleaseLabel,
 );
 if (plan.length === 0) console.log("nothing to backfill");
+let failures = 0;
 for (const item of plan) {
   console.log(`${apply ? "creating" : "would create"} under ${item.parent}: ${item.title}`);
   if (!apply) continue;
-  const result = await createSliceSubticket(apiKey, item.parent, item.title, {
-    points: 1,
-    afterRelease: true,
-    afterReleaseLabel,
-    todoStateName,
-    description: archiveDescription(item.parent, item.flag),
-  });
-  console.log(`  ${result.identifier}`);
+  try {
+    const result = await createSliceSubticket(apiKey, item.parent, item.title, {
+      points: 1,
+      afterRelease: true,
+      afterReleaseLabel,
+      todoStateName,
+      description: archiveDescription(item.parent, item.flag),
+    });
+    console.log(`  ${result.identifier}`);
+  } catch (err) {
+    failures++;
+    console.error(`  failed for ${item.parent}: ${err}`);
+  }
 }
 if (!apply && plan.length > 0) console.log("dry run: pass --apply to create these");
+if (failures > 0) {
+  console.error(`${failures} of ${plan.length} failed`);
+  process.exit(1);
+}

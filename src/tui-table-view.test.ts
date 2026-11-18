@@ -4,7 +4,7 @@ import { test } from "node:test";
 import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
-import { tableBoxes } from "./table-view.ts";
+import { BOARD_HEADER, tableBoxes } from "./table-view.ts";
 import { createTableView, type TableViewInput } from "./tui-table-view.ts";
 
 function fakeTty(columns: number, rows: number) {
@@ -53,6 +53,7 @@ function setup(counts = { tasks: 2, review: 2, merge: 2 }, focusedId = "tasks") 
     parent: screen,
     onFocus: (id) => focused.push(id),
     onOpen: (r) => opened.push(r),
+    onOpenPr: () => {},
   });
   const input: TableViewInput = {
     tasks: rows("T", counts.tasks),
@@ -163,7 +164,7 @@ test("hiding or emptying the focused pane does not report a focus", () => {
 
 test("a fresh view keeps its panes hidden until the first render", () => {
   const screen = testScreen();
-  const view = createTableView({ parent: screen, onFocus: () => {}, onOpen: () => {} });
+  const view = createTableView({ parent: screen, onFocus: () => {}, onOpen: () => {}, onOpenPr: () => {} });
   for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, true);
   view.render({ tasks: [], review: [], merge: [], now: 0, boxes: tableBoxes(30, 100), focusedId: "tasks" });
   for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
@@ -173,4 +174,60 @@ test("the tasks pane stretches from the title to the review pane", () => {
   const { view } = setup();
   const boxes = tableBoxes(30, 100);
   assert.equal(view.widgets.tasks.height, 30 - boxes.tasks.top - boxes.tasks.bottom);
+});
+
+function clickCell(view: ReturnType<typeof createTableView>, id: "tasks" | "review" | "merge", rowIndex: number, column: string) {
+  const pane = view.widgets[id];
+  const item = pane.items[rowIndex + 1];
+  const colIdx = BOARD_HEADER.indexOf(column);
+  const offset = pane._maxes.slice(0, colIdx).reduce((sum: number, w: number) => sum + w + 1, 0);
+  const data = { x: pane.aleft + pane.ileft + offset, y: item.atop };
+  item.emit("mousedown", { ...data, action: "mousedown" });
+  item.emit("click", { ...data, action: "mouseup" });
+}
+
+function prSetup() {
+  const screen = testScreen();
+  const opened: BoardRow[] = [];
+  const openedPrs: BoardRow[] = [];
+  const view = createTableView({
+    parent: screen,
+    onFocus: () => {},
+    onOpen: (r) => opened.push(r),
+    onOpenPr: (r) => openedPrs.push(r),
+  });
+  const input: TableViewInput = {
+    tasks: [{ ...row("T-0"), pr: 41 }, row("T-1")],
+    review: [],
+    merge: [],
+    now: 0,
+    boxes: tableBoxes(30, 100),
+    focusedId: "tasks",
+  };
+  view.render(input);
+  screen.render();
+  return { view, opened, openedPrs };
+}
+
+test("a click on the PR cell opens that PR and not the session, even on the selected row", () => {
+  const { view, opened, openedPrs } = prSetup();
+  view.widgets.tasks.select(1);
+  clickCell(view, "tasks", 0, "PR");
+  assert.deepEqual(openedPrs.map((r) => r.pr), [41]);
+  assert.deepEqual(opened, []);
+});
+
+test("a click on a blank PR cell opens nothing", () => {
+  const { view, opened, openedPrs } = prSetup();
+  clickCell(view, "tasks", 1, "PR");
+  assert.deepEqual(openedPrs, []);
+  assert.deepEqual(opened, []);
+});
+
+test("a click elsewhere on the selected row still opens its session", () => {
+  const { view, opened, openedPrs } = prSetup();
+  view.widgets.tasks.select(1);
+  clickCell(view, "tasks", 0, "TITLE");
+  assert.deepEqual(opened.map((r) => r.key), ["T-0"]);
+  assert.deepEqual(openedPrs, []);
 });

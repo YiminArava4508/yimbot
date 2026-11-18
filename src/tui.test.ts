@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
-import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleOpenPr, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
 import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -372,6 +372,24 @@ test("statusContent shows an unexpired notice and drops it after its ttl", () =>
   assert.match(statusContent("supervised", notice, 9_999, []), /adding ready label to #481/);
   assert.doesNotMatch(statusContent("supervised", notice, 10_000, []), /adding ready label/);
   assert.doesNotMatch(statusContent("supervised", null, 0, []), /adding ready label/);
+});
+
+test("handleOpenPr opens the row's PR in its repo and stays quiet on success", async () => {
+  const seen: [number, string | undefined][] = [];
+  const notices: string[] = [];
+  await handleOpenPr(row({ pr: 12, repo: "acme/tf" }), (pr, repo) => {
+    seen.push([pr, repo]);
+    return Promise.resolve();
+  }, (text) => notices.push(text));
+  assert.deepEqual(seen, [[12, "acme/tf"]]);
+  assert.deepEqual(notices, []);
+});
+
+test("handleOpenPr surfaces a failure as a notice", async () => {
+  const notices: string[] = [];
+  await handleOpenPr(row({ pr: 12 }), () => Promise.reject(new Error("gh missing")), (text) => notices.push(text));
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /opening #12 failed: gh missing/);
 });
 
 test("handleReadyPress reports the same outcome the review overlay does", async () => {

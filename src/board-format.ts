@@ -4,12 +4,6 @@ import type { BoardRow } from "./events.ts";
 import { configFromEnv } from "./settings-model.ts";
 import { researchWords, rowType, type TicketType } from "./ticket-type.ts";
 
-export function fmtTime(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
 export function fmtDuration(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;

@@ -2,7 +2,7 @@ import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { paneLabel } from "./board-format.ts";
 import type { BoardRow } from "./events.ts";
-import { TABLE_IDS, alignTables, boardTable, type ReviewEntry, type TableBoxes, type TableId } from "./table-view.ts";
+import { PR_COLUMN, TABLE_IDS, alignTables, boardTable, columnAt, type ReviewEntry, type TableBoxes, type TableId } from "./table-view.ts";
 
 export type TableViewInput = {
   tasks: BoardRow[];
@@ -33,6 +33,7 @@ export function createTableView(opts: {
   parent: any;
   onFocus: (id: TableId) => void;
   onOpen: (row: BoardRow) => void;
+  onOpenPr: (row: BoardRow) => void;
 }): TableView {
   // Positions are re-fit by render() from tableBoxes; tasks is sized by its
   // top and bottom, so it must not start with a height that would win.
@@ -70,11 +71,29 @@ export function createTableView(opts: {
   let last: Pick<TableViewInput, "tasks" | "review" | "merge"> = { tasks: [], review: [], merge: [] };
   let visible = true;
   let syncing = false;
+  // The row whose PR cell the current click went down on. blessed fires the
+  // list's select (which opens the session) before the click reaches the pane,
+  // so mousedown is the only point early enough to claim the click for the PR.
+  let prClick: BoardRow | undefined;
 
   const selectedRow: TableView["selectedRow"] = (id, input) => {
     const index = widgets[id].selected - 1;
     if (id === "review") return input.review[index]?.row;
     return input[id][index];
+  };
+
+  const rowAtItem = (id: TableId, item: any): BoardRow | undefined => {
+    const index = widgets[id].items.indexOf(item) - 1;
+    if (index < 0) return undefined;
+    if (id === "review") return last.review[index]?.row;
+    return last[id][index];
+  };
+
+  const prCellRow = (id: TableId, item: any, x: number): BoardRow | undefined => {
+    const pane = widgets[id];
+    if (!pane._maxes || columnAt(pane._maxes, x - pane.aleft - pane.ileft) !== PR_COLUMN) return undefined;
+    const row = rowAtItem(id, item);
+    return row?.pr != null ? row : undefined;
   };
 
   const syncVisibility = () => {
@@ -96,8 +115,17 @@ export function createTableView(opts: {
       if (!syncing) opts.onFocus(id);
     });
     widgets[id].on("select", () => {
+      if (prClick) return;
       const picked = selectedRow(id, last);
       if (picked) opts.onOpen(picked);
+    });
+    widgets[id].on("element mousedown", (el: any, data: { x: number }) => {
+      prClick = prCellRow(id, el, data.x);
+    });
+    widgets[id].on("element click", () => {
+      const row = prClick;
+      prClick = undefined;
+      if (row) opts.onOpenPr(row);
     });
   }
 

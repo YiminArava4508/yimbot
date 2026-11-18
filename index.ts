@@ -225,6 +225,9 @@ if (process.stdout.isTTY) {
       const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);
     },
+    onOpenPr: async (pr, repo) => {
+      await ghRunner(currentCodebasePath(), repo)(["pr", "view", String(pr), "--web"]);
+    },
     mode: readMode,
     onToggleMode: toggleMode,
     settings,

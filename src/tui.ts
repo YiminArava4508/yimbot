@@ -487,6 +487,20 @@ export async function handleReadyPress(
   }
 }
 
+export async function handleOpenPr(
+  row: BoardRow,
+  openPr: (pr: number, repo?: string) => Promise<void>,
+  setNotice: (text: string, ttlMs: number) => void,
+): Promise<void> {
+  if (row.pr == null) return;
+  try {
+    await openPr(row.pr, row.repo);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setNotice(`{red-fg}opening #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
+  }
+}
+
 export { cellWidth, fitCell, fmtDuration, grey, paneLabel, repoDisplayName, titleCell } from "./board-format.ts";
 
 // The parent tickets box is the queue's width, far too narrow for the board's
@@ -637,6 +651,8 @@ export function runTui(opts: {
   heldMergedKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
+  // Opens a PR on GitHub in the browser; the PR cell on the board is clickable.
+  onOpenPr: (pr: number, repo?: string) => Promise<void>;
   onAddReadyLabel: (pr: number, key: string, label: string, repo?: string) => Promise<void>;
   mode: () => Mode;
   onToggleMode: () => Mode;
@@ -738,6 +754,7 @@ export function runTui(opts: {
     parent: screen,
     onFocus: (id) => focusChange(id),
     onOpen: (r) => opts.onOpenSession(r.key, r.label),
+    onOpenPr: (r) => void handleOpenPr(r, opts.onOpenPr, setNotice),
   });
 
   const makeColumn = (id: string): CardColumn => {

@@ -180,6 +180,6 @@ test("withUpdateLock returns null while a live pid holds the lock", async () => 
 test("withUpdateLock reclaims a lock left by a dead pid", async () => {
   const dir = tempDir("self-update-lock-");
   const dead = execFileSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"]).toString();
-  writeFileSync(join(dir, "self-update.lock"), dead);
+  writeFileSync(join(dir, "yimbot-update.lock"), dead);
   assert.equal(await withUpdateLock(dir, async () => "ran"), "ran");
 });

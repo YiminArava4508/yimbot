@@ -133,7 +133,7 @@ function tryCreate(path: string): boolean {
 }
 
 export async function withUpdateLock<T>(dir: string, fn: () => Promise<T>): Promise<T | null> {
-  const path = join(dir, "self-update.lock");
+  const path = join(dir, "yimbot-update.lock");
   if (!tryCreate(path)) {
     let holder = NaN;
     try {

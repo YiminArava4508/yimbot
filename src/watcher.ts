@@ -1567,6 +1567,12 @@ export function runEndSession(branch: string, reason: string): void {
   });
 }
 
+let heartbeatActive = false;
+
+export function heartbeatRunning(): boolean {
+  return heartbeatActive;
+}
+
 export function startWatcher(config: WatcherConfig): () => void {
   const log = (msg: string) => console.log(`[watcher] ${msg}`);
 
@@ -2069,6 +2075,7 @@ export function startWatcher(config: WatcherConfig): () => void {
   const heartbeat = async () => {
     if (running) return;
     running = true;
+    heartbeatActive = true;
     attentionSnapshot = null;
     try {
       clearDeadRaises(staleRaiseDeps);
@@ -2107,6 +2114,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       await claimOnce(claimState, claimDeps);
     } finally {
       running = false;
+      heartbeatActive = false;
     }
   };
 

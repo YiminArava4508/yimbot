@@ -14,6 +14,7 @@ import {
   claimOnce,
   type ClaimDeps,
   continuationSessionName,
+  heartbeatRunning,
   currentTmuxPane,
   type DependencyScanDeps,
   type DeployDeps,
@@ -1669,4 +1670,8 @@ test("resumeClaudeInPane returns false when the pane is gone", () => {
     throw new Error("can't find pane");
   };
   assert.equal(resumeClaudeInPane("%9", exec), false);
+});
+
+test("heartbeatRunning is false outside a heartbeat", () => {
+  assert.equal(heartbeatRunning(), false);
 });

@@ -16,6 +16,12 @@ export function withoutApiKey(env: NodeJS.ProcessEnv = process.env): NodeJS.Proc
   return rest;
 }
 
+let inFlight = 0;
+
+export function headlessInFlight(): number {
+  return inFlight;
+}
+
 export function runHeadless(
   model: string,
   cwd: string,
@@ -27,6 +33,13 @@ export function runHeadless(
     new Promise<string>((resolve, reject) => {
       const { bin, args } = headlessCommand(agent, model);
       const child = spawn(bin, args, { cwd, env });
+      inFlight++;
+      let settled = false;
+      const release = () => {
+        if (settled) return;
+        settled = true;
+        inFlight--;
+      };
       let out = "";
       let err = "";
       let timedOut = false;
@@ -38,9 +51,10 @@ export function runHeadless(
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (d: string) => { out += d; });
       child.stderr.on("data", (d: string) => { err += d; });
-      child.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+      child.on("error", (e: Error) => { clearTimeout(timer); release(); reject(e); });
       child.on("close", (code: number | null) => {
         clearTimeout(timer);
+        release();
         if (code === 0) resolve(out);
         // A killed child reports no exit code, and "exited null" reads as a
         // agent failure rather than the deadline this side imposed.

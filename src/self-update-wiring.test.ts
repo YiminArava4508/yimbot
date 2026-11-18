@@ -1,11 +1,12 @@
 // src/self-update-wiring.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "./test-temp.ts";
 import type { GitProbe, PrepDeps } from "./self-update.ts";
-import { SAFE_CHECK_MS, startSelfUpdate } from "./self-update-wiring.ts";
+import { readBootSha, SAFE_CHECK_MS, startSelfUpdate } from "./self-update-wiring.ts";
 
 const BOOT = "aaaaaaa1111111";
 const NEXT = "bbbbbbb2222222";
@@ -60,7 +61,7 @@ const flush = async () => {
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
 };
 
-function setup(over: { env?: NodeJS.ProcessEnv; repo?: Partial<Repo>; safe?: boolean } = {}) {
+function setup(over: { env?: NodeJS.ProcessEnv; repo?: Partial<Repo>; safe?: boolean; headless?: boolean } = {}) {
   const repo: Repo = { branch: "master", head: NEXT, origin: NEXT, clean: true, ...over.repo };
   const gitDir = tempDir("wiring-");
   const prep = fakePrep();
@@ -69,11 +70,13 @@ function setup(over: { env?: NodeJS.ProcessEnv; repo?: Partial<Repo>; safe?: boo
   const ctl = { safe: over.safe ?? true, restarts: 0 };
   const handle = startSelfUpdate({
     repoDir: "/unused",
-    env: over.env ?? {},
+    env: over.env ?? { YIMBOT_SUPERVISED: "1" },
+    bootSha: BOOT,
+    headless: over.headless ?? false,
     isSafe: () => ctl.safe,
     restart: () => void ctl.restarts++,
     log: (m) => logs.push(m),
-    deps: { git: fakeGit(repo), prep, gitDir: () => gitDir, headSha: () => BOOT, setTimer: timers.setTimer },
+    deps: { git: fakeGit(repo), prep, gitDir: () => gitDir, setTimer: timers.setTimer },
   });
   return { repo, gitDir, prep, timers, logs, ctl, handle };
 }
@@ -98,10 +101,10 @@ test("a ready state is reported through state()", async () => {
   handle?.stop();
 });
 
-test("seeds the skip set from YIMBOT_SKIP_SHA", async () => {
-  const { handle, prep } = setup({ env: { YIMBOT_SKIP_SHA: NEXT } });
+test("seeds the skip set from YIMBOT_SKIP_SHA as a boot crash", async () => {
+  const { handle, prep } = setup({ env: { YIMBOT_SUPERVISED: "1", YIMBOT_SKIP_SHA: NEXT } });
   await flush();
-  assert.deepEqual(handle?.state(), { kind: "blocked", reason: `typecheck fails at ${NEXT.slice(0, 7)}` });
+  assert.deepEqual(handle?.state(), { kind: "blocked", reason: `crashed on boot at ${NEXT.slice(0, 7)}` });
   assert.equal(prep.typechecks, 0);
   handle?.stop();
 });
@@ -186,19 +189,66 @@ test("stop clears the timers", async () => {
   assert.equal(timers.fire(5 * 60_000), 0);
 });
 
+test("a later poll on the same ready target does not prep again", async () => {
+  const { handle, timers, prep } = setup({ safe: false });
+  await flush();
+  timers.fire(5 * 60_000);
+  await flush();
+  assert.deepEqual(handle?.state(), { kind: "ready", target: NEXT });
+  assert.equal(prep.typechecks, 1);
+  handle?.stop();
+});
+
+test("headless without YIMBOT_SUPERVISED does not start the updater", async () => {
+  const { handle, prep, logs } = setup({ env: {}, headless: true });
+  await flush();
+  assert.equal(handle, null);
+  assert.equal(prep.typechecks, 0);
+  assert.ok(logs.some((l) => l.includes("scripts/run.sh")));
+});
+
+test("headless under scripts/run.sh starts and restarts", async () => {
+  const { handle, timers, ctl } = setup({ headless: true });
+  await flush();
+  assert.equal(handle?.autoRestart, true);
+  timers.fire(SAFE_CHECK_MS);
+  await flush();
+  assert.equal(ctl.restarts, 1);
+  handle?.stop();
+});
+
+test("a board without YIMBOT_SUPERVISED shows ready but never restarts", async () => {
+  const { handle, timers, ctl } = setup({ env: {} });
+  await flush();
+  assert.equal(handle?.autoRestart, false);
+  assert.deepEqual(handle?.state(), { kind: "ready", target: NEXT });
+  assert.equal(timers.fire(SAFE_CHECK_MS), 0);
+  assert.equal(ctl.restarts, 0);
+  handle?.stop();
+});
+
+test("readBootSha returns the HEAD sha of a repo", () => {
+  const dir = tempDir("wiring-boot-");
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+  git("init", "-q");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  assert.equal(readBootSha(dir), git("rev-parse", "HEAD"));
+});
+
+test("readBootSha returns an Error outside a repo", () => {
+  assert.ok(readBootSha(tempDir("wiring-boot-")) instanceof Error);
+});
+
 test("an unreadable boot sha disables self-update instead of crashing boot", () => {
   const logs: string[] = [];
   const handle = startSelfUpdate({
     repoDir: "/unused",
-    env: {},
+    env: { YIMBOT_SUPERVISED: "1" },
+    bootSha: new Error("not a git repository"),
+    headless: false,
     isSafe: () => true,
     restart: () => {},
     log: (m) => logs.push(m),
-    deps: {
-      headSha: () => {
-        throw new Error("not a git repository");
-      },
-    },
   });
   assert.equal(handle, null);
   assert.ok(logs.some((l) => l.includes("not a git repository")));

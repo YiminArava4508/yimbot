@@ -463,8 +463,11 @@ export function reachWarnings(down: Service[]): string {
   return down.map((s) => `{red-fg}⚠ ${s}{/red-fg} `).join("");
 }
 
-export function updateChip(state: UpdateState | null): string {
+export function updateChip(state: UpdateState | null, manualRestart = false): string {
   if (!state || state.kind === "current") return "";
+  if (state.kind === "ready" && manualRestart) {
+    return "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg}";
+  }
   if (state.kind === "ready") return "{black-fg}{cyan-bg} update ready {/cyan-bg}{/black-fg}";
   return `{red-fg}update blocked: ${state.reason}{/red-fg}`;
 }
@@ -490,8 +493,9 @@ export function statusContent(
   now: number,
   down: Service[],
   update: UpdateState | null = null,
+  manualRestart = false,
 ): string {
-  const base = `${reachWarnings(down)}${updateChip(update)}${modeContent(mode)}`;
+  const base = `${reachWarnings(down)}${updateChip(update, manualRestart)}${modeContent(mode)}`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -665,6 +669,8 @@ export function setupApplyOutcome(result: ApplyResult): { text: string; isError:
 export function runTui(opts: {
   onQuit: () => void;
   updateState?: () => UpdateState | null;
+  // True when no wrapper will relaunch the board, so a ready update waits for a manual restart.
+  updateManualRestart?: boolean;
   bootNotice?: Notice | null;
   liveKeys: () => Set<string>;
   // Keys of the instance's open PRs: a PR-backed row stays on the board while
@@ -908,7 +914,14 @@ export function runTui(opts: {
     status.setContent(
       daemonStopped
         ? "daemon stopped"
-        : statusContent(opts.mode(), notice, Date.now(), unreachable(), opts.updateState?.() ?? null),
+        : statusContent(
+            opts.mode(),
+            notice,
+            Date.now(),
+            unreachable(),
+            opts.updateState?.() ?? null,
+            opts.updateManualRestart ?? false,
+          ),
     );
     screen.render();
   };

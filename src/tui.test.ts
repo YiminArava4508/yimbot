@@ -1113,6 +1113,19 @@ test("updateChip renders nothing for null and current, a chip for ready, red tex
   assert.equal(updateChip({ kind: "blocked", reason: "dirty tree" }), "{red-fg}update blocked: dirty tree{/red-fg}");
 });
 
+test("updateChip asks for a manual restart when nothing will relaunch the board", () => {
+  assert.equal(
+    updateChip({ kind: "ready", target: "abc" }, true),
+    "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg}",
+  );
+  assert.equal(updateChip({ kind: "blocked", reason: "dirty tree" }, true), "{red-fg}update blocked: dirty tree{/red-fg}");
+});
+
+test("statusContent passes the manual restart flag to the update chip", () => {
+  const bar = statusContent("supervised", null, 0, [], { kind: "ready", target: "abc" }, true);
+  assert.ok(bar.includes("update ready (restart to apply)"));
+});
+
 test("statusContent shows the update chip before the mode chip", () => {
   const bar = statusContent("supervised", null, 0, [], { kind: "ready", target: "abc" });
   assert.ok(bar.indexOf("update ready") >= 0);

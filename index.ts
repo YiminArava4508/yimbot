@@ -24,7 +24,7 @@ import type { SettingsDeps } from "./src/tui-settings.ts";
 import { archMapPath, readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
 import { headlessInFlight, runHeadless, withoutApiKey } from "./src/headless.ts";
-import { startSelfUpdate } from "./src/self-update-wiring.ts";
+import { readBootSha, startSelfUpdate } from "./src/self-update-wiring.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
 import {
@@ -44,6 +44,10 @@ import {
 } from "./src/watcher.ts";
 
 process.env.MREIS_WORKTREE_LOCK_DISABLE = "1";
+
+// Read before anything else runs, so a pull by another process during startup
+// still shows up as an update.
+const bootSha = readBootSha(import.meta.dirname);
 
 const firstRun = setupMode({
   isTTY: Boolean(process.stdout.isTTY && process.stdin.isTTY),
@@ -208,6 +212,8 @@ if (process.stdout.isTTY) {
   const updater = startSelfUpdate({
     repoDir: import.meta.dirname,
     env: process.env,
+    bootSha,
+    headless: false,
     isSafe: () => tui !== undefined && !tui.isBusy() && daemonIdle(),
     restart: () => {
       tui?.teardown();
@@ -221,6 +227,7 @@ if (process.stdout.isTTY) {
   });
   tui = runTui({
     updateState: updater?.state,
+    updateManualRestart: updater ? !updater.autoRestart : false,
     bootNotice: updater ? bootNotice(process.env, updater.bootSha) : null,
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
@@ -270,6 +277,8 @@ if (process.stdout.isTTY) {
   const updater = startSelfUpdate({
     repoDir: import.meta.dirname,
     env: process.env,
+    bootSha,
+    headless: true,
     isSafe: daemonIdle,
     restart: () => {
       stop();

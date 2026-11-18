@@ -81,26 +81,26 @@ function fakePrep(typecheckOk = true): PrepDeps & { calls: string[] } {
 
 test("current when head and origin equal boot", async () => {
   const git = fakeGit();
-  const state = await checkForUpdate(BOOT, git, fakePrep(), new Set());
+  const state = await checkForUpdate(BOOT, git, fakePrep(), new Map());
   assert.deepEqual(state, { kind: "current" });
   assert.ok(!git.calls.includes("pull"));
 });
 
 test("blocked when not on master", async () => {
-  const state = await checkForUpdate(BOOT, fakeGit({ branch: "feat/x" }), fakePrep(), new Set());
+  const state = await checkForUpdate(BOOT, fakeGit({ branch: "feat/x" }), fakePrep(), new Map());
   assert.deepEqual(state, { kind: "blocked", reason: "not on master" });
 });
 
 test("blocked when tree dirty", async () => {
   const git = fakeGit({ clean: false, originHead: ORIGIN });
-  const state = await checkForUpdate(BOOT, git, fakePrep(), new Set());
+  const state = await checkForUpdate(BOOT, git, fakePrep(), new Map());
   assert.deepEqual(state, { kind: "blocked", reason: "dirty tree" });
   assert.ok(!git.calls.includes("pull"));
 });
 
 test("pulls when origin is ahead", async () => {
   const git = fakeGit({ originHead: ORIGIN, ancestors: [[BOOT, ORIGIN]] });
-  const state = await checkForUpdate(BOOT, git, fakePrep(), new Set());
+  const state = await checkForUpdate(BOOT, git, fakePrep(), new Map());
   assert.deepEqual(state, { kind: "ready", target: ORIGIN });
   assert.equal(git.calls.filter((c) => c === "pull").length, 1);
 });
@@ -108,14 +108,14 @@ test("pulls when origin is ahead", async () => {
 test("local commit ahead of origin is ready without pulling", async () => {
   const head = "ccccccc3333333";
   const git = fakeGit({ head, originHead: BOOT, ancestors: [[BOOT, head]] });
-  const state = await checkForUpdate(BOOT, git, fakePrep(), new Set());
+  const state = await checkForUpdate(BOOT, git, fakePrep(), new Map());
   assert.deepEqual(state, { kind: "ready", target: head });
   assert.ok(!git.calls.includes("pull"));
 });
 
 test("blocked when diverged", async () => {
   const git = fakeGit({ head: "ccccccc3333333", originHead: ORIGIN });
-  const state = await checkForUpdate(BOOT, git, fakePrep(), new Set());
+  const state = await checkForUpdate(BOOT, git, fakePrep(), new Map());
   assert.deepEqual(state, { kind: "blocked", reason: "diverged" });
 });
 
@@ -125,7 +125,7 @@ test("installs only when pnpm-lock.yaml changed", async () => {
     BOOT,
     fakeGit({ originHead: ORIGIN, ancestors: [[BOOT, ORIGIN]], changed: ["pnpm-lock.yaml"] }),
     withLock,
-    new Set(),
+    new Map(),
   );
   assert.ok(withLock.calls.includes("install"));
 
@@ -134,13 +134,13 @@ test("installs only when pnpm-lock.yaml changed", async () => {
     BOOT,
     fakeGit({ originHead: ORIGIN, ancestors: [[BOOT, ORIGIN]], changed: ["src/a.ts"] }),
     withoutLock,
-    new Set(),
+    new Map(),
   );
   assert.ok(!withoutLock.calls.includes("install"));
 });
 
 test("typecheck failure blocks and skips the sha", async () => {
-  const skipped = new Set<string>();
+  const skipped = new Map<string, string>();
   const git = fakeGit({ originHead: ORIGIN, ancestors: [[BOOT, ORIGIN]] });
   const state = await checkForUpdate(BOOT, git, fakePrep(false), skipped);
   assert.deepEqual(state, { kind: "blocked", reason: `typecheck fails at ${ORIGIN.slice(0, 7)}` });
@@ -150,13 +150,42 @@ test("typecheck failure blocks and skips the sha", async () => {
 test("skipped sha is blocked, not ready", async () => {
   const prep = fakePrep();
   const git = fakeGit({ originHead: ORIGIN, ancestors: [[BOOT, ORIGIN]] });
-  const state = await checkForUpdate(BOOT, git, prep, new Set([ORIGIN]));
-  assert.equal(state.kind, "blocked");
+  const state = await checkForUpdate(BOOT, git, prep, new Map([[ORIGIN, `typecheck fails at ${ORIGIN.slice(0, 7)}`]]));
+  assert.deepEqual(state, { kind: "blocked", reason: `typecheck fails at ${ORIGIN.slice(0, 7)}` });
   assert.ok(!prep.calls.includes("typecheck"));
 });
 
+test("booted on a local commit ahead of origin is current", async () => {
+  const local = "ccccccc3333333";
+  const git = fakeGit({ head: local, originHead: ORIGIN, ancestors: [[ORIGIN, local]] });
+  const prep = fakePrep();
+  const state = await checkForUpdate(local, git, prep, new Map());
+  assert.deepEqual(state, { kind: "current" });
+  assert.ok(!git.calls.includes("pull"));
+  assert.deepEqual(prep.calls, []);
+});
+
+test("after a rollback the skipped origin sha is blocked without a pull", async () => {
+  const prev = "ddddddd4444444";
+  const git = fakeGit({ head: prev, originHead: ORIGIN, ancestors: [[prev, ORIGIN]] });
+  const prep = fakePrep();
+  const skipped = new Map([[ORIGIN, `crashed on boot at ${ORIGIN.slice(0, 7)}`]]);
+  const state = await checkForUpdate(prev, git, prep, skipped);
+  assert.deepEqual(state, { kind: "blocked", reason: `crashed on boot at ${ORIGIN.slice(0, 7)}` });
+  assert.ok(!git.calls.includes("pull"));
+  assert.deepEqual(prep.calls, []);
+});
+
+test("a target that is already the ready target skips install and typecheck", async () => {
+  const git = fakeGit({ head: ORIGIN, originHead: ORIGIN, changed: ["pnpm-lock.yaml"] });
+  const prep = fakePrep();
+  const state = await checkForUpdate(BOOT, git, prep, new Map(), ORIGIN);
+  assert.deepEqual(state, { kind: "ready", target: ORIGIN });
+  assert.deepEqual(prep.calls, []);
+});
+
 test("fetch failure keeps state quiet", async () => {
-  const state = await checkForUpdate(BOOT, fakeGit({ fetchFails: true }), fakePrep(), new Set());
+  const state = await checkForUpdate(BOOT, fakeGit({ fetchFails: true }), fakePrep(), new Map());
   assert.deepEqual(state, { kind: "blocked", reason: "fetch failed" });
 });
 
@@ -324,6 +353,68 @@ test("a rejected check keeps polling and the previous state", async () => {
   await f.fire(300_000);
   assert.equal(n, 3);
   assert.deepEqual(f.seen, [{ kind: "current" }]);
+});
+
+test("does not restart while a check is in flight", async () => {
+  let release: (s: UpdateState) => void = () => {};
+  let n = 0;
+  const f = fakeUpdater({
+    check: () => {
+      n++;
+      if (n === 1) return Promise.resolve(READY);
+      return new Promise<UpdateState>((r) => (release = r));
+    },
+  });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(300_000);
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 0);
+  release(READY);
+  await f.flush();
+  await f.fire(10_000);
+  assert.equal(f.log.restarts, 1);
+});
+
+test("does not restart when the state changed during stillValid", async () => {
+  let valid: (ok: boolean) => void = () => {};
+  const blockedState: UpdateState = { kind: "blocked", reason: "not on master" };
+  const f = fakeUpdater({
+    states: [READY, blockedState],
+    stillValid: () => new Promise<boolean>((r) => (valid = r)),
+  });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(10_000);
+  await f.fire(300_000);
+  valid(true);
+  await f.flush();
+  assert.equal(f.log.restarts, 0);
+  assert.deepEqual(f.seen.at(-1), blockedState);
+});
+
+test("passes the previous state to check", async () => {
+  const prevs: Array<UpdateState | undefined> = [];
+  const f = fakeUpdater({
+    isSafe: () => false,
+    check: async (prev) => {
+      prevs.push(prev);
+      return READY;
+    },
+  });
+  startSelfUpdater(f.deps, f.opts);
+  await f.flush();
+  await f.fire(300_000);
+  assert.deepEqual(prevs, [undefined, READY]);
+});
+
+test("autoRestart false polls and reports but never restarts", async () => {
+  const f = fakeUpdater({ states: [READY] });
+  startSelfUpdater(f.deps, { ...f.opts, autoRestart: false });
+  await f.flush();
+  assert.deepEqual(f.seen, [READY]);
+  assert.equal(f.timers.filter((t) => t.ms === 10_000).length, 0);
+  assert.equal(f.log.restarts, 0);
 });
 
 test("stop clears the timers", async () => {

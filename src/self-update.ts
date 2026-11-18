@@ -29,11 +29,21 @@ export type PrepDeps = {
 
 const blocked = (reason: string): UpdateState => ({ kind: "blocked", reason });
 
+// Maps a sha that must never be applied to the reason the status bar shows.
+export type SkippedShas = Map<string, string>;
+
+async function newestSha(git: GitProbe, head: string, origin: string): Promise<string | null> {
+  if (head === origin || (await git.isAncestor(origin, head))) return head;
+  if (await git.isAncestor(head, origin)) return origin;
+  return null;
+}
+
 export async function checkForUpdate(
   bootSha: string,
   git: GitProbe,
   prep: PrepDeps,
-  skipped: Set<string>,
+  skipped: SkippedShas,
+  readyTarget?: string,
 ): Promise<UpdateState> {
   try {
     await git.fetch();
@@ -44,23 +54,22 @@ export async function checkForUpdate(
   if (!(await git.isClean())) return blocked("dirty tree");
 
   const head = await git.head();
-  const origin = await git.originHead();
-  if (head === bootSha && origin === bootSha) return { kind: "current" };
+  const target = await newestSha(git, head, await git.originHead());
+  if (target === null) return blocked("diverged");
+  if (target === bootSha) return { kind: "current" };
+  const skipReason = skipped.get(target);
+  if (skipReason) return blocked(skipReason);
 
-  if (head !== origin && !(await git.isAncestor(origin, head))) {
-    if (!(await git.isAncestor(head, origin))) return blocked("diverged");
-    await git.pullFfOnly();
-  }
-
-  const target = await git.head();
-  if (skipped.has(target)) return blocked(`typecheck fails at ${target.slice(0, 7)}`);
+  if (head !== target) await git.pullFfOnly();
+  if (target === readyTarget) return { kind: "ready", target };
 
   const changed = await git.changedFiles(bootSha, target);
   if (changed.includes("pnpm-lock.yaml")) await prep.install();
 
   if (!(await prep.typecheck())) {
-    skipped.add(target);
-    return blocked(`typecheck fails at ${target.slice(0, 7)}`);
+    const reason = `typecheck fails at ${target.slice(0, 7)}`;
+    skipped.set(target, reason);
+    return blocked(reason);
   }
   return { kind: "ready", target };
 }
@@ -101,7 +110,7 @@ export function gitProbe(dir: string): GitProbe {
 export function pnpmPrep(dir: string): PrepDeps {
   return {
     async install() {
-      await execFileAsync("pnpm", ["install", "--frozen-lockfile"], { cwd: dir });
+      await execFileAsync("pnpm", ["install", "--frozen-lockfile"], { cwd: dir, maxBuffer: 64 * 1024 * 1024 });
     },
     async typecheck() {
       try {
@@ -161,7 +170,7 @@ export async function withUpdateLock<T>(dir: string, fn: () => Promise<T>): Prom
 }
 
 export type SelfUpdaterDeps = {
-  check(): Promise<UpdateState>;
+  check(prev: UpdateState | undefined): Promise<UpdateState>;
   isSafe(): boolean;
   stillValid(target: string): Promise<boolean>;
   restart(): void;
@@ -180,7 +189,7 @@ export function pollIntervalMs(env: NodeJS.ProcessEnv): number {
 
 export function startSelfUpdater(
   deps: SelfUpdaterDeps,
-  opts: { pollMs: number; safeCheckMs: number },
+  opts: { pollMs: number; safeCheckMs: number; autoRestart?: boolean },
 ): () => void {
   let state: UpdateState | undefined;
   let stopped = false;
@@ -188,6 +197,7 @@ export function startSelfUpdater(
   let ticking = false;
   let pollTimer: { clear(): void } | undefined;
   let safeTimer: { clear(): void } | undefined;
+  const autoRestart = opts.autoRestart ?? true;
 
   const setState = (next: UpdateState) => {
     if (state && JSON.stringify(state) === JSON.stringify(next)) return;
@@ -209,12 +219,15 @@ export function startSelfUpdater(
     try {
       if (state?.kind !== "ready") return;
       const target = state.target;
-      if (!deps.isSafe()) return armSafe();
-      if (!(await deps.stillValid(target))) {
+      if (checking || !deps.isSafe()) return armSafe();
+      const valid = await deps.stillValid(target);
+      if (stopped) return;
+      if (state?.kind !== "ready" || state.target !== target) return;
+      if (!valid) {
         setState({ kind: "blocked", reason: "dirty tree" });
         return;
       }
-      if (stopped || !deps.isSafe()) return armSafe();
+      if (checking || !deps.isSafe()) return armSafe();
       deps.restart();
     } catch {
       armSafe();
@@ -227,13 +240,13 @@ export function startSelfUpdater(
     if (checking || stopped) return;
     checking = true;
     try {
-      setState(await deps.check());
+      setState(await deps.check(state));
     } catch {
       // Keep the previous state and try again on the next poll.
     } finally {
       checking = false;
     }
-    if (state?.kind === "ready") armSafe();
+    if (autoRestart && state?.kind === "ready") armSafe();
   };
 
   const schedulePoll = () => {

@@ -62,9 +62,12 @@ export function reviewSessionName(pr: number): string {
 
 // -A attaches when the session already exists, so a restarted yimbot rejoins
 // the same conversation. The ";" is tmux's command separator, passed as its
-// own argv element since no shell is involved.
+// own argv element since no shell is involved. The client shares the board's
+// tmux server, so an empty key table and no prefix keep root bindings (pane
+// navigation on C-h/j/k/l, the prefix) from eating keys meant for claude.
 export function reviewTmuxArgv(pr: number, worktree: string): string[] {
   const name = reviewSessionName(pr);
+  const setOption = (option: string, value: string) => [";", "set-option", "-t", name, option, value];
   return [
     "new-session",
     "-A",
@@ -74,12 +77,10 @@ export function reviewTmuxArgv(pr: number, worktree: string): string[] {
     sessionCwd(worktree),
     "claude",
     ...claudeArgs(pr, worktree),
-    ";",
-    "set-option",
-    "-t",
-    name,
-    "status",
-    "off",
+    ...setOption("status", "off"),
+    ...setOption("key-table", "yimbot-review"),
+    ...setOption("prefix", "None"),
+    ...setOption("prefix2", "None"),
   ];
 }
 

@@ -663,6 +663,32 @@ test("readyOnce reports each open PR's section", async () => {
   ]);
 });
 
+test("readyOnce moves a PR it labels this tick to the merge section right away", async () => {
+  const seen: { n: number; section: string }[] = [];
+  const h = harness({ onSection: (n, s) => void seen.push({ n, section: s }) }, []);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
+  assert.deepEqual(seen, [
+    { n: 4706, section: "review" },
+    { n: 4706, section: "merge" },
+  ]);
+});
+
+test("readyOnce leaves the section alone when the label add fails", async () => {
+  const seen: { n: number; section: string }[] = [];
+  const h = harness(
+    {
+      addLabel: async () => {
+        throw new Error("boom");
+      },
+      onSection: (n, s) => void seen.push({ n, section: s }),
+    },
+    [],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [{ n: 4706, section: "review" }]);
+});
+
 test("readyOnce reports a section for a blocked PR even though it reports no verdict", async () => {
   // Aviator swaps ready-to-merge for blocked, so a blocked PR has genuinely
   // left the merge queue and the board must say so. Its labels stay the

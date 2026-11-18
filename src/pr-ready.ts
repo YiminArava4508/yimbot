@@ -280,6 +280,9 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     try {
       await deps.addLabel(n, deps.label);
       state.latched.add(n);
+      // The section above was read before this label went on; report the new
+      // one now so the row does not wait a heartbeat to reach the merge pane.
+      deps.onSection?.(n, boardSection(false, true, false));
       if (approved) freeSlots--;
       else awaitingReview++;
       deps.log(`labeled PR #${n} ${deps.label} (ready to merge)`);

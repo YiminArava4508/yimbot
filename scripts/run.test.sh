@@ -41,6 +41,7 @@ git fetch -q origin
 assert_ok can_roll_back "$base" "$pushed"
 assert_fails can_roll_back "$pushed" "$base"
 assert_fails can_roll_back "" "$pushed"
+assert_fails can_roll_back "$pushed" "$pushed"
 
 echo c > f.txt; git commit -qam local-only
 local_sha=$(git rev-parse HEAD)
@@ -66,9 +67,10 @@ cat > "$tmp/bin/pnpm" <<'FAKE'
 #!/bin/bash
 n=$(( $(cat "$FAKE_DIR/count" 2>/dev/null || echo 0) + 1 ))
 echo $n > "$FAKE_DIR/count"
-echo "launch $n updated=${YIMBOT_UPDATED_FROM:-} rolled=${YIMBOT_ROLLED_BACK:-}" >> "$FAKE_DIR/log"
+echo "launch $n updated=${YIMBOT_UPDATED_FROM:-} rolled=${YIMBOT_ROLLED_BACK:-} skip=${YIMBOT_SKIP_SHA:-} sup=${YIMBOT_SUPERVISED:-}" >> "$FAKE_DIR/log"
 case "$FAKE_MODE:$n" in
   *:1) echo x >> f.txt; git commit -qam update; git push -qf origin master 2>/dev/null; exit 75 ;;
+  crash:2) exit 1 ;;
   int:2) trap 'exit 1' INT; touch "$FAKE_DIR/ready"; sleep 30 & wait; exit 1 ;;
   *) exit 0 ;;
 esac
@@ -79,8 +81,8 @@ before=$(git rev-parse HEAD)
 rm -f "$tmp/count" "$tmp/log"
 FAKE_MODE=ok bash scripts/run.sh >/dev/null 2>&1
 assert_eq "$?" "0" "loop exits 0 after relaunch"
-assert_eq "$(sed -n 1p "$tmp/log")" "launch 1 updated= rolled=" "first launch has no update env"
-assert_eq "$(sed -n 2p "$tmp/log")" "launch 2 updated=$before rolled=" "relaunch carries YIMBOT_UPDATED_FROM"
+assert_eq "$(sed -n 1p "$tmp/log")" "launch 1 updated= rolled= skip= sup=1" "first launch has no update env and is supervised"
+assert_eq "$(sed -n 2p "$tmp/log")" "launch 2 updated=$before rolled= skip= sup=1" "relaunch carries YIMBOT_UPDATED_FROM"
 
 git reset -q --hard "$before"
 rm -f "$tmp/count" "$tmp/log" "$tmp/ready"
@@ -94,5 +96,15 @@ wait "$wpid"
 assert_eq "$?" "1" "interrupt ends the wrapper with the child code"
 assert_eq "$(git rev-parse HEAD)" "$after_update" "interrupt does not roll back"
 assert_eq "$(wc -l < "$tmp/log")" "2" "no relaunch after interrupt"
+
+git reset -q --hard "$before"
+rm -f "$tmp/count" "$tmp/log"
+FAKE_MODE=crash bash scripts/run.sh >/dev/null 2>&1
+assert_eq "$?" "0" "loop exits 0 after a rollback relaunch"
+crashed=$(git rev-parse origin/master)
+assert_eq "$(git rev-parse HEAD)" "$before" "boot crash rolls back to prev"
+assert_eq "$(sed -n 2p "$tmp/log")" "launch 2 updated=$before rolled= skip= sup=1" "crashing launch runs the pulled commit"
+assert_eq "$(sed -n 3p "$tmp/log")" "launch 3 updated= rolled=$crashed skip=$crashed sup=1" "relaunch after rollback skips the crashed sha"
+assert_eq "$(wc -l < "$tmp/log")" "3" "no relaunch after the rolled-back run exits 0"
 
 exit $fail

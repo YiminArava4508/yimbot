@@ -19,6 +19,7 @@ crashed_on_boot() {
 can_roll_back() {
   local prev=$1 cur=$2
   [ -n "$prev" ] || return 1
+  [ "$prev" != "$cur" ] || return 1
   git merge-base --is-ancestor "$prev" "$cur" 2>/dev/null || return 1
   git merge-base --is-ancestor "$cur" origin/master 2>/dev/null || return 1
   git diff-index --quiet HEAD -- 2>/dev/null
@@ -36,6 +37,8 @@ roll_back() {
 main() {
   cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." || exit 1
   unset YIMBOT_UPDATED_FROM YIMBOT_ROLLED_BACK YIMBOT_SKIP_SHA
+  # Tells yimbot something will relaunch it after exit 75.
+  export YIMBOT_SUPERVISED=1
 
   local prev="" cur start code
   interrupted=""

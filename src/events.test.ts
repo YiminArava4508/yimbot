@@ -1069,11 +1069,39 @@ test("foldSections takes the newest section event per key", () => {
     ev("section_merge", "ENG-1", 1),
     ev("section_review", "ENG-2", 2),
     ev("section_tasks", "ENG-1", 3),
-    ev("task_started", "ENG-1", 4),
+    ev("ci_fix_started", "ENG-1", 4),
   ]);
   assert.equal(folded.get("ENG-1"), "tasks");
   assert.equal(folded.get("ENG-2"), "review");
   assert.equal(folded.get("ENG-3"), undefined);
+});
+
+test("a fresh task start clears the section a closed PR left behind", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1, kind: "section_review", key: "ENG-1", label: "ENG-1", pr: 6645 },
+      { ts: 2, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+  );
+  assert.equal(rows[0].section, "tasks");
+});
+
+test("a task start that carries its PR keeps the row's section", () => {
+  const folded = foldSections([
+    { ts: 1, kind: "section_review", key: "ENG-1", label: "ENG-1", pr: 9 },
+    { ts: 2, kind: "task_started", key: "ENG-1", label: "ENG-1", pr: 9, repo: "acme/x" },
+  ]);
+  assert.equal(folded.get("ENG-1"), "review");
+});
+
+test("emitSection reports review again after a fresh task start", () => {
+  withTmpLog((path) => {
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitEvent({ kind: "task_started", key: "ENG-9", label: "ENG-9" });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 13 });
+    assert.deepEqual(readEvents(path).map((e) => e.kind), ["section_review", "task_started", "section_review"]);
+  });
 });
 
 test("reduceRows defaults a row with no section event to tasks", () => {

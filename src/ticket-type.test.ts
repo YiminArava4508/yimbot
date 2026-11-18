@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_RESEARCH_WORDS, researchWords, rowType, ticketType } from "./ticket-type.ts";
+import { DEFAULT_RELEASE_WORDS, DEFAULT_RESEARCH_WORDS, releaseWords, researchWords, rowType, ticketType } from "./ticket-type.ts";
 
 test("ticketType reads research from a title that opens with a research verb", () => {
   assert.equal(ticketType("Decide retention for bov-exports/ objects"), "research");
@@ -53,4 +53,41 @@ test("rowType leaves a ticket row to its title", () => {
   assert.equal(rowType({ key: "ENG-1", title: "Decide retention" }), "research");
   assert.equal(rowType({ key: "ENG-1", title: "Add column" }), null);
   assert.equal(rowType({ key: "ENG-1@acme/terraform-x", title: "Add column" }), null);
+});
+
+test("ticketType reads release from a rollout or release checklist title", () => {
+  assert.equal(ticketType("Release checklist: flags, nonprod check and production rollout for Hyperion candidates"), "release");
+  assert.equal(ticketType("Rollout of the new search index"), "release");
+  assert.equal(ticketType("Go/no-go for escrow v2"), "release");
+});
+
+test("ticketType lets release win over a research word in the same title", () => {
+  assert.equal(ticketType("Release checklist: decide pilot group"), "release");
+});
+
+test("ticketType leaves a plain release mention untyped", () => {
+  assert.equal(ticketType("Fix release build on CI"), null);
+});
+
+test("ticketType takes a custom release word list", () => {
+  assert.equal(ticketType("Launch plan for CDN", ["research"], ["launch plan"]), "release");
+  assert.equal(ticketType("Rollout of the index", ["research"], []), null);
+});
+
+test("releaseWords falls back to the defaults and reads RELEASE_TITLE_WORDS when set", () => {
+  const prev = process.env.RELEASE_TITLE_WORDS;
+  try {
+    delete process.env.RELEASE_TITLE_WORDS;
+    assert.deepEqual(releaseWords(), DEFAULT_RELEASE_WORDS);
+    process.env.RELEASE_TITLE_WORDS = " Launch plan, cutover ,";
+    assert.deepEqual(releaseWords(), ["launch plan", "cutover"]);
+  } finally {
+    if (prev === undefined) delete process.env.RELEASE_TITLE_WORDS;
+    else process.env.RELEASE_TITLE_WORDS = prev;
+  }
+});
+
+test("rowType lets pr win over a release title", () => {
+  assert.equal(rowType({ key: "pr:7", title: "Release checklist" }), "pr");
+  assert.equal(rowType({ key: "ENG-1966", title: "Release checklist" }), "release");
 });

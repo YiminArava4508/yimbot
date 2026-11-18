@@ -33,7 +33,7 @@ export function codebaseRepoName(): string {
   return basename(configFromEnv(process.env).codebasePath);
 }
 
-export const TYPE_CHIP_COLOR: Record<TicketType, string> = { research: "magenta", pr: "cyan" };
+export const TYPE_CHIP_COLOR: Record<TicketType, string> = { research: "magenta", release: "yellow", pr: "cyan" };
 
 // The TITLE cell: a typed row gets a chip ahead of its title, so the type
 // reads at a glance without the board spending a column on a rare marker.

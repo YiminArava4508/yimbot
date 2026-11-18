@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
+import { goCacheDir, trimGoCache } from "./go-cache.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
@@ -105,6 +106,12 @@ export async function startDaemon(): Promise<() => void> {
   // Cleanup step: on by default, disabled with a recognized off-value. Removes a
   // worktree + session once its PR merges.
   const autoCleanup = !["false", "off", "no", "0"].includes(envOr("AUTO_CLEANUP", "true").toLowerCase());
+
+  const goCacheTrim = !["false", "off", "no", "0"].includes(envOr("GO_CACHE_TRIM", "true").toLowerCase());
+  const goCacheMaxAgeHours = Number(envOr("GO_CACHE_MAX_AGE_HOURS", "6"));
+  if (!Number.isFinite(goCacheMaxAgeHours) || goCacheMaxAgeHours <= 0) {
+    throw new Error("GO_CACHE_MAX_AGE_HOURS must be a positive number");
+  }
 
   if (!apiKey) throw new Error("LINEAR_API_KEY is required");
   if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
@@ -536,8 +543,32 @@ export async function startDaemon(): Promise<() => void> {
   void safeSync();
   const syncTimer = setInterval(() => void safeSync(), heartbeatIntervalMinutes * 60 * 1000);
 
+  let trimming = false;
+  const safeTrim = async (): Promise<void> => {
+    if (trimming) return;
+    trimming = true;
+    try {
+      const dir = await goCacheDir();
+      if (!dir) return;
+      const { removed, freedBytes } = await trimGoCache(dir, goCacheMaxAgeHours * 60 * 60 * 1000);
+      if (removed > 0) {
+        console.log(`[go-cache] removed ${removed} entries unused for ${goCacheMaxAgeHours}h, freed ${(freedBytes / 1e9).toFixed(1)}G`);
+      }
+    } catch (err) {
+      console.warn(`[go-cache] trim failed: ${err}`);
+    } finally {
+      trimming = false;
+    }
+  };
+  let trimTimer: NodeJS.Timeout | undefined;
+  if (goCacheTrim) {
+    void safeTrim();
+    trimTimer = setInterval(() => void safeTrim(), 60 * 60 * 1000);
+  }
+
   return () => {
     clearInterval(syncTimer);
+    clearInterval(trimTimer);
     stop();
   };
 }

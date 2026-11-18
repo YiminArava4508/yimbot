@@ -224,6 +224,11 @@ flowchart TD
   group's teardown and the reap of a worktree whose PR closed unmerged. *(optional; setting: `AUTO_CLEANUP`,
   on by default)* Needs `gh` installed and authenticated; runs against the
   repo at `CODEBASE_PATH`.
+- **Trim the Go build cache:** every hour, removes entries in `go env GOCACHE`
+  that no build has used in `GO_CACHE_MAX_AGE_HOURS` (defaults to 6). Go's own
+  trim waits 5 days, which lets parallel worktree builds grow the cache past
+  100G. *(optional; setting: `GO_CACHE_TRIM`, on by default; skipped when `go`
+  isn't installed)*
 - **Advance the work (teal):** every heartbeat, once one of your PRs is merged,
   yimbot judges its issue against the issue's acceptance criteria and, while any
   remain unmet, spawns a continuation session to keep working the issue.

@@ -33,6 +33,7 @@ const opts = (merged: Set<string> | null = null, requireEstimate = false) => ({
   riskLabels,
   rejectLabel: "reject",
   afterReleaseLabel: "after-release",
+  doneStateName: "Done",
   merged,
   clearedStates: clearedStateNames("Merged", "Deployed To Nonprod"),
   labelFilter: null,
@@ -240,7 +241,16 @@ test("selectNextClaim holds an after-release ticket while its parent is In Revie
   assert.equal(selectNextClaim([t2], opts(new Set(["ENG-9"]))), null);
 });
 
-test("selectNextClaim releases an after-release ticket once the parent is completed", () => {
+test("selectNextClaim keeps holding an after-release ticket on a Ready To Release parent", () => {
+  const t = todo({
+    id: "ar",
+    labels: ["after-release"],
+    blockedBy: [{ identifier: "ENG-9", stateName: "Ready To Release", stateType: "completed" }],
+  });
+  assert.equal(selectNextClaim([t], opts()), null);
+});
+
+test("selectNextClaim releases an after-release ticket once the parent is Done", () => {
   const t = todo({
     id: "ar",
     labels: ["after-release"],

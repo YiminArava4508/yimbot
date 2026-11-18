@@ -46,19 +46,22 @@ export function isClearedState(stateName: string, cleared: Set<string>): boolean
 
 // A blocker stops blocking once its work has landed: it reached the merge state
 // (or one past it), it was closed out, or its PR is merged even though nobody
-// moved the ticket. An after-release ticket waits for the blocker to be closed
-// out (completed, canceled or duplicate): merged work has not shipped yet.
+// moved the ticket. An after-release ticket (doneState set) waits for the
+// blocker to sit in the Done state by name: merged work has not shipped yet, and
+// other completed-type states such as Ready To Release are not released either.
 function isSatisfied(
   b: Blocker,
   merged: Set<string>,
   cleared: Set<string>,
-  afterRelease: boolean,
+  doneState: string | null,
 ): boolean {
-  const closedOut =
-    b.stateType === "completed" || b.stateType === "canceled" || b.stateType === "duplicate";
-  if (afterRelease) return closedOut;
+  if (doneState !== null) return isClearedState(b.stateName, new Set([doneState.trim().toLowerCase()]));
   return (
-    isClearedState(b.stateName, cleared) || closedOut || merged.has(b.identifier.toUpperCase())
+    isClearedState(b.stateName, cleared) ||
+    b.stateType === "completed" ||
+    b.stateType === "canceled" ||
+    b.stateType === "duplicate" ||
+    merged.has(b.identifier.toUpperCase())
   );
 }
 
@@ -69,16 +72,16 @@ export function isAfterReleaseOrphan(afterRelease: boolean, blockedBy: Blocker[]
 }
 
 // A ticket is blocked while any of its blockers is unsatisfied. No blockers
-// means never blocked, except for an after-release ticket.
+// means never blocked, except for an after-release ticket (doneState set).
 export function isBlocked(
   blockedBy: Blocker[],
   merged: Set<string>,
   cleared: Set<string>,
-  afterRelease = false,
+  doneState: string | null = null,
 ): boolean {
   return (
-    isAfterReleaseOrphan(afterRelease, blockedBy) ||
-    blockedBy.some((b) => !isSatisfied(b, merged, cleared, afterRelease))
+    isAfterReleaseOrphan(doneState !== null, blockedBy) ||
+    blockedBy.some((b) => !isSatisfied(b, merged, cleared, doneState))
   );
 }
 
@@ -88,11 +91,11 @@ export function unsatisfiedBlockers(
   blockedBy: Blocker[],
   merged: Set<string>,
   cleared: Set<string>,
-  afterRelease = false,
+  doneState: string | null = null,
 ): string {
-  const suffix = afterRelease ? ", waiting for release" : "";
+  const suffix = doneState !== null ? ", waiting for release" : "";
   return blockedBy
-    .filter((b) => !isSatisfied(b, merged, cleared, afterRelease))
+    .filter((b) => !isSatisfied(b, merged, cleared, doneState))
     .map((b) => `${b.identifier} (${b.stateName}${suffix})`)
     .join(", ");
 }

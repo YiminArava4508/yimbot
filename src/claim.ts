@@ -9,6 +9,8 @@ export type SelectOptions = {
   rejectLabel: string;
   // Label (any casing) that makes a ticket wait for its blockers to be completed, not merely merged.
   afterReleaseLabel: string;
+  // State an after-release ticket's blockers must be in (DONE_STATE_NAME).
+  doneStateName: string;
   // Merged ticket identifiers. When non-null, todos with a blocker whose work
   // has not landed are dropped; null skips the blocked filter (gh unavailable).
   merged: Set<string> | null;
@@ -43,7 +45,12 @@ function priorityRank(priority: number): number {
 function isHeldByBlockers(t: CycleTodoIssue, opts: SelectOptions): boolean {
   const afterRelease = hasLabel(t.labels, opts.afterReleaseLabel);
   if (!afterRelease && opts.merged === null) return false;
-  return isBlocked(t.blockedBy, opts.merged ?? new Set(), opts.clearedStates, afterRelease);
+  return isBlocked(
+    t.blockedBy,
+    opts.merged ?? new Set(),
+    opts.clearedStates,
+    afterRelease ? opts.doneStateName : null,
+  );
 }
 
 // Rank the Todo tickets that may be claimed: drop risk-labeled tickets, then

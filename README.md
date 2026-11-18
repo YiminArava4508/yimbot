@@ -278,8 +278,9 @@ flowchart TD
 
 A ticket labeled `after-release` (the `AFTER_RELEASE_LABEL` env var renames it)
 waits for its blockers to be **released**, not just merged. Each blocker counts
-as satisfied only when its Linear state type is `completed`, `canceled` or
-`duplicate`. The Merged and review states and a merged PR do not count. Tickets
+as satisfied only when it sits in the Done state (`DONE_STATE_NAME`, defaults to
+`Done`). The Merged and review states, other completed-type states such as Ready
+To Release, Canceled, and a merged PR do not count. Tickets
 without the label behave as before.
 
 - **Claim and reconcile:** the claim step defers the ticket, logging

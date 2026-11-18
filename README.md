@@ -492,8 +492,11 @@ go when the board owns the terminal, default `daemon.log`).
 
 ```bash
 pnpm install
-pnpm start   # first run opens the setup wizard in the TUI, writes .env, then starts
+scripts/run.sh   # first run opens the setup wizard in the TUI, writes .env, then starts
 ```
+
+`scripts/run.sh` relaunches yimbot after a self-update and rolls back a crash on
+boot to the previous commit. `pnpm start` runs it once with no relaunch.
 
 `pnpm start` opens a setup wizard in the TUI when yimbot is not fully set up:
 no `LINEAR_API_KEY`, a `CODEBASE_PATH` that is unset or not a git repository,
@@ -600,7 +603,8 @@ its local worktree and any running fix session behind for a human to clear up.
 ```bash
 pnpm onboard   # (re)configure via the CLI prompts (W on the board does it in the TUI)
 pnpm check     # one-shot: print the issues the deploy state and label filter currently match
-pnpm start     # run the daemon (Ctrl+C to stop); opens the setup wizard first if not set up
+scripts/run.sh # run the daemon (Ctrl+C to stop); opens the setup wizard first if not set up
+pnpm start     # same, without relaunch after a self-update
 ```
 
 ## Session launcher & skill

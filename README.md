@@ -498,6 +498,14 @@ scripts/run.sh   # first run opens the setup wizard in the TUI, writes .env, the
 `scripts/run.sh` relaunches yimbot after a self-update and rolls back a crash on
 boot to the previous commit. `pnpm start` runs it once with no relaunch.
 
+Self-update polls `origin/master` and, once nothing is in flight, exits so
+`scripts/run.sh` can relaunch it on the new code. `SELF_UPDATE` turns it on or
+off (default on; `false`, `off`, `no` or `0` turn it off) and
+`SELF_UPDATE_INTERVAL_MINUTES` sets the poll interval (default `5`). Relaunching
+needs `scripts/run.sh`: under plain `pnpm start` the board shows
+`update ready (restart to apply)` and waits for you, and headless runs do not
+self-update at all.
+
 `pnpm start` opens a setup wizard in the TUI when yimbot is not fully set up:
 no `LINEAR_API_KEY`, a `CODEBASE_PATH` that is unset or not a git repository,
 or a required tool (`git`, `tmux`, `gh`, `node`, `pnpm`, `claude`) missing from

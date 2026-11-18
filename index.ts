@@ -41,6 +41,8 @@ import {
   unbindReturnKey,
 } from "./src/watcher.ts";
 
+process.env.MREIS_WORKTREE_LOCK_DISABLE = "1";
+
 const firstRun = setupMode({
   isTTY: Boolean(process.stdout.isTTY && process.stdin.isTTY),
   term: process.env.TERM,

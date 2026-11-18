@@ -235,7 +235,7 @@ create_worktree() {
 # pickup-ticket skill (all optional). Pure (reads env + checks one file);
 # unit-tested via sourcing.
 build_claude_cmd() {
-  local cmd="claude --permission-mode auto"
+  local cmd="MREIS_WORKTREE_LOCK_DISABLE=1 claude --permission-mode auto"
   local settings=${SESSION_SETTINGS:-$HOME/.config/yimbot/session-settings.json}
   [ -f "$settings" ] && cmd="$cmd --settings $settings"
   [ -n "${PLAN_MODEL:-}" ] && cmd="$cmd --model $PLAN_MODEL"

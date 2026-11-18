@@ -24,6 +24,7 @@ assert_eq "$(unset DEFAULT_BRANCH; default_branch_of /no/such/repo)" "main" "fal
 # bypass-mode confirmation screen blocks the unattended start.
 assert_eq "$(build_claude_cmd | grep -c -- '--permission-mode auto')" "1" "runs in auto mode"
 assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "0" "does not bypass permissions"
+assert_eq "$(build_claude_cmd | grep -c 'MREIS_WORKTREE_LOCK_DISABLE=1')" "1" "disables the worktree lock"
 assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" "honors PLAN_MODEL"
 assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
 assert_eq "$(SPLIT_TICKETS=false build_claude_cmd | grep -c 'SPLIT_TICKETS=false')" "1" "passes SPLIT_TICKETS through"

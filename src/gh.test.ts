@@ -10,6 +10,7 @@ import {
   type GhRunner,
   ghRunner,
   listMyClosedUnmergedPRs,
+  listMergedPRsBy,
   listMyMergedPRs,
   listMyOpenPRs,
   listSuccessfulRunHeadShas,
@@ -110,6 +111,13 @@ test("listMyMergedPRs requests author=@me merged PRs and parses them", async () 
   const prs = await listMyMergedPRs(run);
   assert.deepEqual(prs, [{ number: 2, headRefName: "eng-2-b" }]);
   assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "merged"]);
+});
+
+test("listMergedPRsBy lists merged PRs for the given author", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify([{ number: 7, headRefName: "eng-7-x" }])]);
+  const prs = await listMergedPRsBy(run, "yimbot-red");
+  assert.deepEqual(prs, [{ number: 7, headRefName: "eng-7-x" }]);
+  assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "yimbot-red", "--state", "merged"]);
 });
 
 test("parseClosedUnmergedPRs drops merged rows and keeps only closed-unmerged", () => {

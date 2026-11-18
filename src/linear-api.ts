@@ -456,7 +456,7 @@ export type CycleParent = {
   children: { labels: string[] }[];
 };
 
-// Top-level active-cycle issues titled "Remove ..." with their children's label
+// Active-cycle issues (sub-issues included) titled "Remove ..." with their children's label
 // names, for finding tickets that lack a given follow-up child.
 export async function fetchCycleParents(
   apiKey: string,
@@ -480,7 +480,6 @@ export async function fetchCycleParents(
         filter: {
           team: { id: { eq: $teamId } }
           cycle: { isActive: { eq: true } }
-          parent: { null: true }
           title: { startsWith: "Remove" }
         }
       ) {

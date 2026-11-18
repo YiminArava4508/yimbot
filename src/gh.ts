@@ -68,8 +68,13 @@ export function parseMergedPRs(json: string, repo?: string): MergedPR[] {
 // The viewer's merged PRs in the runner's repo. Bounded to the 100 most recent:
 // a worktree whose PR merged more than 100 merges ago is not a realistic case.
 export async function listMyMergedPRs(run: GhRunner, repo?: string): Promise<MergedPR[]> {
+  return listMergedPRsBy(run, "@me", repo);
+}
+
+// Merged PRs by any author ("@me" or a login), same 100-PR bound.
+export async function listMergedPRsBy(run: GhRunner, author: string, repo?: string): Promise<MergedPR[]> {
   return parseMergedPRs(
-    await run(["pr", "list", "--author", "@me", "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
+    await run(["pr", "list", "--author", author, "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
     repo,
   );
 }

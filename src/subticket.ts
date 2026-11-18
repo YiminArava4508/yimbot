@@ -30,6 +30,7 @@ export type SliceOptions = {
   // parent zeroing.
   afterRelease?: boolean;
   afterReleaseLabel?: string;
+  description?: string;
 };
 
 // Create one split-slice subticket under a parent ticket: a Linear sub-issue
@@ -74,6 +75,7 @@ export async function createSliceSubticket(
       teamId: parent.teamId,
       parentId: parent.id,
       title,
+      ...(opts.description ? { description: opts.description } : {}),
       ...(opts.points != null ? { estimate: opts.points } : {}),
       ...(parent.assigneeId ? { assigneeId: parent.assigneeId } : {}),
       ...placement,

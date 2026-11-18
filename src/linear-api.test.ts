@@ -8,6 +8,7 @@ import {
   createComment,
   createSubIssue,
   fetchIssueEstimate,
+  fetchCycleParents,
   fetchIssueSplitInfo,
   fetchUnestimatedIssues,
   fetchUsers,
@@ -1063,4 +1064,28 @@ test("countAssignedInState leaves out issues carrying the reject label", async (
   };
   assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body), "reject"), 1);
   assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body)), 2);
+});
+
+test("fetchCycleParents lists active-cycle issues with their children's label names", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            identifier: "ENG-1",
+            title: "Remove `x` flag (code, then prod)",
+            children: { nodes: [{ labels: { nodes: [{ name: "after-release" }] } }] },
+          },
+        ],
+      },
+    },
+  });
+  const parents = await fetchCycleParents("k", "team-1", fetchImpl);
+  assert.deepEqual(parents, [
+    {
+      identifier: "ENG-1",
+      title: "Remove `x` flag (code, then prod)",
+      children: [{ labels: ["after-release"] }],
+    },
+  ]);
 });

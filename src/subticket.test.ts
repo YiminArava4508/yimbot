@@ -330,3 +330,26 @@ test("createSliceSubticket --after-release uses the configured label name", asyn
   const create = calls.find((c) => /issueCreate/.test(c.query as string));
   assert.deepEqual((create?.variables as { input: { labelIds: string[] } }).input.labelIds, ["lab-x"]);
 });
+
+test("createSliceSubticket passes a description through to the sub-issue", async () => {
+  const { fetchImpl, calls } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null, labels: { nodes: [] } },
+        },
+      },
+    },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+    { match: /issueUpdate/, body: { data: { issueUpdate: { success: true } } } },
+  ]);
+  await createSliceSubticket("k", "ENG-42", "slice", { description: "do the thing" }, fetchImpl);
+  const create = calls.find((c) => /issueCreate/.test(c.query as string));
+  assert.deepEqual(create?.variables, {
+    input: { teamId: "team-1", parentId: "uuid-p", title: "slice", description: "do the thing" },
+  });
+});

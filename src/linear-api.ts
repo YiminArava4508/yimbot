@@ -450,6 +450,52 @@ export async function fetchCycleTodoIssues(
   }));
 }
 
+export type CycleParent = {
+  identifier: string;
+  title: string;
+  children: { labels: string[] }[];
+};
+
+// Every issue in the team's active cycle with its children's label names, for
+// finding tickets that lack a given follow-up child.
+export async function fetchCycleParents(
+  apiKey: string,
+  teamId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CycleParent[]> {
+  type Data = {
+    issues: {
+      nodes: {
+        identifier: string;
+        title: string;
+        children: { nodes: { labels: { nodes: { name: string }[] } }[] };
+      }[];
+    };
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query CycleParents($teamId: ID!) {
+      issues(
+        first: 250
+        filter: { team: { id: { eq: $teamId } }, cycle: { isActive: { eq: true } } }
+      ) {
+        nodes {
+          identifier
+          title
+          children { nodes { labels { nodes { name } } } }
+        }
+      }
+    }`,
+    { teamId },
+    fetchImpl,
+  );
+  return data.issues.nodes.map((n) => ({
+    identifier: n.identifier,
+    title: n.title,
+    children: n.children.nodes.map((c) => ({ labels: c.labels.nodes.map((l) => l.name) })),
+  }));
+}
+
 export type CycleBoardState = { id: string; name: string; type: string; position: number; color: string };
 export type CycleBoardIssue = {
   identifier: string;
@@ -723,6 +769,7 @@ export type SubIssueInput = {
   stateId?: string;
   cycleId?: string;
   labelIds?: string[];
+  description?: string;
 };
 
 export async function createSubIssue(

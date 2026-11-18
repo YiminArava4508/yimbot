@@ -16,19 +16,21 @@ import { runSetup, configToEnvRecord } from "./src/setup.ts";
 import { needsSetup, setupMode } from "./src/setup-core.ts";
 import { linearSettingsDeps, reconfigureFinish, runTuiSetup, setupDeps, shouldRunCliSetup } from "./src/setup-boot.ts";
 import { startDaemon } from "./src/daemon.ts";
-import { returnKey, runTui } from "./src/tui.ts";
+import { bootNotice, returnKey, runTui, type TuiHandle } from "./src/tui.ts";
 import { fetchCycleBoard } from "./src/linear-api.ts";
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
 import { archMapPath, readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
-import { runHeadless, withoutApiKey } from "./src/headless.ts";
+import { headlessInFlight, runHeadless, withoutApiKey } from "./src/headless.ts";
+import { startSelfUpdate } from "./src/self-update-wiring.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
 import {
   bindReturnKey,
   currentTmuxPane,
+  heartbeatRunning,
   listGitWorktrees,
   listTmuxSessions,
   liveQaKeys,
@@ -82,6 +84,10 @@ function redirectConsoleToFile(): void {
 // daemon on a new CODEBASE_PATH mid-session, and callers that closed over a
 // stale value would keep filtering/opening sessions against the old repo.
 const currentCodebasePath = () => codebasePath();
+
+// Exit code scripts/run.sh treats as "relaunch me on the new code".
+const UPDATE_EXIT = 75;
+const daemonIdle = () => !heartbeatRunning() && headlessInFlight() === 0;
 
 if (process.stdout.isTTY) {
   redirectConsoleToFile();
@@ -198,7 +204,24 @@ if (process.stdout.isTTY) {
       },
     };
   };
-  runTui({
+  let tui: TuiHandle | undefined;
+  const updater = startSelfUpdate({
+    repoDir: import.meta.dirname,
+    env: process.env,
+    isSafe: () => tui !== undefined && !tui.isBusy() && daemonIdle(),
+    restart: () => {
+      tui?.teardown();
+      if (boardPane) unbindReturnKey(returnKeyName);
+      claudeRegistry.detachAll();
+      stop();
+      updater?.stop();
+      process.exit(UPDATE_EXIT);
+    },
+    log: (msg) => console.log(msg),
+  });
+  tui = runTui({
+    updateState: updater?.state,
+    bootNotice: updater ? bootNotice(process.env, updater.bootSha) : null,
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
       claudeRegistry.killAll();
@@ -244,6 +267,17 @@ if (process.stdout.isTTY) {
   });
 } else {
   const stop = await startDaemon();
+  const updater = startSelfUpdate({
+    repoDir: import.meta.dirname,
+    env: process.env,
+    isSafe: daemonIdle,
+    restart: () => {
+      stop();
+      updater?.stop();
+      process.exit(UPDATE_EXIT);
+    },
+    log: (msg) => console.log(msg),
+  });
   const shutdown = () => {
     stop();
     process.exit(0);

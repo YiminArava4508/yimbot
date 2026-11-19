@@ -126,3 +126,21 @@ test("nudgeOnce handles independent keys separately", () => {
   nudgeOnce(freshNudgeState(), d);
   assert.deepEqual(sent.map((s) => s.pane), ["%1", "%2"]);
 });
+
+test("nudgeOnce logs why it flags stuck: no pane", () => {
+  const { deps: d, logs } = deps([needsInput("ENG-1", 100)]);
+  nudgeOnce(freshNudgeState(), d);
+  assert.deepEqual(logs, ["flagged ENG-1 stuck without nudge: no pane on the needs_input event"]);
+});
+
+test("nudgeOnce logs why it flags stuck: out of allowance", () => {
+  const { deps: d, logs } = deps([needsInput("ENG-1", 100, "%42")], { maxNudges: 0 });
+  nudgeOnce(freshNudgeState(), d);
+  assert.deepEqual(logs, ["flagged ENG-1 stuck without nudge in pane %42: out of allowance (0/0)"]);
+});
+
+test("nudgeOnce logs why it flags stuck: send returned false", () => {
+  const { deps: d, logs } = deps([needsInput("ENG-1", 100, "%42")], { send: () => false });
+  nudgeOnce(freshNudgeState(), d);
+  assert.deepEqual(logs, ["flagged ENG-1 stuck without nudge in pane %42: pane gone or not running Claude"]);
+});

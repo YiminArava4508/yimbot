@@ -9,8 +9,13 @@ import { STUCK_STATUS, isWorkingStatus, rowKeyOf, type BoardRow, type YimbotEven
 export const MAX_RESUME_ATTEMPTS = 3;
 const RESUME_WINDOW_MS = 60 * 60_000;
 
-const CLAUDE_COMMANDS = new Set(["claude", "node"]);
 export const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash"]);
+
+// Claude Code ships as a native binary named after its version, so tmux
+// reports e.g. "2.1.327" as the pane's foreground command.
+export function isClaudeCommand(cmd: string): boolean {
+  return cmd === "claude" || cmd === "node" || /^\d+\.\d+\.\d+$/.test(cmd);
+}
 
 export function stuckIdleMs(raw: string | undefined): number {
   const minutes = Number(raw);
@@ -66,7 +71,7 @@ function judge(key: string, last: LastPane | undefined, live: Map<string, PaneIn
   if (!last || !info) return gone();
   if (!deps.ownsSession(info.session, key)) return gone();
   const sameSession = [...live.entries()].filter(([, p]) => p.session === info.session);
-  const claudePanes = sameSession.filter(([, p]) => CLAUDE_COMMANDS.has(p.cmd));
+  const claudePanes = sameSession.filter(([, p]) => isClaudeCommand(p.cmd));
   if (SHELL_COMMANDS.has(info.cmd)) {
     if (claudePanes.length > 0) return null;
     return { reason: "claude exited", resumePane: last.ended ? undefined : last.pane };

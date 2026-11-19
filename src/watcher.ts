@@ -41,7 +41,7 @@ import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import { clearDeadRaises, type StaleRaiseDeps } from "./stale-raise.ts";
-import { SHELL_COMMANDS, detectStuckSessions, freshStuckState, stuckIdleMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
+import { SHELL_COMMANDS, detectStuckSessions, isClaudeCommand, freshStuckState, stuckIdleMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
@@ -1417,7 +1417,7 @@ export function sendNudge(pane: string, prompt: string): boolean {
   } catch {
     return false; // pane gone
   }
-  if (!/^(claude|node)$/.test(cmd)) return false;
+  if (!isClaudeCommand(cmd)) return false;
   execFileSync("tmux", ["send-keys", "-t", pane, "Escape"], { stdio: "ignore" });
   execFileSync("tmux", ["send-keys", "-t", pane, "-l", prompt], { stdio: "ignore" });
   execFileSync("tmux", ["send-keys", "-t", pane, "Enter"], { stdio: "ignore" });

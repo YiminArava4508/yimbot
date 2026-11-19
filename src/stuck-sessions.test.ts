@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BoardRow, YimbotEvent } from "./events.ts";
-import { MAX_RESUME_ATTEMPTS, detectStuckSessions, stuckIdleMs, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
+import { MAX_RESUME_ATTEMPTS, detectStuckSessions, isClaudeCommand, stuckIdleMs, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
 
 const MIN = 60_000;
 const NOW = 100 * MIN;
@@ -182,4 +182,18 @@ test("stuckIdleMs defaults to 30 minutes and ignores a bad value", () => {
   assert.equal(stuckIdleMs(undefined), 30 * MIN);
   assert.equal(stuckIdleMs("45"), 45 * MIN);
   for (const bad of ["abc", "0", "-5", ""]) assert.equal(stuckIdleMs(bad), 30 * MIN, bad);
+});
+
+test("isClaudeCommand accepts claude, node and a bare version", () => {
+  for (const cmd of ["claude", "node", "2.1.327"]) assert.equal(isClaudeCommand(cmd), true, cmd);
+});
+
+test("isClaudeCommand rejects shells, editors, partial versions and empty", () => {
+  for (const cmd of ["zsh", "bash", "vim", "2.1", ""]) assert.equal(isClaudeCommand(cmd), false, cmd);
+});
+
+test("a pane running a version-named binary counts as claude: idle fires, no resume", () => {
+  const { emitted, resumed } = run({ events: [paneEvent("%1")], panes: pane("2.1.327", 45) });
+  assert.deepEqual(emitted.map((e) => [e.kind, e.reason]), [["session_stuck", "no activity 45m"]]);
+  assert.deepEqual(resumed, []);
 });

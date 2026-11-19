@@ -53,6 +53,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[];
   logs: string[];
   waiting: { prNumber: number; waitingOn: number[] }[];
+  waitingHold: { kind: string; note?: string }[];
   requeued: number[];
 } {
   const spawned: { name: string; branch: string; prNumber: number }[] = [];
@@ -65,6 +66,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   const flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[] = [];
   const logs: string[] = [];
   const waiting: { prNumber: number; waitingOn: number[] }[] = [];
+  const waitingHold: { kind: string; note?: string }[] = [];
   const requeued: number[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
@@ -82,7 +84,10 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     restoreFixStatus: (prNumber, branch, kind) => void restored.push({ prNumber, branch, kind }),
     blockReason: async () => ({ kind: "other" }),
     prLifecycle: async () => "open",
-    markWaiting: (prNumber, _branch, waitingOn) => void waiting.push({ prNumber, waitingOn }),
+    markWaiting: (prNumber, _branch, waitingOn, kind, note) => {
+      waiting.push({ prNumber, waitingOn });
+      waitingHold.push({ kind, note });
+    },
     requeue: async (prNumber) => {
       requeued.push(prNumber);
       return null;
@@ -100,7 +105,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, settled, restored, flagRaised, logs, waiting, requeued };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, settled, restored, flagRaised, logs, waiting, waitingHold, requeued };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -1034,7 +1039,53 @@ test("a waiting PR stays held while any sibling is still open", async () => {
   await reviewOnce(state, h.deps);
   await reviewOnce(state, h.deps);
   assert.equal(h.requeued.length, 0);
-  assert.equal(h.waiting.length, 1);
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062, 8081], [8081]]);
+});
+
+test("a waiting PR drops merged and closed siblings from the row and keeps the open ones", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "open", 8081: "open", 8083: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062, 8081, 8083]),
+    prLifecycle: async (n) => life[n],
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  life[8062] = "merged";
+  life[8081] = "closed";
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062, 8081, 8083], [8083]]);
+  assert.deepEqual(h.waitingHold.map((w) => w.kind), ["landing", "landing"]);
+});
+
+test("a queue-conflict wait carries the open sibling's needs-approval note", async () => {
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062]),
+    holderNote: (n) => (n === 8062 ? "needs approval" : undefined),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.waitingHold, [{ kind: "landing", note: "needs approval" }]);
+});
+
+test("an overlap hold shows only the overlapping PR, with its note", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "merged", 8081: "merged" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n] ?? "open",
+    requeue: async () => 8090,
+    holderNote: (n) => (n === 8090 ? "needs approval" : undefined),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.waiting.at(-1), { prNumber: 4706, waitingOn: [8090] });
+  assert.deepEqual(h.waitingHold.at(-1), { kind: "overlap", note: "needs approval" });
 });
 
 test("once every sibling landed and the PR is mergeable it is re-queued with no session", async () => {

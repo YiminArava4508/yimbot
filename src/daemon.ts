@@ -18,6 +18,7 @@ import {
   prFiles,
   blockReason,
   prLifecycle,
+  holderNote,
   removeLabel,
   checksInfo,
   compareStatus,
@@ -276,6 +277,7 @@ export async function startDaemon(): Promise<() => void> {
         blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
         blockReason: (n: number) => ReturnType<typeof blockReason>;
         prLifecycle: (n: number) => ReturnType<typeof prLifecycle>;
+        holderNote: (n: number) => string | undefined;
         requeue: (n: number) => Promise<number | null>;
         humanChangesRequested: (n: number) => ReturnType<typeof humanChangesRequested>;
       }
@@ -306,6 +308,7 @@ export async function startDaemon(): Promise<() => void> {
       blockedInfo: (n) => blockedInfo(runnerFor(n), n, blockedLabelName),
       blockReason: (n) => blockReason(runnerFor(n), n),
       prLifecycle: (n) => prLifecycle(runnerFor(n), n),
+      holderNote,
       requeue: async (n) => {
         const holder = (await queueGate([{ n }])).get(n) ?? null;
         if (holder !== null) return holder;

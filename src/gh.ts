@@ -365,8 +365,31 @@ export function parsePrLifecycle(json: string): PrLifecycle {
   return state === "CLOSED" ? "closed" : "open";
 }
 
+export function parseHolderNote(json: string): string | undefined {
+  const { state, reviewDecision, mergeStateStatus } = JSON.parse(json) as {
+    state?: string;
+    reviewDecision?: string | null;
+    mergeStateStatus?: string;
+  };
+  if (state !== "OPEN") return undefined;
+  if (reviewDecision === "REVIEW_REQUIRED" || reviewDecision === "CHANGES_REQUESTED") return "needs approval";
+  return mergeStateStatus === "BLOCKED" ? "blocked" : undefined;
+}
+
+// Filled by prLifecycle from the same gh call, so a waiting row can say its
+// holder is stuck without a second read per PR per tick.
+const holderNotes = new Map<number, string>();
+
+export function holderNote(prNumber: number): string | undefined {
+  return holderNotes.get(prNumber);
+}
+
 export async function prLifecycle(run: GhRunner, prNumber: number): Promise<PrLifecycle> {
-  return parsePrLifecycle(await run(["pr", "view", String(prNumber), "--json", "state"]));
+  const json = await run(["pr", "view", String(prNumber), "--json", "state,reviewDecision,mergeStateStatus"]);
+  const note = parseHolderNote(json);
+  if (note) holderNotes.set(prNumber, note);
+  else holderNotes.delete(prNumber);
+  return parsePrLifecycle(json);
 }
 
 export type HumanChangesRequested = { requested: boolean; latestAt: number | null };

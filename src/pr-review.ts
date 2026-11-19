@@ -70,7 +70,7 @@ export type ReviewState = {
   pendingSpawn: Map<number, { kind: FixKind; at: number }>;
   // PRs the merge queue blocked only because of siblings queued ahead of them:
   // held by the daemon (no session) until every sibling has merged or closed.
-  waiting: Map<number, { waitingOn: number[]; headSha: string; commentAt: string }>;
+  waiting: Map<number, { waitingOn: number[]; headSha: string; commentAt: string; hold: "landing" | "overlap"; note?: string }>;
   // The failure comment (createdAt) a PR was last re-queued for. A re-block that
   // shows the same comment brought no new information, so it goes to a session.
   requeuedFor: Map<number, string>;
@@ -134,7 +134,10 @@ export type PrReviewDeps = {
   // Whether a PR is still open, merged, or closed.
   prLifecycle: (prNumber: number) => Promise<PrLifecycle>;
   // Record the waiting state on the board: the PR is held until `waitingOn` land.
-  markWaiting: (prNumber: number, branch: string, waitingOn: number[]) => void;
+  markWaiting: (prNumber: number, branch: string, waitingOn: number[], kind: "landing" | "overlap", note?: string) => void;
+  // Why an open waited-on PR cannot merge by itself ("needs approval"), read
+  // from the same gh call prLifecycle already makes. Undefined when unknown.
+  holderNote?: (prNumber: number) => string | undefined;
   // Swap the blocked label for the ready label. No session involved. Resolves
   // to null once queued, or to the older queued PR it overlaps and must wait on
   // (nothing is relabeled then).
@@ -254,6 +257,14 @@ async function closeDeadBlockedFixer(pr: OpenPR, deps: PrReviewDeps): Promise<bo
 // this tick (waiting on queued siblings, or just re-queued), false to let the
 // blocked fixer session take it. Never consults lastHandledBlockedSha, so a
 // re-block at the same head can re-enter the waiting state.
+function noteFor(prs: number[], deps: PrReviewDeps): string | undefined {
+  for (const n of prs) {
+    const note = deps.holderNote?.(n);
+    if (note) return note;
+  }
+  return undefined;
+}
+
 async function holdForQueue(
   pr: OpenPR,
   headSha: string,
@@ -275,13 +286,24 @@ async function holdForQueue(
       return false;
     }
     if (reason.kind !== "conflict" || state.requeuedFor.get(pr.number) === reason.commentAt) return false;
-    held = { waitingOn: reason.waitingOn, headSha, commentAt: reason.commentAt };
+    held = { waitingOn: reason.waitingOn, headSha, commentAt: reason.commentAt, hold: "landing" };
     state.waiting.set(pr.number, held);
-    deps.markWaiting(pr.number, pr.headRefName, held.waitingOn);
+    held.note = noteFor(held.waitingOn, deps);
+    deps.markWaiting(pr.number, pr.headRefName, held.waitingOn, "landing", held.note);
     deps.log(`PR #${pr.number} blocked by queue conflict, waiting on ${held.waitingOn.map((n) => `#${n}`).join(", ")}`);
   }
   try {
-    for (const n of held.waitingOn) if ((await deps.prLifecycle(n)) === "open") return true;
+    const open: number[] = [];
+    for (const n of held.waitingOn) if ((await deps.prLifecycle(n)) === "open") open.push(n);
+    if (open.length > 0) {
+      const note = noteFor(open, deps);
+      if (open.length < held.waitingOn.length || note !== held.note) {
+        held.waitingOn = open;
+        held.note = note;
+        deps.markWaiting(pr.number, pr.headRefName, open, held.hold, note);
+      }
+      return true;
+    }
   } catch (err) {
     deps.log(`waiting PR check failed for PR #${pr.number}: ${err}`);
     return true;
@@ -296,7 +318,9 @@ async function holdForQueue(
   }
   if (holder !== null) {
     held.waitingOn = [holder];
-    deps.markWaiting(pr.number, pr.headRefName, [holder]);
+    held.hold = "overlap";
+    held.note = noteFor([holder], deps);
+    deps.markWaiting(pr.number, pr.headRefName, [holder], "overlap", held.note);
     deps.log(`PR #${pr.number} overlaps queued PR #${holder}, waiting on it before re-queueing`);
     return true;
   }

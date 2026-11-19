@@ -4,6 +4,9 @@ import {
   parseBlockReason,
   parsePrFiles,
   parsePrLifecycle,
+  parseHolderNote,
+  holderNote,
+  prLifecycle,
   parseQueuedPrs,
   addLabel,
   applyReadyLabel,
@@ -775,4 +778,24 @@ test("parsePrFiles and parseQueuedPrs read paths and head SHAs", () => {
     { n: 5, headSha: "h", files: ["x"] },
     { n: 6, headSha: "i", files: [] },
   ]);
+});
+
+test("parseHolderNote flags an open PR that needs approval or is blocked", () => {
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED"}'), "needs approval");
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"CHANGES_REQUESTED","mergeStateStatus":"BLOCKED"}'), "needs approval");
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED"}'), "blocked");
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"APPROVED","mergeStateStatus":"CLEAN"}'), undefined);
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":null,"mergeStateStatus":"CLEAN"}'), undefined);
+  assert.equal(parseHolderNote('{"state":"MERGED","reviewDecision":"REVIEW_REQUIRED"}'), undefined);
+});
+
+test("prLifecycle reads the holder note in the same gh call", async () => {
+  const calls: string[][] = [];
+  const run = async (args: string[]) => {
+    calls.push(args);
+    return '{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED"}';
+  };
+  assert.equal(await prLifecycle(run, 8090), "open");
+  assert.equal(holderNote(8090), "needs approval");
+  assert.equal(calls.length, 1);
 });

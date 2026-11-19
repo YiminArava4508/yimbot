@@ -788,7 +788,7 @@ export type WatcherConfig = {
   // listOpenPRs spans every repo (EXTRA_REPOS included) for the board and the
   // ready step; listFixableOpenPRs is the codebase repo's only, since a fix
   // session's worktree is cut from codebasePath.
-  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "blockReason" | "prLifecycle" | "humanChangesRequested"> & {
+  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "blockReason" | "prLifecycle" | "holderNote" | "humanChangesRequested"> & {
     listFixableOpenPRs: () => Promise<OpenPR[]>;
     requeue: (prNumber: number) => Promise<number | null>;
   }) | null;
@@ -1716,9 +1716,11 @@ export function startWatcher(config: WatcherConfig): () => void {
     blockedInfo: config.prReview.blockedInfo,
     blockReason: config.prReview.blockReason,
     prLifecycle: config.prReview.prLifecycle,
-    markWaiting: (prNumber, branch, waitingOn) => {
+    holderNote: config.prReview.holderNote,
+    markWaiting: (prNumber, branch, waitingOn, hold, waitNote) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
-      emitStatus({ kind: "blocked_waiting", key, label, title: titleFromBranch(branch), pr: prNumber, waitingOn });
+      const kind = hold === "overlap" ? "queue_held" : "blocked_waiting";
+      emitStatus({ kind, key, label, title: titleFromBranch(branch), pr: prNumber, waitingOn, waitNote });
     },
     requeue: (prNumber) => config.prReview!.requeue(prNumber),
     mode: readMode,
@@ -1987,7 +1989,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     },
     onHeld: (n: number, holder: number) => {
       const k = keyForPr(n);
-      emitStatus({ kind: "queue_held", key: k.key, label: k.label, pr: n, repo: k.repo, waitingOn: [holder] });
+      emitStatus({ kind: "queue_held", key: k.key, label: k.label, pr: n, repo: k.repo, waitingOn: [holder], waitNote: config.prReview?.holderNote?.(holder) });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,

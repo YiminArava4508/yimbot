@@ -43,6 +43,23 @@ export function checkQuiet(opts: { lastCalledAt: string | null | undefined; now:
   return { pass: hours > quietHours, detail: ago };
 }
 
+// Check 5 identifies the flag by the backticked key in the ticket title when the
+// description has no `Flag key:` line. Zero or several backticked names is
+// ambiguous, so it reads as no key.
+export function flagKeyFromTitle(title: string): string | null {
+  const names = [...title.matchAll(/`([^`]+)`/g)].map((m) => m[1]!);
+  return names.length === 1 && /^[A-Za-z0-9._-]+$/.test(names[0]!) ? names[0]! : null;
+}
+
+// An exact-key search in PostHog can return partial matches; the flag is only
+// usable when exactly one result carries the key.
+export function pickFlagByKey<T extends { key: string }>(flags: T[], key: string): { flag: T } | { error: string } {
+  const hits = flags.filter((f) => f.key === key);
+  if (hits.length === 0) return { error: `flag key ${key} not found in prod` };
+  if (hits.length > 1) return { error: `flag key ${key} matches more than one flag` };
+  return { flag: hits[0]! };
+}
+
 const isCommitRef = (v: string) => /^[0-9a-f]{7,40}$/i.test(v);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 

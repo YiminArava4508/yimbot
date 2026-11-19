@@ -181,8 +181,13 @@ review, split, and local-server steps above do not apply.
 An after-release "Archive `<flag>` flag in prod" ticket may archive the flag
 itself, but only through this checklist. There is no PR, review, split, or
 local-server step. Read the exact flag key and PostHog flag ID from the ticket
-description (`~/get-ticket.sh <TICKET>`); if either is missing, or the flag ID
-does not resolve to that key in prod project 117986, fail check 5 below.
+description (`~/get-ticket.sh <TICKET>`) when it has `Flag key:` and `PostHog
+flag ID:` lines; the ID must resolve to that key in prod project 117986. Older
+tickets have no such lines: take the key from the backticked name in the title
+("Archive `hubspot-call-list-sync` flag in prod"), search prod project 117986
+for that exact key, and require exactly one flag with that key. Missing lines
+alone never fail check 5. It fails only when the key can't be found or matches
+more than one flag.
 
 **Fail closed.** If any input can't be read (gh, git, Linear, PostHog), that
 check fails. Never pass a check on missing data, and never skip one.

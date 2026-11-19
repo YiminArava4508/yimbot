@@ -4,6 +4,8 @@ import {
   checkQuiet,
   classifyMatches,
   collectProdBuilds,
+  flagKeyFromTitle,
+  pickFlagByKey,
   resolveQuietHours,
   parseAppCharts,
   parseAppVersion,
@@ -461,4 +463,20 @@ test("FLAG_ARCHIVE_QUIET_HOURS=24 makes a call 5 hours ago fail", () => {
 
 test("checkQuiet fails a timestamp it cannot read", () => {
   assert.equal(checkQuiet({ lastCalledAt: "not a date", now: NOW, quietHours: 4 }).pass, false);
+});
+
+test("flagKeyFromTitle takes the backticked name from the ticket title", () => {
+  assert.equal(flagKeyFromTitle("Archive `hubspot-call-list-sync` flag in prod"), "hubspot-call-list-sync");
+  assert.equal(flagKeyFromTitle("Archive `a.b_c-1` flag in prod"), "a.b_c-1");
+  assert.equal(flagKeyFromTitle("Archive the flag in prod"), null);
+  assert.equal(flagKeyFromTitle("Archive `one` and `two` flags"), null);
+  assert.equal(flagKeyFromTitle("Archive `bad key` flag"), null);
+});
+
+test("pickFlagByKey needs exactly one exact-key match", () => {
+  const flags = [{ id: 1, key: "foo" }, { id: 2, key: "foo-bar" }, { id: 3, key: "baz" }];
+  assert.deepEqual(pickFlagByKey(flags, "foo"), { flag: { id: 1, key: "foo" } });
+  assert.match((pickFlagByKey(flags, "nope") as { error: string }).error, /not found/);
+  const dupes = [{ id: 1, key: "foo" }, { id: 9, key: "foo" }];
+  assert.match((pickFlagByKey(dupes, "foo") as { error: string }).error, /more than one/);
 });

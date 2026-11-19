@@ -771,10 +771,17 @@ test("fetchTicket maps the issue, its parent and its comments oldest first", asy
             { body: "first", createdAt: "2026-09-01T00:00:00.000Z", user: null },
           ],
         },
+        inverseRelations: {
+          nodes: [
+            { type: "blocks", issue: { identifier: "ENG-41", state: { name: "Done", type: "completed" } } },
+            { type: "related", issue: { identifier: "ENG-9", state: { name: "Todo", type: "unstarted" } } },
+          ],
+        },
       },
     },
   ]);
   const t = await fetchTicket("key", "ENG-42", fetchImpl);
+  assert.deepEqual(t.blockedBy, [{ identifier: "ENG-41", stateName: "Done" }]);
   assert.equal(t.id, "uuid-1");
   assert.equal(t.teamId, "team-1");
   assert.equal(t.parent, "ENG-40");

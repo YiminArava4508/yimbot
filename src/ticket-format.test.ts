@@ -51,3 +51,16 @@ test("formatTicket says so when there is no description, no comments, no estimat
   assert.match(out, /## Description\n\n\(none\)\n/);
   assert.match(out, /## Comments\n\n\(none\)\n/);
 });
+
+test("formatTicket lists blockers with their state, and omits the line when there are none", () => {
+  const blocked = formatTicket({
+    ...ticket,
+    blockedBy: [
+      { identifier: "ENG-41", stateName: "Done" },
+      { identifier: "ENG-39", stateName: "In Review" },
+    ],
+  });
+  assert.match(blocked, /^Blocked by: ENG-41 \(Done\), ENG-39 \(In Review\)$/m);
+  assert.doesNotMatch(formatTicket(ticket), /Blocked by/);
+  assert.doesNotMatch(formatTicket({ ...ticket, blockedBy: [] }), /Blocked by/);
+});

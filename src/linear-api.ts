@@ -948,6 +948,7 @@ export async function fetchTicket(
       assignee: { name: string } | null;
       team: { id: string };
       comments: { nodes: { body: string; createdAt: string; user: { name: string } | null }[] };
+      inverseRelations: InverseRelationNodes;
     } | null;
   };
   const data = await gql<Data>(
@@ -961,6 +962,7 @@ export async function fetchTicket(
         assignee { name }
         team { id }
         comments(first: 250) { nodes { body createdAt user { name } } }
+        ${BLOCKERS_SELECTION}
       }
     }`,
     { id: identifier },
@@ -986,6 +988,7 @@ export async function fetchTicket(
     parent: issue.parent?.identifier ?? null,
     assignee: issue.assignee?.name ?? null,
     comments,
+    blockedBy: blockersFrom(issue.inverseRelations).map((b) => ({ identifier: b.identifier, stateName: b.stateName })),
   };
 }
 

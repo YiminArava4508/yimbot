@@ -107,7 +107,16 @@ assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.permissionDecis
 assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.hookEventName')" "PreToolUse" "deny names the hook event"
 assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -c 'No human is available')" "1" "deny carries the reason"
 assert_eq "$(unset EVENTS_LOG; deny_ask_user_question)" "" "unset EVENTS_LOG allows AskUserQuestion"
-rm -rf "$ASK_DIR"
+
+# The settings.json wrapper loads the function through ~/new-session.sh and emits the deny.
+ASK_HOME=$(mktemp -d)
+ln -s "$(cd "$(dirname "$0")" && pwd)/new-session.sh" "$ASK_HOME/new-session.sh"
+ASK_CMD=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "AskUserQuestion") | .hooks[0].command' "$(dirname "$0")/../settings/session-settings.json")
+hook_out=$(HOME="$ASK_HOME" EVENTS_LOG="$ASK_DIR/events.jsonl" bash -c "$ASK_CMD")
+assert_eq "$(printf '%s' "$hook_out" | jq -r '.hookSpecificOutput.permissionDecision')" "deny" "settings hook command denies in autonomous mode"
+echo supervised > "$ASK_DIR/mode"
+assert_eq "$(HOME="$ASK_HOME" EVENTS_LOG="$ASK_DIR/events.jsonl" bash -c "$ASK_CMD")" "" "settings hook command allows in supervised mode"
+rm -rf "$ASK_HOME" "$ASK_DIR"
 
 # event_key_from_branch mirrors deriveKey({branch}): eng-/sc- ticket branches map
 # to the uppercased TICKET-NUMBER; any other branch is its own key.

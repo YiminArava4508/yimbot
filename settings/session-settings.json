@@ -51,6 +51,12 @@
         "hooks": [
           { "type": "command", "command": "bash \"$HOME/.config/yimbot/no-self-rebase.sh\" pre", "timeout": 10 }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          { "type": "command", "command": "bash -c 'source \"$HOME/new-session.sh\" 2>/dev/null; command -v deny_ask_user_question >/dev/null 2>&1 && deny_ask_user_question'" }
+        ]
       }
     ],
     "PostToolUse": [

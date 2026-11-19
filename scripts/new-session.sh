@@ -124,6 +124,16 @@ emit_hook_event() {
   printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"%s}\n' "$ts" "$kind" "$key" "$key" "$extra" >> "$EVENTS_LOG" 2>/dev/null || true
 }
 
+# Claude Code PreToolUse hook for AskUserQuestion: while the yimbot mode file
+# (next to $EVENTS_LOG) reads autonomous no human is there to answer, so deny
+# the tool and tell the session to decide. Any other state prints nothing,
+# which lets the tool through.
+deny_ask_user_question() {
+  [ -n "${EVENTS_LOG:-}" ] || return 0
+  [ "$(cat "$(dirname "$EVENTS_LOG")/mode" 2>/dev/null)" = autonomous ] || return 0
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"No human is available. Pick the option you would recommend, state why in one line, and continue."}}'
+}
+
 # Notification types that do not mean a human is blocking: the ~60s idle prompt
 # (which an autonomous session hits routinely while its background agents work),
 # the computer-use banners, a push notification the session itself sent, and the

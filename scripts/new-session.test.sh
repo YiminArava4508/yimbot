@@ -92,6 +92,22 @@ rm -rf "$SK_TMP" "$SK_EMPTY"
 # The hook emitter helpers survive sourcing.
 assert_defined event_key_from_branch
 assert_defined emit_hook_event
+assert_defined deny_ask_user_question
+
+# deny_ask_user_question: denies only while the mode file next to $EVENTS_LOG
+# reads autonomous; every other state lets the tool through with no output.
+ASK_DIR=$(mktemp -d)
+ask() { EVENTS_LOG="$ASK_DIR/events.jsonl" deny_ask_user_question; }
+assert_eq "$(ask)" "" "no mode file allows AskUserQuestion"
+echo supervised > "$ASK_DIR/mode"
+assert_eq "$(ask)" "" "supervised allows AskUserQuestion"
+echo autonomous > "$ASK_DIR/mode"
+ask_out=$(ask)
+assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.permissionDecision')" "deny" "autonomous denies AskUserQuestion"
+assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.hookEventName')" "PreToolUse" "deny names the hook event"
+assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -c 'No human is available')" "1" "deny carries the reason"
+assert_eq "$(unset EVENTS_LOG; deny_ask_user_question)" "" "unset EVENTS_LOG allows AskUserQuestion"
+rm -rf "$ASK_DIR"
 
 # event_key_from_branch mirrors deriveKey({branch}): eng-/sc- ticket branches map
 # to the uppercased TICKET-NUMBER; any other branch is its own key.

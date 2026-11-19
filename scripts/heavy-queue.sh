@@ -11,7 +11,12 @@
 #   post    PostToolUse hook. Drops the ticket this tool call took, unless the
 #           hold it handed the ticket to is still running the command.
 #   hold    Runs a command under the flock. What `pre` rewrites commands to.
-#   status  Prints the queue, --json for machines.
+#   status  Prints the queue and the api-tests stack owner, --json for machines.
+#
+# A second lock guards the api-tests stack: one per machine, since every
+# worktree's stack shares a compose project name and a port range. It is a state
+# file (stack.json) read and written under a short flock, because the stack
+# outlives the command that started it.
 #
 # Every failure path exits 0 and lets the command run unqueued.
 
@@ -26,20 +31,30 @@ HEAVY_TICKET=${HEAVY_TICKET:-}
 # Defaults matching settings/heavy-jobs.conf, so a missing or partial conf still
 # yields a working queue rather than an unset-variable crash in the hot path.
 heavy_conf_load() {
-  HEAVY_PATTERNS='^(task (generate|gqlgen|build-all|test|test-integration|ci-local)|pnpm (run )?(build|typecheck|test)[a-z:]*|go build|go test)'
+  HEAVY_STACK_PATTERNS='task api-tests(:(up|restart))?([[:space:]]|$)|node ([^ ]+/)?(api-tests/)?scripts/run\.mjs( --[a-z-]+)* (all|up|restart)([[:space:]]|$)'
+  HEAVY_STACK_DOWN_PATTERNS='task api-tests:down([[:space:]]|$)|node ([^ ]+/)?(api-tests/)?scripts/run\.mjs( --[a-z-]+)* down([[:space:]]|$)'
+  HEAVY_PATTERNS="^(task (generate|gqlgen|build-all|test|test-integration|ci-local)|pnpm (run )?(build|typecheck|test)[a-z:]*|go build|go test|$HEAVY_STACK_PATTERNS)"
   HEAVY_WAIT_TIMEOUT=1200
+  HEAVY_STACK_WAIT=600
+  HEAVY_MIN_FREE_PCT=20
+  HEAVY_STACK_PROJECT=api-tests
+  HEAVY_STACK_PORT=31003
   HEAVY_MAX_JOB=1800
   # A 0.5s heartbeat needs a window wide enough to survive the loaded machine
   # this queue exists for. A dead waiter's ticket then delays others by up to
   # this long, which costs fairness only: the flock is what gates the work.
   HEAVY_STALE_WAIT=30
   [ -f "$HEAVY_CONF" ] && . "$HEAVY_CONF"
-  # The conf is hand-edited. These three feed arithmetic and flock -w, where a
+  # The conf is hand-edited. These feed arithmetic and flock -w, where a
   # garbage value makes flock refuse the invocation and skip the command it was
   # meant to queue, so fall back to the default rather than pass it on.
   [[ ${HEAVY_WAIT_TIMEOUT:-} =~ ^[0-9]+$ ]] || HEAVY_WAIT_TIMEOUT=1200
   [[ ${HEAVY_MAX_JOB:-} =~ ^[0-9]+$ ]] || HEAVY_MAX_JOB=1800
   [[ ${HEAVY_STALE_WAIT:-} =~ ^[0-9]+$ ]] || HEAVY_STALE_WAIT=30
+  [[ ${HEAVY_STACK_WAIT:-} =~ ^[0-9]+$ ]] || HEAVY_STACK_WAIT=600
+  [[ ${HEAVY_MIN_FREE_PCT:-} =~ ^[0-9]+$ ]] || HEAVY_MIN_FREE_PCT=20
+  [[ ${HEAVY_STACK_PORT:-} =~ ^[0-9]+$ ]] || HEAVY_STACK_PORT=31003
+  [ -n "${HEAVY_STACK_PROJECT:-}" ] || HEAVY_STACK_PROJECT=api-tests
   return 0
 }
 
@@ -142,20 +157,34 @@ split_commands() {
 # still running a heavy job. This is the one parse the hook does per command,
 # so the reentrancy guards live here.
 heavy_command() {
-  local seg inner
   [ -n "${YIMBOT_HEAVY_HELD:-}" ] && return 1
-  case $1 in *heavy-queue.sh\ hold*) return 1 ;; esac
+  command_matching "$HEAVY_PATTERNS" "$1"
+}
+
+# heavy_command's parse against any pattern, without the reentrancy guard.
+command_matching() {
+  local pattern=$1 seg inner
+  case $2 in *heavy-queue.sh\ hold*) return 1 ;; esac
   while IFS= read -r -d '' seg; do
     inner=$(unwrap_command "$seg")
-    if [[ $inner =~ $HEAVY_PATTERNS ]]; then
+    if [[ $inner =~ $pattern ]]; then
       printf '%s' "$inner"
       return 0
     fi
-    if [ "$inner" != "$seg" ] && heavy_command "$inner"; then
+    if [ "$inner" != "$seg" ] && command_matching "$pattern" "$inner"; then
       return 0
     fi
-  done < <(split_commands "$(strip_heredocs "$1")")
+  done < <(split_commands "$(strip_heredocs "$2")")
   return 1
+}
+
+stack_command() {
+  [ -n "${YIMBOT_HEAVY_HELD:-}" ] && return 1
+  command_matching "^($HEAVY_STACK_PATTERNS)" "$1"
+}
+
+stack_down_command() {
+  command_matching "^($HEAVY_STACK_DOWN_PATTERNS)" "$1" >/dev/null
 }
 
 is_heavy() {
@@ -224,10 +253,19 @@ ticket_write() {
 # hold spaces and parentheses.
 proc_start() {
   local stat
-  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || { proc_start_ps "$1"; return; }
   stat=${stat##*) }
   set -- $stat
   printf '%s' "${20:-}"
+}
+
+# macOS has no /proc. lstart is a date string, and the ticket stores owner_start
+# as a bare JSON number, so reduce it to a checksum.
+proc_start_ps() {
+  local started
+  started=$(ps -o lstart= -p "$1" 2>/dev/null)
+  [ -n "${started//[[:space:]]/}" ] || return 1
+  printf '%s' "$started" | cksum | cut -d' ' -f1
 }
 
 ticket_field() {
@@ -314,8 +352,18 @@ hold_ticket() {
   return 0
 }
 
+hold_unqueued() {
+  local rc
+  bash -c "$1"
+  rc=$?
+  [ -n "$2" ] && stack_settle "$2" "$rc"
+  return $rc
+}
+
 cmd_hold() {
-  local cmd=$1 rc lock
+  local cmd=$1 rc lock stack_wt=
+  # Checked before the held marker goes up, which would hide every match.
+  stack_command "$cmd" >/dev/null && stack_wt=$(stack_worktree "$PWD")
   export YIMBOT_HEAVY_HELD=1
   # pre passes the ticket in as an environment assignment. Stop it there: a
   # nested hold that adopted this ticket would drop it when the inner command
@@ -323,16 +371,17 @@ cmd_hold() {
   export -n HEAVY_TICKET 2>/dev/null
   if ! command -v flock >/dev/null 2>&1; then
     heavy_log "flock missing, running unqueued"
-    bash -c "$cmd"
+    hold_unqueued "$cmd" "$stack_wt"
     return $?
   fi
   lock=$(lock_path)
   if ! : 2>/dev/null >> "$lock"; then
     heavy_log "cannot open the lock file, running unqueued: $cmd"
-    bash -c "$cmd"
+    hold_unqueued "$cmd" "$stack_wt"
     return $?
   fi
   hold_ticket "$cmd"
+  [ -n "$stack_wt" ] && stack_mark_pending "$stack_wt" "$$"
   # -E 99 marks "could not take the lock in time" so nothing waits forever. A
   # command that legitimately exits 99 is indistinguishable here and gets run a
   # second time, which is the accepted cost of never blocking a session.
@@ -340,10 +389,26 @@ cmd_hold() {
   rc=$?
   if [ "$rc" = 99 ]; then
     heavy_log "no lock after ${HEAVY_MAX_JOB}s, running unqueued: $cmd"
-    bash -c "$cmd"
+    hold_unqueued "$cmd" "$stack_wt"
     return $?
   fi
+  [ -n "$stack_wt" ] && stack_settle "$stack_wt" "$rc"
   return $rc
+}
+
+# The exit status of a chain says nothing about the stack (`up; echo $?` always
+# exits 0), so ask the stack itself.
+# Up when it answers, released when the command failed. A command that exited 0
+# with no stack yet (backgrounded, or still starting) keeps its pending claim
+# for HEAVY_MAX_JOB, so a ten-minute build is not judged dead and handed over.
+stack_settle() {
+  if stack_alive; then
+    stack_mark_up "$1"
+  elif [ "$2" != 0 ]; then
+    stack_release "$1"
+  else
+    stack_mark_pending "$1" 0
+  fi
 }
 
 heavy_log() {
@@ -378,6 +443,163 @@ pair_call_ticket() {
   printf '%s' "$HEAVY_TICKET" 2>/dev/null > "$(call_ticket_file "$1")"
 }
 
+# Free memory as a whole percentage, empty when no source answers.
+free_memory_pct() {
+  local pct
+  if [ "$(uname 2>/dev/null)" = Darwin ]; then
+    pct=$(memory_pressure -Q 2>/dev/null | pct_from_memory_pressure)
+    [ -n "$pct" ] && { printf '%s' "$pct"; return; }
+    pct=$(vm_stat 2>/dev/null | pct_from_vm_stat "$(sysctl -n hw.memsize 2>/dev/null)")
+    [ -n "$pct" ] && { printf '%s' "$pct"; return; }
+  fi
+  pct_from_meminfo /proc/meminfo
+}
+
+pct_from_memory_pressure() {
+  sed -n 's/.*free percentage: *\([0-9]*\)%.*/\1/p' | head -1
+}
+
+pct_from_vm_stat() {
+  awk -v total="${1:-0}" '
+    /page size of/ { match($0, /page size of [0-9]+/); ps = substr($0, RSTART + 13, RLENGTH - 13) }
+    /^Pages (free|inactive|speculative):/ { gsub(/\./, "", $NF); pages += $NF }
+    END { if (total > 0 && ps > 0) printf "%d", pages * ps * 100 / total }'
+}
+
+pct_from_meminfo() {
+  [ -r "$1" ] || return 1
+  awk '
+    /^MemTotal:/ { total = $2 }
+    /^MemAvailable:/ { avail = $2 }
+    END { if (total > 0 && avail != "") printf "%d", avail * 100 / total; else exit 1 }' "$1"
+}
+
+# True while free memory is below HEAVY_MIN_FREE_PCT. An unreadable reading never
+# blocks: the gate exists to protect the machine, not to wedge sessions.
+memory_low() {
+  local free
+  [ "$HEAVY_MIN_FREE_PCT" -gt 0 ] || return 1
+  free=$(free_memory_pct 2>/dev/null)
+  [[ $free =~ ^[0-9]+$ ]] || return 1
+  HEAVY_FREE_NOW=$free
+  [ "$free" -lt "$HEAVY_MIN_FREE_PCT" ]
+}
+
+stack_file() {
+  mkdir -p "$HEAVY_STATE_DIR" 2>/dev/null
+  printf '%s' "$HEAVY_STATE_DIR/stack.json"
+}
+
+# Runs a function under a short flock so two sessions cannot both claim a free
+# stack. A missing flock or an unopenable lock file runs it unlocked: the stack
+# wait is bounded either way.
+with_stack_lock() {
+  local lock=$HEAVY_STATE_DIR/stack.lock
+  mkdir -p "$HEAVY_STATE_DIR" 2>/dev/null
+  if command -v flock >/dev/null 2>&1 && : 2>/dev/null >> "$lock"; then
+    ( flock -w 10 9 2>/dev/null; "$@" ) 9>> "$lock"
+  else
+    "$@"
+  fi
+}
+
+# Is anything of the api-tests stack still up: a container in its compose
+# project, or a listener on its first port (HEAVY_STACK_PROJECT, HEAVY_STACK_PORT).
+stack_alive() {
+  if [ -n "${HEAVY_STACK_PROBE:-}" ]; then
+    bash -c "$HEAVY_STACK_PROBE" >/dev/null 2>&1
+    return
+  fi
+  if command -v docker >/dev/null 2>&1 &&
+    [ -n "$(docker ps -q --filter label=com.docker.compose.project=$HEAVY_STACK_PROJECT 2>/dev/null)" ]; then
+    return 0
+  fi
+  ( exec 3<> /dev/tcp/127.0.0.1/$HEAVY_STACK_PORT ) 2>/dev/null
+}
+
+stack_write() {
+  local file=$(stack_file) tmp
+  tmp=$file.$$.tmp
+  printf '{"key":"%s","worktree":"%s","state":"%s","pid":%s,"since":%s}\n' \
+    "$(json_escape "$1")" "$(json_escape "$2")" "$3" "${4:-0}" "$(date +%s)" \
+    2>/dev/null > "$tmp" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$file" 2>/dev/null
+}
+
+# A claim is stale when its worktree is gone, when a pending one lost the process
+# bringing it up or outlived HEAVY_MAX_JOB, or when an up one has
+# no containers or processes left.
+stack_stale() {
+  local f=$1 state wt pid since
+  [ -f "$f" ] || return 0
+  wt=$(ticket_field "$f" worktree)
+  [ -d "$wt" ] || return 0
+  state=$(ticket_field "$f" state)
+  if [ "$state" = pending ]; then
+    pid=$(ticket_num_field "$f" pid)
+    since=$(ticket_num_field "$f" since)
+    if [ -n "$pid" ] && [ "$pid" != 0 ]; then
+      kill -0 "$pid" 2>/dev/null || return 0
+    fi
+    [ $(( $(date +%s) - ${since:-0} )) -gt "$HEAVY_MAX_JOB" ]
+    return
+  fi
+  ! stack_alive
+}
+
+stack_reap() {
+  local f=$(stack_file)
+  [ -f "$f" ] && stack_stale "$f" && rm -f "$f" 2>/dev/null
+  return 0
+}
+
+_stack_claim() {
+  local wt=$1 key=$2 f=$(stack_file)
+  stack_reap
+  if [ -f "$f" ] && [ "$(ticket_field "$f" worktree)" != "$wt" ]; then
+    ticket_field "$f" key
+    return 1
+  fi
+  [ -f "$f" ] && return 0
+  stack_write "$key" "$wt" pending 0
+  return 0
+}
+
+# Take the stack for a worktree. Prints the owning key and fails when another
+# worktree holds it. A write failure grants the claim rather than blocking.
+stack_claim() {
+  with_stack_lock _stack_claim "$1" "$2"
+}
+
+_stack_mark() {
+  local f=$(stack_file) wt=$1 state=$2 pid=${3:-0}
+  [ -f "$f" ] && [ "$(ticket_field "$f" worktree)" = "$wt" ] || return 0
+  if [ "$state" = release ]; then
+    rm -f "$f" 2>/dev/null
+  else
+    stack_write "$(ticket_field "$f" key)" "$wt" "$state" "$pid"
+  fi
+}
+
+stack_mark_up() { with_stack_lock _stack_mark "$1" up 0; }
+stack_mark_pending() { with_stack_lock _stack_mark "$1" pending "$2"; }
+stack_release() { with_stack_lock _stack_mark "$1" release; }
+
+# Poll for the stack until HEAVY_STACK_WAIT runs out. Prints the owner on timeout.
+wait_for_stack() {
+  local wt=$1 key=$2 deadline owner
+  deadline=$(( $(date +%s) + HEAVY_STACK_WAIT ))
+  while true; do
+    owner=$(stack_claim "$wt" "$key") && return 0
+    [ "$(date +%s)" -ge "$deadline" ] && { printf '%s' "${owner:-another worktree}"; return 1; }
+    sleep 1
+  done
+}
+
+stack_worktree() {
+  git -C "$1" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$1"
+}
+
 # Poll until HEAVY_TICKET reaches the head. Touch it every pass: that heartbeat
 # is what lets other waiters reap this ticket promptly if the session dies. A
 # waiter reaped anyway writes a fresh ticket and keeps waiting, so losing the
@@ -385,9 +607,15 @@ pair_call_ticket() {
 # is read and reassigned here, since rejoining means a new path.
 wait_for_head() {
   local key=$1 cmd=$2 deadline=$(( $(date +%s) + HEAVY_WAIT_TIMEOUT ))
+  HEAVY_WAIT_REASON=queue
   while true; do
     ticket_reap
-    [ "$(ticket_head)" = "$HEAVY_TICKET" ] && return 0
+    if [ "$(ticket_head)" = "$HEAVY_TICKET" ]; then
+      memory_low || return 0
+      HEAVY_WAIT_REASON=memory
+    else
+      HEAVY_WAIT_REASON=queue
+    fi
     [ "$(date +%s)" -ge "$deadline" ] && return 1
     if [ -e "$HEAVY_TICKET" ]; then
       touch "$HEAVY_TICKET" 2>/dev/null
@@ -401,14 +629,26 @@ wait_for_head() {
 }
 
 cmd_pre() {
-  local payload cmd cwd call key stripped prefix
+  local payload cmd cwd call key stripped prefix stack_wt owner
   payload=$(cat)
   cmd=$(payload_field "$payload" '.tool_input.command') || return 0
   [ -n "$cmd" ] || return 0
-  stripped=$(heavy_command "$cmd") || return 0
+  # A stack command queues even when an older conf's HEAVY_PATTERNS omits it.
+  stripped=$(heavy_command "$cmd") || stripped=$(stack_command "$cmd") || return 0
 
   cwd=$(payload_field "$payload" '.cwd') || cwd=$PWD
   key=$(heavy_key_for "$cwd")
+  # The stack check comes before the queue so a session waiting on another
+  # worktree's stack holds no place in line while it waits.
+  if stack_command "$cmd" >/dev/null; then
+    stack_wt=$(stack_worktree "$cwd")
+    if ! owner=$(wait_for_stack "$stack_wt" "$key"); then
+      heavy_log "api-tests stack held by $owner, denying: $stripped"
+      jq -nc --arg r "api-tests stack is held by $owner; wait or ask it to run task api-tests:down" \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+      return 0
+    fi
+  fi
   # Losing the queue never costs the lock: every path below still rewrites the
   # command through hold. Dropping the handover with the ticket is what lets
   # hold write a fresh one for what it is about to run.
@@ -432,7 +672,11 @@ cmd_pre() {
     else
       rm -f "$HEAVY_TICKET" 2>/dev/null
       [ -n "$call" ] && rm -f "$(call_ticket_file "$call")" 2>/dev/null
-      heavy_log "timed out waiting for the slot, holding without a place in line: $stripped"
+      if [ "$HEAVY_WAIT_REASON" = memory ]; then
+        heavy_log "timed out waiting for free memory (${HEAVY_FREE_NOW:-?}% free, need ${HEAVY_MIN_FREE_PCT}%), holding without a place in line: $stripped"
+      else
+        heavy_log "timed out waiting for the slot, holding without a place in line: $stripped"
+      fi
     fi
   fi
 
@@ -440,9 +684,19 @@ cmd_pre() {
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",updatedInput:{command:$c}},systemMessage:"yimbot: holding the heavy-job slot"}'
 }
 
+# down ran in this worktree: drop its claim once nothing of the stack is left.
+stack_release_if_down() {
+  stack_alive || stack_release "$1"
+}
+
 cmd_post() {
-  local payload call f ticket
+  local payload call f ticket pcmd pcwd
   payload=$(cat)
+  pcmd=$(payload_field "$payload" '.tool_input.command') || pcmd=
+  if [ -n "$pcmd" ] && stack_down_command "$pcmd"; then
+    pcwd=$(payload_field "$payload" '.cwd') || pcwd=$PWD
+    stack_release_if_down "$(stack_worktree "$pcwd")"
+  fi
   call=$(payload_field "$payload" '.tool_use_id') || return 0
   [ -n "$call" ] || return 0
   f=$(call_ticket_file "$call")
@@ -464,8 +718,14 @@ cmd_post() {
 # Reaping here makes status a writer, not a read-only observer, so anything
 # polling it on a timer is also what keeps the queue tidy.
 cmd_status() {
-  local t first=1 running=null entries=() json now
+  local t first=1 running=null entries=() json now stack=null sf
   ticket_reap
+  stack_reap
+  sf=$(stack_file)
+  if [ -f "$sf" ]; then
+    stack=$(printf '{"key":"%s","worktree":"%s","state":"%s","since":%s}' \
+      "$(ticket_field "$sf" key)" "$(ticket_field "$sf" worktree)" "$(ticket_field "$sf" state)" "$(ticket_num_field "$sf" since)")
+  fi
   for t in $(printf '%s\n' "$(queue_dir)"/*.json 2>/dev/null | sort); do
     [ -e "$t" ] || continue
     json=$(printf '{"key":"%s","cmd":"%s","since":%s}' \
@@ -480,20 +740,31 @@ cmd_status() {
   local waiting
   waiting=$(IFS=,; printf '[%s]' "${entries[*]:-}")
   if [ "${1:-}" = "--json" ]; then
-    printf '{"running":%s,"waiting":%s}\n' "$running" "$waiting"
+    printf '{"running":%s,"waiting":%s,"stack":%s}\n' "$running" "$waiting" "$stack"
     return 0
   fi
   # An idle queue has nothing to feed jq: return here rather than leaning on
   # jq to tolerate the stray blank line an empty entries array would add.
-  [ "$running" = null ] && [ ${#entries[@]} -eq 0 ] && return 0
+  if [ "$running" = null ] && [ ${#entries[@]} -eq 0 ]; then
+    stack_status_row "$stack"
+    return 0
+  fi
   now=$(( $(date +%s%N) / 1000000 ))
-  printf '%s\n' "$running" "${entries[@]}" | jq -r --argjson now "$now" '
+  printf '%s\n' "$running" ${entries[@]+"${entries[@]}"} | jq -r --argjson now "$now" '
     select(. != null)
     | ((($now - .since) / 1000 | floor) | if . < 0 then 0 else . end) as $s
     | (if $s < 60 then "\($s)s"
        elif $s < 3600 then "\($s / 60 | floor)m"
        else "\($s / 3600 | floor)h\($s % 3600 / 60 | floor)m" end) as $age
     | "\(.key)\t\($age)\t\(.cmd)"'
+  stack_status_row "$stack"
+}
+
+# The stack owner as a last row, in the same key, age, text columns.
+stack_status_row() {
+  [ "$1" = null ] && return 0
+  printf '%s' "$1" | jq -r --argjson now "$(( $(date +%s) ))" '
+    "\(.key)\t\((($now - .since) / 60 | floor))m\tapi-tests stack (\(.state))"'
 }
 
 # Source-guard: sourcing loads the helpers, executing dispatches a subcommand.

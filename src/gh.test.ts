@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  parseBlockReason,
+  parsePrLifecycle,
   addLabel,
   applyReadyLabel,
   blockedInfo,
@@ -724,4 +726,43 @@ test("repoMergesManually rethrows any other failure", async () => {
     throw new Error("gh: Server Error (HTTP 502)");
   };
   await assert.rejects(repoMergesManually(run, "o/r"), /502/);
+});
+
+const AVIATOR_STATUS = `# Current Aviator status\n> Aviator will automatically update this comment.\n\nThis PR is not ready to merge (currently in state blocked): merge conflict detected, please resolve manually and requeue.\n`;
+const AVIATOR_FAILURE = `This pull request failed to merge: merge conflict detected, please resolve manually and requeue. After you have resolved the problem, you should remove the \`blocked\` pull request label from this PR and then try to re-queue the PR.
+Additional debug info: A merge conflict occurred while queueing this pull request. Potential conflicting pull requests:
+* [8062 chore(hyperion): remove is-hyperion-financials-available flag (ENG-3766)](8062)
+* [8081 Remove \`contact-acitivy-tab\` flag (code, then prod)](8081)
+* [8086 Remove \`listing-marketing-performance-tab\` flag (code, then prod)](8086). 
+Please resolve manually and requeue. If resolving manually does not work, you may need to wait for previous PRs in the queue to merge.`;
+
+function comments(...c: { login: string; body: string; createdAt?: string }[]): string {
+  return JSON.stringify({ comments: c.map((x) => ({ author: { login: x.login }, body: x.body, createdAt: x.createdAt ?? "2026-11-18T19:51:29Z" })) });
+}
+
+test("parseBlockReason reads the queued PRs from a merge conflict failure comment", () => {
+  const json = comments({ login: "aviator-app", body: AVIATOR_STATUS }, { login: "aviator-app", body: AVIATOR_FAILURE });
+  assert.deepEqual(parseBlockReason(json), { kind: "conflict", waitingOn: [8062, 8081, 8086], commentAt: "2026-11-18T19:51:29Z" });
+});
+
+test("parseBlockReason uses the newest failure comment", () => {
+  const older = AVIATOR_FAILURE.replace("8062", "7000");
+  const newer = AVIATOR_FAILURE.replace("8062", "9000");
+  const json = comments({ login: "aviator-app", body: older }, { login: "aviator-app", body: newer });
+  assert.deepEqual((parseBlockReason(json) as { waitingOn: number[] }).waitingOn, [9000, 8081, 8086]);
+});
+
+test("parseBlockReason is other for failed checks, no PR list, or a non-Aviator author", () => {
+  const checks = AVIATOR_FAILURE + "\nFailed checks:\n* unit-tests";
+  assert.deepEqual(parseBlockReason(comments({ login: "aviator-app", body: checks })), { kind: "other" });
+  const noList = "This pull request failed to merge: merge conflict detected, please resolve manually.";
+  assert.deepEqual(parseBlockReason(comments({ login: "aviator-app", body: noList })), { kind: "other" });
+  assert.deepEqual(parseBlockReason(comments({ login: "someone", body: AVIATOR_FAILURE })), { kind: "other" });
+  assert.deepEqual(parseBlockReason(comments({ login: "aviator-app", body: AVIATOR_STATUS })), { kind: "other" });
+});
+
+test("parsePrLifecycle maps gh states", () => {
+  assert.equal(parsePrLifecycle('{"state":"MERGED"}'), "merged");
+  assert.equal(parsePrLifecycle('{"state":"CLOSED"}'), "closed");
+  assert.equal(parsePrLifecycle('{"state":"OPEN"}'), "open");
 });

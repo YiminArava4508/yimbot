@@ -10,6 +10,7 @@ export type EventKind =
   | "ci_fix_started"
   | "conflict_fix_started"
   | "blocked_fix_started"
+  | "blocked_waiting"
   | "fix_ended"
   | "merge_blocked"
   | "ci_failing"
@@ -60,6 +61,8 @@ export type YimbotEvent = {
   // it; the autonomous-mode nudge uses it to target the exact stuck Claude, and
   // the stale-raise step to notice that Claude is gone.
   pane?: string;
+  // The queued PRs a blocked_waiting row is waiting on to land.
+  waitingOn?: number[];
 };
 
 const TICKET = /^(eng|sc)-(\d+)/i;
@@ -162,6 +165,9 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   ci_fix_started: { status: "fixing CI", terminal: false },
   conflict_fix_started: { status: "resolving conflict", terminal: false },
   blocked_fix_started: { status: "unblocking", terminal: false },
+  // The queue blocked the PR only because of siblings queued ahead of it; the
+  // daemon holds it until they land, then re-queues it. No session involved.
+  blocked_waiting: { status: "waiting on queue", terminal: false },
   // A fix session closed itself (or was reaped) and the PR's verdict has not
   // replaced it yet, typically CI re-running on the fix push.
   fix_ended: { status: "fix done", terminal: false },

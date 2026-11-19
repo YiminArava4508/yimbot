@@ -13,6 +13,9 @@ import { runHeadless } from "./headless.ts";
 import {
   addLabel,
   blockedInfo,
+  blockReason,
+  prLifecycle,
+  removeLabel,
   checksInfo,
   compareStatus,
   defaultBranch,
@@ -182,6 +185,7 @@ export async function startDaemon(): Promise<() => void> {
   // label) when its combined-CI batch fails; the review step's blocked-fix kind
   // triggers on it and re-queues by removing it and re-adding the ready label.
   const blockedLabelName = envOr("BLOCKED_LABEL", "blocked");
+  const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
 
   // Reviewer logins whose comments/reviews the bot addresses itself in
   // supervised mode; anyone else's raise the board flag and halt that PR's fix
@@ -253,6 +257,9 @@ export async function startDaemon(): Promise<() => void> {
         mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
         checksInfo: (n: number) => ReturnType<typeof checksInfo>;
         blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
+        blockReason: (n: number) => ReturnType<typeof blockReason>;
+        prLifecycle: (n: number) => ReturnType<typeof prLifecycle>;
+        requeue: (n: number) => Promise<void>;
         humanChangesRequested: (n: number) => ReturnType<typeof humanChangesRequested>;
       }
     | null = null;
@@ -280,6 +287,12 @@ export async function startDaemon(): Promise<() => void> {
       mergeableInfo: (n) => mergeableInfo(runnerFor(n), n),
       checksInfo: (n) => checksInfo(runnerFor(n), n, ignoreChecks),
       blockedInfo: (n) => blockedInfo(runnerFor(n), n, blockedLabelName),
+      blockReason: (n) => blockReason(runnerFor(n), n),
+      prLifecycle: (n) => prLifecycle(runnerFor(n), n),
+      requeue: async (n) => {
+        await removeLabel(runnerFor(n), n, blockedLabelName);
+        await addLabel(runnerFor(n), n, readyLabelName);
+      },
       humanChangesRequested: (n) => humanChangesRequested(runnerFor(n), n, trustedReviewers),
     };
     const extraNote = extraRepos.length ? `; also watching ${extraRepos.join(", ")}` : "";
@@ -461,7 +474,6 @@ export async function startDaemon(): Promise<() => void> {
   // recognized off-value. Gated on the same gh-availability signal as
   // review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
   const autoReadyLabel = !["false", "off", "no", "0"].includes(envOr("AUTO_READY_LABEL", "true").toLowerCase());
-  const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
   const readySoakMinutes = Number(envOr("READY_SOAK_MINUTES", "10"));
   const readySoakMs = (Number.isFinite(readySoakMinutes) && readySoakMinutes >= 0 ? readySoakMinutes : 10) * 60_000;
   const readyMaxQueued = Number(envOr("READY_MAX_QUEUED", "3"));

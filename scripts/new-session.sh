@@ -124,6 +124,24 @@ emit_hook_event() {
   printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"%s}\n' "$ts" "$kind" "$key" "$key" "$extra" >> "$EVENTS_LOG" 2>/dev/null || true
 }
 
+# Record that a queue-blocked PR is only waiting on other queued PRs to land:
+# emit_blocked_waiting <pr> <waiting-on-pr>... Same blocked_waiting event the
+# daemon writes itself, keyed by the current branch. Best-effort like the above.
+emit_blocked_waiting() {
+  local pr=$1 branch key ts waiting
+  shift
+  [ -n "${EVENTS_LOG:-}" ] && [ -n "$pr" ] && [ "$#" -gt 0 ] || return 0
+  branch=$(git branch --show-current 2>/dev/null) || return 0
+  [ -n "$branch" ] || return 0
+  key=$(event_key_from_branch "$branch")
+  key=${key//\\/\\\\}
+  key=${key//\"/\\\"}
+  ts=$(( $(date +%s%N) / 1000000 ))
+  waiting=$(printf '%s,' "$@")
+  printf '{"ts":%s,"kind":"blocked_waiting","key":"%s","label":"%s","pr":%s,"waitingOn":[%s]}\n' \
+    "$ts" "$key" "$key" "$pr" "${waiting%,}" >> "$EVENTS_LOG" 2>/dev/null || true
+}
+
 # Claude Code PreToolUse hook for AskUserQuestion: while the yimbot mode file
 # (next to $EVENTS_LOG) reads autonomous no human is there to answer, so deny
 # the tool and tell the session to decide. Any other state prints nothing,

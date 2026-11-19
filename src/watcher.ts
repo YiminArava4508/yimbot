@@ -787,8 +787,9 @@ export type WatcherConfig = {
   // listOpenPRs spans every repo (EXTRA_REPOS included) for the board and the
   // ready step; listFixableOpenPRs is the codebase repo's only, since a fix
   // session's worktree is cut from codebasePath.
-  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> & {
+  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "blockReason" | "prLifecycle" | "humanChangesRequested"> & {
     listFixableOpenPRs: () => Promise<OpenPR[]>;
+    requeue: (prNumber: number) => Promise<void>;
   }) | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
@@ -1689,6 +1690,13 @@ export function startWatcher(config: WatcherConfig): () => void {
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
     blockedInfo: config.prReview.blockedInfo,
+    blockReason: config.prReview.blockReason,
+    prLifecycle: config.prReview.prLifecycle,
+    markWaiting: (prNumber, branch, waitingOn) => {
+      const { key, label } = prRowKey({ branch, pr: prNumber });
+      emitStatus({ kind: "blocked_waiting", key, label, title: titleFromBranch(branch), pr: prNumber, waitingOn });
+    },
+    requeue: (prNumber) => config.prReview!.requeue(prNumber),
     mode: readMode,
     humanChangesRequested: config.prReview.humanChangesRequested,
     // Every hook here keys by prRowKey, never the bare branch: a PR whose branch
@@ -1942,7 +1950,8 @@ export function startWatcher(config: WatcherConfig): () => void {
     // fix in flight; the label coming off hands the row back to onVerdict.
     onBlocked: (n: number) => {
       const k = keyForPr(n);
-      if (currentStatus(k.key) === statusFor("blocked_fix_started")?.status) return;
+      const status = currentStatus(k.key);
+      if (status === statusFor("blocked_fix_started")?.status || status === statusFor("blocked_waiting")?.status) return;
       emitStatus({ kind: "merge_blocked", key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),

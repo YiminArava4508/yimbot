@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { BlockedInfo, ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { BlockedInfo, BlockReason, ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, PrLifecycle, UnresolvedInfo } from "./gh.ts";
 import {
   blockedSessionName,
   ciSessionName,
@@ -52,6 +52,8 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   restored: { prNumber: number; branch: string; kind: string }[];
   flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[];
   logs: string[];
+  waiting: { prNumber: number; waitingOn: number[] }[];
+  requeued: number[];
 } {
   const spawned: { name: string; branch: string; prNumber: number }[] = [];
   const ciSpawned: { name: string; branch: string; prNumber: number }[] = [];
@@ -62,6 +64,8 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   const restored: { prNumber: number; branch: string; kind: string }[] = [];
   const flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[] = [];
   const logs: string[] = [];
+  const waiting: { prNumber: number; waitingOn: number[] }[] = [];
+  const requeued: number[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
     unresolvedInfo: async () => info(2, 1000),
@@ -76,6 +80,10 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     settleFixStatus: (prNumber, branch) => void settled.push({ prNumber, branch }),
     restoreFixStatus: (prNumber, branch, kind) => void restored.push({ prNumber, branch, kind }),
+    blockReason: async () => ({ kind: "other" }),
+    prLifecycle: async () => "open",
+    markWaiting: (prNumber, _branch, waitingOn) => void waiting.push({ prNumber, waitingOn }),
+    requeue: async (prNumber) => void requeued.push(prNumber),
     blockedPaneActivity: () => null,
     blockedSettleMs: 2 * 60 * 1000,
     blockedStuckMs: 30 * 60 * 1000,
@@ -89,7 +97,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, settled, restored, flagRaised, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, settled, restored, flagRaised, logs, waiting, requeued };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -995,4 +1003,119 @@ test("a freshly quiet blocked window is not closed even when the PR conflicts", 
   });
   await reviewOnce(freshReviewState(), h.deps);
   assert.equal(h.reaped.length, 0);
+});
+
+const queueConflict = (commentAt = "t1", waitingOn = [8062, 8081]): BlockReason => ({ kind: "conflict", waitingOn, commentAt });
+
+test("a queue merge conflict block records waiting and spawns no session", async () => {
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.waiting, [{ prNumber: 4706, waitingOn: [8062, 8081] }]);
+  assert.equal(h.blockedSpawned.length, 0);
+  assert.equal(h.requeued.length, 0);
+});
+
+test("a waiting PR stays held while any sibling is still open", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "merged", 8081: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n],
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.equal(h.requeued.length, 0);
+  assert.equal(h.waiting.length, 1);
+});
+
+test("once every sibling landed and the PR is mergeable it is re-queued with no session", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "open", 8081: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n],
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  life[8062] = "merged";
+  life[8081] = "closed";
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.requeued, [4706]);
+  assert.equal(h.blockedSpawned.length, 0);
+});
+
+test("once every sibling landed and the PR conflicts with main the conflict path takes over", async () => {
+  let state = "mergeable" as MergeableState;
+  const life: Record<number, PrLifecycle> = { 8062: "open", 8081: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    mergeableInfo: async () => merge(state, "abc"),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n],
+  });
+  const rs = freshReviewState();
+  await reviewOnce(rs, h.deps);
+  life[8062] = "merged";
+  life[8081] = "merged";
+  state = "conflicting";
+  await reviewOnce(rs, h.deps);
+  assert.equal(h.requeued.length, 0);
+  assert.equal(h.conflictSpawned.length, 1);
+});
+
+test("a re-block at the same head with a new failure comment re-enters waiting", async () => {
+  let at = "t1";
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(at, at === "t1" ? [8062] : [9000]),
+    prLifecycle: async (n) => (n === 8062 ? "merged" : "open"),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps); // waits, sees 8062 landed on the same tick, re-queues
+  assert.deepEqual(h.requeued, [4706]);
+  at = "t2";
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062], [9000]]);
+  assert.equal(h.blockedSpawned.length, 0);
+});
+
+test("a re-block showing the already-handled failure comment goes to a session", async () => {
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062]),
+    prLifecycle: async () => "merged",
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.equal(h.requeued.length, 1);
+  assert.equal(h.blockedSpawned.length, 1);
+});
+
+test("a non-conflict block or an unreadable comment still goes to the blocked fix session", async () => {
+  const other = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+  });
+  await reviewOnce(freshReviewState(), other.deps);
+  assert.equal(other.blockedSpawned.length, 1);
+  const failing = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => {
+      throw new Error("gh down");
+    },
+  });
+  await reviewOnce(freshReviewState(), failing.deps);
+  assert.equal(failing.blockedSpawned.length, 1);
 });

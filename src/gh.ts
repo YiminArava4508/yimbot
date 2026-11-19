@@ -306,6 +306,47 @@ export async function blockedInfo(run: GhRunner, prNumber: number, label: string
   return parseBlockedInfo(await run(["pr", "view", String(prNumber), "--json", "labels,headRefOid"]), label);
 }
 
+// Why the merge queue blocked a PR, read from its newest "failed to merge"
+// comment. A "merge conflict detected" block with no failed checks names the
+// queued PRs it collided with: not this PR's fault, so it only has to wait for
+// them. Anything else (failed checks, no readable comment) needs a session.
+export type BlockReason =
+  | { kind: "conflict"; waitingOn: number[]; commentAt: string }
+  | { kind: "other" };
+
+const AVIATOR_AUTHOR_RE = /^aviator/i;
+
+export function parseBlockReason(json: string): BlockReason {
+  const data = JSON.parse(json) as { comments?: { author?: { login?: string }; body?: string; createdAt?: string }[] };
+  const failures = (data.comments ?? []).filter(
+    (c) => AVIATOR_AUTHOR_RE.test(c.author?.login ?? "") && /failed to merge:/i.test(c.body ?? ""),
+  );
+  const newest = failures[failures.length - 1];
+  if (!newest) return { kind: "other" };
+  const body = newest.body ?? "";
+  if (!/failed to merge: merge conflict detected/i.test(body) || /failed checks:/i.test(body)) return { kind: "other" };
+  const section = body.split(/potential conflicting pull requests:/i)[1] ?? "";
+  const waitingOn = [...section.matchAll(/^\s*[*-]\s*\[(\d+)\b/gm)].map((m) => Number(m[1]));
+  if (waitingOn.length === 0) return { kind: "other" };
+  return { kind: "conflict", waitingOn: [...new Set(waitingOn)], commentAt: newest.createdAt ?? "" };
+}
+
+export async function blockReason(run: GhRunner, prNumber: number): Promise<BlockReason> {
+  return parseBlockReason(await run(["pr", "view", String(prNumber), "--json", "comments"]));
+}
+
+export type PrLifecycle = "open" | "merged" | "closed";
+
+export function parsePrLifecycle(json: string): PrLifecycle {
+  const { state } = JSON.parse(json) as { state: string };
+  if (state === "MERGED") return "merged";
+  return state === "CLOSED" ? "closed" : "open";
+}
+
+export async function prLifecycle(run: GhRunner, prNumber: number): Promise<PrLifecycle> {
+  return parsePrLifecycle(await run(["pr", "view", String(prNumber), "--json", "state"]));
+}
+
 export type HumanChangesRequested = { requested: boolean; latestAt: number | null };
 
 // Author-aware changes-requested from `gh pr view <n> --json latestReviews`

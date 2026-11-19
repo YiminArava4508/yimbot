@@ -92,6 +92,17 @@ rm -rf "$SK_TMP" "$SK_EMPTY"
 # The hook emitter helpers survive sourcing.
 assert_defined event_key_from_branch
 assert_defined emit_hook_event
+assert_defined emit_blocked_waiting
+
+# emit_blocked_waiting writes one blocked_waiting event with the PR numbers.
+BW_DIR=$(mktemp -d)
+git -C "$BW_DIR" init -q -b eng-9-thing
+bw_line=$( cd "$BW_DIR" && EVENTS_LOG="$BW_DIR/events.jsonl" emit_blocked_waiting 8090 8062 8081 && cat "$BW_DIR/events.jsonl" )
+case "$bw_line" in
+  *'"kind":"blocked_waiting"'*'"pr":8090'*'"waitingOn":[8062,8081]'*) echo "ok: blocked_waiting event" ;;
+  *) echo "FAIL: blocked_waiting event: $bw_line"; exit 1 ;;
+esac
+rm -rf "$BW_DIR"
 assert_defined deny_ask_user_question
 
 # deny_ask_user_question: denies only while the mode file next to $EVENTS_LOG

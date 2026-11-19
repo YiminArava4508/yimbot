@@ -56,6 +56,10 @@ before you touch any code.
    Decide whether the failure is caused by this PR's changes or by another PR in
    the batch (or a flake). Read enough of the failure to be sure.
 
+   If the failure is only "merge conflict detected" with a "Potential conflicting
+   pull requests" list and no "Failed checks:", the daemon normally handles it
+   without a session. Treat it like step 3's "another PR's fault" case.
+
 4. **Fix if this PR is at fault.** Reproduce the failure locally, then fix it
    **in this session**. PR-fix work always runs on the stronger session model:
    never delegate it to cheaper implementation subagents, and ignore
@@ -97,19 +101,32 @@ before you touch any code.
    customized in the daemon config, use those exact names here instead: remove
    the block label this PR actually carries, and add the queue's ready label.
 
-7. **Bail cleanly when uncertain.** If you cannot determine the cause, or a fix
+7. **Wait for queued PRs instead of re-queuing.** If you conclude the block is a
+   conflict with other queued PRs and not this PR's fault (this branch merges
+   cleanly with main, and the listed PRs have not landed yet), do not re-queue
+   and do not leave the window open. Record the PR numbers you are waiting on,
+   then close your window as in step 10. The daemon holds the PR, re-checks
+   those PRs every tick, and swaps `blocked` for `ready-to-merge` once they all
+   merged or closed (or starts a conflict fix if the PR then conflicts with main):
+
+   ```bash
+   bash -c 'source ~/new-session.sh && emit_blocked_waiting <number> <waiting-pr> [<waiting-pr> ...]'
+   ```
+
+8. **Bail cleanly when uncertain.** Only for real uncertainty or a PR that is
+   genuinely broken: if you cannot determine the cause, or a fix
    would be risky, or you could not make the build green: leave the `blocked` label
    on, push nothing, leave the session open, and report why. Never re-queue a PR you
    believe is genuinely broken. yimbot dedups by the blocked head SHA, so it will
    not immediately retry; a human takes it from here.
 
-8. **Flag ready to test** so the user knows they can run local dev here:
+9. **Flag ready to test** so the user knows they can run local dev here:
 
    ```bash
    tmux set-option -t "$(tmux display-message -p '#{session_name}')" @feature_status "#[fg=cyan]▶"
    ```
 
-9. **Close the session (final step, success path only).** Print your summary first
+10. **Close the session (final step, success and waiting paths).** Print your summary first
    (what failed, whose fault it was, whether you fixed code or just re-queued, the
    local test result), then close the session. Your fix name is
    `pr-<number>-blocked`:
@@ -121,5 +138,5 @@ before you touch any code.
      ```bash
      tmux kill-window -t "$(tmux display-message -p '#{session_name}'):pr-<number>-blocked"
      ```
-   Only close on the success path. If you bailed at step 2, step 5, or step 7, leave the
-   session open.
+   Close on the success path and after recording a wait (step 7). If you bailed at
+   step 2, step 5, or step 8, leave the session open for a human.

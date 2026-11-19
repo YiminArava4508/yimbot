@@ -43,6 +43,26 @@ this flow and follow **Flag Archive Tickets** below.
    Limits** below, plan it as a series of shippable slices up front (see that
    section).
 
+   - **Sizing notes are estimation context, not a plan.** A "Sizing",
+     "Justification", or similar estimation section in the ticket may point you
+     at related tickets or code to read, but never take the approach, mechanism,
+     or type from it. Derive the approach from the problem statement,
+     acceptance criteria, comments, and the codebase. If the note's suggestion
+     and an existing pattern disagree, follow the existing pattern and record
+     the choice under Decisions.
+   - **Look up the existing UI pattern.** When the ticket asks for user-facing
+     behavior (a filter, input, column, form field), find a feature in the repo
+     that already behaves the way the ticket asks, or the one a reviewer would
+     compare it to, and copy its configuration and component. Name that
+     reference feature in the plan's Decisions note. Only build new behavior
+     when no existing feature does the same thing.
+   - **Look up the default path.** For that same behavior, trace what a user
+     gets without changing any setting: the default operator, predicate, mode,
+     or variant the UI selects when the feature first renders. Plan for the
+     requested behavior to work on that default path, the same way it does on
+     the reference feature. Behavior that only appears after the user picks a
+     non-default option does not meet the ticket.
+
 1a. **Size check.** Size the plan on the 1, 2, 3, 5, 8, 13, 21 scale. Skip this step
    when the ticket has no estimate or a 0 estimate. For `eng-*` tickets, write
    the reason to a file (the estimate, your planned size, and the evidence: files
@@ -75,6 +95,12 @@ this flow and follow **Flag Archive Tickets** below.
      in-session.
    Either way, implement the plan task-by-task using
    `superpowers:test-driven-development`.
+
+   For user-facing behavior, the first failing test covers the default path
+   found in step 1: render or build the feature with its default settings
+   (no operator, predicate, or mode chosen by the test), feed it the input the
+   ticket describes, and assert the requested result. Tests that only set a
+   non-default option do not count toward this.
 
 5. **Self-review and fix.** With the tests green, run one round of code review on
    the changes before finishing (before any PR): invoke

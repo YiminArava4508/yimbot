@@ -25,6 +25,10 @@ follow **Spike Tickets** below. Signals: a "spike" label, or a title/description
 that asks a question or asks to investigate, research, or evaluate instead of
 asking for a behavior change.
 
+**Flag-archive check second.** If the ticket is an after-release "Archive
+`<flag>` flag in prod" ticket (the `after-release` label plus that title), skip
+this flow and follow **Flag Archive Tickets** below.
+
 1. **Plan.** Invoke `superpowers:writing-plans` and produce the implementation
    plan for this ticket. Design/plan docs are written under `docs/superpowers/`.
    Before designing any new function, helper, component, type, or module,
@@ -123,15 +127,16 @@ asking for a behavior change.
      release", archiving a flag in prod), do NOT do that work. Before moving the
      ticket to Review, run
      `~/create-subticket.sh <TICKET> "<follow-up title>" <points> --after-release`.
-     Put everything the follow-up needs in its description: the verified
-     PostHog project and flag ID, the exact key, the dependency checks still
-     outstanding (experiments, surveys, dependent flags, scheduled changes,
-     tours, early-access features, replay settings, external consumers), and
-     the readback to record. Link the follow-up in the final summary and in a
-     comment on the parent ticket. Use `Resolves <TICKET>` in the PR body.
-     The after-release follow-up holds the remaining work, and the parent has
-     to reach Done for the follow-up to unblock. Archiving in prod stays
-     hard to reverse and needs a human "go".
+     For a flag archive, title it exactly "Archive `<flag-key>` flag in prod"
+     and put these two lines in the description, since the checklist in **Flag
+     Archive Tickets** reads them: `Flag key: <exact key>` and
+     `PostHog flag ID: <id>` (prod project 117986, verified). Also list the
+     checks still outstanding (experiments, surveys, dependent flags,
+     scheduled changes, early-access features, replay link, external
+     consumers) and the readback to record. Link the follow-up in the final
+     summary and in a comment on the parent ticket. Use `Resolves <TICKET>` in
+     the PR body. The after-release follow-up holds the remaining work, and the
+     parent has to reach Done for the follow-up to unblock.
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
      PR, or in a split the whole series, is open.
@@ -171,6 +176,60 @@ review, split, and local-server steps above do not apply.
    (`~/end-session.sh <branch>`).
 5. **STOP.** Print the findings summary and where it was posted.
 
+## Flag Archive Tickets
+
+An after-release "Archive `<flag>` flag in prod" ticket may archive the flag
+itself, but only through this checklist. There is no PR, review, split, or
+local-server step. Read the exact flag key and PostHog flag ID from the ticket
+description (`~/get-ticket.sh <TICKET>`); if either is missing, or the flag ID
+does not resolve to that key in prod project 117986, fail check 5 below.
+
+**Fail closed.** If any input can't be read (gh, git, Linear, PostHog), that
+check fails. Never pass a check on missing data, and never skip one.
+
+1. **Run the reference checks (checks 2 and 3).** `~/flag-archive-check.sh <key>`
+   prints JSON (`pass`, `checks`, `prodShas`, `docMatches`, `quietHours`) and
+   exits non-zero on failure. It covers: no code references on `origin/main` of
+   MatthewsREIS/gemini or anywhere else in the org, and none at any gemini
+   commit prod runs. `*.md` matches land in `docMatches` and don't fail.
+2. **Check 1, released.** The `Blocked by:` line of `~/get-ticket.sh <TICKET>`
+   must list at least one blocker, and every blocker must be `Done`. The
+   claim gate already checked this; re-check it anyway.
+3. **Check 4, quiet in prod.** With the PostHog MCP, read the flag in project
+   117986. `last_called_at` must be older than `quietHours` from step 1 (24
+   unless `FLAG_ARCHIVE_QUIET_HOURS` is set). A null or missing value fails.
+4. **Check 5, nothing depends on it and archiving changes nothing for users.**
+   In project 117986 all of these must hold:
+   - no experiments, surveys, early-access features, or scheduled changes use
+     the flag;
+   - no other flag depends on it (search other flags' filters for this flag's
+     ID);
+   - session replay isn't linked to it;
+   - the flag is active, at 100% rollout, with no release conditions.
+   Product tours are out of scope (the PostHog key can't read them). Don't
+   fail on them, but say so in the readback.
+
+**If every check passes**, in this order:
+
+a. **Save the flag's state** as a comment on the ticket before touching it: id,
+   key, active, filters/rollout, `last_called_at`, enough to restore it.
+b. **Archive the flag** with the PostHog MCP.
+c. **Read it back** and confirm it now reads as archived. If it doesn't, raise
+   needs-decision (below) with what you saw and stop.
+d. **Post a readback comment** listing every check with its evidence, the prod
+   commits searched (`prodShas`), any `docMatches`, and the note that tours
+   weren't checked.
+e. **Move the ticket to In Review**, same as the spike flow: `~/move-ticket.sh
+   <TICKET> "In Review"` (Shortcut: use the Shortcut MCP). No PR. Then STOP and
+   print the readback.
+
+**If any check fails**, archive nothing:
+
+a. Run `~/needs-decision.sh "<failed check number and name>: <evidence>"` so
+   the board stops showing the session as "working".
+b. Post the same failed check and evidence as a comment on the ticket.
+c. STOP.
+
 ## Hard-Stop Rubric
 
 The PR is the human checkpoint. Code that only takes effect once the PR is
@@ -186,6 +245,10 @@ mutate real resources right now**, before any review can happen:
 - Deleting or overwriting real infrastructure, data, or resources.
 - Any data-destroying or otherwise irreversible command executed during
   implementation.
+
+**Exception: archiving a prod PostHog flag.** It is allowed without a "go",
+only through the **Flag Archive Tickets** checklist, and only when every check
+passes. Every other prod change still needs a "go".
 
 Nothing else pauses. Writing migration, auth, or billing code, touching many
 files, touching shared or core code, or the plan containing an open question is

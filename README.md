@@ -306,6 +306,11 @@ been released. If tickets are not moved to Done when a release ships, the gate
 waits forever. If someone moves a ticket to Done early, the follow-up runs
 before the release. Check this holds before relying on the label.
 
+**Prod flag archive.** The pickup-ticket skill archives a prod PostHog flag only
+after its checklist passes. Check 4 needs the flag quiet for `FLAG_ARCHIVE_QUIET_HOURS`
+(default `4`); a flag that was never called passes. Set the variable in `.env`
+to change the window.
+
 ## Heavy job queue
 
 Every session yimbot opens can be running a build, a test suite, or a code

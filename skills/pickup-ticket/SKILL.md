@@ -200,8 +200,11 @@ check fails. Never pass a check on missing data, and never skip one.
    must list at least one blocker, and every blocker must be `Done`. The
    claim gate already checked this; re-check it anyway.
 3. **Check 4, quiet in prod.** With the PostHog MCP, read the flag in project
-   117986. `last_called_at` must be older than `quietHours` from step 1 (24
-   unless `FLAG_ARCHIVE_QUIET_HOURS` is set). A null or missing value fails.
+   117986. `last_called_at` must be older than `quietHours` from step 1 (4
+   unless `FLAG_ARCHIVE_QUIET_HOURS` is set). A null or missing `last_called_at`
+   means the flag was never called: the check passes, and the readback says
+   "never called". If the flag can't be read (PostHog error, flag not found),
+   the check fails; that is not the same as never called.
 4. **Check 5, nothing depends on it and archiving changes nothing for users.**
    In project 117986 all of these must hold:
    - no experiments, surveys, early-access features, or scheduled changes use

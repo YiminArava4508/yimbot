@@ -23,6 +23,26 @@ const PIN_FILE_API = `${TF_REPO_API}/app-revisions.yaml`;
 const APPS_FILE_API = `${TF_REPO_API}/application-services.tf`;
 const SEARCH_LIMIT = 100;
 
+export const DEFAULT_QUIET_HOURS = 4;
+
+export function resolveQuietHours(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_QUIET_HOURS;
+}
+
+// Check 4. A null or missing `last_called_at` means the flag was never called,
+// which passes. A flag that could not be read at all (PostHog error, no flag
+// found) is not this case: the caller fails the check before getting here.
+export function checkQuiet(opts: { lastCalledAt: string | null | undefined; now: Date; quietHours: number }): { pass: boolean; detail: string } {
+  const { lastCalledAt, now, quietHours } = opts;
+  if (lastCalledAt === null || lastCalledAt === undefined) return { pass: true, detail: "never called" };
+  const at = new Date(lastCalledAt).getTime();
+  if (Number.isNaN(at)) return { pass: false, detail: `last_called_at is not a timestamp: ${lastCalledAt}` };
+  const hours = (now.getTime() - at) / 3600_000;
+  const ago = `last called ${hours.toFixed(1)}h ago, quiet window is ${quietHours}h`;
+  return { pass: hours > quietHours, detail: ago };
+}
+
 const isCommitRef = (v: string) => /^[0-9a-f]{7,40}$/i.test(v);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 

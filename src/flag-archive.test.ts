@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  checkQuiet,
   classifyMatches,
   collectProdBuilds,
+  resolveQuietHours,
   parseAppCharts,
   parseAppVersion,
   parseArgs,
@@ -425,4 +427,38 @@ test("prod greps are fixed-string, scoped to the build's folder, and skip markdo
   }
   const folders = prodGreps.map((g) => g[g.length - 2]).sort();
   assert.deepEqual(folders, ["api", "api-langserve", "artemis-mcp", "react-ui", "workers"]);
+});
+
+const NOW = new Date("2026-11-19T12:00:00Z");
+const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3600_000).toISOString();
+
+test("resolveQuietHours defaults to 4 and honours a positive override", () => {
+  assert.equal(resolveQuietHours(undefined), 4);
+  assert.equal(resolveQuietHours(""), 4);
+  assert.equal(resolveQuietHours("0"), 4);
+  assert.equal(resolveQuietHours("junk"), 4);
+  assert.equal(resolveQuietHours("24"), 24);
+});
+
+test("checkQuiet fails a call 3 hours ago and passes one 5 hours ago with the default window", () => {
+  const quietHours = resolveQuietHours(undefined);
+  assert.equal(checkQuiet({ lastCalledAt: hoursAgo(3), now: NOW, quietHours }).pass, false);
+  assert.equal(checkQuiet({ lastCalledAt: hoursAgo(5), now: NOW, quietHours }).pass, true);
+});
+
+test("checkQuiet passes a flag that was never called and says so", () => {
+  for (const lastCalledAt of [null, undefined]) {
+    const r = checkQuiet({ lastCalledAt, now: NOW, quietHours: 4 });
+    assert.equal(r.pass, true);
+    assert.match(r.detail, /never called/);
+  }
+});
+
+test("FLAG_ARCHIVE_QUIET_HOURS=24 makes a call 5 hours ago fail", () => {
+  const quietHours = resolveQuietHours("24");
+  assert.equal(checkQuiet({ lastCalledAt: hoursAgo(5), now: NOW, quietHours }).pass, false);
+});
+
+test("checkQuiet fails a timestamp it cannot read", () => {
+  assert.equal(checkQuiet({ lastCalledAt: "not a date", now: NOW, quietHours: 4 }).pass, false);
 });

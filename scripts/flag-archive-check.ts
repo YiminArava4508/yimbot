@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { parseArgs, runFlagArchiveCheck, type GitRunner } from "../src/flag-archive.ts";
+import { parseArgs, resolveQuietHours, runFlagArchiveCheck, type GitRunner } from "../src/flag-archive.ts";
 import { ghRunner } from "../src/gh.ts";
 
 const args = parseArgs(process.argv.slice(2));
@@ -14,7 +14,7 @@ if (!args) {
   process.exit(2);
 }
 const geminiDir = args.geminiDir ?? process.env.GEMINI_DIR ?? join(homedir(), "Work", "gemini");
-const quietHours = Number(process.env.FLAG_ARCHIVE_QUIET_HOURS) > 0 ? Number(process.env.FLAG_ARCHIVE_QUIET_HOURS) : 24;
+const quietHours = resolveQuietHours(process.env.FLAG_ARCHIVE_QUIET_HOURS);
 
 const execFileAsync = promisify(execFile);
 const git: GitRunner = async (gitArgs) => {

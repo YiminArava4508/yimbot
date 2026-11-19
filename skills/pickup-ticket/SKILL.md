@@ -188,10 +188,14 @@ does not resolve to that key in prod project 117986, fail check 5 below.
 check fails. Never pass a check on missing data, and never skip one.
 
 1. **Run the reference checks (checks 2 and 3).** `~/flag-archive-check.sh <key>`
-   prints JSON (`pass`, `checks`, `prodShas`, `docMatches`, `quietHours`) and
-   exits non-zero on failure. It covers: no code references on `origin/main` of
-   MatthewsREIS/gemini or anywhere else in the org, and none at any gemini
-   commit prod runs. `*.md` matches land in `docMatches` and don't fail.
+   prints JSON (`pass`, `checks`, `builds`, `prodShas`, `docMatches`,
+   `quietHours`) and exits non-zero on failure. It covers: no code references
+   on `origin/main` of MatthewsREIS/gemini or anywhere else in the org, and none
+   in the source folder of each gemini build prod runs (each app's chart and its
+   local subcharts, at the commit their `appVersion` names; `builds` lists
+   every app, chart, commit, and folder searched). `*.md` files are never
+   searched in prod builds; on `origin/main` and the org they land in
+   `docMatches` and don't fail.
 2. **Check 1, released.** The `Blocked by:` line of `~/get-ticket.sh <TICKET>`
    must list at least one blocker, and every blocker must be `Done`. The
    claim gate already checked this; re-check it anyway.

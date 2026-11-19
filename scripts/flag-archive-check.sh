@@ -1,7 +1,7 @@
 #!/bin/bash
 # flag-archive-check.sh - run checks 2 and 3 of the prod flag-archive policy
-# (no code references on gemini main, the rest of the org, or any commit prod
-# runs). Prints JSON; exits non-zero on any failure. Runs from anywhere
+# (no code references on gemini main, the rest of the org, or the source folder
+# of any build prod runs). Prints JSON; exits non-zero on any failure. Runs from anywhere
 # (symlinked to ~/flag-archive-check.sh); resolves back to the yimbot repo so
 # its .env applies (FLAG_ARCHIVE_QUIET_HOURS, GEMINI_DIR).
 # Usage: flag-archive-check.sh <flag-key> [--gemini-dir <path>]

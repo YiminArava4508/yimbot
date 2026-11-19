@@ -121,6 +121,15 @@ export type PrReviewDeps = {
   // Called for each fixer seen in flight: put back its status if a settle
   // fired while it was invisible (slow start, transient tmux read failure).
   restoreFixStatus: (prNumber: number, branch: string, kind: FixKind) => void;
+  // What a blocked fixer's window is doing: `working` when claude is mid-turn,
+  // `quietMs` since its last output. Null when it cannot be read (window gone,
+  // tmux down), which never closes anything.
+  blockedPaneActivity: (prNumber: number, branch: string) => { working: boolean; quietMs: number } | null;
+  // A blocked window must be quiet this long before the daemon may close it for
+  // a finished job (conflicting PR, label gone): enough to clear a mid-relabel.
+  blockedSettleMs: number;
+  // A blocked window quiet this long is dead whatever the PR looks like.
+  blockedStuckMs: number;
   // Injected clock (epoch ms) for the stale-reap timer; Date.now in production.
   now: () => number;
   // Stale-reap threshold: reap a fix in flight longer than this regardless of state.
@@ -200,6 +209,29 @@ function pendingKind(state: ReviewState, prNumber: number, deps: PrReviewDeps): 
   return undefined;
 }
 
+// Close a blocked fixer's window when it is idle and its job is over: the PR now
+// conflicts with main, the blocked label is gone, or the window has been quiet
+// past the stuck threshold. A working or unreadable window is never touched.
+// The conflict path picks the PR up on a later tick, once the window is gone.
+async function closeDeadBlockedFixer(pr: OpenPR, deps: PrReviewDeps): Promise<boolean> {
+  const activity = deps.blockedPaneActivity(pr.number, pr.headRefName);
+  if (activity === null || activity.working || activity.quietMs < deps.blockedSettleMs) return false;
+  let reason: string | null = activity.quietMs >= deps.blockedStuckMs ? "idle past stuck threshold" : null;
+  if (reason === null) {
+    try {
+      if ((await deps.mergeableInfo(pr.number)).state === "conflicting") reason = "PR now conflicts with main";
+      else if (!(await deps.blockedInfo(pr.number)).blocked) reason = "blocked label gone";
+    } catch (err) {
+      deps.log(`blocked window check failed for PR #${pr.number}: ${err}`);
+      return false;
+    }
+  }
+  if (reason === null) return false;
+  deps.reapFix(pr.number, pr.headRefName, "blocked");
+  deps.log(`closed ${blockedSessionName(pr.number)} for PR #${pr.number} (${reason})`);
+  return true;
+}
+
 export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -268,11 +300,15 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
         deps.restoreFixStatus(pr.number, pr.headRefName, kind);
         // A blocked fix owns its whole lifecycle: the fix-pr-blocked skill fixes the
         // Aviator combined-CI failure, swaps blocked -> ready-to-merge, then closes its
-        // own session. The daemon must never reap it, or it races that work -- the label
-        // clears mid-investigation (another PR in the batch was the culprit) or right
-        // after the skill's own relabel, before it finishes cleaning up. It still counts
-        // as in flight, so it keeps the other fix kinds off the shared worktree below.
-        if (kind === "blocked") continue;
+        // own session. The daemon never reaps one that is working, or it races that
+        // work (the label clears mid-investigation, or right after the skill's own
+        // relabel, before it finishes cleaning up). Only an idle window whose job no
+        // longer makes sense is closed (see closeDeadBlockedFixer). Either way it
+        // counts as in flight, so it keeps the other fix kinds off the worktree.
+        if (kind === "blocked") {
+          await closeDeadBlockedFixer(pr, deps);
+          continue;
+        }
         const key = `${pr.number}:${kind}`;
         if (!state.fixSeenAt.has(key)) state.fixSeenAt.set(key, now);
         const stale = now - (state.fixSeenAt.get(key) as number) >= deps.reapStaleMs;

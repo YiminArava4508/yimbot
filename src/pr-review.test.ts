@@ -76,6 +76,9 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
     settleFixStatus: (prNumber, branch) => void settled.push({ prNumber, branch }),
     restoreFixStatus: (prNumber, branch, kind) => void restored.push({ prNumber, branch, kind }),
+    blockedPaneActivity: () => null,
+    blockedSettleMs: 2 * 60 * 1000,
+    blockedStuckMs: 30 * 60 * 1000,
     now: () => 0,
     reapStaleMs: 90 * 60 * 1000,
     pendingSpawnMaxMs: 6 * 60 * 1000,
@@ -916,4 +919,80 @@ test("reviewOnce reads the flag state by PR number as well as branch", async () 
   });
   await reviewOnce(freshReviewState(), d);
   assert.deepEqual(seen, [[4706, "eng-4706-x"]]);
+});
+
+const MIN = 60 * 1000;
+
+test("an idle blocked window is closed once the PR conflicts, then a conflict fix spawns", async () => {
+  let windowOpen = true;
+  const h = deps({
+    inFlightFixKinds: () => (windowOpen ? (["blocked"] as FixKind[]) : []),
+    reapFix: () => void (windowOpen = false),
+    blockedPaneActivity: () => ({ working: false, quietMs: 5 * MIN }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  assert.equal(windowOpen, false);
+  assert.equal(h.conflictSpawned.length, 0);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.conflictSpawned, [{ name: "pr-4706-conflict", branch: "eng-4706-x", prNumber: 4706 }]);
+});
+
+test("an idle blocked window is closed once the blocked label is gone", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: false, quietMs: 5 * MIN }),
+    blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.reaped, [{ prNumber: 4706, branch: "eng-4706-x", kind: "blocked" }]);
+});
+
+test("an actively working blocked window is never closed", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: true, quietMs: 60 * MIN }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.equal(h.reaped.length, 0);
+});
+
+test("a blocked window with unreadable activity is never closed", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => null,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.equal(h.reaped.length, 0);
+});
+
+test("a blocked window still blocked and clean with main is left alone until it goes idle past the stuck threshold", async () => {
+  let quietMs = 5 * MIN;
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: false, quietMs }),
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  assert.equal(h.reaped.length, 0);
+  quietMs = 31 * MIN;
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.reaped, [{ prNumber: 4706, branch: "eng-4706-x", kind: "blocked" }]);
+});
+
+test("a freshly quiet blocked window is not closed even when the PR conflicts", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: false, quietMs: 10_000 }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.equal(h.reaped.length, 0);
 });

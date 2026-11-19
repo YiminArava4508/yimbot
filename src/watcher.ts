@@ -41,6 +41,7 @@ import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import { clearDeadRaises, type StaleRaiseDeps } from "./stale-raise.ts";
+import { readPaneActivity } from "./blocked-pane.ts";
 import { SHELL_COMMANDS, detectStuckSessions, isClaudeCommand, freshStuckState, stuckIdleMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
 import {
   countAssignedInState,
@@ -1718,6 +1719,10 @@ export function startWatcher(config: WatcherConfig): () => void {
         emitStatus({ kind: fixStartKind(kind), key, label, title: titleFromBranch(branch), pr: prNumber });
       }
     },
+    blockedPaneActivity: (prNumber, branch) =>
+      readPaneActivity(blockedSessionName(prNumber), sanitizeBranchToSession(branch)),
+    blockedSettleMs: 2 * 60 * 1000,
+    blockedStuckMs: stuckIdleMs(process.env.STUCK_IDLE_MINUTES),
     now: Date.now,
     reapStaleMs: config.reapStaleMs,
     pendingSpawnMaxMs: 2 * config.heartbeatIntervalMinutes * 60 * 1000,

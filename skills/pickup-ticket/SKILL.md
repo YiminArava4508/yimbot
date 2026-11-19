@@ -120,6 +120,40 @@ this flow and follow **Flag Archive Tickets** below.
    the full test suite and loop until it is green again. In a split, run
    this once on the full implementation, before slicing it into PRs.
 
+6a. **Local UAT (before any PR).** Use the feature in the running app the way
+   a user would, before a reviewer does.
+   - **When it runs:** the change touches user-facing UI in a repo with
+     Playwright set up (gemini's `react-ui/tests`). Backend-only changes and
+     repos without Playwright skip it; record `UAT: skipped (<reason>)` for
+     the PR body and go to step 7.
+   - **Start the env:** from the worktree root, set `WT=$(git rev-parse
+     --show-toplevel)`, run `~/run-local-env.sh "$(basename "$WT")"`, then
+     `BASE_URL=$(~/wait-local-env.sh "$WT")`. If the wait exits non-zero,
+     retry once with `~/run-local-env.sh --force "$(basename "$WT")"` and wait
+     again. If that also fails, skip UAT with the error as the reason.
+   - **Write the spec** at `react-ui/tests/<ticket-slug>.spec.ts`, following
+     `react-ui/tests/AGENTS.md`. It creates the data it needs, opens the
+     feature with its default settings (the test picks no operator,
+     predicate, or mode), enters the input the ticket describes, and asserts
+     the acceptance criteria. At the passing state it calls
+     `page.screenshot({ path: process.env.UAT_SCREENSHOT })`. Admin-only
+     screens use gemini's `admin-session-stub` skill. This spec is the
+     default-path test from step 4 when step 4 did not already write one in
+     Playwright. It ships in the PR and counts toward the PR Size Limits.
+   - **Run it** from `react-ui`: `SHOT=$(mktemp --suffix=.png)`, then
+     `PLAYWRIGHT_BASE_URL=$BASE_URL UAT_SCREENSHOT=$SHOT npx playwright test
+     tests/<ticket-slug>.spec.ts`.
+   - **On failure:** fix the code (not the spec, unless the spec misreads the
+     ticket), re-run the full test suite, and re-run the spec. After 3 failed
+     rounds, stop fixing: record `UAT: failed` with the last failure output
+     for the PR body and go to step 7, which then opens a draft and leaves the
+     ticket out of Review.
+   - **On pass:** run `~/attach-ticket.sh "$SHOT"`; it prints the asset URL
+     and deletes the file. Record `UAT: passed` with `![uat](<asset-url>)`
+     for the PR body. If the upload fails, record `UAT: passed (screenshot
+     upload failed)` and `shred -u "$SHOT"`.
+   - Leave the env running.
+
 7. **Ship at green.** When the full test suite passes, run the
    end-of-implementation steps in this order:
    - **Check PR size** against the **PR Size Limits** below
@@ -132,10 +166,11 @@ this flow and follow **Flag Archive Tickets** below.
      file is missing, treat it as `supervised`). In `supervised` mode pass
      `--draft` (a human marks the PR ready for review); in `autonomous`
      mode open it non-draft. The daemon's review and ready steps process
-     drafts too, so this only gates the merge. **Always create a brand-new
+     drafts too, so this only gates the merge. A `UAT: failed` result from
+     step 6a forces `--draft` in either mode. **Always create a brand-new
      PR; never reopen a previously
      closed PR, even one referenced by the branch, commit, or ticket.** Title = the ticket summary; body = a short "what changed /
-     why / test result", any **Decisions** you made to resolve uncertainty
+     why / test result", the `UAT:` line from step 6a, any **Decisions** you made to resolve uncertainty
      (with the alternative you rejected, and what was reused), and the
      ticket reference so the tracker auto-links the PR. Follow the repo's
      commit/PR conventions: never mention Claude, Claude Code, or AI, and
@@ -165,11 +200,12 @@ this flow and follow **Flag Archive Tickets** below.
      parent has to reach Done for the follow-up to unblock.
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
-     PR, or in a split the whole series, is open.
+     PR, or in a split the whole series, is open. Skip this when UAT failed:
+     the draft PR waits for a human.
    - **Spin up the local server on this session's tmux pane** so the change
      can be inspected running. In a split, run it from the ticket branch,
      since that branch is the one that keeps every change for whole-app
-     local testing.
+     local testing. When step 6a already started it, this no-ops.
    Then STOP. Print a summary of what changed, the PR URL (or URLs, for a
    split), and the test result.
 

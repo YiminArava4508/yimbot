@@ -259,6 +259,38 @@ test("emitStatus skips an observation that does not change the derived status", 
   });
 });
 
+test("emitStatus skips a waiting row whose waitingOn is the same set in any order", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8062, 8081] });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8081, 8062] });
+    assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitStatus writes a waiting row again when waitingOn changes, and the board shows the newest list", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8062, 8081] });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090] });
+    emitStatus({ kind: "queue_held", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090] });
+    assert.equal(readEvents(path).length, 3);
+    const [row] = reduceRows(readEvents(path), Date.now());
+    assert.deepEqual(row.waitingOn, [8090]);
+    assert.equal(row.waitingKind, "overlap");
+  });
+});
+
+test("emitStatus writes a waiting row again when the holder note changes", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090] });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090], waitNote: "needs approval" });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090], waitNote: "needs approval" });
+    assert.equal(readEvents(path).length, 2);
+    const [row] = reduceRows(readEvents(path), Date.now());
+    assert.equal(row.waitingNote, "needs approval");
+    assert.equal(row.waitingKind, "landing");
+  });
+});
+
 test("emitStatus dedupes by derived status string, not by kind", () => {
   withTmpLog((path) => {
     // task_started and ready_regressed both derive to "working".

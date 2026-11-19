@@ -72,7 +72,14 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 function reasonCell(r: BoardRow): string {
   const reasons = r.stuckReason ? [...r.flagReasons, r.stuckReason] : r.flagReasons;
   if (reasons.length > 0) return `{red-fg}${reasons.join(",")}{/red-fg}`;
-  return r.waitingOn?.length ? `waiting on ${r.waitingOn.map((n) => `#${n}`).join(", ")}` : "";
+  return waitText(r);
+}
+
+function waitText(r: BoardRow): string {
+  if (!r.waitingOn?.length) return "";
+  const prs = r.waitingOn.map((n) => `#${n}`).join(", ");
+  if (r.waitingKind === "overlap") return `held behind ${prs} (${["same files", r.waitingNote].filter(Boolean).join(", ")})`;
+  return `waiting on ${prs} to land${r.waitingNote ? ` (${r.waitingNote})` : ""}`;
 }
 
 export const BOARD_HEADER = ["DUR", "STATUS", "TYPE", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];

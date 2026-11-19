@@ -132,6 +132,23 @@ test("boardTable leaves the REASON cell blank when unflagged", () => {
   assert.equal(body[col("REASON")], "");
 });
 
+test("boardTable words a queue-conflict wait as PRs to land", () => {
+  const [, body] = boardTable([{ row: row({ waitingOn: [8062, 8081], waitingKind: "landing" }) }], 0);
+  assert.equal(body[col("REASON")], "waiting on #8062, #8081 to land");
+});
+
+test("boardTable words an overlap hold as held behind the PR (same files)", () => {
+  const [, body] = boardTable([{ row: row({ waitingOn: [8090], waitingKind: "overlap" }) }], 0);
+  assert.equal(body[col("REASON")], "held behind #8090 (same files)");
+});
+
+test("boardTable adds the holder's note to the wait text", () => {
+  const [, held] = boardTable([{ row: row({ waitingOn: [8090], waitingKind: "overlap", waitingNote: "needs approval" }) }], 0);
+  assert.equal(held[col("REASON")], "held behind #8090 (same files, needs approval)");
+  const [, landing] = boardTable([{ row: row({ waitingOn: [8062], waitingKind: "landing", waitingNote: "needs approval" }) }], 0);
+  assert.equal(landing[col("REASON")], "waiting on #8062 to land (needs approval)");
+});
+
 test("boardTable dims a terminal row's status", () => {
   const [, body] = boardTable([{ row: row({ status: "merged", terminal: true }) }], 0);
   assert.equal(body[col("STATUS")], "{grey-fg}merged{/grey-fg}");

@@ -64,6 +64,8 @@ export type YimbotEvent = {
   pane?: string;
   // The queued PRs a blocked_waiting row is waiting on to land.
   waitingOn?: number[];
+  // Why the holder itself is stuck, e.g. "needs approval"; shown on the wait text.
+  waitNote?: string;
 };
 
 const TICKET = /^(eng|sc)-(\d+)/i;
@@ -423,9 +425,32 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
 // (a PR gone green, a merged worktree) without bloating the log or the board, so
 // a row transitions off a stale action status even when no write drove it.
 export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
-  const lastStatus = currentStatus(ev.key);
-  if (lastStatus !== undefined && lastStatus === statusFor(ev.kind)?.status) return;
+  const last = lastStatusEvent(ev.key);
+  if (last !== undefined && statusFor(last.kind)?.status === statusFor(ev.kind)?.status && sameWait(last, ev)) return;
   emitEvent(ev);
+}
+
+function waitingKindOf(kind: EventKind): "landing" | "overlap" | undefined {
+  if (kind === "blocked_waiting") return "landing";
+  return kind === "queue_held" ? "overlap" : undefined;
+}
+
+// Two observations of one status only differ when they are waiting rows that
+// wait on a different set of PRs, in a different way, or with a different note.
+// Everything else stays a pure status compare, so heartbeats never re-append.
+function sameWait(a: YimbotEvent, b: Pick<YimbotEvent, "kind" | "waitingOn" | "waitNote">): boolean {
+  if (waitingKindOf(a.kind) !== waitingKindOf(b.kind)) return false;
+  if (!waitingKindOf(b.kind)) return true;
+  const was = new Set(a.waitingOn ?? []);
+  const now = new Set(b.waitingOn ?? []);
+  if (was.size !== now.size || [...now].some((n) => !was.has(n))) return false;
+  return (a.waitNote ?? "") === (b.waitNote ?? "");
+}
+
+function lastStatusEvent(key: string, events: YimbotEvent[] = readEvents()): YimbotEvent | undefined {
+  let last: YimbotEvent | undefined;
+  for (const e of events) if (e.key === key && statusFor(e.kind)) last = e;
+  return last;
 }
 
 // The status a key's row currently shows, or undefined for a key with no
@@ -588,6 +613,9 @@ export type BoardRow = {
   stuckReason?: string;
   // The PRs a "waiting on queue" row is waiting on.
   waitingOn?: number[];
+  // "landing": PRs ahead in the queue must land. "overlap": held behind a queued PR that edits the same files.
+  waitingKind?: "landing" | "overlap";
+  waitingNote?: string;
 };
 
 function keepMergedMsDefault(): number {
@@ -647,6 +675,8 @@ export function reduceRows(
       flagged: false,
       flagReasons: [],
       waitingOn: e.kind === "blocked_waiting" || e.kind === "queue_held" ? e.waitingOn : undefined,
+      waitingKind: waitingKindOf(e.kind),
+      waitingNote: waitingKindOf(e.kind) ? e.waitNote : undefined,
     });
   }
 

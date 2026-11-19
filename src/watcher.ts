@@ -790,7 +790,7 @@ export type WatcherConfig = {
   // session's worktree is cut from codebasePath.
   prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "blockReason" | "prLifecycle" | "humanChangesRequested"> & {
     listFixableOpenPRs: () => Promise<OpenPR[]>;
-    requeue: (prNumber: number) => Promise<void>;
+    requeue: (prNumber: number) => Promise<number | null>;
   }) | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
@@ -1965,6 +1965,8 @@ export function startWatcher(config: WatcherConfig): () => void {
         }
         return;
       }
+      // A PR the overlap gate is holding keeps its "waiting on queue" row until the label goes on.
+      if (!hasLabel && currentStatus(k.key) === statusFor("queue_held")?.status) return;
       emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual), key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     // Where the row sits, reported separately from its status so a queued PR
@@ -1982,6 +1984,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       const status = currentStatus(k.key);
       if (status === statusFor("blocked_fix_started")?.status || status === statusFor("blocked_waiting")?.status) return;
       emitStatus({ kind: "merge_blocked", key: k.key, label: k.label, pr: n, repo: k.repo });
+    },
+    onHeld: (n: number, holder: number) => {
+      const k = keyForPr(n);
+      emitStatus({ kind: "queue_held", key: k.key, label: k.label, pr: n, repo: k.repo, waitingOn: [holder] });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,

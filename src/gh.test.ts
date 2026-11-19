@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   parseBlockReason,
+  parsePrFiles,
   parsePrLifecycle,
+  parseQueuedPrs,
   addLabel,
   applyReadyLabel,
   blockedInfo,
@@ -765,4 +767,12 @@ test("parsePrLifecycle maps gh states", () => {
   assert.equal(parsePrLifecycle('{"state":"MERGED"}'), "merged");
   assert.equal(parsePrLifecycle('{"state":"CLOSED"}'), "closed");
   assert.equal(parsePrLifecycle('{"state":"OPEN"}'), "open");
+});
+
+test("parsePrFiles and parseQueuedPrs read paths and head SHAs", () => {
+  assert.deepEqual(parsePrFiles('{"headRefOid":"abc","files":[{"path":"a.ts"},{"path":"b.ts"}]}'), { headSha: "abc", files: ["a.ts", "b.ts"] });
+  assert.deepEqual(parseQueuedPrs('[{"number":5,"headRefOid":"h","files":[{"path":"x"}]},{"number":6,"headRefOid":"i"}]'), [
+    { n: 5, headSha: "h", files: ["x"] },
+    { n: 6, headSha: "i", files: [] },
+  ]);
 });

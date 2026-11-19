@@ -71,7 +71,8 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 // wherever it sits.
 function reasonCell(r: BoardRow): string {
   const reasons = r.stuckReason ? [...r.flagReasons, r.stuckReason] : r.flagReasons;
-  return reasons.length > 0 ? `{red-fg}${reasons.join(",")}{/red-fg}` : "";
+  if (reasons.length > 0) return `{red-fg}${reasons.join(",")}{/red-fg}`;
+  return r.waitingOn?.length ? `waiting on ${r.waitingOn.map((n) => `#${n}`).join(", ")}` : "";
 }
 
 export const BOARD_HEADER = ["DUR", "STATUS", "TYPE", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];

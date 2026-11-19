@@ -83,7 +83,10 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     blockReason: async () => ({ kind: "other" }),
     prLifecycle: async () => "open",
     markWaiting: (prNumber, _branch, waitingOn) => void waiting.push({ prNumber, waitingOn }),
-    requeue: async (prNumber) => void requeued.push(prNumber),
+    requeue: async (prNumber) => {
+      requeued.push(prNumber);
+      return null;
+    },
     blockedPaneActivity: () => null,
     blockedSettleMs: 2 * 60 * 1000,
     blockedStuckMs: 30 * 60 * 1000,
@@ -1118,4 +1121,29 @@ test("a non-conflict block or an unreadable comment still goes to the blocked fi
   });
   await reviewOnce(freshReviewState(), failing.deps);
   assert.equal(failing.blockedSpawned.length, 1);
+});
+
+test("a re-queue that overlaps a queued PR waits on it, then re-queues once it lands", async () => {
+  let holder: number | null = 8082;
+  const life: Record<number, PrLifecycle> = { 8062: "merged", 8082: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062]),
+    prLifecycle: async (n) => life[n],
+    requeue: async (n) => {
+      h.requeued.push(n);
+      return holder;
+    },
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps); // siblings landed, but 8082 holds the queue
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062], [8082]]);
+  await reviewOnce(state, h.deps); // still waiting on 8082
+  assert.equal(h.requeued.length, 1);
+  life[8082] = "merged";
+  holder = null;
+  await reviewOnce(state, h.deps);
+  assert.equal(h.requeued.length, 2);
+  assert.equal(h.blockedSpawned.length, 0);
 });

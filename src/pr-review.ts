@@ -135,8 +135,10 @@ export type PrReviewDeps = {
   prLifecycle: (prNumber: number) => Promise<PrLifecycle>;
   // Record the waiting state on the board: the PR is held until `waitingOn` land.
   markWaiting: (prNumber: number, branch: string, waitingOn: number[]) => void;
-  // Swap the blocked label for the ready label. No session involved.
-  requeue: (prNumber: number, branch: string) => Promise<void>;
+  // Swap the blocked label for the ready label. No session involved. Resolves
+  // to null once queued, or to the older queued PR it overlaps and must wait on
+  // (nothing is relabeled then).
+  requeue: (prNumber: number, branch: string) => Promise<number | null>;
   // What a blocked fixer's window is doing: `working` when claude is mid-turn,
   // `quietMs` since its last output. Null when it cannot be read (window gone,
   // tmux down), which never closes anything.
@@ -285,10 +287,17 @@ async function holdForQueue(
     return true;
   }
   if (mergeState !== "mergeable") return true; // GitHub still computing; the conflict path covers "conflicting"
+  let holder: number | null;
   try {
-    await deps.requeue(pr.number, pr.headRefName);
+    holder = await deps.requeue(pr.number, pr.headRefName);
   } catch (err) {
     deps.log(`requeue failed for PR #${pr.number}: ${err}`);
+    return true;
+  }
+  if (holder !== null) {
+    held.waitingOn = [holder];
+    deps.markWaiting(pr.number, pr.headRefName, [holder]);
+    deps.log(`PR #${pr.number} overlaps queued PR #${holder}, waiting on it before re-queueing`);
     return true;
   }
   state.waiting.delete(pr.number);

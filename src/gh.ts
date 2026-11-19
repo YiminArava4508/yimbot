@@ -335,6 +335,28 @@ export async function blockReason(run: GhRunner, prNumber: number): Promise<Bloc
   return parseBlockReason(await run(["pr", "view", String(prNumber), "--json", "comments"]));
 }
 
+// Changed file paths for a PR, with the head they belong to.
+export function parsePrFiles(json: string): { headSha: string; files: string[] } {
+  const d = JSON.parse(json) as { headRefOid: string; files?: { path: string }[] };
+  return { headSha: d.headRefOid, files: (d.files ?? []).map((f) => f.path) };
+}
+
+export async function prFiles(run: GhRunner, prNumber: number): Promise<{ headSha: string; files: string[] }> {
+  return parsePrFiles(await run(["pr", "view", String(prNumber), "--json", "headRefOid,files"]));
+}
+
+// Every open PR carrying `label`, with head SHA and changed files, in one call.
+export function parseQueuedPrs(json: string): { n: number; headSha: string; files: string[] }[] {
+  const rows = JSON.parse(json) as { number: number; headRefOid: string; files?: { path: string }[] }[];
+  return rows.map((r) => ({ n: r.number, headSha: r.headRefOid, files: (r.files ?? []).map((f) => f.path) }));
+}
+
+export async function listQueuedPrs(run: GhRunner, label: string): Promise<{ n: number; headSha: string; files: string[] }[]> {
+  return parseQueuedPrs(
+    await run(["pr", "list", "--state", "open", "--label", label, "--limit", "100", "--json", "number,headRefOid,files"]),
+  );
+}
+
 export type PrLifecycle = "open" | "merged" | "closed";
 
 export function parsePrLifecycle(json: string): PrLifecycle {

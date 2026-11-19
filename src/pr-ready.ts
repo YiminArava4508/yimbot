@@ -74,6 +74,11 @@ export type PrReadyDeps = {
   // writes a status when it spawns (deduped per head), so without this the row
   // would keep saying "ready to merge" for as long as the label stays on.
   onBlocked?: (prNumber: number) => void;
+  // Overlap gate: given the PRs about to be labeled, says for each whether it may
+  // queue (null) or which older PR it must wait on. Absent means no gate.
+  queueGate?: (candidates: { n: number; headSha?: string }[]) => Promise<Map<number, number | null>>;
+  // Report a PR held back by the gate, so the board can say what it waits on.
+  onHeld?: (prNumber: number, holder: number) => void;
   log: (msg: string) => void;
 };
 
@@ -90,7 +95,7 @@ export type PrReadyDeps = {
 export type ReadyVerdict = "ready" | "regressed" | "hold";
 // Which hard failure produced a regressed verdict.
 export type RegressReason = "threads" | "ci";
-type Classified = { verdict: ReadyVerdict; reason?: RegressReason };
+type Classified = { verdict: ReadyVerdict; reason?: RegressReason; headSha?: string };
 
 // `latched`: PR numbers that have carried the ready label at least once this
 // daemon run, whether the bot added it or it was observed already on (e.g.
@@ -163,13 +168,14 @@ async function classify(prNumber: number, deps: PrReadyDeps): Promise<Classified
   // label here would hide the PR from the auto-heal (and its approval-preserving
   // App push). Real conflicts get a "needs a human" comment from that sweep, and
   // Aviator relabels to blocked if a queued conflict fails its speculative merge.
-  const mergeable = (await deps.mergeableInfo(prNumber)).state;
+  const mergeInfo = await deps.mergeableInfo(prNumber);
+  const mergeable = mergeInfo.state;
   if (mergeable === "conflicting") return { verdict: "hold" };
   if (mergeable === "unknown") return { verdict: "hold" };
   const ci = (await deps.checksInfo(prNumber)).state;
   if (ci === "failing") return { verdict: "regressed", reason: "ci" };
   if (ci === "pending") return { verdict: "hold" };
-  return { verdict: "ready" }; // passing or none
+  return { verdict: "ready", headSha: mergeInfo.headSha }; // passing or none
 }
 
 // One ready-step tick, run every heartbeat. The label write is add-only and
@@ -197,6 +203,21 @@ async function classify(prNumber: number, deps: PrReadyDeps): Promise<Classified
 // A readiness read that errors skips the PR for this tick; an addLabel that
 // errors is logged, left unlatched, and the loop moves on (a failed add queued
 // nothing, so it uses up neither a slot nor cap room).
+// Only candidates that could take a slot are gated, so a PR waiting on slot
+// room is not shown as waiting on an overlap. Failing open (no gate, gate error).
+async function gateCandidates(
+  candidates: { n: number; headSha?: string }[],
+  deps: PrReadyDeps,
+): Promise<Map<number, number | null>> {
+  if (!deps.queueGate || candidates.length === 0) return new Map();
+  try {
+    return await deps.queueGate(candidates);
+  } catch (err) {
+    deps.log(`overlap gate failed, queueing without it: ${err}`);
+    return new Map();
+  }
+}
+
 export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -213,7 +234,7 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
 
   let occupied = 0;
   let awaitingReview = 0;
-  const candidates: { n: number; approved: boolean }[] = [];
+  const candidates: { n: number; approved: boolean; headSha?: string }[] = [];
   for (const pr of prs) {
     // Labels come first because the board's section depends on them and nothing
     // else: a PR whose readiness reads fail still has to be placed. Reading them
@@ -241,8 +262,9 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
 
     let verdict: ReadyVerdict;
     let reason: RegressReason | undefined;
+    let headSha: string | undefined;
     try {
-      ({ verdict, reason } = await classify(pr.number, deps));
+      ({ verdict, reason, headSha } = await classify(pr.number, deps));
     } catch (err) {
       deps.log(`readiness check failed for PR #${pr.number}: ${err}`);
       continue;
@@ -268,14 +290,20 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
     if (live.isDraft) continue;
     if (verdict !== "ready" || state.latched.has(pr.number)) continue;
     const soaked = deps.now() - (state.readySince.get(pr.number) ?? deps.now()) >= deps.soakMs;
-    if (soaked) candidates.push({ n: pr.number, approved: live.approved });
+    if (soaked) candidates.push({ n: pr.number, approved: live.approved, headSha });
   }
 
   const sinceOf = (n: number) => state.readySince.get(n) ?? 0;
   candidates.sort((x, y) => sinceOf(x.n) - sinceOf(y.n));
   let freeSlots = deps.maxQueued - occupied;
   const reviewRoom = () => (deps.maxAwaitingReview === undefined ? Infinity : deps.maxAwaitingReview - awaitingReview);
+  const held = await gateCandidates(candidates, deps);
   for (const { n, approved } of candidates) {
+    const holder = held.get(n);
+    if (holder !== undefined && holder !== null) {
+      deps.onHeld?.(n, holder);
+      continue;
+    }
     if (approved ? freeSlots <= 0 : reviewRoom() <= 0) continue;
     try {
       await deps.addLabel(n, deps.label);

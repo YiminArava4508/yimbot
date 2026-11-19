@@ -1,3 +1,4 @@
+import { createQueueGate, type QueueGate } from "./queue-overlap.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +14,8 @@ import { runHeadless } from "./headless.ts";
 import {
   addLabel,
   blockedInfo,
+  listQueuedPrs,
+  prFiles,
   blockReason,
   prLifecycle,
   removeLabel,
@@ -246,6 +249,20 @@ export async function startDaemon(): Promise<() => void> {
     now: Date.now,
     log: (msg) => console.log(`[yimbot] ${msg}`),
   });
+  // One overlap gate for every place yimbot queues a PR (ready label, re-queue
+  // after a block). Only the codebase repo's PRs are compared: PR numbers of
+  // EXTRA_REPOS live in other repos.
+  const queueGate: QueueGate = async (candidates) => {
+    const local = candidates.filter((c) => !repoByNumber.has(c.n));
+    const result = await gateLocal(local);
+    for (const c of candidates) if (!result.has(c.n)) result.set(c.n, null);
+    return result;
+  };
+  const gateLocal = createQueueGate({
+    listQueued: () => listQueuedPrs(gh, readyLabelName),
+    fetchFiles: (n) => prFiles(gh, n),
+    log: (msg) => console.log(`[queue-gate] ${msg}`),
+  });
   let prReview:
     | {
         // Every repo's open PRs (the board, ready, and cleanup steps).
@@ -259,7 +276,7 @@ export async function startDaemon(): Promise<() => void> {
         blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
         blockReason: (n: number) => ReturnType<typeof blockReason>;
         prLifecycle: (n: number) => ReturnType<typeof prLifecycle>;
-        requeue: (n: number) => Promise<void>;
+        requeue: (n: number) => Promise<number | null>;
         humanChangesRequested: (n: number) => ReturnType<typeof humanChangesRequested>;
       }
     | null = null;
@@ -290,8 +307,11 @@ export async function startDaemon(): Promise<() => void> {
       blockReason: (n) => blockReason(runnerFor(n), n),
       prLifecycle: (n) => prLifecycle(runnerFor(n), n),
       requeue: async (n) => {
+        const holder = (await queueGate([{ n }])).get(n) ?? null;
+        if (holder !== null) return holder;
         await removeLabel(runnerFor(n), n, blockedLabelName);
         await addLabel(runnerFor(n), n, readyLabelName);
+        return null;
       },
       humanChangesRequested: (n) => humanChangesRequested(runnerFor(n), n, trustedReviewers),
     };
@@ -489,6 +509,7 @@ export async function startDaemon(): Promise<() => void> {
           checksInfo: prReview.checksInfo,
           prState: (n: number) => prState(runnerFor(n), n),
           addLabel: (n: number, label: string) => addLabel(runnerFor(n), n, label),
+          queueGate,
           mergesManually,
           label: readyLabelName,
           blockedLabel: blockedLabelName,

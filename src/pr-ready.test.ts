@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
+import { createQueueGate } from "./queue-overlap.ts";
 import { boardReadyToMerge, boardSection, boardReadyKind, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 
 const LABEL = "ready-to-merge";
@@ -833,4 +834,58 @@ test("readyOnce does not let a labeled manual-merge PR hold the queue slot", asy
   );
   await readyOnce(h.state, h.deps);
   assert.deepEqual(h.added, [{ n: 2, label: LABEL }]);
+});
+
+test("a PR the overlap gate holds is not labeled and is reported with its holder", async () => {
+  const heldReports: [number, number][] = [];
+  const h = harness({
+    listOpenPRs: async () => [pr(10), pr(20)],
+    queueGate: async () => new Map([[10, null], [20, 10]]),
+    onHeld: (n, holder) => void heldReports.push([n, holder]),
+  });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [10]);
+  assert.deepEqual(heldReports, [[20, 10]]);
+  assert.equal(h.state.latched.has(20), false);
+});
+
+test("a gate that throws fails open", async () => {
+  const h = harness({
+    queueGate: async () => {
+      throw new Error("boom");
+    },
+  });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [4706]);
+});
+
+test("three overlapping PRs are labeled one per merge", async () => {
+  const files: Record<number, string[]> = { 8082: ["flags.ts"], 8087: ["flags.ts"], 8090: ["flags.ts"] };
+  const open = new Set([8082, 8087, 8090]);
+  const labeled = new Set<number>();
+  const gate = createQueueGate({
+    listQueued: async () => [...labeled].filter((n) => open.has(n)).map((n) => ({ n, headSha: "s", files: files[n] })),
+    fetchFiles: async (n) => ({ headSha: "s", files: files[n] }),
+    log: () => {},
+  });
+  const state = freshReadyState();
+  const tick = async () => {
+    const h = harness({
+      listOpenPRs: async () => [...open].map((n) => pr(n)),
+      prState: async (n: number) => ({ labels: labeled.has(n) ? [LABEL] : [], isDraft: false, approved: true }),
+      addLabel: async (n: number) => void labeled.add(n),
+      queueGate: gate,
+    });
+    await readyOnce(state, h.deps);
+  };
+  await tick();
+  assert.deepEqual([...labeled], [8082]);
+  await tick();
+  assert.deepEqual([...labeled], [8082]);
+  open.delete(8082);
+  await tick();
+  assert.deepEqual([...labeled], [8082, 8087]);
+  open.delete(8087);
+  await tick();
+  assert.deepEqual([...labeled], [8082, 8087, 8090]);
 });

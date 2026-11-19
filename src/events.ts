@@ -11,6 +11,7 @@ export type EventKind =
   | "conflict_fix_started"
   | "blocked_fix_started"
   | "blocked_waiting"
+  | "queue_held"
   | "fix_ended"
   | "merge_blocked"
   | "ci_failing"
@@ -168,6 +169,9 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   // The queue blocked the PR only because of siblings queued ahead of it; the
   // daemon holds it until they land, then re-queues it. No session involved.
   blocked_waiting: { status: "waiting on queue", terminal: false },
+  // A ready PR the daemon is not queueing yet because it edits the same files as
+  // an older queued PR; `waitingOn` names that PR.
+  queue_held: { status: "waiting on queue", terminal: false },
   // A fix session closed itself (or was reaped) and the PR's verdict has not
   // replaced it yet, typically CI re-running on the fix push.
   fix_ended: { status: "fix done", terminal: false },
@@ -582,6 +586,8 @@ export type BoardRow = {
   flagReasons: string[];
   // Why the row shows "stuck": its session ended or went quiet.
   stuckReason?: string;
+  // The PRs a "waiting on queue" row is waiting on.
+  waitingOn?: number[];
 };
 
 function keepMergedMsDefault(): number {
@@ -640,6 +646,7 @@ export function reduceRows(
       startTs,
       flagged: false,
       flagReasons: [],
+      waitingOn: e.kind === "blocked_waiting" || e.kind === "queue_held" ? e.waitingOn : undefined,
     });
   }
 

@@ -33,6 +33,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
+import { type MergedSyncDeps, mergedSyncOnce } from "./merged-sync.ts";
 import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, fixStartKind, isFixerStatus, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, yieldsToVerdict, type YimbotEvent } from "./events.ts";
 import { loadFixSeenAt, saveFixSeenAt } from "./fix-timers.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
@@ -800,6 +801,12 @@ export type WatcherConfig = {
     issueState: (identifier: string) => Promise<TicketState | null>;
     clearedStates: Set<string>;
   } | null;
+  // Merged sync step: null disables it (AUTO_MERGED_SYNC off, or gh unavailable).
+  // Moves review-state tickets whose PRs all merged to the merged state.
+  mergedSync: Pick<
+    MergedSyncDeps,
+    "listMergedPRs" | "listOpenPRs" | "fetchState" | "reviewStateName" | "mergedStateName" | "graceMs"
+  > | null;
   // gh-backed hooks for the advance step; null disables it (AUTO_CONTINUE off, or
   // gh unavailable). When set, each heartbeat judges merged PRs' issues against
   // their AC tracker and spawns a continuation while criteria remain.
@@ -1832,6 +1839,17 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: advanceLog,
   };
 
+  const mergedSyncDeps: MergedSyncDeps | null = config.mergedSync && {
+    ...config.mergedSync,
+    listReviewIssues: async () =>
+      filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.reviewContext)),
+    moveToMerged: async (identifier) => {
+      await moveIssueToStateByName(config.apiKey, identifier, config.mergedSync!.mergedStateName);
+    },
+    now: Date.now,
+    log: (msg) => console.log(msg),
+  };
+
   const qaLog = (msg: string) => console.log(`[qa] ${msg}`);
   const qaState = config.qa ? loadQaState() : freshQaState();
   const qaDeps: QaDeps | null = config.qa && {
@@ -2110,6 +2128,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       // on the next tick regardless of order — it matches on the worktree dir,
       // which reattach reuses rather than creates.)
       if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
+      if (mergedSyncDeps) await mergedSyncOnce(mergedSyncDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
       if (qaDeps) {
         await qaOnce(qaState, qaDeps);

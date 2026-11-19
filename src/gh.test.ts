@@ -104,6 +104,17 @@ test("parseMergedPRs keeps only number/headRefName", () => {
   assert.deepEqual(prs, [{ number: 4700, headRefName: "eng-900-y" }]);
 });
 
+test("parseMergedPRs keeps mergedAt when gh returns it", () => {
+  const prs = parseMergedPRs(JSON.stringify([{ number: 1, headRefName: "eng-1-a", mergedAt: "2026-11-18T10:00:00Z" }]));
+  assert.deepEqual(prs, [{ number: 1, headRefName: "eng-1-a", mergedAt: "2026-11-18T10:00:00Z" }]);
+});
+
+test("listMergedPRsBy asks gh for mergedAt", async () => {
+  const { run, calls } = capturingRunner(["[]"]);
+  await listMergedPRsBy(run, "@me");
+  assert.ok(calls[0].includes("number,headRefName,mergedAt"));
+});
+
 test("listMyMergedPRs requests author=@me merged PRs and parses them", async () => {
   const { run, calls } = capturingRunner([
     JSON.stringify([{ number: 2, headRefName: "eng-2-b" }]),

@@ -225,6 +225,13 @@ flowchart TD
   group's teardown and the reap of a worktree whose PR closed unmerged. *(optional; setting: `AUTO_CLEANUP`,
   on by default)* Needs `gh` installed and authenticated; runs against the
   repo at `CODEBASE_PATH`.
+- **Sync merged tickets:** moves your tickets in the review state to the merge
+  state (`MERGED_STATE_NAME`) once every PR for the ticket has merged, as a
+  backstop for the Linear GitHub integration, which only does it for PRs that
+  say "Resolves"/"Closes". Waits `MERGED_SYNC_GRACE_MINUTES` (default 10) after
+  the merge, skips tickets with any PR still open, and never moves a ticket
+  backwards. Respects `LABEL_FILTER`. *(optional; setting: `AUTO_MERGED_SYNC`,
+  on by default)* Needs `gh` installed and authenticated.
 - **Trim the Go build cache:** every hour, removes entries in `go env GOCACHE`
   that no build has used in `GO_CACHE_MAX_AGE_HOURS` (defaults to 6). Go's own
   trim waits 5 days, which lets parallel worktree builds grow the cache past

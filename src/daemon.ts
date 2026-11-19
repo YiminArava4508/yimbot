@@ -363,6 +363,26 @@ export async function startDaemon(): Promise<() => void> {
       : `[yimbot] advance step OFF${autoContinue ? " (gh unavailable)" : ""}`,
   );
 
+  const autoMergedSync = !["false", "off", "no", "0"].includes(envOr("AUTO_MERGED_SYNC", "true").toLowerCase());
+  const graceParsed = Number(envOr("MERGED_SYNC_GRACE_MINUTES", "10"));
+  const mergedSyncGraceMinutes = Number.isFinite(graceParsed) && graceParsed >= 0 ? graceParsed : 10;
+  const mergedSync =
+    autoMergedSync && prReview
+      ? {
+          listMergedPRs: listAllMergedPRs,
+          listOpenPRs: listAllOpenPRs,
+          fetchState: async (identifier: string) => (await fetchIssueState(apiKey, identifier)).name,
+          reviewStateName,
+          mergedStateName,
+          graceMs: mergedSyncGraceMinutes * 60_000,
+        }
+      : null;
+  console.log(
+    mergedSync
+      ? `[yimbot] merged-sync step ON: ${reviewStateName} -> ${mergedStateName} when all PRs merged (${mergedSyncGraceMinutes}m grace)`
+      : `[yimbot] merged-sync step OFF${autoMergedSync ? " (gh unavailable)" : ""}`,
+  );
+
   // QA step: once every child of a parent ticket merged and the nonprod deploy
   // workflow includes the last merge, spawn a session that posts "how to test"
   // on the parent. Off unless the primary repo's workflow + url are set; gated
@@ -530,6 +550,7 @@ export async function startDaemon(): Promise<() => void> {
     prReview,
     cleanup,
     advance,
+    mergedSync,
     qa,
     ready,
     blocked,

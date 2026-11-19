@@ -58,11 +58,16 @@ export async function listMyOpenPRs(run: GhRunner, repo?: string): Promise<OpenP
   );
 }
 
-export type MergedPR = { number: number; headRefName: string; repo?: string };
+export type MergedPR = { number: number; headRefName: string; repo?: string; mergedAt?: string };
 
 export function parseMergedPRs(json: string, repo?: string): MergedPR[] {
   const rows = JSON.parse(json) as MergedPR[];
-  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName, ...(repo ? { repo } : {}) }));
+  return rows.map((r) => ({
+    number: r.number,
+    headRefName: r.headRefName,
+    ...(repo ? { repo } : {}),
+    ...(r.mergedAt ? { mergedAt: r.mergedAt } : {}),
+  }));
 }
 
 // The viewer's merged PRs in the runner's repo. Bounded to the 100 most recent:
@@ -74,7 +79,7 @@ export async function listMyMergedPRs(run: GhRunner, repo?: string): Promise<Mer
 // Merged PRs by any author ("@me" or a login), same 100-PR bound.
 export async function listMergedPRsBy(run: GhRunner, author: string, repo?: string): Promise<MergedPR[]> {
   return parseMergedPRs(
-    await run(["pr", "list", "--author", author, "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
+    await run(["pr", "list", "--author", author, "--state", "merged", "--json", "number,headRefName,mergedAt", "--limit", "100"]),
     repo,
   );
 }

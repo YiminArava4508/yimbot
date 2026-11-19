@@ -128,8 +128,9 @@ asking for a behavior change.
      outstanding (experiments, surveys, dependent flags, scheduled changes,
      tours, early-access features, replay settings, external consumers), and
      the readback to record. Link the follow-up in the final summary and in a
-     comment on the parent ticket. Use "Part of" rather than "Closes" in the
-     PR body, so merging does not close the ticket. Archiving in prod stays
+     comment on the parent ticket. Use `Resolves <TICKET>` in the PR body.
+     The after-release follow-up holds the remaining work, and the parent has
+     to reach Done for the follow-up to unblock. Archiving in prod stays
      hard to reverse and needs a human "go".
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the

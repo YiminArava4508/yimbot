@@ -41,6 +41,7 @@ import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import { clearDeadRaises, type StaleRaiseDeps } from "./stale-raise.ts";
+import { claimWorktreeForFixer, fsLockDeps, releaseWorktreeFromFixer } from "./worktree-lock.ts";
 import { readPaneActivity } from "./blocked-pane.ts";
 import { SHELL_COMMANDS, detectStuckSessions, isClaudeCommand, freshStuckState, stuckIdleMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
 import {
@@ -1063,6 +1064,28 @@ export function tmuxWindowExists(session: string, window: string): boolean {
 }
 
 
+// Hand a fixer window the worktree's lock (and give it back): a fixer is the only
+// thing the daemon runs on a PR's worktree, and the lock hook would otherwise
+// refuse it because the ticket session claimed the tree. Best-effort.
+const lockLog = (msg: string) => console.log(`[lock] ${msg}`);
+function worktreeFor(branch: string): string {
+  return join(worktreesDir, sanitizeBranchToSession(branch));
+}
+export function lockForFixer(branch: string, kind: FixKind, prNumber: number): void {
+  try {
+    claimWorktreeForFixer(worktreeFor(branch), kind, prNumber, fsLockDeps(lockLog));
+  } catch (err) {
+    lockLog(`claim failed for PR #${prNumber}: ${err}`);
+  }
+}
+export function unlockFromFixer(branch: string): void {
+  try {
+    releaseWorktreeFromFixer(worktreeFor(branch), fsLockDeps(lockLog));
+  } catch (err) {
+    lockLog(`release failed for ${branch}: ${err}`);
+  }
+}
+
 // The session/window name for a PR's fix of a given kind.
 function fixNameForKind(prNumber: number, kind: FixKind): string {
   return kind === "fix"
@@ -1096,10 +1119,11 @@ export function reapFix(prNumber: number, branch: string, kind: FixKind): void {
   const name = fixNameForKind(prNumber, kind);
   if (tmuxHasSession(name)) {
     killTmuxSession(name);
-    return;
+  } else {
+    const ticketSession = sanitizeBranchToSession(branch);
+    if (tmuxWindowExists(ticketSession, name)) killTmuxWindow(ticketSession, name);
   }
-  const ticketSession = sanitizeBranchToSession(branch);
-  if (tmuxWindowExists(ticketSession, name)) killTmuxWindow(ticketSession, name);
+  unlockFromFixer(branch);
 }
 
 // Flag a tmux session's feature as ready to test by setting the session-scoped
@@ -1720,6 +1744,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     settleFixStatus: (prNumber, branch) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       if (isFixerStatus(currentStatus(key))) emitStatus({ kind: "fix_ended", key, label, pr: prNumber });
+      unlockFromFixer(branch);
     },
     restoreFixStatus: (prNumber, branch, kind) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
@@ -1737,21 +1762,25 @@ export function startWatcher(config: WatcherConfig): () => void {
     spawnFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "fix", prNumber);
       spawnFixSession(name, branch);
     },
     spawnCiFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "ci_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "ci", prNumber);
       spawnFixSession(name, branch);
     },
     spawnConflictFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "conflict_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "conflict", prNumber);
       spawnFixSession(name, branch);
     },
     spawnBlockedFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "blocked_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "blocked", prNumber);
       spawnFixSession(name, branch);
     },
     log: reviewIconLog,

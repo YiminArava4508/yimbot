@@ -117,6 +117,13 @@ emit_hook_event() {
   key=${key//\\/\\\\}
   key=${key//\"/\\\"}
   ts=$(( $(date +%s%N) / 1000000 ))
+  # Reasons can be free text (needs-decision.sh): flatten control characters,
+  # then escape like the key so one event stays one valid JSONL line.
+  reason=${reason//$'\n'/ }
+  reason=${reason//$'\r'/ }
+  reason=${reason//$'\t'/ }
+  reason=${reason//\\/\\\\}
+  reason=${reason//\"/\\\"}
   [ -n "$reason" ] && extra=",\"reason\":\"$reason\""
   # The emitting pane, so the autonomous-mode nudge can address this exact
   # Claude. tmux pane ids are %N; no escaping needed.

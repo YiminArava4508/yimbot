@@ -43,7 +43,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "bash \"$HOME/.config/yimbot/heavy-queue.sh\" pre", "timeout": 1800 }
+          { "type": "command", "command": "bash \"$HOME/.config/yimbot/heavy-queue.sh\" pre", "timeout": 2400 }
         ]
       },
       {

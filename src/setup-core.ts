@@ -357,6 +357,16 @@ export const hostLinks: HostLink[] = [
     label: "split subticket creator (~/create-subticket.sh)",
   },
   {
+    source: join(repoRoot, "scripts/flag-archive-check.sh"),
+    target: join(homedir(), "flag-archive-check.sh"),
+    label: "prod flag-archive reference check (~/flag-archive-check.sh)",
+  },
+  {
+    source: join(repoRoot, "scripts/needs-decision.sh"),
+    target: join(homedir(), "needs-decision.sh"),
+    label: "needs-decision flag raiser (~/needs-decision.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/refine-session.sh"),
     target: join(homedir(), "refine-session.sh"),
     label: "refine session launcher (~/refine-session.sh)",

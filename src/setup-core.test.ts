@@ -135,3 +135,11 @@ test("hostLinks installs ~/reject-ticket.sh from the repo script", () => {
   assert.ok(link);
   assert.ok(link.source.endsWith("/scripts/reject-ticket.sh"));
 });
+
+test("hostLinks installs the flag-archive check and needs-decision helpers", () => {
+  for (const name of ["flag-archive-check.sh", "needs-decision.sh"]) {
+    const link = hostLinks.find((l) => l.target.endsWith(`/${name}`));
+    assert.ok(link, `${name} host link is present`);
+    assert.ok(link.source.endsWith(`/scripts/${name}`));
+  }
+});

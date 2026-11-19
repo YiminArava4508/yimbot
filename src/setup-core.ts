@@ -407,6 +407,11 @@ export const hostLinks: HostLink[] = [
     label: "ticket file attacher (~/attach-ticket.sh)",
   },
   {
+    source: join(repoRoot, "scripts/wait-local-env.sh"),
+    target: join(homedir(), "wait-local-env.sh"),
+    label: "local env waiter (~/wait-local-env.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/move-ticket.sh"),
     target: join(homedir(), "move-ticket.sh"),
     label: "ticket state mover (~/move-ticket.sh)",

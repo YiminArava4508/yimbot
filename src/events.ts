@@ -20,6 +20,7 @@ export type EventKind =
   | "draft_pr"
   | "ready_unqueued"
   | "ready_manual"
+  | "needs_approval"
   | "ready_regressed"
   | "awaiting_slices"
   | "tracking"
@@ -186,6 +187,7 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   draft_pr: { status: "draft pr", terminal: false },
   ready_unqueued: { status: "ready: r to queue", terminal: false },
   ready_manual: { status: "ready: merge manually", terminal: false },
+  needs_approval: { status: "needs approval", terminal: false },
   ready_regressed: { status: "working", terminal: false },
   awaiting_slices: { status: "waiting on slices", terminal: false },
   tracking: { status: "tracker ticket", terminal: false },
@@ -311,7 +313,7 @@ export function fixStartKind(kind: keyof typeof FIX_START_KIND): EventKind {
 // Statuses a regressed readiness verdict may replace with the named failure:
 // a readiness claim, or a finished fix whose result is now known.
 export function yieldsToVerdict(status: string | undefined): boolean {
-  return isReadyClaim(status) || status === STATUS.fix_ended!.status;
+  return isReadyClaim(status) || status === STATUS.fix_ended!.status || status === STATUS.needs_approval!.status;
 }
 
 // A split parent's row: it has no work of its own, only slices to wait on.

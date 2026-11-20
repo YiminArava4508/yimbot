@@ -127,6 +127,7 @@ const STATUS_TONES: Record<string, Tone> = {
   "fix done": "wait",
   "in review": "wait",
   "awaiting approval": "wait",
+  "needs approval": "wait",
   "draft pr": "wait",
   "ready: r to queue": "wait",
   "ready: merge manually": "wait",

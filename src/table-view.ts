@@ -100,6 +100,7 @@ const STATUS_COLOR: Record<string, string> = {
   "needs decision": "red",
   "review findings": "yellow",
   "awaiting approval": "yellow",
+  "needs approval": "yellow",
   "ready to merge": "green",
   "ready: r to queue": "green",
   "ready: merge manually": "green",

@@ -784,6 +784,27 @@ test("boardReadyKind: a repo without a merge queue says merge manually, label or
   assert.equal(boardReadyKind(true, true, "supervised", true), "draft_pr");
 });
 
+test("boardReadyKind: a labeled PR with no approval says needs approval", () => {
+  assert.equal(boardReadyKind(false, true, "supervised", false, false), "needs_approval");
+  assert.equal(boardReadyKind(false, true, "autonomous", false, false), "needs_approval");
+  assert.equal(boardReadyKind(false, true, "supervised", false, true), "ready_to_merge");
+  assert.equal(boardReadyKind(false, false, "supervised", false, false), "ready_unqueued");
+  assert.equal(boardReadyKind(true, true, "supervised", false, false), "draft_pr");
+  assert.equal(boardReadyKind(false, true, "supervised", true, false), "ready_manual");
+});
+
+test("readyOnce tells onVerdict whether the PR is approved", async () => {
+  const seen: boolean[] = [];
+  const h = harness(
+    { onVerdict: (_n, _v, _hasLabel, _isDraft, _reason, _manual, approved) => void seen.push(approved) },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  h.deps.prState = async () => ({ labels: [LABEL], isDraft: false, approved: true });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [false, true]);
+});
+
 test("readyOnce tells onVerdict whether the PR's repo merges manually", async () => {
   const seen: { n: number; manual: boolean }[] = [];
   const h = harness(

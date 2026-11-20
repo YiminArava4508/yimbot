@@ -40,6 +40,8 @@ export type EventKind =
   | "qa_started"
   | "qa_posted"
   | "qa_failed"
+  | "spike_awaiting_approval"
+  | "spike_closed"
   | "section_tasks"
   | "section_review"
   | "section_merge";
@@ -199,6 +201,8 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   // Terminal like `refined`: a failed QA run has nothing left driving it, and
   // the row has to stay put until a human looks at it.
   qa_failed: { status: "qa failed", terminal: true },
+  spike_awaiting_approval: { status: "awaiting approval", terminal: false },
+  spike_closed: { status: "spike closed", terminal: true },
 };
 
 // Takes a plain string, not EventKind: the log persists across versions, so a

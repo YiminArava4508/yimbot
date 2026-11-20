@@ -244,6 +244,7 @@ export type SpikeSweepDeps = {
   // Idempotent: edits the SPIKE_DONE_MARKER comment in place when it exists.
   upsertComment: (issueId: string, body: string) => Promise<void>;
   moveToDone: (identifier: string) => Promise<void>;
+  markRow: (identifier: string, kind: "spike_awaiting_approval" | "spike_closed") => void;
   log: (msg: string) => void;
 };
 
@@ -274,6 +275,7 @@ export async function closeCodelessSpikes(
     }
     if (!(await deps.isCodeless(issue.identifier))) continue;
     handled.add(issue.id);
+    deps.markRow(issue.identifier, "spike_awaiting_approval");
     try {
       await deps.upsertComment(issue.id, spikeDoneBody(issue.creator));
     } catch (err) {
@@ -282,6 +284,7 @@ export async function closeCodelessSpikes(
     }
     try {
       await deps.moveToDone(issue.identifier);
+      deps.markRow(issue.identifier, "spike_closed");
       deps.log(`moved codeless spike ${issue.identifier} to Done`);
     } catch (err) {
       deps.log(`move to Done failed on ${issue.identifier}, left in review: ${err}`);
@@ -766,6 +769,8 @@ export type WatcherConfig = {
   progressContext: LinearContext;
   // Context for the In-Review Linear poll that flags a session ready-to-test.
   reviewContext: LinearContext;
+  // Where pickup-ticket parks a finished spike (SPIKE_REVIEW_STATE_NAME); the spike sweep reads it.
+  spikeReviewContext: LinearContext;
   // State a codeless spike moves to when it enters review (DONE_STATE_NAME).
   doneStateName: string;
   heartbeatIntervalMinutes: number;
@@ -1682,13 +1687,18 @@ export function startWatcher(config: WatcherConfig): () => void {
       moveToDone: async (identifier) => {
         await moveIssueToStateByName(config.apiKey, identifier, config.doneStateName);
       },
+      markRow: (identifier, kind) => emitStatus({ kind, ...deriveKey({ identifier }) }),
       log: spikeLog,
     };
   };
   const reviewNoticeDeps: WatcherDeps = {
     fetchIssues: async () => {
       const issues = filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.reviewContext));
-      const spikes = await closeCodelessSpikes(issues, spikeSweepState, spikeDeps());
+      const spikeIssues =
+        config.spikeReviewContext.stateId === config.reviewContext.stateId
+          ? issues
+          : filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.spikeReviewContext));
+      const spikes = await closeCodelessSpikes(spikeIssues, spikeSweepState, spikeDeps());
       const rest = issues.filter((i) => !spikes.has(i.id));
       pruneSeen(reviewNoticeState, rest);
       return rest;

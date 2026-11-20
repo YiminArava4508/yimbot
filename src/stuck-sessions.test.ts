@@ -73,6 +73,11 @@ test("live claude pane active within idleMs emits nothing", () => {
   assert.deepEqual(emitted, []);
 });
 
+test("a spike awaiting approval is never flagged stuck, however long it sits quiet", () => {
+  const { emitted } = run({ rows: [row({ status: "awaiting approval" })], events: [paneEvent("%1")], panes: pane("claude", 600) });
+  assert.deepEqual(emitted, []);
+});
+
 test("a pane running something that is neither claude nor a shell is left alone", () => {
   const { emitted, resumed } = run({ events: [paneEvent("%1")], panes: pane("vim", 90) });
   assert.deepEqual(emitted, []);

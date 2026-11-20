@@ -68,6 +68,7 @@ export async function startDaemon(): Promise<() => void> {
   // back to the legacy TRIGGER_STATE_NAME.
   const stateName = envOr("DEPLOY_STATE_NAME", envOr("TRIGGER_STATE_NAME", "In Progress"));
   const reviewStateName = envOr("REVIEW_STATE_NAME", "In Review");
+  const spikeReviewStateName = envOr("SPIKE_REVIEW_STATE_NAME", "In Review");
   // The heartbeat: how often the central loop ticks. Reads the new
   // HEARTBEAT_INTERVAL_MINUTES, falling back to the legacy POLL_INTERVAL_MINUTES.
   const heartbeatIntervalMinutes = Number(
@@ -151,6 +152,7 @@ export async function startDaemon(): Promise<() => void> {
 
   const progressContext = await resolveContext(apiKey, teamName, stateName);
   const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
+  const spikeReviewContext = await resolveContext(apiKey, teamName, spikeReviewStateName);
   const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 
   // REFINE_USERS names/emails resolve to ids once at startup; misses are logged
@@ -566,6 +568,7 @@ export async function startDaemon(): Promise<() => void> {
     labelFilter,
     progressContext,
     reviewContext,
+    spikeReviewContext,
     doneStateName: envOr("DONE_STATE_NAME", "Done"),
     heartbeatIntervalMinutes,
     reapStaleMs: reapStaleMinutes * 60 * 1000,

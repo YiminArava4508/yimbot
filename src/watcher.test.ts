@@ -799,15 +799,35 @@ function stateIssue(id: string, identifier: string, creator: string | null): Sta
 
 function sweepDeps(over: Partial<SpikeSweepDeps> = {}) {
   const calls: string[] = [];
+  const rows: string[] = [];
   const deps: SpikeSweepDeps = {
     isCodeless: async () => true,
     upsertComment: async (id, body) => void calls.push(`comment ${id} ${body}`),
     moveToDone: async (identifier) => void calls.push(`move ${identifier}`),
+    markRow: (identifier, kind) => void rows.push(`${identifier} ${kind}`),
     log: () => {},
     ...over,
   };
-  return { calls, deps };
+  return { calls, rows, deps };
 }
+
+test("closeCodelessSpikes shows the row awaiting approval, then closed once Done", async () => {
+  const { rows, deps } = sweepDeps();
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, ["ENG-7 spike_awaiting_approval", "ENG-7 spike_closed"]);
+});
+
+test("closeCodelessSpikes leaves the row awaiting approval when the move to Done fails", async () => {
+  const { rows, deps } = sweepDeps({ moveToDone: async () => { throw new Error("no state Done"); } });
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, ["ENG-7 spike_awaiting_approval"]);
+});
+
+test("closeCodelessSpikes leaves the row of a ticket with code alone", async () => {
+  const { rows, deps } = sweepDeps({ isCodeless: async () => false });
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, []);
+});
 
 test("closeCodelessSpikes pings the creator, then moves the ticket to Done", async () => {
   const { calls, deps } = sweepDeps();

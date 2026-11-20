@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, fixStartKind, isFlagged, isFixerStatus, isParentRow, pinEventsLog, yieldsToVerdict, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, fixStartKind, isFlagged, isWorkingStatus, isFixerStatus, isParentRow, pinEventsLog, yieldsToVerdict, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1068,6 +1068,12 @@ test("a clearing event after a hand-back drops the flag but keeps the status", (
 test("statusFor maps the two hand-back kinds", () => {
   assert.deepEqual(statusFor("needs_decision"), { status: "needs decision", terminal: false });
   assert.deepEqual(statusFor("review_findings"), { status: "review findings", terminal: false });
+});
+
+test("spike event kinds map to board statuses, and awaiting approval is not working", () => {
+  assert.deepEqual(statusFor("spike_awaiting_approval"), { status: "awaiting approval", terminal: false });
+  assert.deepEqual(statusFor("spike_closed"), { status: "spike closed", terminal: true });
+  assert.equal(isWorkingStatus("awaiting approval"), false);
 });
 
 test("refine event kinds map to board statuses", () => {

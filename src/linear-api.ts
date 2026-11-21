@@ -450,6 +450,56 @@ export async function fetchCycleTodoIssues(
   }));
 }
 
+export type CycleParent = {
+  identifier: string;
+  title: string;
+  children: { labels: string[] }[];
+};
+
+// Active-cycle issues (sub-issues included) titled "Remove ..." with their children's label
+// names, for finding tickets that lack a given follow-up child.
+export async function fetchCycleParents(
+  apiKey: string,
+  teamId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CycleParent[]> {
+  type Data = {
+    issues: {
+      nodes: {
+        identifier: string;
+        title: string;
+        children: { nodes: { labels: { nodes: { name: string }[] } }[] };
+      }[];
+    };
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query CycleParents($teamId: ID!) {
+      issues(
+        first: 250
+        filter: {
+          team: { id: { eq: $teamId } }
+          cycle: { isActive: { eq: true } }
+          title: { startsWith: "Remove" }
+        }
+      ) {
+        nodes {
+          identifier
+          title
+          children(first: 250) { nodes { labels { nodes { name } } } }
+        }
+      }
+    }`,
+    { teamId },
+    fetchImpl,
+  );
+  return data.issues.nodes.map((n) => ({
+    identifier: n.identifier,
+    title: n.title,
+    children: n.children.nodes.map((c) => ({ labels: c.labels.nodes.map((l) => l.name) })),
+  }));
+}
+
 export type CycleBoardState = { id: string; name: string; type: string; position: number; color: string };
 export type CycleBoardIssue = {
   identifier: string;
@@ -723,6 +773,7 @@ export type SubIssueInput = {
   stateId?: string;
   cycleId?: string;
   labelIds?: string[];
+  description?: string;
 };
 
 export async function createSubIssue(
@@ -768,13 +819,13 @@ export async function setIssueEstimate(
   }
 }
 
-export async function addIssueLabel(
+// The id of a team label by name (case-insensitive), created when missing.
+export async function resolveTeamLabelId(
   apiKey: string,
-  issueId: string,
   teamId: string,
   labelName: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<void> {
+): Promise<string> {
   type ListData = { team: { labels: { nodes: { id: string; name: string }[] } } };
   const list = await gql<ListData>(
     apiKey,
@@ -785,22 +836,31 @@ export async function addIssueLabel(
     fetchImpl,
   );
   const want = labelName.trim().toLowerCase();
-  let labelId = list.team.labels.nodes.find((l) => l.name.trim().toLowerCase() === want)?.id;
-  if (!labelId) {
-    type CreateData = { issueLabelCreate: { success: boolean; issueLabel: { id: string } | null } };
-    const created = await gql<CreateData>(
-      apiKey,
-      `mutation CreateLabel($name: String!, $teamId: String!) {
-        issueLabelCreate(input: { name: $name, teamId: $teamId }) { success issueLabel { id } }
-      }`,
-      { name: labelName, teamId },
-      fetchImpl,
-    );
-    if (!created.issueLabelCreate.success || !created.issueLabelCreate.issueLabel) {
-      throw new Error(`issueLabelCreate failed for "${labelName}"`);
-    }
-    labelId = created.issueLabelCreate.issueLabel.id;
+  const existing = list.team.labels.nodes.find((l) => l.name.trim().toLowerCase() === want)?.id;
+  if (existing) return existing;
+  type CreateData = { issueLabelCreate: { success: boolean; issueLabel: { id: string } | null } };
+  const created = await gql<CreateData>(
+    apiKey,
+    `mutation CreateLabel($name: String!, $teamId: String!) {
+      issueLabelCreate(input: { name: $name, teamId: $teamId }) { success issueLabel { id } }
+    }`,
+    { name: labelName, teamId },
+    fetchImpl,
+  );
+  if (!created.issueLabelCreate.success || !created.issueLabelCreate.issueLabel) {
+    throw new Error(`issueLabelCreate failed for "${labelName}"`);
   }
+  return created.issueLabelCreate.issueLabel.id;
+}
+
+export async function addIssueLabel(
+  apiKey: string,
+  issueId: string,
+  teamId: string,
+  labelName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const labelId = await resolveTeamLabelId(apiKey, teamId, labelName, fetchImpl);
   type AddData = { issueAddLabel: { success: boolean } };
   const added = await gql<AddData>(
     apiKey,
@@ -888,6 +948,7 @@ export async function fetchTicket(
       assignee: { name: string } | null;
       team: { id: string };
       comments: { nodes: { body: string; createdAt: string; user: { name: string } | null }[] };
+      inverseRelations: InverseRelationNodes;
     } | null;
   };
   const data = await gql<Data>(
@@ -901,6 +962,7 @@ export async function fetchTicket(
         assignee { name }
         team { id }
         comments(first: 250) { nodes { body createdAt user { name } } }
+        ${BLOCKERS_SELECTION}
       }
     }`,
     { id: identifier },
@@ -926,6 +988,7 @@ export async function fetchTicket(
     parent: issue.parent?.identifier ?? null,
     assignee: issue.assignee?.name ?? null,
     comments,
+    blockedBy: blockersFrom(issue.inverseRelations).map((b) => ({ identifier: b.identifier, stateName: b.stateName })),
   };
 }
 

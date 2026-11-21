@@ -14,6 +14,7 @@ import {
   detectPackageManager,
   ensureHostLinks,
   expandTilde,
+  fixCommandFor,
   ghHasScopes,
   hasClaudeAuth,
   hostLinks,
@@ -235,7 +236,7 @@ test("PREREQUISITES split into blocking required and non-blocking recommended ch
     assert.equal(sev(k), "required", `${k} is required`);
   }
   // Recommended: warn but never block.
-  for (const k of ["gh-scopes", "git-identity", "shortcut", "posthog", "task", "tmux-navigator", "tmux-status"]) {
+  for (const k of ["gh-scopes", "git-identity", "shortcut", "posthog", "task", "docker", "docker-running", "atlas", "tmux-navigator", "tmux-status"]) {
     assert.equal(sev(k), "recommended", `${k} is recommended`);
   }
   // Every prerequisite declares one of the two severities.
@@ -435,4 +436,36 @@ test("hostLinks installs the session deny-list settings", () => {
   const confLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/heavy-jobs.conf"));
   assert.ok(confLink, "heavy-jobs.conf host link is present");
   assert.ok(confLink!.source.endsWith("settings/heavy-jobs.conf"), "sourced from settings/heavy-jobs.conf");
+});
+
+test("docker is checked before its daemon", () => {
+  const keys = PREREQUISITES.map((pr) => pr.key);
+  assert.ok(keys.indexOf("docker") < keys.indexOf("docker-running"), "docker before docker-running");
+});
+
+test("installCommand installs the docker toolchain per manager", () => {
+  assert.deepEqual(installCommand("docker", "brew"), ["brew", "install", "colima", "docker", "docker-compose"]);
+  assert.deepEqual(installCommand("docker", "pacman"), ["sudo", "pacman", "-S", "--needed", "docker", "docker-compose"]);
+  assert.equal(installCommand("docker", "apt"), null);
+  assert.equal(installCommand("docker", null), null);
+  assert.deepEqual(installCommand("atlas", "brew"), ["brew", "install", "ariga/tap/atlas"]);
+  const script = ["sh", "-c", "curl -sSf https://atlasgo.sh | sh"];
+  assert.deepEqual(installCommand("atlas", "pacman"), script);
+  assert.deepEqual(installCommand("atlas", null), script);
+});
+
+test("fixCommandFor starts colima on brew and has no fix for the docker daemon elsewhere", () => {
+  const pr = PREREQUISITES.find((p) => p.key === "docker-running")!;
+  assert.deepEqual(fixCommandFor(pr, "brew"), ["colima", "start"]);
+  assert.equal(fixCommandFor(pr, "pacman"), null);
+  assert.equal(fixCommandFor(pr, null), null);
+});
+
+test("installHint for docker, docker-running and atlas names the fix", () => {
+  assert.match(installHint("docker", "brew"), /brew install colima docker docker-compose/);
+  assert.match(installHint("docker", "apt"), /docs\.docker\.com/);
+  assert.match(installHint("docker-running", "brew"), /colima start/);
+  assert.match(installHint("docker-running", "pacman"), /systemctl enable --now docker/);
+  assert.match(installHint("atlas", "brew"), /brew install ariga\/tap\/atlas/);
+  assert.match(installHint("atlas", "pacman"), /atlasgo\.sh/);
 });

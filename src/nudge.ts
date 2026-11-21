@@ -51,6 +51,11 @@ export function nudgeOnce(state: NudgeState, deps: NudgeDeps): void {
     // Out of allowance, or nothing to aim at (event from an older hook build
     // carries no pane): a person has to look.
     if (count >= deps.maxNudges || !e.pane) {
+      deps.log(
+        e.pane
+          ? `flagged ${key} stuck without nudge in pane ${e.pane}: out of allowance (${count}/${deps.maxNudges})`
+          : `flagged ${key} stuck without nudge: no pane on the needs_input event`,
+      );
       deps.raiseFlag(key, e.label, "stuck");
       state.nudgedAt.set(key, e.ts);
       continue;
@@ -63,6 +68,7 @@ export function nudgeOnce(state: NudgeState, deps: NudgeDeps): void {
       } else {
         // The pane is gone or belongs to something else now (crashed session,
         // tmux restart recycling ids): a person has to look.
+        deps.log(`flagged ${key} stuck without nudge in pane ${e.pane}: pane gone or not running Claude`);
         deps.raiseFlag(key, e.label, "stuck");
         state.nudgedAt.set(key, e.ts);
       }

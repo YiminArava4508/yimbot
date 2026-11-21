@@ -58,18 +58,28 @@ export async function listMyOpenPRs(run: GhRunner, repo?: string): Promise<OpenP
   );
 }
 
-export type MergedPR = { number: number; headRefName: string; repo?: string };
+export type MergedPR = { number: number; headRefName: string; repo?: string; mergedAt?: string };
 
 export function parseMergedPRs(json: string, repo?: string): MergedPR[] {
   const rows = JSON.parse(json) as MergedPR[];
-  return rows.map((r) => ({ number: r.number, headRefName: r.headRefName, ...(repo ? { repo } : {}) }));
+  return rows.map((r) => ({
+    number: r.number,
+    headRefName: r.headRefName,
+    ...(repo ? { repo } : {}),
+    ...(r.mergedAt ? { mergedAt: r.mergedAt } : {}),
+  }));
 }
 
 // The viewer's merged PRs in the runner's repo. Bounded to the 100 most recent:
 // a worktree whose PR merged more than 100 merges ago is not a realistic case.
 export async function listMyMergedPRs(run: GhRunner, repo?: string): Promise<MergedPR[]> {
+  return listMergedPRsBy(run, "@me", repo);
+}
+
+// Merged PRs by any author ("@me" or a login), same 100-PR bound.
+export async function listMergedPRsBy(run: GhRunner, author: string, repo?: string): Promise<MergedPR[]> {
   return parseMergedPRs(
-    await run(["pr", "list", "--author", "@me", "--state", "merged", "--json", "number,headRefName", "--limit", "100"]),
+    await run(["pr", "list", "--author", author, "--state", "merged", "--json", "number,headRefName,mergedAt", "--limit", "100"]),
     repo,
   );
 }
@@ -296,6 +306,92 @@ export async function blockedInfo(run: GhRunner, prNumber: number, label: string
   return parseBlockedInfo(await run(["pr", "view", String(prNumber), "--json", "labels,headRefOid"]), label);
 }
 
+// Why the merge queue blocked a PR, read from its newest "failed to merge"
+// comment. A "merge conflict detected" block with no failed checks names the
+// queued PRs it collided with: not this PR's fault, so it only has to wait for
+// them. Anything else (failed checks, no readable comment) needs a session.
+export type BlockReason =
+  | { kind: "conflict"; waitingOn: number[]; commentAt: string }
+  | { kind: "other" };
+
+const AVIATOR_AUTHOR_RE = /^aviator/i;
+
+export function parseBlockReason(json: string): BlockReason {
+  const data = JSON.parse(json) as { comments?: { author?: { login?: string }; body?: string; createdAt?: string }[] };
+  const failures = (data.comments ?? []).filter(
+    (c) => AVIATOR_AUTHOR_RE.test(c.author?.login ?? "") && /failed to merge:/i.test(c.body ?? ""),
+  );
+  const newest = failures[failures.length - 1];
+  if (!newest) return { kind: "other" };
+  const body = newest.body ?? "";
+  if (!/failed to merge: merge conflict detected/i.test(body) || /failed checks:/i.test(body)) return { kind: "other" };
+  const section = body.split(/potential conflicting pull requests:/i)[1] ?? "";
+  const waitingOn = [...section.matchAll(/^\s*[*-]\s*\[(\d+)\b/gm)].map((m) => Number(m[1]));
+  if (waitingOn.length === 0) return { kind: "other" };
+  return { kind: "conflict", waitingOn: [...new Set(waitingOn)], commentAt: newest.createdAt ?? "" };
+}
+
+export async function blockReason(run: GhRunner, prNumber: number): Promise<BlockReason> {
+  return parseBlockReason(await run(["pr", "view", String(prNumber), "--json", "comments"]));
+}
+
+// Changed file paths for a PR, with the head they belong to.
+export function parsePrFiles(json: string): { headSha: string; files: string[] } {
+  const d = JSON.parse(json) as { headRefOid: string; files?: { path: string }[] };
+  return { headSha: d.headRefOid, files: (d.files ?? []).map((f) => f.path) };
+}
+
+export async function prFiles(run: GhRunner, prNumber: number): Promise<{ headSha: string; files: string[] }> {
+  return parsePrFiles(await run(["pr", "view", String(prNumber), "--json", "headRefOid,files"]));
+}
+
+// Every open PR carrying `label`, with head SHA and changed files, in one call.
+export function parseQueuedPrs(json: string): { n: number; headSha: string; files: string[] }[] {
+  const rows = JSON.parse(json) as { number: number; headRefOid: string; files?: { path: string }[] }[];
+  return rows.map((r) => ({ n: r.number, headSha: r.headRefOid, files: (r.files ?? []).map((f) => f.path) }));
+}
+
+export async function listQueuedPrs(run: GhRunner, label: string): Promise<{ n: number; headSha: string; files: string[] }[]> {
+  return parseQueuedPrs(
+    await run(["pr", "list", "--state", "open", "--label", label, "--limit", "100", "--json", "number,headRefOid,files"]),
+  );
+}
+
+export type PrLifecycle = "open" | "merged" | "closed";
+
+export function parsePrLifecycle(json: string): PrLifecycle {
+  const { state } = JSON.parse(json) as { state: string };
+  if (state === "MERGED") return "merged";
+  return state === "CLOSED" ? "closed" : "open";
+}
+
+export function parseHolderNote(json: string): string | undefined {
+  const { state, reviewDecision, mergeStateStatus } = JSON.parse(json) as {
+    state?: string;
+    reviewDecision?: string | null;
+    mergeStateStatus?: string;
+  };
+  if (state !== "OPEN") return undefined;
+  if (reviewDecision === "REVIEW_REQUIRED" || reviewDecision === "CHANGES_REQUESTED") return "needs approval";
+  return mergeStateStatus === "BLOCKED" ? "blocked" : undefined;
+}
+
+// Filled by prLifecycle from the same gh call, so a waiting row can say its
+// holder is stuck without a second read per PR per tick.
+const holderNotes = new Map<number, string>();
+
+export function holderNote(prNumber: number): string | undefined {
+  return holderNotes.get(prNumber);
+}
+
+export async function prLifecycle(run: GhRunner, prNumber: number): Promise<PrLifecycle> {
+  const json = await run(["pr", "view", String(prNumber), "--json", "state,reviewDecision,mergeStateStatus"]);
+  const note = parseHolderNote(json);
+  if (note) holderNotes.set(prNumber, note);
+  else holderNotes.delete(prNumber);
+  return parsePrLifecycle(json);
+}
+
 export type HumanChangesRequested = { requested: boolean; latestAt: number | null };
 
 // Author-aware changes-requested from `gh pr view <n> --json latestReviews`
@@ -337,17 +433,18 @@ export async function prLabels(run: GhRunner, prNumber: number): Promise<string[
   return parseLabels(await run(["pr", "view", String(prNumber), "--json", "labels"]));
 }
 
-export type PrState = { labels: string[]; isDraft: boolean };
+export type PrState = { labels: string[]; isDraft: boolean; approved: boolean };
 
-// Labels and the draft flag together, from one `gh pr view`. The ready step
+// Labels, the draft flag and approval together, from one `gh pr view`. The ready step
 // needs both live: the open-PR listing it walks is a snapshot taken at tick
 // start, and an operator queueing a PR mid-tick promotes it out of draft.
 export function parsePrState(json: string): PrState {
-  return { labels: parseLabels(json), isDraft: parseIsDraft(json) };
+  const { reviewDecision } = JSON.parse(json) as { reviewDecision?: string | null };
+  return { labels: parseLabels(json), isDraft: parseIsDraft(json), approved: reviewDecision === "APPROVED" };
 }
 
 export async function prState(run: GhRunner, prNumber: number): Promise<PrState> {
-  return parsePrState(await run(["pr", "view", String(prNumber), "--json", "labels,isDraft"]));
+  return parsePrState(await run(["pr", "view", String(prNumber), "--json", "labels,isDraft,reviewDecision"]));
 }
 
 // Add / remove a single label on a PR. The gh stdout is discarded; a non-zero

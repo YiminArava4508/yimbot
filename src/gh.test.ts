@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  parseBlockReason,
+  parsePrFiles,
+  parsePrLifecycle,
+  parseHolderNote,
+  holderNote,
+  prLifecycle,
+  parseQueuedPrs,
   addLabel,
   applyReadyLabel,
   blockedInfo,
@@ -10,6 +17,7 @@ import {
   type GhRunner,
   ghRunner,
   listMyClosedUnmergedPRs,
+  listMergedPRsBy,
   listMyMergedPRs,
   listMyOpenPRs,
   listSuccessfulRunHeadShas,
@@ -103,6 +111,17 @@ test("parseMergedPRs keeps only number/headRefName", () => {
   assert.deepEqual(prs, [{ number: 4700, headRefName: "eng-900-y" }]);
 });
 
+test("parseMergedPRs keeps mergedAt when gh returns it", () => {
+  const prs = parseMergedPRs(JSON.stringify([{ number: 1, headRefName: "eng-1-a", mergedAt: "2026-11-18T10:00:00Z" }]));
+  assert.deepEqual(prs, [{ number: 1, headRefName: "eng-1-a", mergedAt: "2026-11-18T10:00:00Z" }]);
+});
+
+test("listMergedPRsBy asks gh for mergedAt", async () => {
+  const { run, calls } = capturingRunner(["[]"]);
+  await listMergedPRsBy(run, "@me");
+  assert.ok(calls[0].includes("number,headRefName,mergedAt"));
+});
+
 test("listMyMergedPRs requests author=@me merged PRs and parses them", async () => {
   const { run, calls } = capturingRunner([
     JSON.stringify([{ number: 2, headRefName: "eng-2-b" }]),
@@ -110,6 +129,13 @@ test("listMyMergedPRs requests author=@me merged PRs and parses them", async () 
   const prs = await listMyMergedPRs(run);
   assert.deepEqual(prs, [{ number: 2, headRefName: "eng-2-b" }]);
   assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "@me", "--state", "merged"]);
+});
+
+test("listMergedPRsBy lists merged PRs for the given author", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify([{ number: 7, headRefName: "eng-7-x" }])]);
+  const prs = await listMergedPRsBy(run, "yimbot-red");
+  assert.deepEqual(prs, [{ number: 7, headRefName: "eng-7-x" }]);
+  assert.deepEqual(calls[0].slice(0, 6), ["pr", "list", "--author", "yimbot-red", "--state", "merged"]);
 });
 
 test("parseClosedUnmergedPRs drops merged rows and keeps only closed-unmerged", () => {
@@ -614,16 +640,22 @@ test("prReviewMeta views the PR once with every field the review and order flows
 
 test("parsePrState reads the labels and the draft flag from one view", () => {
   assert.deepEqual(
-    parsePrState(JSON.stringify({ labels: [{ name: "ready-to-merge" }], isDraft: true })),
-    { labels: ["ready-to-merge"], isDraft: true },
+    parsePrState(JSON.stringify({ labels: [{ name: "ready-to-merge" }], isDraft: true, reviewDecision: "APPROVED" })),
+    { labels: ["ready-to-merge"], isDraft: true, approved: true },
   );
-  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false });
+  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false, approved: false });
 });
 
-test("prState asks for both fields in a single call", async () => {
+test("parsePrState treats any review decision but APPROVED as not approved", () => {
+  for (const reviewDecision of ["REVIEW_REQUIRED", "CHANGES_REQUESTED", "", null]) {
+    assert.equal(parsePrState(JSON.stringify({ isDraft: false, reviewDecision })).approved, false);
+  }
+});
+
+test("prState asks for labels, draft flag and review decision in a single call", async () => {
   const { run, calls } = capturingRunner([JSON.stringify({ labels: [], isDraft: false })]);
   await prState(run, 4706);
-  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels,isDraft"]);
+  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels,isDraft,reviewDecision"]);
 });
 
 test("parseRunHeadShas lists head shas in gh order", () => {
@@ -699,4 +731,71 @@ test("repoMergesManually rethrows any other failure", async () => {
     throw new Error("gh: Server Error (HTTP 502)");
   };
   await assert.rejects(repoMergesManually(run, "o/r"), /502/);
+});
+
+const AVIATOR_STATUS = `# Current Aviator status\n> Aviator will automatically update this comment.\n\nThis PR is not ready to merge (currently in state blocked): merge conflict detected, please resolve manually and requeue.\n`;
+const AVIATOR_FAILURE = `This pull request failed to merge: merge conflict detected, please resolve manually and requeue. After you have resolved the problem, you should remove the \`blocked\` pull request label from this PR and then try to re-queue the PR.
+Additional debug info: A merge conflict occurred while queueing this pull request. Potential conflicting pull requests:
+* [8062 chore(hyperion): remove is-hyperion-financials-available flag (ENG-3766)](8062)
+* [8081 Remove \`contact-acitivy-tab\` flag (code, then prod)](8081)
+* [8086 Remove \`listing-marketing-performance-tab\` flag (code, then prod)](8086). 
+Please resolve manually and requeue. If resolving manually does not work, you may need to wait for previous PRs in the queue to merge.`;
+
+function comments(...c: { login: string; body: string; createdAt?: string }[]): string {
+  return JSON.stringify({ comments: c.map((x) => ({ author: { login: x.login }, body: x.body, createdAt: x.createdAt ?? "2026-11-18T19:51:29Z" })) });
+}
+
+test("parseBlockReason reads the queued PRs from a merge conflict failure comment", () => {
+  const json = comments({ login: "aviator-app", body: AVIATOR_STATUS }, { login: "aviator-app", body: AVIATOR_FAILURE });
+  assert.deepEqual(parseBlockReason(json), { kind: "conflict", waitingOn: [8062, 8081, 8086], commentAt: "2026-11-18T19:51:29Z" });
+});
+
+test("parseBlockReason uses the newest failure comment", () => {
+  const older = AVIATOR_FAILURE.replace("8062", "7000");
+  const newer = AVIATOR_FAILURE.replace("8062", "9000");
+  const json = comments({ login: "aviator-app", body: older }, { login: "aviator-app", body: newer });
+  assert.deepEqual((parseBlockReason(json) as { waitingOn: number[] }).waitingOn, [9000, 8081, 8086]);
+});
+
+test("parseBlockReason is other for failed checks, no PR list, or a non-Aviator author", () => {
+  const checks = AVIATOR_FAILURE + "\nFailed checks:\n* unit-tests";
+  assert.deepEqual(parseBlockReason(comments({ login: "aviator-app", body: checks })), { kind: "other" });
+  const noList = "This pull request failed to merge: merge conflict detected, please resolve manually.";
+  assert.deepEqual(parseBlockReason(comments({ login: "aviator-app", body: noList })), { kind: "other" });
+  assert.deepEqual(parseBlockReason(comments({ login: "someone", body: AVIATOR_FAILURE })), { kind: "other" });
+  assert.deepEqual(parseBlockReason(comments({ login: "aviator-app", body: AVIATOR_STATUS })), { kind: "other" });
+});
+
+test("parsePrLifecycle maps gh states", () => {
+  assert.equal(parsePrLifecycle('{"state":"MERGED"}'), "merged");
+  assert.equal(parsePrLifecycle('{"state":"CLOSED"}'), "closed");
+  assert.equal(parsePrLifecycle('{"state":"OPEN"}'), "open");
+});
+
+test("parsePrFiles and parseQueuedPrs read paths and head SHAs", () => {
+  assert.deepEqual(parsePrFiles('{"headRefOid":"abc","files":[{"path":"a.ts"},{"path":"b.ts"}]}'), { headSha: "abc", files: ["a.ts", "b.ts"] });
+  assert.deepEqual(parseQueuedPrs('[{"number":5,"headRefOid":"h","files":[{"path":"x"}]},{"number":6,"headRefOid":"i"}]'), [
+    { n: 5, headSha: "h", files: ["x"] },
+    { n: 6, headSha: "i", files: [] },
+  ]);
+});
+
+test("parseHolderNote flags an open PR that needs approval or is blocked", () => {
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED"}'), "needs approval");
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"CHANGES_REQUESTED","mergeStateStatus":"BLOCKED"}'), "needs approval");
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED"}'), "blocked");
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"APPROVED","mergeStateStatus":"CLEAN"}'), undefined);
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":null,"mergeStateStatus":"CLEAN"}'), undefined);
+  assert.equal(parseHolderNote('{"state":"MERGED","reviewDecision":"REVIEW_REQUIRED"}'), undefined);
+});
+
+test("prLifecycle reads the holder note in the same gh call", async () => {
+  const calls: string[][] = [];
+  const run = async (args: string[]) => {
+    calls.push(args);
+    return '{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED"}';
+  };
+  assert.equal(await prLifecycle(run, 8090), "open");
+  assert.equal(holderNote(8090), "needs approval");
+  assert.equal(calls.length, 1);
 });

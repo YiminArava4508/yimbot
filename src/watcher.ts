@@ -9,9 +9,14 @@ import {
   parseAcceptanceCriteria,
   renderAcComment,
 } from "./acceptance.ts";
-import { isClearedState, mergedIdentifierSet, unsatisfiedBlockers } from "./blocked.ts";
+import {
+  isAfterReleaseOrphan,
+  isClearedState,
+  mergedIdentifierSet,
+  unsatisfiedBlockers,
+} from "./blocked.ts";
 import { selectClaims } from "./claim.ts";
-import { dropRejected, filterByLabel, type LabelFilter } from "./labels.ts";
+import { dropRejected, filterByLabel, hasLabel, type LabelFilter } from "./labels.ts";
 import {
   candidateLines,
   DEPENDENCY_COMMENT_MARKER,
@@ -28,6 +33,7 @@ import {
   sweepOrphanWorktrees,
   type Worktree,
 } from "./cleanup.ts";
+import { type MergedSyncDeps, mergedSyncOnce } from "./merged-sync.ts";
 import { AWAITING_SLICES_STATUS, WORKING_STATUS, currentStatus, deriveKey, fixStartKind, isFixerStatus, isHoldStatus, emitEvent, emitFlagged, emitSection, emitStatus, foldAttention, mergedRowKeys, prRowKey, readEvents, reduceRows, sectionKind, statusFor, ticketKeyOf, titleFromBranch, yieldsToVerdict, type YimbotEvent } from "./events.ts";
 import { loadFixSeenAt, saveFixSeenAt } from "./fix-timers.ts";
 import type { ChecksInfo, MergeableInfo, MergedPR, OpenPR, PrState, UnresolvedInfo } from "./gh.ts";
@@ -35,7 +41,9 @@ import { setHeldMergedKeys } from "./held-merged.ts";
 import { readMode } from "./mode.ts";
 import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import { clearDeadRaises, type StaleRaiseDeps } from "./stale-raise.ts";
-import { SHELL_COMMANDS, detectStuckSessions, freshStuckState, stuckIdleMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
+import { claimWorktreeForFixer, fsLockDeps, releaseWorktreeFromFixer } from "./worktree-lock.ts";
+import { readPaneActivity } from "./blocked-pane.ts";
+import { SHELL_COMMANDS, detectStuckSessions, isClaudeCommand, freshStuckState, stuckIdleMs, transcriptLastWriteMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
@@ -236,6 +244,7 @@ export type SpikeSweepDeps = {
   // Idempotent: edits the SPIKE_DONE_MARKER comment in place when it exists.
   upsertComment: (issueId: string, body: string) => Promise<void>;
   moveToDone: (identifier: string) => Promise<void>;
+  markRow: (identifier: string, kind: "spike_awaiting_approval" | "spike_closed") => void;
   log: (msg: string) => void;
 };
 
@@ -266,6 +275,7 @@ export async function closeCodelessSpikes(
     }
     if (!(await deps.isCodeless(issue.identifier))) continue;
     handled.add(issue.id);
+    deps.markRow(issue.identifier, "spike_awaiting_approval");
     try {
       await deps.upsertComment(issue.id, spikeDoneBody(issue.creator));
     } catch (err) {
@@ -274,6 +284,7 @@ export async function closeCodelessSpikes(
     }
     try {
       await deps.moveToDone(issue.identifier);
+      deps.markRow(issue.identifier, "spike_closed");
       deps.log(`moved codeless spike ${issue.identifier} to Done`);
     } catch (err) {
       deps.log(`move to Done failed on ${issue.identifier}, left in review: ${err}`);
@@ -432,6 +443,10 @@ export type ClaimDeps = {
   // Label names that disqualify a ticket from being claimed.
   riskLabels: string[];
   rejectLabel: string;
+  // Label that gates a ticket on its blockers being completed (AFTER_RELEASE_LABEL).
+  afterReleaseLabel: string;
+  // State an after-release ticket's blockers must be in (DONE_STATE_NAME).
+  doneStateName: string;
   // Which slice of the board this instance works (LABEL_FILTER).
   labelFilter: LabelFilter;
   // Whether the claim step skips tickets with no estimate. Read per tick so it
@@ -544,10 +559,10 @@ async function recordInferredBlockers(
 // fails closed on the same write, and the claim step never reaches any other
 // ticket. Latching it here lets the next tick fall through to the
 // next-priority ticket instead, so only the broken ticket stalls.
-export type ClaimState = { skip: Set<string> };
+export type ClaimState = { skip: Set<string>; orphansLogged: Set<string> };
 
 export function freshClaimState(): ClaimState {
-  return { skip: new Set() };
+  return { skip: new Set(), orphansLogged: new Set() };
 }
 
 // A started parent means its session may still be carving slices. A parent in
@@ -620,15 +635,31 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
       deps.log(`claim failed: ${err}`);
       return;
     }
-    for (const t of inSlice) {
-      const holdouts = unsatisfiedBlockers(t.blockedBy, merged, deps.clearedStates);
-      if (holdouts) deps.log(`deferring ${t.identifier}: blocked by ${holdouts}`);
+  }
+  for (const t of inSlice) {
+    const afterRelease = hasLabel(t.labels, deps.afterReleaseLabel);
+    if (isAfterReleaseOrphan(afterRelease, t.blockedBy)) {
+      if (!state.orphansLogged.has(t.id)) {
+        state.orphansLogged.add(t.id);
+        deps.log(`deferring ${t.identifier}: ${deps.afterReleaseLabel} but has no blockers (nothing to wait on)`);
+      }
+      continue;
     }
+    if (merged === null && !afterRelease) continue;
+    const holdouts = unsatisfiedBlockers(
+      t.blockedBy,
+      merged ?? new Set(),
+      deps.clearedStates,
+      afterRelease ? deps.doneStateName : null,
+    );
+    if (holdouts) deps.log(`deferring ${t.identifier}: blocked by ${holdouts}`);
   }
 
   const ranked = selectClaims(inSlice, {
     riskLabels: deps.riskLabels,
     rejectLabel: deps.rejectLabel,
+    afterReleaseLabel: deps.afterReleaseLabel,
+    doneStateName: deps.doneStateName,
     merged,
     clearedStates: deps.clearedStates,
     labelFilter: deps.labelFilter,
@@ -661,6 +692,10 @@ export type ReconcileDeps = {
   fetchMergedIdentifiers: () => Promise<Set<string>>;
   // State names that count as a blocker's work having landed (clearedStateNames).
   clearedStates: Set<string>;
+  // Label that gates a ticket on its blockers being completed (AFTER_RELEASE_LABEL).
+  afterReleaseLabel: string;
+  // State an after-release ticket's blockers must be in (DONE_STATE_NAME).
+  doneStateName: string;
   // Move a blocked issue back to Todo.
   moveToTodo: (issueId: string) => Promise<void>;
   // Drop an issue id from the deploy latch so it relaunches once unblocked.
@@ -694,7 +729,12 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
   }
 
   for (const issue of issues) {
-    const holdouts = unsatisfiedBlockers(issue.blockedBy, merged, deps.clearedStates);
+    const holdouts = unsatisfiedBlockers(
+      issue.blockedBy,
+      merged,
+      deps.clearedStates,
+      hasLabel(issue.labels, deps.afterReleaseLabel) ? deps.doneStateName : null,
+    );
     if (!holdouts) continue;
     try {
       await deps.moveToTodo(issue.id);
@@ -710,6 +750,7 @@ export type ClaimConfig = {
   autoClaim: boolean;
   riskLabels: string[];
   rejectLabel: string;
+  afterReleaseLabel: string;
   labelFilter: LabelFilter;
   maxInProgress: number;
   claimsPerHeartbeat: number;
@@ -728,9 +769,15 @@ export type WatcherConfig = {
   progressContext: LinearContext;
   // Context for the In-Review Linear poll that flags a session ready-to-test.
   reviewContext: LinearContext;
+  // Where pickup-ticket parks a finished spike (SPIKE_REVIEW_STATE_NAME); the spike sweep reads it.
+  spikeReviewContext: LinearContext;
   // State a codeless spike moves to when it enters review (DONE_STATE_NAME).
   doneStateName: string;
   heartbeatIntervalMinutes: number;
+  // True while the daemon's disk guard reports low free space. Holds new ticket
+  // launches (claim + deploy) and idle nudges, which would only hit ENOSPC.
+  // Absent means never low.
+  diskLow?: () => boolean;
   // How long a fix session may stay in flight before the reaper tears it down as
   // stale, regardless of PR state (backstop for bailed/crashed/stuck sessions and
   // for comment fixes, which have no crisp PR-state objective).
@@ -750,8 +797,9 @@ export type WatcherConfig = {
   // listOpenPRs spans every repo (EXTRA_REPOS included) for the board and the
   // ready step; listFixableOpenPRs is the codebase repo's only, since a fix
   // session's worktree is cut from codebasePath.
-  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "humanChangesRequested"> & {
+  prReview: (Pick<PrReviewDeps, "listOpenPRs" | "unresolvedInfo" | "mergeableInfo" | "checksInfo" | "blockedInfo" | "blockReason" | "prLifecycle" | "holderNote" | "humanChangesRequested"> & {
     listFixableOpenPRs: () => Promise<OpenPR[]>;
+    requeue: (prNumber: number) => Promise<number | null>;
   }) | null;
   // gh-backed hooks for the cleanup step; null disables it (AUTO_CLEANUP off, or
   // gh unavailable). When set, each heartbeat tears down the worktree + session
@@ -765,6 +813,12 @@ export type WatcherConfig = {
     issueState: (identifier: string) => Promise<TicketState | null>;
     clearedStates: Set<string>;
   } | null;
+  // Merged sync step: null disables it (AUTO_MERGED_SYNC off, or gh unavailable).
+  // Moves review-state tickets whose PRs all merged to the merged state.
+  mergedSync: Pick<
+    MergedSyncDeps,
+    "listMergedPRs" | "listOpenPRs" | "fetchState" | "reviewStateName" | "mergedStateName" | "graceMs"
+  > | null;
   // gh-backed hooks for the advance step; null disables it (AUTO_CONTINUE off, or
   // gh unavailable). When set, each heartbeat judges merged PRs' issues against
   // their AC tracker and spawns a continuation while criteria remain.
@@ -786,8 +840,9 @@ export type WatcherConfig = {
   // gh unavailable). When set, each heartbeat adds the ready label (autonomous
   // mode only) to a non-draft open PR that has been clean on all three signals
   // (no unresolved threads, mergeable, CI passing/none) for soakMs straight,
-  // one PR in the queue at a time. Add-only: the step never removes the label,
-  // and supervised mode never touches it.
+  // every eligible PR in one tick, limited by maxQueued (approved + labeled PRs
+  // in the queue) and maxAwaitingReview. Add-only: the step never removes the
+  // label, and supervised mode never touches it.
   ready: {
     listOpenPRs: () => Promise<OpenPR[]>;
     unresolvedInfo: (n: number) => Promise<UnresolvedInfo>;
@@ -799,6 +854,8 @@ export type WatcherConfig = {
     label: string;
     blockedLabel: string;
     soakMs: number;
+    maxQueued: number;
+    maxAwaitingReview?: number;
   } | null;
   // gh-backed source for the blocked-by handling (claim deferral + reconcile
   // move-back); null disables both (gh unavailable). Reuses listMyMergedPRs.
@@ -1016,6 +1073,28 @@ export function tmuxWindowExists(session: string, window: string): boolean {
 }
 
 
+// Hand a fixer window the worktree's lock (and give it back): a fixer is the only
+// thing the daemon runs on a PR's worktree, and the lock hook would otherwise
+// refuse it because the ticket session claimed the tree. Best-effort.
+const lockLog = (msg: string) => console.log(`[lock] ${msg}`);
+function worktreeFor(branch: string): string {
+  return join(worktreesDir, sanitizeBranchToSession(branch));
+}
+export function lockForFixer(branch: string, kind: FixKind, prNumber: number): void {
+  try {
+    claimWorktreeForFixer(worktreeFor(branch), kind, prNumber, fsLockDeps(lockLog));
+  } catch (err) {
+    lockLog(`claim failed for PR #${prNumber}: ${err}`);
+  }
+}
+export function unlockFromFixer(branch: string): void {
+  try {
+    releaseWorktreeFromFixer(worktreeFor(branch), fsLockDeps(lockLog));
+  } catch (err) {
+    lockLog(`release failed for ${branch}: ${err}`);
+  }
+}
+
 // The session/window name for a PR's fix of a given kind.
 function fixNameForKind(prNumber: number, kind: FixKind): string {
   return kind === "fix"
@@ -1049,10 +1128,11 @@ export function reapFix(prNumber: number, branch: string, kind: FixKind): void {
   const name = fixNameForKind(prNumber, kind);
   if (tmuxHasSession(name)) {
     killTmuxSession(name);
-    return;
+  } else {
+    const ticketSession = sanitizeBranchToSession(branch);
+    if (tmuxWindowExists(ticketSession, name)) killTmuxWindow(ticketSession, name);
   }
-  const ticketSession = sanitizeBranchToSession(branch);
-  if (tmuxWindowExists(ticketSession, name)) killTmuxWindow(ticketSession, name);
+  unlockFromFixer(branch);
 }
 
 // Flag a tmux session's feature as ready to test by setting the session-scoped
@@ -1363,7 +1443,11 @@ export function resumeClaudeInPane(pane: string, exec: Exec = runExec): boolean 
 // tmux server restart recycles %N ids onto unrelated panes) — literal
 // keystrokes into an arbitrary shell or editor would execute the prompt as
 // commands. Other tmux failures throw; the nudge step logs and retries.
-export function sendNudge(pane: string, prompt: string): boolean {
+//
+// interrupt: false skips the Escape, for a Claude believed idle: if it is in
+// fact mid-turn, the text then queues as its next message rather than
+// cancelling the work in progress.
+export function sendNudge(pane: string, prompt: string, { interrupt = true }: { interrupt?: boolean } = {}): boolean {
   let cmd: string;
   try {
     cmd = execFileSync("tmux", ["display", "-p", "-t", pane, "#{pane_current_command}"], {
@@ -1372,8 +1456,8 @@ export function sendNudge(pane: string, prompt: string): boolean {
   } catch {
     return false; // pane gone
   }
-  if (!/^(claude|node)$/.test(cmd)) return false;
-  execFileSync("tmux", ["send-keys", "-t", pane, "Escape"], { stdio: "ignore" });
+  if (!isClaudeCommand(cmd)) return false;
+  if (interrupt) execFileSync("tmux", ["send-keys", "-t", pane, "Escape"], { stdio: "ignore" });
   execFileSync("tmux", ["send-keys", "-t", pane, "-l", prompt], { stdio: "ignore" });
   execFileSync("tmux", ["send-keys", "-t", pane, "Enter"], { stdio: "ignore" });
   return true;
@@ -1539,6 +1623,12 @@ export function runEndSession(branch: string, reason: string): void {
   });
 }
 
+let heartbeatActive = false;
+
+export function heartbeatRunning(): boolean {
+  return heartbeatActive;
+}
+
 export function startWatcher(config: WatcherConfig): () => void {
   const log = (msg: string) => console.log(`[watcher] ${msg}`);
 
@@ -1605,13 +1695,18 @@ export function startWatcher(config: WatcherConfig): () => void {
       moveToDone: async (identifier) => {
         await moveIssueToStateByName(config.apiKey, identifier, config.doneStateName);
       },
+      markRow: (identifier, kind) => emitStatus({ kind, ...deriveKey({ identifier }) }),
       log: spikeLog,
     };
   };
   const reviewNoticeDeps: WatcherDeps = {
     fetchIssues: async () => {
       const issues = filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.reviewContext));
-      const spikes = await closeCodelessSpikes(issues, spikeSweepState, spikeDeps());
+      const spikeIssues =
+        config.spikeReviewContext.stateId === config.reviewContext.stateId
+          ? issues
+          : filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.spikeReviewContext));
+      const spikes = await closeCodelessSpikes(spikeIssues, spikeSweepState, spikeDeps());
       const rest = issues.filter((i) => !spikes.has(i.id));
       pruneSeen(reviewNoticeState, rest);
       return rest;
@@ -1637,6 +1732,15 @@ export function startWatcher(config: WatcherConfig): () => void {
     mergeableInfo: config.prReview.mergeableInfo,
     checksInfo: config.prReview.checksInfo,
     blockedInfo: config.prReview.blockedInfo,
+    blockReason: config.prReview.blockReason,
+    prLifecycle: config.prReview.prLifecycle,
+    holderNote: config.prReview.holderNote,
+    markWaiting: (prNumber, branch, waitingOn, hold, waitNote) => {
+      const { key, label } = prRowKey({ branch, pr: prNumber });
+      const kind = hold === "overlap" ? "queue_held" : "blocked_waiting";
+      emitStatus({ kind, key, label, title: titleFromBranch(branch), pr: prNumber, waitingOn, waitNote });
+    },
+    requeue: (prNumber) => config.prReview!.requeue(prNumber),
     mode: readMode,
     humanChangesRequested: config.prReview.humanChangesRequested,
     // Every hook here keys by prRowKey, never the bare branch: a PR whose branch
@@ -1660,6 +1764,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     settleFixStatus: (prNumber, branch) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       if (isFixerStatus(currentStatus(key))) emitStatus({ kind: "fix_ended", key, label, pr: prNumber });
+      unlockFromFixer(branch);
     },
     restoreFixStatus: (prNumber, branch, kind) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
@@ -1667,27 +1772,35 @@ export function startWatcher(config: WatcherConfig): () => void {
         emitStatus({ kind: fixStartKind(kind), key, label, title: titleFromBranch(branch), pr: prNumber });
       }
     },
+    blockedPaneActivity: (prNumber, branch) =>
+      readPaneActivity(blockedSessionName(prNumber), sanitizeBranchToSession(branch)),
+    blockedSettleMs: 2 * 60 * 1000,
+    blockedStuckMs: stuckIdleMs(process.env.STUCK_IDLE_MINUTES),
     now: Date.now,
     reapStaleMs: config.reapStaleMs,
     pendingSpawnMaxMs: 2 * config.heartbeatIntervalMinutes * 60 * 1000,
     spawnFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "review_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "fix", prNumber);
       spawnFixSession(name, branch);
     },
     spawnCiFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "ci_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "ci", prNumber);
       spawnFixSession(name, branch);
     },
     spawnConflictFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "conflict_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "conflict", prNumber);
       spawnFixSession(name, branch);
     },
     spawnBlockedFix: (name, branch, prNumber) => {
       const { key, label } = prRowKey({ branch, pr: prNumber });
       emitEvent({ kind: "blocked_fix_started", key, label, title: titleFromBranch(branch), pr: prNumber });
+      lockForFixer(branch, "blocked", prNumber);
       spawnFixSession(name, branch);
     },
     log: reviewIconLog,
@@ -1788,6 +1901,17 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: advanceLog,
   };
 
+  const mergedSyncDeps: MergedSyncDeps | null = config.mergedSync && {
+    ...config.mergedSync,
+    listReviewIssues: async () =>
+      filterByLabel(config.labelFilter, await fetchIssuesInState(config.apiKey, config.reviewContext)),
+    moveToMerged: async (identifier) => {
+      await moveIssueToStateByName(config.apiKey, identifier, config.mergedSync!.mergedStateName);
+    },
+    now: Date.now,
+    log: (msg) => console.log(msg),
+  };
+
   const qaLog = (msg: string) => console.log(`[qa] ${msg}`);
   const qaState = config.qa ? loadQaState() : freshQaState();
   const qaDeps: QaDeps | null = config.qa && {
@@ -1842,7 +1966,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     // stale fix status. The label writers stay pure GitHub side effects. A ready
     // draft says "draft pr" instead: it cannot merge until a human marks it
     // ready for review.
-    onVerdict: (n: number, verdict, hasLabel, isDraft, reason, manual) => {
+    onVerdict: (n: number, verdict, hasLabel, isDraft, reason, manual, approved) => {
       const k = keyForPr(n);
       if (!boardReadyToMerge(verdict, hasLabel)) {
         const status = currentStatus(k.key);
@@ -1861,7 +1985,9 @@ export function startWatcher(config: WatcherConfig): () => void {
         }
         return;
       }
-      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual), key: k.key, label: k.label, pr: n, repo: k.repo });
+      // A PR the overlap gate is holding keeps its "waiting on queue" row until the label goes on.
+      if (!hasLabel && currentStatus(k.key) === statusFor("queue_held")?.status) return;
+      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual, approved), key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     // Where the row sits, reported separately from its status so a queued PR
     // stays in the merge pane while its status walks through a CI fix or a
@@ -1875,8 +2001,13 @@ export function startWatcher(config: WatcherConfig): () => void {
     // fix in flight; the label coming off hands the row back to onVerdict.
     onBlocked: (n: number) => {
       const k = keyForPr(n);
-      if (currentStatus(k.key) === statusFor("blocked_fix_started")?.status) return;
+      const status = currentStatus(k.key);
+      if (status === statusFor("blocked_fix_started")?.status || status === statusFor("blocked_waiting")?.status) return;
       emitStatus({ kind: "merge_blocked", key: k.key, label: k.label, pr: n, repo: k.repo });
+    },
+    onHeld: (n: number, holder: number) => {
+      const k = keyForPr(n);
+      emitStatus({ kind: "queue_held", key: k.key, label: k.label, pr: n, repo: k.repo, waitingOn: [holder], waitNote: config.prReview?.holderNote?.(holder) });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,
@@ -1933,6 +2064,8 @@ export function startWatcher(config: WatcherConfig): () => void {
     autoClaim: claim.autoClaim,
     riskLabels: claim.riskLabels,
     rejectLabel: claim.rejectLabel,
+    afterReleaseLabel: claim.afterReleaseLabel,
+    doneStateName: config.doneStateName,
     labelFilter: claim.labelFilter,
     requireEstimate: refineEnabled,
     maxEstimate: claim.maxEstimate,
@@ -1988,6 +2121,8 @@ export function startWatcher(config: WatcherConfig): () => void {
       ),
     fetchMergedIdentifiers: async () => mergedIdentifierSet(await config.blocked!.listMergedPRs()),
     clearedStates: config.clearedStates,
+    afterReleaseLabel: config.claim.afterReleaseLabel,
+    doneStateName: config.doneStateName,
     moveToTodo: (issueId) => moveIssueToState(config.apiKey, issueId, config.claim.todoContext.stateId),
     unlatchDeploy: (issueId) => void deployState.launched.delete(issueId),
     log: reconcileLog,
@@ -2016,8 +2151,12 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: (msg) => console.log(`[stale] ${msg}`),
   };
 
+  const diskLow = config.diskLow ?? (() => false);
+
   // Stuck-session step: a working row whose Claude is gone or silent shows as
-  // stuck, and an exited Claude in a surviving pane is resumed in place.
+  // stuck, and an exited Claude in a surviving pane is resumed in place. In
+  // autonomous mode an idle live Claude is prompted to carry on (held while the
+  // disk is low, where a retry would just hit ENOSPC again).
   const stuckState = freshStuckState();
   const stuckDeps: StuckDeps = {
     events: readEvents,
@@ -2030,8 +2169,17 @@ export function startWatcher(config: WatcherConfig): () => void {
     },
     now: Date.now,
     idleMs: stuckIdleMs(process.env.STUCK_IDLE_MINUTES),
+    lastWriteMs: transcriptLastWriteMs,
     emit: (e) => emitEvent(e),
     resume: resumeClaudeInPane,
+    canNudge: () => readMode() === "autonomous" && !diskLow(),
+    nudge: (pane, prompt) => {
+      try {
+        return sendNudge(pane, prompt, { interrupt: false });
+      } catch {
+        return false;
+      }
+    },
     log: (msg) => console.log(`[stuck] ${msg}`),
   };
 
@@ -2039,13 +2187,18 @@ export function startWatcher(config: WatcherConfig): () => void {
   const heartbeat = async () => {
     if (running) return;
     running = true;
+    heartbeatActive = true;
     attentionSnapshot = null;
     try {
       clearDeadRaises(staleRaiseDeps);
       detectStuckSessions(stuckState, stuckDeps);
       nudgeOnce(nudgeState, nudgeDeps);
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
-      await deployOnce(deployState, deployDeps);
+      // A low disk holds new ticket sessions: each new worktree adds a checkout,
+      // dependencies and builds, and would hit ENOSPC on its first command.
+      // Deploy catches up once space is back (its latch only sets on launch).
+      if (diskLow()) console.log("[watcher] disk low: holding deploy and claim");
+      else await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
       await pollOnce(reviewNoticeState, reviewNoticeDeps);
       if (prReviewDeps) {
@@ -2061,6 +2214,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       // on the next tick regardless of order — it matches on the worktree dir,
       // which reattach reuses rather than creates.)
       if (sweepDeps) await sweepOrphanWorktrees(sweepDeps);
+      if (mergedSyncDeps) await mergedSyncOnce(mergedSyncDeps);
       if (advanceDeps) await advanceOnce(advanceState, advanceDeps);
       if (qaDeps) {
         await qaOnce(qaState, qaDeps);
@@ -2074,9 +2228,10 @@ export function startWatcher(config: WatcherConfig): () => void {
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps
       // the WIP cap accounting correct.
-      await claimOnce(claimState, claimDeps);
+      if (!diskLow()) await claimOnce(claimState, claimDeps);
     } finally {
       running = false;
+      heartbeatActive = false;
     }
   };
 

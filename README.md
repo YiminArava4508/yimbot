@@ -126,8 +126,9 @@ flowchart TD
   moved back to to-do. A blocker counts as landed once it reaches the merge state
   (`MERGED_STATE_NAME`, defaults to `Merged`) or the review state, once it is
   closed out in any Done/Canceled state, or once its own PR merges even if nobody
-  moved the ticket. Waiting for Done would be too late: that column means
-  released. While the refine step is on, an unestimated ticket is left alone
+  moved the ticket. Waiting for Done would be too late for normal tickets: that
+  column means released. Tickets labeled `after-release` are the exception (see
+  [After-release gating](#after-release-gating)). While the refine step is on, an unestimated ticket is left alone
   as well: it is the refine step's to size first. A 0-point ticket is always
   skipped, estimated or not, because a zero marks a decomposed container whose
   subtickets carry the actual work. A Todo sub-issue whose parent is In Progress
@@ -224,6 +225,33 @@ flowchart TD
   group's teardown and the reap of a worktree whose PR closed unmerged. *(optional; setting: `AUTO_CLEANUP`,
   on by default)* Needs `gh` installed and authenticated; runs against the
   repo at `CODEBASE_PATH`.
+- **Sync merged tickets:** moves your tickets in the review state to the merge
+  state (`MERGED_STATE_NAME`) once every PR for the ticket has merged, as a
+  backstop for the Linear GitHub integration, which only does it for PRs that
+  say "Resolves"/"Closes". Waits `MERGED_SYNC_GRACE_MINUTES` (default 10) after
+  the merge, skips tickets with any PR still open, and never moves a ticket
+  backwards. Respects `LABEL_FILTER`. *(optional; setting: `AUTO_MERGED_SYNC`,
+  on by default)* Needs `gh` installed and authenticated.
+- **Trim the Go build cache:** every 15 minutes, removes entries in `go env GOCACHE`
+  that no build has used in `GO_CACHE_MAX_AGE_HOURS` (defaults to 6). Go's own
+  trim waits 5 days, which lets parallel worktree builds grow the cache past
+  100G. *(optional; setting: `GO_CACHE_TRIM`, on by default; skipped when `go`
+  isn't installed)*
+- **Disk guard:** every minute, checks free space on the volumes sessions write
+  to (`/tmp`, where Claude Code keeps its temp dir, the worktrees and the Go
+  cache). Below `DISK_LOW_GB` (default 20) it trims the Go cache down to entries
+  used in the last `GO_CACHE_EMERGENCY_MAX_AGE_MINUTES` (default 30) and holds new
+  ticket launches (claim and deploy) and idle nudges, until free space is back
+  above `DISK_RECOVER_GB` (default 40).
+- **Nudge idle sessions:** in autonomous mode, a working session whose Claude has
+  sat at its prompt past `STUCK_IDLE_MINUTES` (default 30), e.g. after it stopped
+  on a transient disk-full or network error and asked for "continue", is
+  prompted to retry or decide and carry on. Idle is judged from Claude's Stop
+  hook (`turn_ended`) and its transcript writes, including its subagents', so
+  viewing the pane doesn't reset the clock. Mid-turn, and for sessions started
+  before the hook existed, the pane's last screen output is used instead. It shares the 3-per-hour budget with
+  the `claude --continue` relaunch of an exited Claude; past it the row stays
+  stuck for a person.
 - **Advance the work (teal):** every heartbeat, once one of your PRs is merged,
   yimbot judges its issue against the issue's acceptance criteria and, while any
   remain unmet, spawns a continuation session to keep working the issue.
@@ -244,23 +272,59 @@ flowchart TD
   per extra repo; `QA_SESSION_TIMEOUT_MINUTES`, defaults to 45)* Needs `gh`,
   Chrome with the Claude extension signed in to nonprod, and `~/attach-ticket.sh`
   linked by setup.
-- **Flag ready to merge (lime):** every heartbeat, for each of your open
-  non-draft PRs that is clean on all three signals (no unresolved review threads,
-  no merge conflicts, and CI passing or no CI at all), it adds a `ready-to-merge`
-  label so you or an automerge system can see at a glance that it's mergeable. The
-  label is removed again only on a hard regression (a new comment, a broken build),
-  which the fixers then handle; an in-flight state (CI still running, mergeability
-  not yet computed) or a merge conflict holds the label as-is, so a merge queue
-  that queues on the label is never yanked back out mid-merge. Conflicts hold
-  rather than regress because label-driven conflict sweeps (like gemini's
-  resolve-generated-conflicts workflow) discover PRs by this label, and stripping
-  it would hide the PR from the auto-heal; the conflict fixer still runs either way. If your merge queue
-  posts its own gating check that only completes once the PR is queued (e.g.
-  Aviator's `aviator/checks`), list it in `IGNORE_CHECKS` so it isn't counted as
-  perpetually-pending CI and deadlock the label. *(optional; settings:
-  `AUTO_READY_LABEL`, on by default; `READY_MERGE_LABEL`, defaults to
-  `ready-to-merge` and must already exist in the repo; `IGNORE_CHECKS`, empty by
+- **Flag ready to merge (lime):** in autonomous mode, every heartbeat, each of
+  your open non-draft PRs that has stayed clean on all three signals (no
+  unresolved review threads, no merge conflicts, and CI passing or no CI at all)
+  for the soak gets a `ready-to-merge` label. The label goes on before approval,
+  since it also pings reviewers. The bot never removes it: a PR that regresses
+  keeps its label while the fixers work, and a removal by a human or the merge
+  queue is final (the PR is not re-labeled). Every eligible PR is labeled in one
+  tick. Only labeled PRs that are also approved (and blocked PRs, which are due
+  a re-queue) count against `READY_MAX_QUEUED`; an approved PR that is still
+  unlabeled waits for a free slot. `READY_MAX_AWAITING_REVIEW` optionally caps
+  how many labeled PRs may sit unapproved, so reviewers are not pinged for a
+  whole backlog at once. Oldest-ready goes first under either limit. PRs in
+  repos with no merge queue are never labeled and take no slot. Conflicts and
+  in-flight states hold rather than regress because label-driven conflict
+  sweeps (like gemini's resolve-generated-conflicts workflow) discover PRs by
+  this label. If your merge queue posts its own gating check that only completes
+  once the PR is queued (e.g. Aviator's `aviator/checks`), list it in
+  `IGNORE_CHECKS` so it isn't counted as perpetually-pending CI and deadlock the
+  label. *(optional; settings: `AUTO_READY_LABEL`, on by default;
+  `READY_MERGE_LABEL`, defaults to `ready-to-merge` and must already exist in the
+  repo; `READY_SOAK_MINUTES`, defaults to 10; `READY_MAX_QUEUED`, defaults to 3;
+  `READY_MAX_AWAITING_REVIEW`, no cap by default; `IGNORE_CHECKS`, empty by
   default)* Needs `gh` installed and authenticated.
+
+## After-release gating
+
+A ticket labeled `after-release` (the `AFTER_RELEASE_LABEL` env var renames it)
+waits for its blockers to be **released**, not just merged. Each blocker counts
+as satisfied only when it sits in the Done state (`DONE_STATE_NAME`, defaults to
+`Done`). The Merged and review states, other completed-type states such as Ready
+To Release, Canceled, and a merged PR do not count. Tickets
+without the label behave as before.
+
+- **Claim and reconcile:** the claim step defers the ticket, logging
+  `ENG-1 (In Review, waiting for release)`, and the reconcile step moves it back
+  to Todo if it is already In Progress.
+- **No blockers:** an `after-release` ticket with no blockers is never claimed,
+  and the claim step logs that once per ticket.
+- **Creating one:** `~/create-subticket.sh <PARENT> "<title>" <points> --after-release`
+  adds the label on top of the inherited ones, makes the parent block the new
+  subticket, and implies `--claimable` and `--no-zero-parent`. The pickup-ticket
+  skill uses it for work that can only happen once the change ships (archiving a
+  flag in prod, say).
+
+**Assumption:** the parent reaches a completed state (Done) only once it has
+been released. If tickets are not moved to Done when a release ships, the gate
+waits forever. If someone moves a ticket to Done early, the follow-up runs
+before the release. Check this holds before relying on the label.
+
+**Prod flag archive.** The pickup-ticket skill archives a prod PostHog flag only
+after its checklist passes. Check 4 needs the flag quiet for `FLAG_ARCHIVE_QUIET_HOURS`
+(default `4`); a flag that was never called passes. Set the variable in `.env`
+to change the window.
 
 ## Heavy job queue
 
@@ -456,8 +520,19 @@ go when the board owns the terminal, default `daemon.log`).
 
 ```bash
 pnpm install
-pnpm start   # first run opens the setup wizard in the TUI, writes .env, then starts
+scripts/run.sh   # first run opens the setup wizard in the TUI, writes .env, then starts
 ```
+
+`scripts/run.sh` relaunches yimbot after a self-update and rolls back a crash on
+boot to the previous commit. `pnpm start` runs it once with no relaunch.
+
+Self-update polls `origin/master` and, once nothing is in flight, exits so
+`scripts/run.sh` can relaunch it on the new code. `SELF_UPDATE` turns it on or
+off (default on; `false`, `off`, `no` or `0` turn it off) and
+`SELF_UPDATE_INTERVAL_MINUTES` sets the poll interval (default `5`). Relaunching
+needs `scripts/run.sh`: under plain `pnpm start` the board shows
+`update ready (restart to apply)` and waits for you, and headless runs do not
+self-update at all.
 
 `pnpm start` opens a setup wizard in the TUI when yimbot is not fully set up:
 no `LINEAR_API_KEY`, a `CODEBASE_PATH` that is unset or not a git repository,
@@ -481,7 +556,7 @@ The wizard begins with a two-tier prerequisite pre-flight:
   at a time (`f`) or all in a row ("Fix everything for me").
 - **Recommended (warns, never blocks):** `gh` token `repo`+`workflow` scopes and
   git identity (both offered as one-command fixes), the `shortcut` MCP server
-  the `sc-*` sessions fetch through, the `posthog` MCP server, `go-task` (`task`, which repo pre-push hooks run), the vim-tmux-navigator tmux bindings (the wizard offers to append `scripts/tmux-navigator.conf` to your tmux config), and a tmux status line that shows
+  the `sc-*` sessions fetch through, the `posthog` MCP server, `go-task` (`task`, which repo pre-push hooks run), Docker (`docker`, plus a running daemon; Colima on macOS) and `atlas` for repos with a compose stack and DB migrations, the vim-tmux-navigator tmux bindings (the wizard offers to append `scripts/tmux-navigator.conf` to your tmux config), and a tmux status line that shows
   `@feature_status` (the ready-to-test flag). Linear sessions need no MCP: they
   read and write tickets through `~/get-ticket.sh`, `~/comment-ticket.sh` and
   `~/move-ticket.sh`, which use the daemon's `LINEAR_API_KEY`.
@@ -564,7 +639,8 @@ its local worktree and any running fix session behind for a human to clear up.
 ```bash
 pnpm onboard   # (re)configure via the CLI prompts (W on the board does it in the TUI)
 pnpm check     # one-shot: print the issues the deploy state and label filter currently match
-pnpm start     # run the daemon (Ctrl+C to stop); opens the setup wizard first if not set up
+scripts/run.sh # run the daemon (Ctrl+C to stop); opens the setup wizard first if not set up
+pnpm start     # same, without relaunch after a self-update
 ```
 
 ## Session launcher & skill

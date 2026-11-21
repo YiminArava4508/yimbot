@@ -46,8 +46,16 @@ export function isClearedState(stateName: string, cleared: Set<string>): boolean
 
 // A blocker stops blocking once its work has landed: it reached the merge state
 // (or one past it), it was closed out, or its PR is merged even though nobody
-// moved the ticket.
-function isSatisfied(b: Blocker, merged: Set<string>, cleared: Set<string>): boolean {
+// moved the ticket. An after-release ticket (doneState set) waits for the
+// blocker to sit in the Done state by name: merged work has not shipped yet, and
+// other completed-type states such as Ready To Release are not released either.
+function isSatisfied(
+  b: Blocker,
+  merged: Set<string>,
+  cleared: Set<string>,
+  doneState: string | null,
+): boolean {
+  if (doneState !== null) return isClearedState(b.stateName, new Set([doneState.trim().toLowerCase()]));
   return (
     isClearedState(b.stateName, cleared) ||
     b.stateType === "completed" ||
@@ -57,14 +65,24 @@ function isSatisfied(b: Blocker, merged: Set<string>, cleared: Set<string>): boo
   );
 }
 
+// An after-release ticket with nothing to wait on is almost always a mistake, so
+// it is never claimable.
+export function isAfterReleaseOrphan(afterRelease: boolean, blockedBy: Blocker[]): boolean {
+  return afterRelease && blockedBy.length === 0;
+}
+
 // A ticket is blocked while any of its blockers is unsatisfied. No blockers
-// means never blocked.
+// means never blocked, except for an after-release ticket (doneState set).
 export function isBlocked(
   blockedBy: Blocker[],
   merged: Set<string>,
   cleared: Set<string>,
+  doneState: string | null = null,
 ): boolean {
-  return blockedBy.some((b) => !isSatisfied(b, merged, cleared));
+  return (
+    isAfterReleaseOrphan(doneState !== null, blockedBy) ||
+    blockedBy.some((b) => !isSatisfied(b, merged, cleared, doneState))
+  );
 }
 
 // The blockers still holding a ticket back, each with its current state, for the
@@ -73,9 +91,11 @@ export function unsatisfiedBlockers(
   blockedBy: Blocker[],
   merged: Set<string>,
   cleared: Set<string>,
+  doneState: string | null = null,
 ): string {
+  const suffix = doneState !== null ? ", waiting for release" : "";
   return blockedBy
-    .filter((b) => !isSatisfied(b, merged, cleared))
-    .map((b) => `${b.identifier} (${b.stateName})`)
+    .filter((b) => !isSatisfied(b, merged, cleared, doneState))
+    .map((b) => `${b.identifier} (${b.stateName}${suffix})`)
     .join(", ");
 }

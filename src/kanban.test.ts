@@ -226,6 +226,8 @@ test("statusTone maps each emitted status to a tone", () => {
     "qa: in session": "ok",
     "ready to review": "wait",
     "in review": "wait",
+    "awaiting approval": "wait",
+    "spike closed": "ok",
     "draft pr": "wait",
     "ready: r to queue": "wait",
     "waiting on slices": "wait",

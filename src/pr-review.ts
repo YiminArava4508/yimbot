@@ -1,4 +1,4 @@
-import type { BlockedInfo, ChecksInfo, HumanChangesRequested, MergeableInfo, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { BlockedInfo, BlockReason, ChecksInfo, HumanChangesRequested, MergeableInfo, OpenPR, PrLifecycle, UnresolvedInfo } from "./gh.ts";
 import type { Mode } from "./mode.ts";
 
 // The tmux session name for a PR's fix run. Keyed by PR number (not branch) so
@@ -68,6 +68,12 @@ export type ReviewState = {
   lastHandledConflictSha: Map<number, string>;
   lastHandledBlockedSha: Map<number, string>;
   pendingSpawn: Map<number, { kind: FixKind; at: number }>;
+  // PRs the merge queue blocked only because of siblings queued ahead of them:
+  // held by the daemon (no session) until every sibling has merged or closed.
+  waiting: Map<number, { waitingOn: number[]; headSha: string; commentAt: string; hold: "landing" | "overlap"; note?: string }>;
+  // The failure comment (createdAt) a PR was last re-queued for. A re-block that
+  // shows the same comment brought no new information, so it goes to a session.
+  requeuedFor: Map<number, string>;
   // "<prNumber>:<kind>" -> epoch ms the fix was first seen in flight. Drives the
   // stale reap backstop. The watcher persists it (fix-timers.json) across restarts.
   fixSeenAt: Map<string, number>;
@@ -80,6 +86,8 @@ export function freshReviewState(): ReviewState {
     lastHandledConflictSha: new Map(),
     lastHandledBlockedSha: new Map(),
     pendingSpawn: new Map(),
+    waiting: new Map(),
+    requeuedFor: new Map(),
     fixSeenAt: new Map(),
   };
 }
@@ -121,6 +129,28 @@ export type PrReviewDeps = {
   // Called for each fixer seen in flight: put back its status if a settle
   // fired while it was invisible (slow start, transient tmux read failure).
   restoreFixStatus: (prNumber: number, branch: string, kind: FixKind) => void;
+  // Why the queue blocked a PR, from its failure comment.
+  blockReason: (prNumber: number) => Promise<BlockReason>;
+  // Whether a PR is still open, merged, or closed.
+  prLifecycle: (prNumber: number) => Promise<PrLifecycle>;
+  // Record the waiting state on the board: the PR is held until `waitingOn` land.
+  markWaiting: (prNumber: number, branch: string, waitingOn: number[], kind: "landing" | "overlap", note?: string) => void;
+  // Why an open waited-on PR cannot merge by itself ("needs approval"), read
+  // from the same gh call prLifecycle already makes. Undefined when unknown.
+  holderNote?: (prNumber: number) => string | undefined;
+  // Swap the blocked label for the ready label. No session involved. Resolves
+  // to null once queued, or to the older queued PR it overlaps and must wait on
+  // (nothing is relabeled then).
+  requeue: (prNumber: number, branch: string) => Promise<number | null>;
+  // What a blocked fixer's window is doing: `working` when claude is mid-turn,
+  // `quietMs` since its last output. Null when it cannot be read (window gone,
+  // tmux down), which never closes anything.
+  blockedPaneActivity: (prNumber: number, branch: string) => { working: boolean; quietMs: number } | null;
+  // A blocked window must be quiet this long before the daemon may close it for
+  // a finished job (conflicting PR, label gone): enough to clear a mid-relabel.
+  blockedSettleMs: number;
+  // A blocked window quiet this long is dead whatever the PR looks like.
+  blockedStuckMs: number;
   // Injected clock (epoch ms) for the stale-reap timer; Date.now in production.
   now: () => number;
   // Stale-reap threshold: reap a fix in flight longer than this regardless of state.
@@ -200,6 +230,106 @@ function pendingKind(state: ReviewState, prNumber: number, deps: PrReviewDeps): 
   return undefined;
 }
 
+// Close a blocked fixer's window when it is idle and its job is over: the PR now
+// conflicts with main, the blocked label is gone, or the window has been quiet
+// past the stuck threshold. A working or unreadable window is never touched.
+// The conflict path picks the PR up on a later tick, once the window is gone.
+async function closeDeadBlockedFixer(pr: OpenPR, deps: PrReviewDeps): Promise<boolean> {
+  const activity = deps.blockedPaneActivity(pr.number, pr.headRefName);
+  if (activity === null || activity.working || activity.quietMs < deps.blockedSettleMs) return false;
+  let reason: string | null = activity.quietMs >= deps.blockedStuckMs ? "idle past stuck threshold" : null;
+  if (reason === null) {
+    try {
+      if ((await deps.mergeableInfo(pr.number)).state === "conflicting") reason = "PR now conflicts with main";
+      else if (!(await deps.blockedInfo(pr.number)).blocked) reason = "blocked label gone";
+    } catch (err) {
+      deps.log(`blocked window check failed for PR #${pr.number}: ${err}`);
+      return false;
+    }
+  }
+  if (reason === null) return false;
+  deps.reapFix(pr.number, pr.headRefName, "blocked");
+  deps.log(`closed ${blockedSessionName(pr.number)} for PR #${pr.number} (${reason})`);
+  return true;
+}
+
+// Handles a blocked PR that is clean with main. True when the daemon owns it
+// this tick (waiting on queued siblings, or just re-queued), false to let the
+// blocked fixer session take it. Never consults lastHandledBlockedSha, so a
+// re-block at the same head can re-enter the waiting state.
+function noteFor(prs: number[], deps: PrReviewDeps): string | undefined {
+  for (const n of prs) {
+    const note = deps.holderNote?.(n);
+    if (note) return note;
+  }
+  return undefined;
+}
+
+async function holdForQueue(
+  pr: OpenPR,
+  headSha: string,
+  mergeState: MergeableInfo["state"],
+  state: ReviewState,
+  deps: PrReviewDeps,
+): Promise<boolean> {
+  let held = state.waiting.get(pr.number);
+  if (held && held.headSha !== headSha) {
+    state.waiting.delete(pr.number);
+    held = undefined;
+  }
+  if (!held) {
+    let reason: BlockReason;
+    try {
+      reason = await deps.blockReason(pr.number);
+    } catch (err) {
+      deps.log(`block reason read failed for PR #${pr.number}: ${err}`);
+      return false;
+    }
+    if (reason.kind !== "conflict" || state.requeuedFor.get(pr.number) === reason.commentAt) return false;
+    held = { waitingOn: reason.waitingOn, headSha, commentAt: reason.commentAt, hold: "landing" };
+    state.waiting.set(pr.number, held);
+    held.note = noteFor(held.waitingOn, deps);
+    deps.markWaiting(pr.number, pr.headRefName, held.waitingOn, "landing", held.note);
+    deps.log(`PR #${pr.number} blocked by queue conflict, waiting on ${held.waitingOn.map((n) => `#${n}`).join(", ")}`);
+  }
+  try {
+    const open: number[] = [];
+    for (const n of held.waitingOn) if ((await deps.prLifecycle(n)) === "open") open.push(n);
+    if (open.length > 0) {
+      const note = noteFor(open, deps);
+      if (open.length < held.waitingOn.length || note !== held.note) {
+        held.waitingOn = open;
+        held.note = note;
+        deps.markWaiting(pr.number, pr.headRefName, open, held.hold, note);
+      }
+      return true;
+    }
+  } catch (err) {
+    deps.log(`waiting PR check failed for PR #${pr.number}: ${err}`);
+    return true;
+  }
+  if (mergeState !== "mergeable") return true; // GitHub still computing; the conflict path covers "conflicting"
+  let holder: number | null;
+  try {
+    holder = await deps.requeue(pr.number, pr.headRefName);
+  } catch (err) {
+    deps.log(`requeue failed for PR #${pr.number}: ${err}`);
+    return true;
+  }
+  if (holder !== null) {
+    held.waitingOn = [holder];
+    held.hold = "overlap";
+    held.note = noteFor([holder], deps);
+    deps.markWaiting(pr.number, pr.headRefName, [holder], "overlap", held.note);
+    deps.log(`PR #${pr.number} overlaps queued PR #${holder}, waiting on it before re-queueing`);
+    return true;
+  }
+  state.waiting.delete(pr.number);
+  state.requeuedFor.set(pr.number, held.commentAt);
+  deps.log(`re-queued PR #${pr.number} (waited on ${held.waitingOn.map((n) => `#${n}`).join(", ")})`);
+  return true;
+}
+
 export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promise<void> {
   let prs: OpenPR[];
   try {
@@ -268,11 +398,15 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
         deps.restoreFixStatus(pr.number, pr.headRefName, kind);
         // A blocked fix owns its whole lifecycle: the fix-pr-blocked skill fixes the
         // Aviator combined-CI failure, swaps blocked -> ready-to-merge, then closes its
-        // own session. The daemon must never reap it, or it races that work -- the label
-        // clears mid-investigation (another PR in the batch was the culprit) or right
-        // after the skill's own relabel, before it finishes cleaning up. It still counts
-        // as in flight, so it keeps the other fix kinds off the shared worktree below.
-        if (kind === "blocked") continue;
+        // own session. The daemon never reaps one that is working, or it races that
+        // work (the label clears mid-investigation, or right after the skill's own
+        // relabel, before it finishes cleaning up). Only an idle window whose job no
+        // longer makes sense is closed (see closeDeadBlockedFixer). Either way it
+        // counts as in flight, so it keeps the other fix kinds off the worktree.
+        if (kind === "blocked") {
+          await closeDeadBlockedFixer(pr, deps);
+          continue;
+        }
         const key = `${pr.number}:${kind}`;
         if (!state.fixSeenAt.has(key)) state.fixSeenAt.set(key, now);
         const stale = now - (state.fixSeenAt.get(key) as number) >= deps.reapStaleMs;
@@ -359,12 +493,13 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       continue;
     }
     if (blocked.blocked) {
-      // The merge queue kicked this PR out after its combined-CI batch failed.
-      // Its own CI is usually green (the failure was in the combined draft PR),
-      // so this never reaches the CI block. Spawn a blocked fix on an unhandled
-      // head and when no other fix kind is mid-spawn; otherwise just wait. Dedup
-      // by head SHA bounds it to one automated attempt per head, so a re-block at
-      // the same SHA (another PR in the batch is the culprit) does not loop.
+      // The merge queue kicked this PR out after its batch failed. A pure merge
+      // conflict with PRs queued ahead is not this PR's fault: the daemon holds
+      // it until they land (no session). Anything else, a real combined-CI
+      // failure, goes to a blocked fix on an unhandled head and when no other
+      // fix kind is mid-spawn; dedup by head SHA bounds that to one automated
+      // attempt per head, so a re-block at the same SHA does not loop.
+      if (await holdForQueue(pr, blocked.headSha, mergeable.state, state, deps)) continue;
       const unhandled = state.lastHandledBlockedSha.get(pr.number) !== blocked.headSha;
       if (unhandled && !(pending && pending !== "blocked")) {
         const name = blockedSessionName(pr.number);
@@ -379,6 +514,7 @@ export async function reviewOnce(state: ReviewState, deps: PrReviewDeps): Promis
       }
       continue; // one fix per PR per tick, all four fixes share the worktree
     }
+    state.waiting.delete(pr.number);
 
     let checks: ChecksInfo;
     try {

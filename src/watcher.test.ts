@@ -14,6 +14,7 @@ import {
   claimOnce,
   type ClaimDeps,
   continuationSessionName,
+  heartbeatRunning,
   currentTmuxPane,
   type DependencyScanDeps,
   type DeployDeps,
@@ -405,6 +406,10 @@ test("findExistingSession matches a tmux session by identifier prefix", () => {
   assert.equal(match, "eng-42-fix-login");
 });
 
+test("findExistingSession ignores yimbot-review sessions", () => {
+  assert.equal(findExistingSession("ENG-123", ["yimbot-review-123"], []), null);
+});
+
 test("findExistingSession falls back to a worktree dir when no session matches", () => {
   const match = findExistingSession("ENG-42", ["eng-7-other"], ["eng-42-old-slug", "eng-99-x"]);
   assert.equal(match, "eng-42-old-slug");
@@ -794,15 +799,35 @@ function stateIssue(id: string, identifier: string, creator: string | null): Sta
 
 function sweepDeps(over: Partial<SpikeSweepDeps> = {}) {
   const calls: string[] = [];
+  const rows: string[] = [];
   const deps: SpikeSweepDeps = {
     isCodeless: async () => true,
     upsertComment: async (id, body) => void calls.push(`comment ${id} ${body}`),
     moveToDone: async (identifier) => void calls.push(`move ${identifier}`),
+    markRow: (identifier, kind) => void rows.push(`${identifier} ${kind}`),
     log: () => {},
     ...over,
   };
-  return { calls, deps };
+  return { calls, rows, deps };
 }
+
+test("closeCodelessSpikes shows the row awaiting approval, then closed once Done", async () => {
+  const { rows, deps } = sweepDeps();
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, ["ENG-7 spike_awaiting_approval", "ENG-7 spike_closed"]);
+});
+
+test("closeCodelessSpikes leaves the row awaiting approval when the move to Done fails", async () => {
+  const { rows, deps } = sweepDeps({ moveToDone: async () => { throw new Error("no state Done"); } });
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, ["ENG-7 spike_awaiting_approval"]);
+});
+
+test("closeCodelessSpikes leaves the row of a ticket with code alone", async () => {
+  const { rows, deps } = sweepDeps({ isCodeless: async () => false });
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, []);
+});
 
 test("closeCodelessSpikes pings the creator, then moves the ticket to Done", async () => {
   const { calls, deps } = sweepDeps();
@@ -884,6 +909,8 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
     autoClaim: true,
     riskLabels: ["migration"],
     rejectLabel: "reject",
+    afterReleaseLabel: "after-release",
+    doneStateName: "Done",
     labelFilter: null,
     requireEstimate: () => false,
     maxEstimate: null,
@@ -1192,6 +1219,8 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
     fetchInProgress: async () => [],
     fetchMergedIdentifiers: async () => new Set<string>(),
     clearedStates: cleared,
+    afterReleaseLabel: "after-release",
+    doneStateName: "Done",
     moveToTodo: async (id) => void movedBack.push(id),
     unlatchDeploy: (id) => void unlatched.push(id),
     log: (msg) => void logs.push(msg),
@@ -1213,6 +1242,79 @@ test("reconcile moves a blocked In-Progress ticket back and unlatches, never tea
   assert.ok(
     logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4 (In Review)")),
   );
+});
+
+test("reconcile moves an In-Progress after-release ticket back while its parent has not shipped", async () => {
+  const { deps, movedBack, logs } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [blocker("ENG-4", "Merged")],
+      },
+    ],
+    fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.deepEqual(movedBack, ["i-5"]);
+  assert.ok(logs.some((l) => l.includes("ENG-4 (Merged, waiting for release)")));
+});
+
+test("reconcile moves an after-release ticket back while its parent is Ready To Release", async () => {
+  const { deps, movedBack } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [{ identifier: "ENG-4", stateName: "Ready To Release", stateType: "completed" }],
+      },
+    ],
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.deepEqual(movedBack, ["i-5"]);
+});
+
+test("reconcile leaves an after-release ticket alone once its parent is Done", async () => {
+  const { deps, movedBack } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [{ identifier: "ENG-4", stateName: "Done", stateType: "completed" }],
+      },
+    ],
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.equal(movedBack.length, 0);
+});
+
+test("claimOnce defers an after-release ticket with the waiting-for-release log and skips it", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", labels: ["after-release"], blockedBy: [blocker("ENG-9")] }),
+    ],
+    fetchMergedIdentifiers: async () => new Set(["ENG-9"]),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l.includes("ENG-9 (In Review, waiting for release)")));
+});
+
+test("claimOnce logs an after-release ticket with no blockers once per ticket", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", labels: ["after-release"] })],
+  });
+  const state = freshClaimState();
+  await claimOnce(state, deps);
+  await claimOnce(state, deps);
+  assert.equal(moved.length, 0);
+  assert.equal(logs.filter((l) => /after-release.*no blockers/.test(l)).length, 1);
 });
 
 test("reconcile leaves unblocked and no-blocker tickets alone", async () => {
@@ -1610,4 +1712,8 @@ test("resumeClaudeInPane returns false when the pane is gone", () => {
     throw new Error("can't find pane");
   };
   assert.equal(resumeClaudeInPane("%9", exec), false);
+});
+
+test("heartbeatRunning is false outside a heartbeat", () => {
+  assert.equal(heartbeatRunning(), false);
 });

@@ -10,6 +10,7 @@ import {
   applyOrder,
   BOARD_HEADER,
   boardTable,
+  columnAt,
   partitionTable,
   tableBoxes,
   tableFocusOrder,
@@ -28,69 +29,94 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
   ...over,
 });
 
+const col = (name: string): number => BOARD_HEADER.indexOf(name);
+
 test("every pane shares one header, in one order", () => {
   assert.deepEqual(BOARD_HEADER, [
-    "TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON",
+    "DUR", "STATUS", "TYPE", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON",
   ]);
   assert.deepEqual(boardTable([])[0], BOARD_HEADER);
 });
 
 test("boardTable renders #N in the PR column and the title", () => {
   const [, body] = boardTable([{ row: row({ pr: 481, title: "add column" }) }], 0);
-  assert.equal(body[4], "#481");
-  assert.equal(body[6], "add column");
+  assert.equal(body[col("PR")], "#481");
+  assert.equal(body[col("TITLE")], "add column");
 });
 
-test("boardTable prefixes a research title with a magenta type chip, plain titles untouched", () => {
-  const [, research, plain] = boardTable(
-    [{ row: row({ title: "Decide retention for exports" }) }, { row: row({ title: "add column" }) }],
+test("boardTable names the row type in the TYPE column and leaves the title bare", () => {
+  const [, research, release, plain, pr] = boardTable(
+    [
+      { row: row({ title: "Decide retention for exports" }) },
+      { row: row({ title: "Release checklist: flags" }) },
+      { row: row({ title: "add column" }) },
+      { row: row({ key: "pr:7117", label: "PR #7117", pr: 7117, title: "test extract coverage" }) },
+    ],
     0,
   );
-  assert.equal(research[6], "{magenta-fg}[research]{/magenta-fg} Decide retention for exports");
-  assert.equal(plain[6], "add column");
+  assert.equal(research[col("TYPE")], "{magenta-fg}research{/magenta-fg}");
+  assert.equal(research[col("TITLE")], "Decide retention for exports");
+  assert.equal(release[col("TYPE")], "{yellow-fg}release{/yellow-fg}");
+  assert.equal(plain[col("TYPE")], "code");
+  assert.equal(plain[col("TITLE")], "add column");
+  assert.equal(pr[col("TYPE")], "{cyan-fg}pr{/cyan-fg}");
+  assert.equal(pr[col("TITLE")], "test extract coverage");
 });
 
-test("boardTable prefixes a ticketless PR row with a cyan pr chip", () => {
-  const [, pr] = boardTable([{ row: row({ key: "pr:7117", label: "PR #7117", pr: 7117, title: "test extract coverage" }) }], 0);
-  assert.equal(pr[6], "{cyan-fg}[pr]{/cyan-fg} test extract coverage");
+test("boardTable greys the TYPE of a terminal row", () => {
+  const [, body] = boardTable([{ row: row({ terminal: true, title: "add column" }) }], 0);
+  assert.equal(body[col("TYPE")], "{grey-fg}code{/grey-fg}");
+});
+
+test("columnAt maps an x offset onto the listtable's columns, gaps included", () => {
+  // Each column is its max width followed by one separator space.
+  const maxes = [4, 6, 3];
+  assert.equal(columnAt(maxes, 0), 0);
+  assert.equal(columnAt(maxes, 3), 0);
+  assert.equal(columnAt(maxes, 4), 0);
+  assert.equal(columnAt(maxes, 5), 1);
+  assert.equal(columnAt(maxes, 11), 1);
+  assert.equal(columnAt(maxes, 12), 2);
+  assert.equal(columnAt(maxes, 99), -1);
+  assert.equal(columnAt(maxes, -1), -1);
 });
 
 test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
   const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
-  assert.equal(extra[5], "terraform-x");
+  assert.equal(extra[col("REPO")], "terraform-x");
   const codebase = boardTable([{ row: row({ pr: 5970 }) }], 0, "gemini")[1];
-  assert.equal(codebase[5], "gemini");
+  assert.equal(codebase[col("REPO")], "gemini");
   const none = boardTable([{ row: row({}) }], 0, "gemini")[1];
-  assert.equal(none[5], "");
+  assert.equal(none[col("REPO")], "");
 });
 
 test("boardTable leaves the PR cell blank when pr is absent", () => {
   const [, body] = boardTable([{ row: row({}) }], 0);
-  assert.equal(body[4], "");
+  assert.equal(body[col("PR")], "");
 });
 
 test("boardTable DUR uses now - startTs for an active row", () => {
   const [, body] = boardTable([{ row: row({ startTs: 0, ts: 0 }) }], 65_000);
-  assert.equal(body[1], "1m");
+  assert.equal(body[col("DUR")], "1m");
 });
 
 test("boardTable DUR is frozen at ts - startTs for a terminal row", () => {
   const [, body] = boardTable([{ row: row({ terminal: true, startTs: 0, ts: 60_000 }) }], 999_999);
-  assert.equal(body[1], "{grey-fg}1m{/grey-fg}");
+  assert.equal(body[col("DUR")], "{grey-fg}1m{/grey-fg}");
 });
 
 test("boardTable greys REPO only on a terminal row", () => {
   const live = boardTable([{ row: row({ pr: 1, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
-  assert.equal(live[5], "terraform-x");
+  assert.equal(live[col("REPO")], "terraform-x");
   const done = boardTable([{ row: row({ pr: 1, repo: "acme/terraform-x", terminal: true }) }], 0, "gemini")[1];
-  assert.equal(done[5], "{grey-fg}terraform-x{/grey-fg}");
+  assert.equal(done[col("REPO")], "{grey-fg}terraform-x{/grey-fg}");
 });
 
 test("boardTable marks a flagged row and leaves others blank", () => {
   const [, flagged] = boardTable([{ row: row({ flagged: true, flagReasons: ["manual"] }) }], 0);
-  assert.equal(flagged[7], "{red-fg}⚑{/red-fg}");
+  assert.equal(flagged[col("FLAG")], "{red-fg}⚑{/red-fg}");
   const [, plain] = boardTable([{ row: row({}) }], 0);
-  assert.equal(plain[7], "");
+  assert.equal(plain[col("FLAG")], "");
 });
 
 test("boardTable joins the flag reasons in the REASON cell", () => {
@@ -98,17 +124,34 @@ test("boardTable joins the flag reasons in the REASON cell", () => {
     [{ row: row({ flagged: true, flagReasons: ["input", "changes-requested"] }) }],
     0,
   );
-  assert.equal(body[8], "{red-fg}input,changes-requested{/red-fg}");
+  assert.equal(body[col("REASON")], "{red-fg}input,changes-requested{/red-fg}");
 });
 
 test("boardTable leaves the REASON cell blank when unflagged", () => {
   const [, body] = boardTable([{ row: row({}) }], 0);
-  assert.equal(body[8], "");
+  assert.equal(body[col("REASON")], "");
+});
+
+test("boardTable words a queue-conflict wait as PRs to land", () => {
+  const [, body] = boardTable([{ row: row({ waitingOn: [8062, 8081], waitingKind: "landing" }) }], 0);
+  assert.equal(body[col("REASON")], "waiting on #8062, #8081 to land");
+});
+
+test("boardTable words an overlap hold as held behind the PR (same files)", () => {
+  const [, body] = boardTable([{ row: row({ waitingOn: [8090], waitingKind: "overlap" }) }], 0);
+  assert.equal(body[col("REASON")], "held behind #8090 (same files)");
+});
+
+test("boardTable adds the holder's note to the wait text", () => {
+  const [, held] = boardTable([{ row: row({ waitingOn: [8090], waitingKind: "overlap", waitingNote: "needs approval" }) }], 0);
+  assert.equal(held[col("REASON")], "held behind #8090 (same files, needs approval)");
+  const [, landing] = boardTable([{ row: row({ waitingOn: [8062], waitingKind: "landing", waitingNote: "needs approval" }) }], 0);
+  assert.equal(landing[col("REASON")], "waiting on #8062 to land (needs approval)");
 });
 
 test("boardTable dims a terminal row's status", () => {
   const [, body] = boardTable([{ row: row({ status: "merged", terminal: true }) }], 0);
-  assert.equal(body[2], "{grey-fg}merged{/grey-fg}");
+  assert.equal(body[col("STATUS")], "{grey-fg}merged{/grey-fg}");
 });
 
 const STATUS_COLORS: [string, string][] = [
@@ -133,13 +176,13 @@ const STATUS_COLORS: [string, string][] = [
 for (const [status, color] of STATUS_COLORS) {
   test(`boardTable colors the "${status}" status ${color}`, () => {
     const [, body] = boardTable([{ row: row({ status }) }], 0);
-    assert.equal(body[2], `{${color}-fg}${status}{/${color}-fg}`);
+    assert.equal(body[col("STATUS")], `{${color}-fg}${status}{/${color}-fg}`);
   });
 }
 
 test("boardTable leaves an unmapped status uncolored", () => {
   const [, body] = boardTable([{ row: row({ status: "something new" }) }], 0);
-  assert.equal(body[2], "something new");
+  assert.equal(body[col("STATUS")], "something new");
 });
 
 test("boardTable has no column past REASON", () => {

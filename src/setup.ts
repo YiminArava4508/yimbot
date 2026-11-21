@@ -69,6 +69,7 @@ export {
   configReferencesNavigator,
   detectPackageManager,
   ensureHostLinks,
+  fixCommandFor,
   ghAuthenticated,
   ghHasScopes,
   hasClaudeAuth,
@@ -501,6 +502,16 @@ export async function runSetup(): Promise<YimbotConfig> {
       path: join(homedir(), "create-subticket.sh"),
       label: "~/create-subticket.sh",
       role: "creates a Linear subticket per split slice (required for split PRs)",
+    },
+    {
+      path: join(homedir(), "flag-archive-check.sh"),
+      label: "~/flag-archive-check.sh",
+      role: "checks a flag has no code references before archiving it in prod (required for after-release flag archives)",
+    },
+    {
+      path: join(homedir(), "needs-decision.sh"),
+      label: "~/needs-decision.sh",
+      role: "raises needs-decision on the board with a reason (required for after-release flag archives)",
     },
     {
       path: join(homedir(), "refine-session.sh"),

@@ -9,11 +9,25 @@ import {
   claudeArgs,
   ensureContextScaffold,
   makeSessionRegistry,
+  reviewSessionName,
+  reviewTmuxArgv,
   seedPrompt,
   sessionCwd,
   spawnPty,
+  tmuxClientEnv,
   type PtyLike,
 } from "./claude-sessions.ts";
+
+function fakeTmux(sessions: string[] = []): { listSessions(): string[]; killSession(name: string): void; killed: string[] } {
+  const killed: string[] = [];
+  return {
+    killed,
+    listSessions: () => sessions,
+    killSession: (name) => {
+      killed.push(name);
+    },
+  };
+}
 
 function fakePty(): PtyLike & { killed: boolean; emitData(d: string): void; emitExit(): void } {
   let dataCb: ((d: string) => void) | null = null;
@@ -67,6 +81,108 @@ test("ensureContextScaffold creates a self-ignoring .yimbot dir with the session
   assert.ok(existsSync(join(cwd, ".yimbot")));
 });
 
+test("reviewSessionName is yimbot-review-<pr>", () => {
+  assert.equal(reviewSessionName(42), "yimbot-review-42");
+});
+
+test("reviewTmuxArgv attaches or creates the PR session", () => {
+  assert.deepEqual(reviewTmuxArgv(42, "/wt"), [
+    "new-session",
+    "-A",
+    "-s",
+    "yimbot-review-42",
+    "-c",
+    sessionCwd("/wt"),
+    "claude",
+    ...claudeArgs(42, "/wt"),
+    ";",
+    "set-option",
+    "-t",
+    "yimbot-review-42",
+    "status",
+    "off",
+    ";",
+    "set-option",
+    "-t",
+    "yimbot-review-42",
+    "key-table",
+    "yimbot-review",
+    ";",
+    "set-option",
+    "-t",
+    "yimbot-review-42",
+    "prefix",
+    "None",
+    ";",
+    "set-option",
+    "-t",
+    "yimbot-review-42",
+    "prefix2",
+    "None",
+  ]);
+});
+
+test("getOrSpawn spawns tmux client args for the PR", () => {
+  let spawnedArgs: string[] = [];
+  const reg = makeSessionRegistry(
+    (_cwd, args) => {
+      spawnedArgs = args;
+      return fakePty();
+    },
+    () => {},
+    fakeTmux(),
+  );
+  reg.getOrSpawn(7, "/wt");
+  assert.deepEqual(spawnedArgs, reviewTmuxArgv(7, "/wt"));
+});
+
+test("getOrSpawn after a fresh registry reattaches with the same argv", () => {
+  const argvs: string[][] = [];
+  const spawn = (_cwd: string, args: string[]) => {
+    argvs.push(args);
+    return fakePty();
+  };
+  makeSessionRegistry(spawn, () => {}, fakeTmux()).getOrSpawn(9, "/wt");
+  makeSessionRegistry(spawn, () => {}, fakeTmux()).getOrSpawn(9, "/wt");
+  assert.equal(argvs.length, 2);
+  assert.deepEqual(argvs[0], argvs[1]);
+});
+
+test("detachAll kills client ptys and no tmux sessions", () => {
+  const spawned: ReturnType<typeof fakePty>[] = [];
+  const tmux = fakeTmux(["yimbot-review-1"]);
+  const reg = makeSessionRegistry(
+    () => {
+      const p = fakePty();
+      spawned.push(p);
+      return p;
+    },
+    () => {},
+    tmux,
+  );
+  reg.getOrSpawn(1, "/tmp/x");
+  reg.detachAll();
+  assert.equal(spawned[0].killed, true);
+  assert.deepEqual(tmux.killed, []);
+  reg.getOrSpawn(1, "/tmp/x");
+  assert.equal(spawned.length, 2);
+});
+
+test("killAll kills every yimbot-review session, including ones this process never spawned", () => {
+  const tmux = fakeTmux(["yimbot-review-7", "eng-1-x"]);
+  const reg = makeSessionRegistry(() => fakePty(), () => {}, tmux);
+  reg.killAll();
+  assert.deepEqual(tmux.killed, ["yimbot-review-7"]);
+});
+
+test("spawn env drops TMUX", () => {
+  const env = tmuxClientEnv({ TMUX: "/tmp/sock,1,0", TMUX_PANE: "%3", PATH: "/bin", UNSET: undefined });
+  assert.equal("TMUX" in env, false);
+  assert.equal("TMUX_PANE" in env, false);
+  assert.equal(env.PATH, "/bin");
+  assert.equal("UNSET" in env, false);
+});
+
 test("getOrSpawn spawns the pty in the session cwd but records the worktree", () => {
   let spawnedCwd = "";
   const reg = makeSessionRegistry(
@@ -75,6 +191,7 @@ test("getOrSpawn spawns the pty in the session cwd but records the worktree", ()
       return fakePty();
     },
     () => {},
+    fakeTmux(),
   );
   const s = reg.getOrSpawn(7, "/wt");
   assert.equal(spawnedCwd, sessionCwd("/wt"));
@@ -90,6 +207,7 @@ test("getOrSpawn reuses a live session and respawns after exit", () => {
       return p;
     },
     () => {},
+    fakeTmux(),
   );
   const a = reg.getOrSpawn(1, "/tmp/x");
   assert.equal(reg.getOrSpawn(1, "/tmp/x"), a);
@@ -111,6 +229,7 @@ test("pty output lands in the session's terminal buffer", async () => {
       return p;
     },
     () => {},
+    fakeTmux(),
   );
   const s = reg.getOrSpawn(3, "/tmp/z");
   spawned[0].emitData("hello");
@@ -127,6 +246,7 @@ test("killAll kills live sessions and forgets them", () => {
       return p;
     },
     () => {},
+    fakeTmux(),
   );
   reg.getOrSpawn(1, "/tmp/x");
   reg.getOrSpawn(2, "/tmp/y");

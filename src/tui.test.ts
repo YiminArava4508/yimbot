@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
-import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent } from "./tui.ts";
+import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleOpenPr, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent, updateChip, bootNotice, NOTICE_ERROR_TTL_MS } from "./tui.ts";
 import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -372,6 +372,24 @@ test("statusContent shows an unexpired notice and drops it after its ttl", () =>
   assert.match(statusContent("supervised", notice, 9_999, []), /adding ready label to #481/);
   assert.doesNotMatch(statusContent("supervised", notice, 10_000, []), /adding ready label/);
   assert.doesNotMatch(statusContent("supervised", null, 0, []), /adding ready label/);
+});
+
+test("handleOpenPr opens the row's PR in its repo and stays quiet on success", async () => {
+  const seen: [number, string | undefined][] = [];
+  const notices: string[] = [];
+  await handleOpenPr(row({ pr: 12, repo: "acme/tf" }), (pr, repo) => {
+    seen.push([pr, repo]);
+    return Promise.resolve();
+  }, (text) => notices.push(text));
+  assert.deepEqual(seen, [[12, "acme/tf"]]);
+  assert.deepEqual(notices, []);
+});
+
+test("handleOpenPr surfaces a failure as a notice", async () => {
+  const notices: string[] = [];
+  await handleOpenPr(row({ pr: 12 }), () => Promise.reject(new Error("gh missing")), (text) => notices.push(text));
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /opening #12 failed: gh missing/);
 });
 
 test("handleReadyPress reports the same outcome the review overlay does", async () => {
@@ -1086,4 +1104,59 @@ test("readyRefusal refuses r on a manual-merge row and defers to prActionRefusal
   assert.match(readyRefusal({ status: "ready: merge manually" }) ?? "", /merge it by hand/);
   assert.equal(readyRefusal({ status: "ready to merge" }), undefined);
   assert.equal(readyRefusal({ status: "tracker ticket" }), prActionRefusal({ status: "tracker ticket" }));
+});
+
+test("updateChip renders nothing for null and current, a chip for ready, red text for blocked", () => {
+  assert.equal(updateChip(null), "");
+  assert.equal(updateChip({ kind: "current" }), "");
+  assert.equal(updateChip({ kind: "ready", target: "abc" }), "{black-fg}{cyan-bg} update ready {/cyan-bg}{/black-fg}");
+  assert.equal(updateChip({ kind: "blocked", reason: "dirty tree" }), "{red-fg}update blocked: dirty tree{/red-fg}");
+});
+
+test("updateChip asks for a manual restart when nothing will relaunch the board", () => {
+  assert.equal(
+    updateChip({ kind: "ready", target: "abc" }, true),
+    "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg}",
+  );
+  assert.equal(updateChip({ kind: "blocked", reason: "dirty tree" }, true), "{red-fg}update blocked: dirty tree{/red-fg}");
+});
+
+test("statusContent passes the manual restart flag to the update chip", () => {
+  const bar = statusContent("supervised", null, 0, [], { kind: "ready", target: "abc" }, true);
+  assert.ok(bar.includes("update ready (restart to apply)"));
+});
+
+test("statusContent shows the update chip before the mode chip", () => {
+  const bar = statusContent("supervised", null, 0, [], { kind: "ready", target: "abc" });
+  assert.ok(bar.indexOf("update ready") >= 0);
+  assert.ok(bar.indexOf("update ready") < bar.indexOf(modeContent("supervised")));
+});
+
+test("bootNotice reports an update with the heartbeat ttl", () => {
+  const n = bootNotice({ YIMBOT_UPDATED_FROM: "1111111aaaa", HEARTBEAT_INTERVAL_MINUTES: "2" }, "2222222bbbb", 1_000);
+  assert.equal(n?.text, "updated 1111111 → 2222222");
+  assert.equal(n?.until, 121_000);
+});
+
+test("bootNotice falls back to the poll interval then 3 minutes", () => {
+  assert.equal(bootNotice({ YIMBOT_UPDATED_FROM: "1111111", POLL_INTERVAL_MINUTES: "5" }, "2222222", 0)?.until, 300_000);
+  assert.equal(bootNotice({ YIMBOT_UPDATED_FROM: "1111111" }, "2222222", 0)?.until, 180_000);
+});
+
+test("bootNotice reports a rollback as an error", () => {
+  const n = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123" }, "2222222", 1_000);
+  assert.equal(n?.text, "update rolled back: deadbee crashed on boot");
+  assert.equal(n?.until, 1_000 + NOTICE_ERROR_TTL_MS);
+});
+
+test("bootNotice is null when head is unchanged or env is empty", () => {
+  assert.equal(bootNotice({ YIMBOT_UPDATED_FROM: "2222222" }, "2222222"), null);
+  assert.equal(bootNotice({}, "2222222"), null);
+});
+
+test("bootNotice prefers the rollback notice when a stale UPDATED_FROM is also set", () => {
+  const same = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123", YIMBOT_UPDATED_FROM: "2222222" }, "2222222", 0);
+  assert.equal(same?.text, "update rolled back: deadbee crashed on boot");
+  const diff = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123", YIMBOT_UPDATED_FROM: "1111111" }, "2222222", 0);
+  assert.equal(diff?.until, NOTICE_ERROR_TTL_MS);
 });

@@ -6,6 +6,7 @@ import { envOr } from "./env.ts";
 import { bus, filterToLiveRows, isFlagged, isParentRow, readEvents, reduceRows, statusFor, type BoardRow, type YimbotEvent } from "./events.ts";
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
+import type { UpdateState } from "./self-update.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
 import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel } from "./board-format.ts";
@@ -462,8 +463,39 @@ export function reachWarnings(down: Service[]): string {
   return down.map((s) => `{red-fg}⚠ ${s}{/red-fg} `).join("");
 }
 
-export function statusContent(mode: Mode, notice: Notice | null, now: number, down: Service[]): string {
-  const base = `${reachWarnings(down)}${modeContent(mode)}`;
+export function updateChip(state: UpdateState | null, manualRestart = false): string {
+  if (!state || state.kind === "current") return "";
+  if (state.kind === "ready" && manualRestart) {
+    return "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg}";
+  }
+  if (state.kind === "ready") return "{black-fg}{cyan-bg} update ready {/cyan-bg}{/black-fg}";
+  return `{red-fg}update blocked: ${state.reason}{/red-fg}`;
+}
+
+export function bootNotice(env: NodeJS.ProcessEnv, head: string, now: number = Date.now()): Notice | null {
+  const rolledBack = env.YIMBOT_ROLLED_BACK;
+  if (rolledBack) {
+    return { text: `update rolled back: ${rolledBack.slice(0, 7)} crashed on boot`, until: now + NOTICE_ERROR_TTL_MS };
+  }
+  const from = env.YIMBOT_UPDATED_FROM;
+  if (from && from !== head) {
+    const minutes = Number(env.HEARTBEAT_INTERVAL_MINUTES ?? env.POLL_INTERVAL_MINUTES ?? "3");
+    return { text: `updated ${from.slice(0, 7)} → ${head.slice(0, 7)}`, until: now + minutes * 60_000 };
+  }
+  return null;
+}
+
+export type TuiHandle = { isBusy(): boolean; teardown(): void };
+
+export function statusContent(
+  mode: Mode,
+  notice: Notice | null,
+  now: number,
+  down: Service[],
+  update: UpdateState | null = null,
+  manualRestart = false,
+): string {
+  const base = `${reachWarnings(down)}${updateChip(update, manualRestart)}${modeContent(mode)}`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -484,6 +516,20 @@ export async function handleReadyPress(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     setNotice(`{red-fg}queueing #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
+  }
+}
+
+export async function handleOpenPr(
+  row: BoardRow,
+  openPr: (pr: number, repo?: string) => Promise<void>,
+  setNotice: (text: string, ttlMs: number) => void,
+): Promise<void> {
+  if (row.pr == null) return;
+  try {
+    await openPr(row.pr, row.repo);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setNotice(`{red-fg}opening #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
   }
 }
 
@@ -622,6 +668,10 @@ export function setupApplyOutcome(result: ApplyResult): { text: string; isError:
 
 export function runTui(opts: {
   onQuit: () => void;
+  updateState?: () => UpdateState | null;
+  // True when no wrapper will relaunch the board, so a ready update waits for a manual restart.
+  updateManualRestart?: boolean;
+  bootNotice?: Notice | null;
   liveKeys: () => Set<string>;
   // Keys of the instance's open PRs: a PR-backed row stays on the board while
   // its PR is open even with no worktree behind it. See filterToLiveRows.
@@ -637,6 +687,8 @@ export function runTui(opts: {
   heldMergedKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
+  // Opens a PR on GitHub in the browser; the PR cell on the board is clickable.
+  onOpenPr: (pr: number, repo?: string) => Promise<void>;
   onAddReadyLabel: (pr: number, key: string, label: string, repo?: string) => Promise<void>;
   mode: () => Mode;
   onToggleMode: () => Mode;
@@ -649,7 +701,7 @@ export function runTui(opts: {
   // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
   // headless prompt runner (same claude -p shape as the review grouping).
   orderDeps: OrderSourceDeps;
-}): void {
+}): TuiHandle {
   const term = screenTerm(process.env.TERM);
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true, ...(term ? { term } : {}) });
 
@@ -712,7 +764,7 @@ export function runTui(opts: {
   // is confirmed down. The panel itself closes on esc/w regardless of draft
   // state, so this has to outlive it to keep showing on the board.
   let daemonStopped = false;
-  let notice: Notice | null = null;
+  let notice: Notice | null = opts.bootNotice ?? null;
 
   const focusedWidget = (): any => {
     if (focusedId === "parents") return parentsPane;
@@ -738,6 +790,7 @@ export function runTui(opts: {
     parent: screen,
     onFocus: (id) => focusChange(id),
     onOpen: (r) => opts.onOpenSession(r.key, r.label),
+    onOpenPr: (r) => void handleOpenPr(r, opts.onOpenPr, setNotice),
   });
 
   const makeColumn = (id: string): CardColumn => {
@@ -861,7 +914,14 @@ export function runTui(opts: {
     status.setContent(
       daemonStopped
         ? "daemon stopped"
-        : statusContent(opts.mode(), notice, Date.now(), unreachable()),
+        : statusContent(
+            opts.mode(),
+            notice,
+            Date.now(),
+            unreachable(),
+            opts.updateState?.() ?? null,
+            opts.updateManualRestart ?? false,
+          ),
     );
     screen.render();
   };
@@ -898,12 +958,15 @@ export function runTui(opts: {
   // instead of leaving stale rows painted until the next tick.
   screen.on("resize", render);
 
-  const quit = () => {
+  const teardown = () => {
     closed = true;
     clearInterval(refreshTimer);
     clearInterval(boardTimer);
     bus.off("event", onEvent);
     screen.destroy();
+  };
+  const quit = () => {
+    teardown();
     opts.onQuit();
   };
   let settingsOpen = false;
@@ -1090,4 +1153,5 @@ export function runTui(opts: {
   });
 
   render();
+  return { isBusy: () => isOverlayOpen() || setupApplying, teardown };
 }

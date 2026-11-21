@@ -33,3 +33,10 @@ test("titleCell puts the pr chip ahead of a row keyed by its PR, over any title 
     "{cyan-fg}[pr]{/cyan-fg} Research the cache",
   );
 });
+
+test("titleCell puts the release chip ahead of a release title", () => {
+  assert.equal(
+    titleCell({ key: "ENG-1", title: "Release checklist: flags" }, ["research"]),
+    "{yellow-fg}[release]{/yellow-fg} Release checklist: flags",
+  );
+});

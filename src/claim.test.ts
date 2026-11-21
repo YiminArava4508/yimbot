@@ -32,6 +32,8 @@ const blocker = (identifier: string, stateName = "In Review") => ({
 const opts = (merged: Set<string> | null = null, requireEstimate = false) => ({
   riskLabels,
   rejectLabel: "reject",
+  afterReleaseLabel: "after-release",
+  doneStateName: "Done",
   merged,
   clearedStates: clearedStateNames("Merged", "Deployed To Nonprod"),
   labelFilter: null,
@@ -230,4 +232,43 @@ test("selectNextClaim skips a ticket carrying the reject label in any casing", (
 test("selectNextClaim still skips reject when RISK_LABELS is overridden", () => {
   const picked = selectNextClaim([todo({ id: "a", labels: ["reject"] })], { ...opts(), riskLabels: [] });
   assert.equal(picked, null);
+});
+
+test("selectNextClaim holds an after-release ticket while its parent is In Review or has a merged PR", () => {
+  const t = todo({ id: "ar", labels: ["after-release"], blockedBy: [blocker("ENG-9", "Merged")] });
+  assert.equal(selectNextClaim([t], opts()), null);
+  const t2 = todo({ id: "ar", labels: ["After-Release"], blockedBy: [blocker("ENG-9")] });
+  assert.equal(selectNextClaim([t2], opts(new Set(["ENG-9"]))), null);
+});
+
+test("selectNextClaim keeps holding an after-release ticket on a Ready To Release parent", () => {
+  const t = todo({
+    id: "ar",
+    labels: ["after-release"],
+    blockedBy: [{ identifier: "ENG-9", stateName: "Ready To Release", stateType: "completed" }],
+  });
+  assert.equal(selectNextClaim([t], opts()), null);
+});
+
+test("selectNextClaim releases an after-release ticket once the parent is Done", () => {
+  const t = todo({
+    id: "ar",
+    labels: ["after-release"],
+    blockedBy: [{ identifier: "ENG-9", stateName: "Done", stateType: "completed" }],
+  });
+  assert.equal(selectNextClaim([t], opts())?.id, "ar");
+});
+
+test("selectNextClaim enforces the after-release gate even when merged PRs are unavailable", () => {
+  const t = todo({ id: "ar", labels: ["after-release"], blockedBy: [blocker("ENG-9", "Merged")] });
+  assert.equal(selectNextClaim([t], opts(null)), null);
+});
+
+test("selectNextClaim never claims an after-release ticket with no blockers", () => {
+  assert.equal(selectNextClaim([todo({ id: "ar", labels: ["after-release"] })], opts()), null);
+});
+
+test("selectNextClaim still claims an unlabeled ticket whose parent is merged", () => {
+  const t = todo({ id: "p", blockedBy: [blocker("ENG-9", "Merged")] });
+  assert.equal(selectNextClaim([t], opts())?.id, "p");
 });

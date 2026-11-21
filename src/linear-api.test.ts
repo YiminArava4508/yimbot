@@ -8,6 +8,7 @@ import {
   createComment,
   createSubIssue,
   fetchIssueEstimate,
+  fetchCycleParents,
   fetchIssueSplitInfo,
   fetchUnestimatedIssues,
   fetchUsers,
@@ -770,10 +771,17 @@ test("fetchTicket maps the issue, its parent and its comments oldest first", asy
             { body: "first", createdAt: "2026-09-01T00:00:00.000Z", user: null },
           ],
         },
+        inverseRelations: {
+          nodes: [
+            { type: "blocks", issue: { identifier: "ENG-41", state: { name: "Done", type: "completed" } } },
+            { type: "related", issue: { identifier: "ENG-9", state: { name: "Todo", type: "unstarted" } } },
+          ],
+        },
       },
     },
   ]);
   const t = await fetchTicket("key", "ENG-42", fetchImpl);
+  assert.deepEqual(t.blockedBy, [{ identifier: "ENG-41", stateName: "Done" }]);
   assert.equal(t.id, "uuid-1");
   assert.equal(t.teamId, "team-1");
   assert.equal(t.parent, "ENG-40");
@@ -1063,4 +1071,41 @@ test("countAssignedInState leaves out issues carrying the reject label", async (
   };
   assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body), "reject"), 1);
   assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body)), 2);
+});
+
+test("fetchCycleParents asks for Remove tickets, sub-issues included, with all their children", async () => {
+  let query = "";
+  const fetchImpl = (async (_u: string, init: { body: string }) => {
+    query = (JSON.parse(init.body) as { query: string }).query;
+    const body = { data: { issues: { nodes: [] } } };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+  }) as unknown as typeof fetch;
+  await fetchCycleParents("k", "team-1", fetchImpl);
+  assert.doesNotMatch(query, /parent:/);
+  assert.match(query, /startsWith: "Remove"/);
+  assert.match(query, /children\(first: 250\)/);
+});
+
+test("fetchCycleParents lists active-cycle issues with their children's label names", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            identifier: "ENG-1",
+            title: "Remove `x` flag (code, then prod)",
+            children: { nodes: [{ labels: { nodes: [{ name: "after-release" }] } }] },
+          },
+        ],
+      },
+    },
+  });
+  const parents = await fetchCycleParents("k", "team-1", fetchImpl);
+  assert.deepEqual(parents, [
+    {
+      identifier: "ENG-1",
+      title: "Remove `x` flag (code, then prod)",
+      children: [{ labels: ["after-release"] }],
+    },
+  ]);
 });

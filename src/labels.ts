@@ -39,3 +39,7 @@ export function hasLabel(labels: string[], label: string): boolean {
 export function dropRejected<T extends { labels: string[] }>(items: T[], rejectLabel: string): T[] {
   return items.filter((item) => !hasLabel(item.labels, rejectLabel));
 }
+
+export function parseAfterReleaseLabel(raw: string | undefined): string {
+  return raw?.trim() || "after-release";
+}

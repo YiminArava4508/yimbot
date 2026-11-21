@@ -7,6 +7,10 @@ export type SelectOptions = {
   riskLabels: string[];
   // Label (any casing) a rejected ticket carries; such tickets are never claimed.
   rejectLabel: string;
+  // Label (any casing) that makes a ticket wait for its blockers to be completed, not merely merged.
+  afterReleaseLabel: string;
+  // State an after-release ticket's blockers must be in (DONE_STATE_NAME).
+  doneStateName: string;
   // Merged ticket identifiers. When non-null, todos with a blocker whose work
   // has not landed are dropped; null skips the blocked filter (gh unavailable).
   merged: Set<string> | null;
@@ -36,6 +40,19 @@ function priorityRank(priority: number): number {
   return priority === 0 ? Number.POSITIVE_INFINITY : priority;
 }
 
+// An after-release ticket is gated on blocker state alone, so it is checked even
+// when the merged-PR list is unavailable.
+function isHeldByBlockers(t: CycleTodoIssue, opts: SelectOptions): boolean {
+  const afterRelease = hasLabel(t.labels, opts.afterReleaseLabel);
+  if (!afterRelease && opts.merged === null) return false;
+  return isBlocked(
+    t.blockedBy,
+    opts.merged ?? new Set(),
+    opts.clearedStates,
+    afterRelease ? opts.doneStateName : null,
+  );
+}
+
 // Rank the Todo tickets that may be claimed: drop risk-labeled tickets, then
 // order by priority (Urgent first, None last), breaking ties on the manual
 // cycle order.
@@ -46,7 +63,7 @@ export function selectClaims(todos: CycleTodoIssue[], opts: SelectOptions): Cycl
       labelFilterAllows(opts.labelFilter, t.labels) &&
       !t.labels.some((label) => risky.has(label.toLowerCase())) &&
       !hasLabel(t.labels, opts.rejectLabel) &&
-      !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged, opts.clearedStates)) &&
+      !isHeldByBlockers(t, opts) &&
       t.estimate !== 0 &&
       !(opts.requireEstimate && t.estimate === null) &&
       !(opts.maxEstimate !== null && t.estimate !== null && t.estimate > opts.maxEstimate),

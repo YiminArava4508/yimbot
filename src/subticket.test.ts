@@ -256,3 +256,127 @@ test("createSliceSubticket --claimable throws when no state matches the todo nam
     /no state named "Todo"/,
   );
 });
+
+test("createSliceSubticket --after-release labels, relates to the parent, and implies claimable and no zeroing", async () => {
+  const { fetchImpl, calls } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: {
+            id: "uuid-p",
+            team: { id: "team-1", activeCycle: { id: "cyc-1" } },
+            assignee: null,
+            labels: { nodes: [{ id: "lab-1" }] },
+          },
+        },
+      },
+    },
+    {
+      match: /TeamStates/,
+      body: { data: { team: { states: { nodes: [{ id: "st-todo", name: "Todo", type: "unstarted" }] } } } },
+    },
+    {
+      match: /TeamLabelIds/,
+      body: { data: { team: { labels: { nodes: [{ id: "lab-ar", name: "after-release" }] } } } },
+    },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+    { match: /issueRelationCreate/, body: { data: { issueRelationCreate: { success: true } } } },
+  ]);
+  const result = await createSliceSubticket("k", "ENG-42", "slice", { afterRelease: true }, fetchImpl);
+
+  assert.deepEqual(result, { identifier: "ENG-43", branch: "eng-43-slice" });
+  const create = calls.find((c) => /issueCreate/.test(c.query as string));
+  assert.deepEqual(create?.variables, {
+    input: {
+      teamId: "team-1",
+      parentId: "uuid-p",
+      title: "slice",
+      stateId: "st-todo",
+      cycleId: "cyc-1",
+      labelIds: ["lab-1", "lab-ar"],
+    },
+  });
+  const relation = calls.find((c) => /issueRelationCreate/.test(c.query as string));
+  assert.deepEqual(relation?.variables, { issueId: "uuid-p", relatedIssueId: "uuid-c" });
+  assert.equal(calls.filter((c) => /issueUpdate/.test(c.query as string)).length, 0);
+});
+
+test("createSliceSubticket --after-release uses the configured label name", async () => {
+  const { fetchImpl, calls } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null, labels: { nodes: [] } },
+        },
+      },
+    },
+    {
+      match: /TeamStates/,
+      body: { data: { team: { states: { nodes: [{ id: "st-todo", name: "Todo", type: "unstarted" }] } } } },
+    },
+    { match: /TeamLabelIds/, body: { data: { team: { labels: { nodes: [{ id: "lab-x", name: "post-ship" }] } } } } },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+    { match: /issueRelationCreate/, body: { data: { issueRelationCreate: { success: true } } } },
+  ]);
+  await createSliceSubticket("k", "ENG-42", "slice", { afterRelease: true, afterReleaseLabel: "Post-Ship" }, fetchImpl);
+  const create = calls.find((c) => /issueCreate/.test(c.query as string));
+  assert.deepEqual((create?.variables as { input: { labelIds: string[] } }).input.labelIds, ["lab-x"]);
+});
+
+test("createSliceSubticket passes a description through to the sub-issue", async () => {
+  const { fetchImpl, calls } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null, labels: { nodes: [] } },
+        },
+      },
+    },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+    { match: /issueUpdate/, body: { data: { issueUpdate: { success: true } } } },
+  ]);
+  await createSliceSubticket("k", "ENG-42", "slice", { description: "do the thing" }, fetchImpl);
+  const create = calls.find((c) => /issueCreate/.test(c.query as string));
+  assert.deepEqual(create?.variables, {
+    input: { teamId: "team-1", parentId: "uuid-p", title: "slice", description: "do the thing" },
+  });
+});
+
+test("createSliceSubticket --after-release names the orphan when the relation write fails", async () => {
+  const { fetchImpl } = routingFetch([
+    {
+      match: /IssueSplitInfo/,
+      body: {
+        data: {
+          issue: { id: "uuid-p", team: { id: "team-1", activeCycle: null }, assignee: null, labels: { nodes: [] } },
+        },
+      },
+    },
+    {
+      match: /TeamStates/,
+      body: { data: { team: { states: { nodes: [{ id: "st-todo", name: "Todo", type: "unstarted" }] } } } },
+    },
+    { match: /TeamLabelIds/, body: { data: { team: { labels: { nodes: [{ id: "lab-ar", name: "after-release" }] } } } } },
+    {
+      match: /issueCreate/,
+      body: { data: { issueCreate: { success: true, issue: { id: "uuid-c", identifier: "ENG-43" } } } },
+    },
+    { match: /issueRelationCreate/, body: { data: { issueRelationCreate: { success: false } } } },
+  ]);
+  await assert.rejects(
+    createSliceSubticket("k", "ENG-42", "slice", { afterRelease: true }, fetchImpl),
+    /ENG-43.*relate-tickets\.sh ENG-42 ENG-43/s,
+  );
+});

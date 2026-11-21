@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "./test-temp.ts";
-import { runHeadless, withoutApiKey } from "./headless.ts";
+import { headlessInFlight, runHeadless, withoutApiKey } from "./headless.ts";
 import { agentFromEnv, headlessCommand } from "./agent.ts";
 
 // A stand-in `claude` on PATH, so a test can see which channel the prompt
@@ -83,4 +83,33 @@ test("runHeadless names codex in its failure and timeout errors", async () => {
   await assert.rejects(runHeadless("", process.cwd(), 5000, "codex")("hi"), /codex exited 2: no auth/);
   onPath("sleep 5", "codex");
   await assert.rejects(runHeadless("", process.cwd(), 50, "codex")("hi"), /codex timed out after 50ms/);
+});
+
+test("headlessInFlight counts a running call and drops on close", async () => {
+  onPath("sleep 0.2; cat >/dev/null");
+  assert.equal(headlessInFlight(), 0);
+  const pending = runHeadless("", process.cwd())("hi");
+  assert.equal(headlessInFlight(), 1);
+  await pending;
+  assert.equal(headlessInFlight(), 0);
+});
+
+test("headlessInFlight drops after a rejected call and after a timeout", async () => {
+  onPath("exit 3");
+  await assert.rejects(runHeadless("", process.cwd())("hi"));
+  assert.equal(headlessInFlight(), 0);
+  onPath("sleep 5");
+  await assert.rejects(runHeadless("", process.cwd(), 50)("hi"), /timed out/);
+  assert.equal(headlessInFlight(), 0);
+});
+
+test("headlessInFlight drops when the binary cannot spawn", async () => {
+  const saved = process.env.PATH;
+  process.env.PATH = "/nonexistent";
+  try {
+    await assert.rejects(runHeadless("", process.cwd())("hi"));
+    assert.equal(headlessInFlight(), 0);
+  } finally {
+    process.env.PATH = saved;
+  }
 });

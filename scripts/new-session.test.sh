@@ -24,6 +24,7 @@ assert_eq "$(unset DEFAULT_BRANCH; default_branch_of /no/such/repo)" "main" "fal
 # bypass-mode confirmation screen blocks the unattended start.
 assert_eq "$(build_claude_cmd | grep -c -- '--permission-mode auto')" "1" "runs in auto mode"
 assert_eq "$(build_claude_cmd | grep -c -- '--dangerously-skip-permissions')" "0" "does not bypass permissions"
+assert_eq "$(build_claude_cmd | grep -c 'MREIS_WORKTREE_LOCK_DISABLE=1')" "1" "disables the worktree lock"
 assert_eq "$(PLAN_MODEL=opus build_claude_cmd | grep -c -- '--model opus')" "1" "honors PLAN_MODEL"
 assert_eq "$(IMPL_MODEL=sonnet build_claude_cmd | grep -c 'IMPL_MODEL=sonnet')" "1" "passes IMPL_MODEL through"
 assert_eq "$(SPLIT_TICKETS=false build_claude_cmd | grep -c 'SPLIT_TICKETS=false')" "1" "passes SPLIT_TICKETS through"
@@ -91,6 +92,42 @@ rm -rf "$SK_TMP" "$SK_EMPTY"
 # The hook emitter helpers survive sourcing.
 assert_defined event_key_from_branch
 assert_defined emit_hook_event
+assert_defined emit_blocked_waiting
+
+# emit_blocked_waiting writes one blocked_waiting event with the PR numbers.
+BW_DIR=$(mktemp -d)
+git -C "$BW_DIR" init -q -b eng-9-thing
+bw_line=$( cd "$BW_DIR" && EVENTS_LOG="$BW_DIR/events.jsonl" emit_blocked_waiting 8090 8062 8081 && cat "$BW_DIR/events.jsonl" )
+case "$bw_line" in
+  *'"kind":"blocked_waiting"'*'"pr":8090'*'"waitingOn":[8062,8081]'*) echo "ok: blocked_waiting event" ;;
+  *) echo "FAIL: blocked_waiting event: $bw_line"; exit 1 ;;
+esac
+rm -rf "$BW_DIR"
+assert_defined deny_ask_user_question
+
+# deny_ask_user_question: denies only while the mode file next to $EVENTS_LOG
+# reads autonomous; every other state lets the tool through with no output.
+ASK_DIR=$(mktemp -d)
+ask() { EVENTS_LOG="$ASK_DIR/events.jsonl" deny_ask_user_question; }
+assert_eq "$(ask)" "" "no mode file allows AskUserQuestion"
+echo supervised > "$ASK_DIR/mode"
+assert_eq "$(ask)" "" "supervised allows AskUserQuestion"
+echo autonomous > "$ASK_DIR/mode"
+ask_out=$(ask)
+assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.permissionDecision')" "deny" "autonomous denies AskUserQuestion"
+assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.hookEventName')" "PreToolUse" "deny names the hook event"
+assert_eq "$(printf '%s' "$ask_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -c 'No human is available')" "1" "deny carries the reason"
+assert_eq "$(unset EVENTS_LOG; deny_ask_user_question)" "" "unset EVENTS_LOG allows AskUserQuestion"
+
+# The settings.json wrapper loads the function through ~/new-session.sh and emits the deny.
+ASK_HOME=$(mktemp -d)
+ln -s "$(cd "$(dirname "$0")" && pwd)/new-session.sh" "$ASK_HOME/new-session.sh"
+ASK_CMD=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "AskUserQuestion") | .hooks[0].command' "$(dirname "$0")/../settings/session-settings.json")
+hook_out=$(HOME="$ASK_HOME" EVENTS_LOG="$ASK_DIR/events.jsonl" bash -c "$ASK_CMD")
+assert_eq "$(printf '%s' "$hook_out" | jq -r '.hookSpecificOutput.permissionDecision')" "deny" "settings hook command denies in autonomous mode"
+echo supervised > "$ASK_DIR/mode"
+assert_eq "$(HOME="$ASK_HOME" EVENTS_LOG="$ASK_DIR/events.jsonl" bash -c "$ASK_CMD")" "" "settings hook command allows in supervised mode"
+rm -rf "$ASK_HOME" "$ASK_DIR"
 
 # event_key_from_branch mirrors deriveKey({branch}): eng-/sc- ticket branches map
 # to the uppercased TICKET-NUMBER; any other branch is its own key.
@@ -135,6 +172,23 @@ rm -f "$HOOK_LOG_PANE"
 # No EVENTS_LOG is a silent no-op, not an error.
 ( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
 assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"
+
+# emit_turn_ended_event (Stop hook) writes turn_ended carrying the payload's
+# transcript_path, JSON-escaped, so the stuck detector can stat it.
+assert_defined emit_turn_ended_event
+TURN_LOG=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$TURN_LOG" TMUX_PANE="%9" emit_turn_ended_event \
+    <<<'{"session_id":"s","transcript_path":"/home/u/.claude/projects/p/s.jsonl","hook_event_name":"Stop","stop_hook_active":false}' )
+assert_eq "$(grep -c '"kind":"turn_ended".*"transcript":"/home/u/.claude/projects/p/s.jsonl".*"pane":"%9"' "$TURN_LOG")" "1" "turn_ended carries transcript and pane"
+assert_eq "$(grep -c '"key":"ENG-7"' "$TURN_LOG")" "1" "turn_ended is keyed from the branch"
+: > "$TURN_LOG"
+( cd "$HOOK_REPO" && EVENTS_LOG="$TURN_LOG" emit_turn_ended_event <<<'{"session_id":"s","hook_event_name":"Stop"}' )
+assert_eq "$(grep -c '"kind":"turn_ended"' "$TURN_LOG")" "1" "a payload without transcript_path still writes turn_ended"
+assert_eq "$(grep -c '"transcript"' "$TURN_LOG")" "0" "no transcript_path, no transcript field"
+: > "$TURN_LOG"
+( cd "$HOOK_REPO" && EVENTS_LOG="$TURN_LOG" emit_hook_event turn_ended "" '/a "b"/c\d.jsonl' )
+assert_eq "$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).transcript)' "$TURN_LOG" 2>/dev/null || python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["transcript"],end="")' "$TURN_LOG")" '/a "b"/c\d.jsonl' "transcript with quotes and backslashes stays valid JSON"
+rm -f "$TURN_LOG"
 
 # emit_notification_event filters Claude Code's Notification payload: only a
 # notification that means a human is blocking becomes a needs_input line.

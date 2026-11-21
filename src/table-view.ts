@@ -1,8 +1,8 @@
-import { cellWidth, codebaseRepoName, dimWhenDone, fmtDuration, fmtTime, grey, repoDisplayName, titleCell } from "./board-format.ts";
+import { cellWidth, codebaseRepoName, dimWhenDone, fmtDuration, grey, repoDisplayName, TYPE_CHIP_COLOR } from "./board-format.ts";
 import { isFlagged, isParentRow, type BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
 import type { OrderEntry } from "./review-order.ts";
-import { researchWords } from "./ticket-type.ts";
+import { researchWords, rowType } from "./ticket-type.ts";
 
 export type TableId = "tasks" | "review" | "merge";
 
@@ -71,10 +71,20 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
 // wherever it sits.
 function reasonCell(r: BoardRow): string {
   const reasons = r.stuckReason ? [...r.flagReasons, r.stuckReason] : r.flagReasons;
-  return reasons.length > 0 ? `{red-fg}${reasons.join(",")}{/red-fg}` : "";
+  if (reasons.length > 0) return `{red-fg}${reasons.join(",")}{/red-fg}`;
+  return waitText(r);
 }
 
-export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];
+function waitText(r: BoardRow): string {
+  if (!r.waitingOn?.length) return "";
+  const prs = r.waitingOn.map((n) => `#${n}`).join(", ");
+  if (r.waitingKind === "overlap") return `held behind ${prs} (${["same files", r.waitingNote].filter(Boolean).join(", ")})`;
+  return `waiting on ${prs} to land${r.waitingNote ? ` (${r.waitingNote})` : ""}`;
+}
+
+export const BOARD_HEADER = ["DUR", "STATUS", "TYPE", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];
+
+export const PR_COLUMN = BOARD_HEADER.indexOf("PR");
 
 const STATUS_COLOR: Record<string, string> = {
   working: "cyan",
@@ -89,6 +99,8 @@ const STATUS_COLOR: Record<string, string> = {
   "unresolved threads": "red",
   "needs decision": "red",
   "review findings": "yellow",
+  "awaiting approval": "yellow",
+  "needs approval": "yellow",
   "ready to merge": "green",
   "ready: r to queue": "green",
   "ready: merge manually": "green",
@@ -97,6 +109,14 @@ const STATUS_COLOR: Record<string, string> = {
   "fix done": "yellow",
   "tracker ticket": "yellow",
 };
+
+function typeCell(r: BoardRow, words: string[]): string {
+  const type = rowType(r, words);
+  if (r.terminal) return grey(type ?? "code");
+  if (!type) return "code";
+  const color = TYPE_CHIP_COLOR[type];
+  return `{${color}-fg}${type}{/${color}-fg}`;
+}
 
 function statusCell(row: Pick<BoardRow, "status" | "terminal">): string {
   if (row.terminal) return grey(row.status);
@@ -113,13 +133,13 @@ export function boardTable(
   const body = entries.map(({ row: r }) => {
     const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
     return [
-      grey(fmtTime(r.ts)),
       dimWhenDone(r.terminal, fmtDuration(durMs)),
       statusCell(r),
+      typeCell(r, words),
       r.label,
       r.pr != null ? `#${r.pr}` : "",
       dimWhenDone(r.terminal, repoDisplayName(r, codebaseName)),
-      titleCell(r, words),
+      r.title ?? "",
       isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
       reasonCell(r),
     ];
@@ -144,6 +164,19 @@ export function alignTables(tables: string[][][]): string[][][] {
   return tables.map((table) =>
     table.map((row) => row.map((cell, i) => cell + " ".repeat((widths[i] ?? 0) - cellWidth(cell)))),
   );
+}
+
+// Which column a listtable's inner x offset lands on, from its _maxes. Each
+// column is its width plus the one space blessed puts after it; -1 is past the
+// last column.
+export function columnAt(maxes: number[], x: number): number {
+  if (x < 0) return -1;
+  let start = 0;
+  for (let i = 0; i < maxes.length; i++) {
+    start += maxes[i] + 1;
+    if (x < start) return i;
+  }
+  return -1;
 }
 
 export type TableBoxes = {

@@ -7,6 +7,7 @@ events.jsonl
 review-state.json
 fix-timers.json
 last-update.json
+tracker-state.json
 architecture-map-*.json
 docs/superpowers/
 mode

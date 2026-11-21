@@ -232,11 +232,23 @@ flowchart TD
   the merge, skips tickets with any PR still open, and never moves a ticket
   backwards. Respects `LABEL_FILTER`. *(optional; setting: `AUTO_MERGED_SYNC`,
   on by default)* Needs `gh` installed and authenticated.
-- **Trim the Go build cache:** every hour, removes entries in `go env GOCACHE`
+- **Trim the Go build cache:** every 15 minutes, removes entries in `go env GOCACHE`
   that no build has used in `GO_CACHE_MAX_AGE_HOURS` (defaults to 6). Go's own
   trim waits 5 days, which lets parallel worktree builds grow the cache past
   100G. *(optional; setting: `GO_CACHE_TRIM`, on by default; skipped when `go`
   isn't installed)*
+- **Disk guard:** every minute, checks free space on the volumes sessions write
+  to (`/tmp`, where Claude Code keeps its temp dir, the worktrees and the Go
+  cache). Below `DISK_LOW_GB` (default 20) it trims the Go cache down to entries
+  used in the last `GO_CACHE_EMERGENCY_MAX_AGE_MINUTES` (default 30) and holds new
+  ticket launches (claim and deploy) and idle nudges, until free space is back
+  above `DISK_RECOVER_GB` (default 40).
+- **Nudge idle sessions:** in autonomous mode, a working session whose Claude has
+  sat at its prompt past `STUCK_IDLE_MINUTES` (default 30), e.g. after it stopped
+  on a transient disk-full or network error and asked for "continue", is
+  prompted to retry or decide and carry on. It shares the 3-per-hour budget with
+  the `claude --continue` relaunch of an exited Claude; past it the row stays
+  stuck for a person.
 - **Advance the work (teal):** every heartbeat, once one of your PRs is merged,
   yimbot judges its issue against the issue's acceptance criteria and, while any
   remain unmet, spawns a continuation session to keep working the issue.

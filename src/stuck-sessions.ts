@@ -4,10 +4,21 @@
 // working row's known panes with tmux and emits session_stuck / session_resumed
 // so the board shows what is really happening. When Claude exited but its pane
 // survives as a shell, it also types `claude --continue` back into that pane.
+// When Claude is alive but has sat at its prompt past the idle limit (it ended
+// its turn waiting for a "continue" no one will type, e.g. after a transient
+// disk-full or network error), it types IDLE_NUDGE_PROMPT into that pane, if
+// canNudge allows (autonomous mode, disk not low).
 import { STUCK_STATUS, isWorkingStatus, rowKeyOf, type BoardRow, type YimbotEvent } from "./events.ts";
 
 export const MAX_RESUME_ATTEMPTS = 3;
 const RESUME_WINDOW_MS = 60 * 60_000;
+
+export const IDLE_NUDGE_PROMPT =
+  "You have been idle at your prompt with no activity, and no human is available to answer. " +
+  "If you stopped because of a transient failure (disk full / ENOSPC, network, rate limit, a flaky " +
+  "command), retry it now. If you stopped to ask something, make the call yourself as a staff " +
+  "engineer, state it in one line, and continue the task. If the task is genuinely finished, say so " +
+  "in one line and stop.";
 
 export const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash"]);
 
@@ -36,6 +47,12 @@ export type StuckDeps = {
   idleMs: number;
   emit: (e: { kind: "session_stuck" | "session_resumed"; key: string; label: string; reason?: string }) => void;
   resume: (pane: string) => void;
+  // Whether an idle live Claude may be prompted right now. False (outside
+  // autonomous mode, or while disk is low and a retry would just fail again)
+  // leaves the row stuck without spending a resume attempt.
+  canNudge: () => boolean;
+  // Type IDLE_NUDGE_PROMPT into a live Claude pane. False when nothing was sent.
+  nudge: (pane: string, prompt: string) => boolean;
   log: (msg: string) => void;
 };
 
@@ -63,7 +80,9 @@ function lastPanes(events: YimbotEvent[]): Map<string, LastPane> {
   return byKey;
 }
 
-type Verdict = { reason: string; resumePane?: string };
+// resumePane: Claude exited, relaunch it there. nudgePane: Claude is alive but
+// idle, prompt it there.
+type Verdict = { reason: string; resumePane?: string; nudgePane?: string };
 
 function judge(key: string, last: LastPane | undefined, live: Map<string, PaneInfo>, deps: StuckDeps): Verdict | null {
   const gone = (): Verdict | null => (deps.hasSessionFor(key) ? null : { reason: "session ended" });
@@ -79,7 +98,13 @@ function judge(key: string, last: LastPane | undefined, live: Map<string, PaneIn
   if (claudePanes.length === 0) return null;
   const quietMs = deps.now() - Math.max(...claudePanes.map(([, p]) => p.activityMs));
   if (quietMs <= deps.idleMs) return null;
-  return { reason: `no activity ${Math.round(quietMs / 60_000)}m` };
+  // Prompt the row's own pane when it is the Claude; otherwise (its last event
+  // came from a sibling window running something else, e.g. an editor) the most
+  // recently active Claude in the same session.
+  const nudgePane = isClaudeCommand(info.cmd)
+    ? last.pane
+    : claudePanes.reduce((a, b) => (b[1].activityMs > a[1].activityMs ? b : a))[0];
+  return { reason: `no activity ${Math.round(quietMs / 60_000)}m`, nudgePane };
 }
 
 // "no activity 31m" and "no activity 45m" are the same stuck state.
@@ -104,15 +129,24 @@ export function detectStuckSessions(state: StuckState, deps: StuckDeps): void {
       deps.emit({ kind: "session_stuck", key: row.key, label: row.label, reason: verdict.reason });
       deps.log(`${row.key} stuck: ${verdict.reason}`);
     }
-    if (!verdict.resumePane) continue;
+    const nudgePane = verdict.nudgePane && deps.canNudge() ? verdict.nudgePane : undefined;
+    if (!verdict.resumePane && !nudgePane) continue;
     const now = deps.now();
     const recent = (state.resumeAttempts.get(row.key) ?? []).filter((t) => now - t < RESUME_WINDOW_MS);
     if (recent.length >= MAX_RESUME_ATTEMPTS) {
       state.resumeAttempts.set(row.key, recent);
       continue;
     }
+    // One budget for relaunches and idle nudges: a session that keeps dying or
+    // keeps going quiet hits the same cap and stays stuck for a person.
     state.resumeAttempts.set(row.key, [...recent, now]);
-    deps.resume(verdict.resumePane);
-    deps.log(`${row.key} resuming claude in ${verdict.resumePane} (attempt ${recent.length + 1})`);
+    if (verdict.resumePane) {
+      deps.resume(verdict.resumePane);
+      deps.log(`${row.key} resuming claude in ${verdict.resumePane} (attempt ${recent.length + 1})`);
+    } else if (nudgePane && deps.nudge(nudgePane, IDLE_NUDGE_PROMPT)) {
+      deps.log(`${row.key} nudged idle claude in ${nudgePane} (attempt ${recent.length + 1})`);
+    } else {
+      deps.log(`${row.key} idle nudge not delivered to ${nudgePane} (attempt ${recent.length + 1})`);
+    }
   }
 }

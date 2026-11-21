@@ -60,6 +60,7 @@ import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { QA_MARKER, qaConfigFor } from "./qa.ts";
 import { ensureHostLinks } from "./setup.ts";
+import { ensureReadsUnblocked, MANAGED_SETTINGS_PATHS, projectSettingsPaths, userSettingsPath } from "./read-block.ts";
 import { sessionScriptPath, startWatcher, worktreesDir } from "./watcher.ts";
 
 export async function startDaemon(): Promise<() => void> {
@@ -161,6 +162,11 @@ export async function startDaemon(): Promise<() => void> {
   }
 
   for (const line of ensureHostLinks()) console.log(`[yimbot] link: ${line}`);
+  const readBlockPaths = {
+    user: userSettingsPath(),
+    warnOnly: [...MANAGED_SETTINGS_PATHS, ...projectSettingsPaths(codebasePath)],
+  };
+  for (const line of ensureReadsUnblocked(readBlockPaths)) console.log(`[yimbot] read block: ${line}`);
 
   const progressContext = await resolveContext(apiKey, teamName, stateName);
   const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);

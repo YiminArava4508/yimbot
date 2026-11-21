@@ -400,8 +400,12 @@ stops the daemon. The one exception is inside the review overlay while the
 claude pane is focused, where `ctrl+c` goes to claude as its interrupt; leave
 that pane first.
 
-The board opens as a table: three stacked panes (in progress, ready to
-review, ready to merge). In both views, at 80 columns and wider, a rail on the
+The board opens as a table: four stacked panes (needs attention, in progress,
+ready to review, ready to merge). Needs attention holds every row waiting on a
+person, whichever pane its PR would otherwise sit in: a session that handed
+back a decision or review findings, and a session the stuck detector or the
+nudge gave up on. It is a board-only grouping: those tickets stay In Progress
+in Linear and still count toward `MAX_IN_PROGRESS`. In both views, at 80 columns and wider, a rail on the
 left holds the background jobs and the parent tickets box of a split. On a
 narrower screen there is no rail: the table folds the parent tickets into the
 in progress pane, and the kanban does not show them. Press `v` to switch to the kanban view

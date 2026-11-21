@@ -5,6 +5,7 @@ import type { BoardRow } from "./events.ts";
 import { PR_COLUMN, TABLE_IDS, alignTables, boardTable, columnAt, type ReviewEntry, type TableBoxes, type TableId } from "./table-view.ts";
 
 export type TableViewInput = {
+  attention: BoardRow[];
   tasks: BoardRow[];
   review: ReviewEntry[];
   merge: BoardRow[];
@@ -16,14 +17,15 @@ export type TableViewInput = {
 export type TableView = {
   widgets: Record<TableId, any>;
   render(input: TableViewInput): void;
-  selectedRow(id: TableId, input: Pick<TableViewInput, "tasks" | "review" | "merge">): BoardRow | undefined;
+  selectedRow(id: TableId, input: Pick<TableViewInput, TableId>): BoardRow | undefined;
   show(): void;
   hide(): void;
 };
 
-const TABLE_BORDER: Record<TableId, string> = { tasks: "grey", review: "yellow", merge: "green" };
+const TABLE_BORDER: Record<TableId, string> = { attention: "red", tasks: "grey", review: "yellow", merge: "green" };
 
 const TABLE_TITLE: Record<TableId, string> = {
+  attention: "needs attention",
   tasks: "in progress",
   review: "ready to review",
   merge: "ready to merge",
@@ -63,12 +65,13 @@ export function createTableView(opts: {
     });
 
   const widgets: Record<TableId, any> = {
-    tasks: makePane("tasks", { top: 1 }),
+    attention: makePane("attention", { top: 1, height: 4 }),
+    tasks: makePane("tasks", { top: 5 }),
     review: makePane("review", { height: 4 }),
     merge: makePane("merge", { height: 4 }),
   };
-  const counts: Record<TableId, number> = { tasks: 0, review: 0, merge: 0 };
-  let last: Pick<TableViewInput, "tasks" | "review" | "merge"> = { tasks: [], review: [], merge: [] };
+  const counts: Record<TableId, number> = { attention: 0, tasks: 0, review: 0, merge: 0 };
+  let last: Pick<TableViewInput, TableId> = { attention: [], tasks: [], review: [], merge: [] };
   let visible = true;
   let syncing = false;
   // The row whose PR cell the current click went down on. blessed fires the
@@ -134,19 +137,22 @@ export function createTableView(opts: {
     selectedRow,
     render(input) {
       last = input;
+      counts.attention = input.attention.length;
       counts.tasks = input.tasks.length;
       counts.review = input.review.length;
       counts.merge = input.merge.length;
-      const [tasksData, reviewData, mergeData] = alignTables([
+      const [attentionData, tasksData, reviewData, mergeData] = alignTables([
+        boardTable(input.attention.map((row) => ({ row })), input.now),
         boardTable(input.tasks.map((row) => ({ row })), input.now),
         boardTable(input.review.map((e) => ({ row: e.row })), input.now),
         boardTable(input.merge.map((row) => ({ row })), input.now),
       ]);
       const { boxes } = input;
+      Object.assign(widgets.attention, boxes.attention);
       Object.assign(widgets.tasks, boxes.tasks);
       Object.assign(widgets.review, boxes.review);
       Object.assign(widgets.merge, boxes.merge);
-      const data = { tasks: tasksData, review: reviewData, merge: mergeData };
+      const data = { attention: attentionData, tasks: tasksData, review: reviewData, merge: mergeData };
       for (const id of TABLE_IDS) {
         widgets[id].setLabel(paneLabel(TABLE_TITLE[id], counts[id]));
         widgets[id].setData(data[id]);

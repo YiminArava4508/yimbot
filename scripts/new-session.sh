@@ -111,6 +111,8 @@ emit_hook_event() {
   branch=$(git branch --show-current 2>/dev/null) || return 0
   [ -n "$branch" ] || return 0
   key=$(event_key_from_branch "$branch")
+  # A keyless event becomes a board row with no ticket that nothing can clear.
+  [ -n "$key" ] || return 0
   # JSON-escape the key: git ref names legally allow " and \, and the
   # fallthrough in event_key_from_branch echoes such branches raw. Order
   # matters: backslash first, so escaping the quote doesn't get re-escaped.

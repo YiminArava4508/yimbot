@@ -11,6 +11,7 @@ import {
   BOARD_HEADER,
   boardTable,
   columnAt,
+  needsAttention,
   partitionTable,
   tableBoxes,
   tableFocusOrder,
@@ -208,9 +209,11 @@ test("partitionTable lifts split parents out of tasks into their own pane", () =
   const b = row({ key: "ENG-2", status: "working" });
   const c = row({ key: "ENG-3", status: "waiting on slices" });
   const d = row({ key: "ENG-4", status: "needs decision" });
-  const { tasks, parents, review, merge } = partitionTable([a, b, c, d]);
+  const { attention, tasks, parents, review, merge } = partitionTable([a, b, c, d]);
   assert.deepEqual(parents.map((r) => r.key), ["ENG-1", "ENG-3"]);
-  assert.deepEqual(tasks.map((r) => r.key), ["ENG-2", "ENG-4"]);
+  assert.deepEqual(tasks.map((r) => r.key), ["ENG-2"]);
+  // A parent on hold owes a human an answer: attention, not the parents pane.
+  assert.deepEqual(attention.map((r) => r.key), ["ENG-4"]);
   assert.deepEqual(review, []);
   assert.deepEqual(merge, []);
 });
@@ -349,17 +352,19 @@ test("alignTables keeps wide-character titles on the shared grid", () => {
   assert.equal(cellWidth(a[1][titleIdx]), cellWidth(b[1][titleIdx]));
 });
 
-test("tableBoxes reserves an equal third of the body for every pane", () => {
+test("tableBoxes reserves an equal quarter of the body for every pane, attention on top", () => {
   const l = tableBoxes(24, 200);
-  assert.equal(l.merge.height, 7);
+  assert.deepEqual(l.attention, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, height: 5 });
+  assert.deepEqual(l.tasks, { top: 6, left: QUEUE_PANE_WIDTH, right: 0, bottom: 11 });
+  assert.equal(l.review.height, 5);
+  assert.equal(l.review.bottom, 6);
+  assert.equal(l.merge.height, 5);
   assert.equal(l.merge.bottom, 1);
-  assert.equal(l.review.height, 7);
-  assert.equal(l.review.bottom, 8);
-  assert.deepEqual(l.tasks, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 15 });
 });
 
 test("tableBoxes drops the queue inset on a narrow screen", () => {
   const l = tableBoxes(24, 79);
+  assert.equal(l.attention.left, 0);
   assert.equal(l.tasks.left, 0);
   assert.equal(l.review.left, 0);
   assert.equal(l.merge.left, 0);
@@ -370,13 +375,47 @@ test("tableBoxes keeps one data row visible per pane on a tiny screen", () => {
 });
 
 test("tableFocusOrder skips empty panes and appends parents only when present", () => {
-  assert.deepEqual(tableFocusOrder({ tasks: 2, review: 0, merge: 1 }, false), ["tasks", "merge"]);
-  assert.deepEqual(tableFocusOrder({ tasks: 0, review: 3, merge: 0 }, true), ["review", "parents"]);
-  assert.deepEqual(tableFocusOrder({ tasks: 0, review: 0, merge: 0 }, false), []);
-  assert.deepEqual(tableFocusOrder({ tasks: 1, review: 1, merge: 1 }, true), ["tasks", "review", "merge", "parents"]);
+  assert.deepEqual(tableFocusOrder({ attention: 0, tasks: 2, review: 0, merge: 1 }, false), ["tasks", "merge"]);
+  assert.deepEqual(tableFocusOrder({ attention: 0, tasks: 0, review: 3, merge: 0 }, true), ["review", "parents"]);
+  assert.deepEqual(tableFocusOrder({ attention: 0, tasks: 0, review: 0, merge: 0 }, false), []);
+  assert.deepEqual(tableFocusOrder({ attention: 1, tasks: 1, review: 1, merge: 1 }, true), [
+    "attention",
+    "tasks",
+    "review",
+    "merge",
+    "parents",
+  ]);
 });
 
 test("boardTable: a stuck row shows its stuck reason in the REASON column", () => {
   const [, stuck] = boardTable([{ row: row({ status: "stuck", stuckReason: "claude exited" }) }], 0);
   assert.match(stuck[stuck.length - 1], /claude exited/);
+});
+
+test("partitionTable lifts needs-decision, review-findings and stuck rows into attention, wherever their PR sits", () => {
+  const decision = row({ key: "ENG-1", status: "needs decision" });
+  const findings = row({ key: "ENG-2", status: "review findings", section: "merge", pr: 21 });
+  const stuck = row({ key: "ENG-3", status: "stuck", stuckReason: "no activity 45m" });
+  const working = row({ key: "ENG-4", status: "working" });
+  const review = row({ key: "ENG-5", status: "draft pr", section: "review", pr: 22 });
+  const out = partitionTable([decision, findings, stuck, working, review]);
+  assert.deepEqual(out.attention.map((r) => r.key), ["ENG-1", "ENG-2", "ENG-3"]);
+  assert.deepEqual(out.tasks.map((r) => r.key), ["ENG-4"]);
+  assert.deepEqual(out.review.map((r) => r.key), ["ENG-5"]);
+  assert.deepEqual(out.merge, []);
+});
+
+test("needsAttention also catches a row flagged decision, findings or stuck, but not input or a terminal row", () => {
+  assert.equal(needsAttention(row({ status: "working", flagReasons: ["stuck"] })), true);
+  assert.equal(needsAttention(row({ status: "fixing CI", flagReasons: ["findings"] })), true);
+  assert.equal(needsAttention(row({ status: "working", flagReasons: ["decision"] })), true);
+  assert.equal(needsAttention(row({ status: "working", flagReasons: ["input"] })), false);
+  assert.equal(needsAttention(row({ status: "working" })), false);
+  assert.equal(needsAttention(row({ status: "needs decision", terminal: true })), false);
+});
+
+test("partitionTable drops a keyless row instead of pinning a blank row in attention", () => {
+  const out = partitionTable([row({ key: "", label: "", status: "needs decision" }), row({ key: "ENG-9", status: "working" })]);
+  assert.deepEqual(out.attention, []);
+  assert.deepEqual(out.tasks.map((r) => r.key), ["ENG-9"]);
 });

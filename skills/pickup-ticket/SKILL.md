@@ -256,13 +256,21 @@ check fails. Never pass a check on missing data, and never skip one.
 
 1. **Run the reference checks (checks 2 and 3).** `~/flag-archive-check.sh <key>`
    prints JSON (`pass`, `checks`, `builds`, `prodShas`, `docMatches`,
-   `quietHours`) and exits non-zero on failure. It covers: no code references
-   on `origin/main` of MatthewsREIS/gemini or anywhere else in the org, and none
-   in the source folder of each gemini build prod runs (each app's chart and its
-   local subcharts, at the commit their `appVersion` names; `builds` lists
-   every app, chart, commit, and folder searched). `*.md` files are never
-   searched in prod builds; on `origin/main` and the org they land in
-   `docMatches` and don't fail.
+   `ignoredMatches`, `quietHours`) and exits non-zero on failure. It covers: no
+   code references on `origin/main` of MatthewsREIS/gemini or anywhere else in
+   the org, and none in the source folder of each gemini build prod runs (each
+   app's chart and its local subcharts, at the commit their `appVersion` names;
+   `builds` lists every app, chart, commit, and folder searched). `*.md` files
+   are never searched in prod builds; on `origin/main` and the org they land in
+   `docMatches` and don't fail. A code reference, in a non-test file, is the
+   exact key as a quoted string (`"key"`, `'key'`, `` `key` ``), the key as a
+   whole token in a config file (yaml, json, tf, `.env`, ...), or `.key` /
+   `key:` in code. Every other match
+   (the key inside a comment or a longer name such as a bucket or option, a test
+   id, a mock, anything in a test file) lands in `ignoredMatches` and doesn't
+   fail. The check is the gate: don't second-guess an ignored match, and don't
+   override a failure because a hit "looks harmless"; raise needs-decision
+   instead.
 2. **Check 1, released.** The `Blocked by:` line of `~/get-ticket.sh <TICKET>`
    must list at least one blocker, and every blocker must be `Done`. The
    claim gate already checked this; re-check it anyway.
@@ -291,8 +299,9 @@ b. **Archive the flag** with the PostHog MCP.
 c. **Read it back** and confirm it now reads as archived. If it doesn't, raise
    needs-decision (below) with what you saw and stop.
 d. **Post a readback comment** listing every check with its evidence, the prod
-   commits searched (`prodShas`), any `docMatches`, and the note that tours
-   weren't checked.
+   commits searched (`prodShas`), any `docMatches`, any `ignoredMatches` (so a
+   reviewer can audit what the check skipped), and the note that tours weren't
+   checked.
 e. **Move the ticket to In Review**, same as the spike flow: `~/move-ticket.sh
    <TICKET> "In Review"` (Shortcut: use the Shortcut MCP). No PR. Then STOP and
    print the readback.

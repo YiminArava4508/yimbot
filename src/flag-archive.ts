@@ -1,6 +1,9 @@
 // Checks 2 and 3 of the prod flag-archive policy: the flag key must be absent
 // from gemini's origin/main, from the rest of the org, and from the source
-// folder of every gemini build prod runs. Every failure to read an input fails
+// folder of every gemini build prod runs. A reference is the exact key as a
+// quoted string ("key", 'key', `key`) in a non-test file; other matches (the
+// key inside a comment, a longer name, a test id or mock) are reported in
+// ignoredMatches but don't fail. Every failure to read an input fails
 // the check; nothing passes on missing data.
 import { posix } from "node:path";
 import type { GhRunner } from "./gh.ts";
@@ -13,7 +16,16 @@ export type GitRunner = (args: string[]) => Promise<GitResult>;
 export type Check = { name: string; pass: boolean; detail: string };
 // One running build: `chart` at `commit` ships the source under `folder`.
 export type ProdBuild = { app: string; chart: string; commit: string; folder: string };
-export type FlagArchiveReport = { pass: boolean; checks: Check[]; builds: ProdBuild[]; prodShas: string[]; docMatches: string[] };
+// ignoredMatches: hits that are not flag references (not the exact quoted key,
+// or in a test file), listed so a human can audit what the check skipped.
+export type FlagArchiveReport = {
+  pass: boolean;
+  checks: Check[];
+  builds: ProdBuild[];
+  prodShas: string[];
+  docMatches: string[];
+  ignoredMatches: string[];
+};
 export type AppChart = { app: string; path: string | null; repoUrl: string | null };
 
 const ORG = "MatthewsREIS";
@@ -160,9 +172,62 @@ export function parseLocalDeps(chartYaml: string, chartDir: string): string[] {
   return deps;
 }
 
+const isDoc = (p: string) => /\.md$/i.test(p);
+
 export function classifyMatches(paths: string[]): { code: string[]; docs: string[] } {
-  const isDoc = (p: string) => /\.md$/i.test(p);
   return { code: paths.filter((p) => !isDoc(p)), docs: paths.filter(isDoc) };
+}
+
+// Test code never ships, so a flag key there (a mock, a test id) is not a
+// reference prod depends on.
+const TEST_PATH = [
+  /(^|\/)(__tests__|__mocks__|tests?|e2e|testdata|fixtures|api-tests|playwright)\//,
+  /_test\.go$/,
+  /\.(test|spec)\.[cm]?[jt]sx?$/,
+  /(^|\/)test_[^/]*\.py$/,
+  /_test\.py$/,
+];
+
+export function isTestPath(path: string): boolean {
+  return TEST_PATH.some((re) => re.test(path));
+}
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// A flag is read by its key as a string literal: useFeatureFlag('key'),
+// IsFeatureEnabled("key"), `key` in a template, a constant = "key". The bare key
+// inside other text (a comment, a bucket name "key-s", an option "key-ttl", a
+// data-testid) is not a lookup.
+export function isQuotedKey(text: string, key: string): boolean {
+  return new RegExp(`(["'\`])${escapeRegExp(key)}\\1`).test(text);
+}
+
+// One grep or search hit: the file and the text around the match (null when
+// the source gave no text, e.g. a binary file, which then counts as code).
+export type Hit = { path: string; text: string | null };
+
+export type Classified = { code: string[]; docs: string[]; ignored: string[] };
+
+// Splits hits into code references (fail the check), docs (listed, never fail)
+// and ignored non-references (listed for audit). Paths are de-duplicated; a
+// file counts as code when any one of its hits is a quoted key outside tests.
+export function classifyHits(hits: Hit[], key: string): Classified {
+  const code = new Set<string>();
+  const docs = new Set<string>();
+  const ignored = new Map<string, string>();
+  for (const h of hits) {
+    if (isDoc(h.path)) docs.add(h.path);
+    else if (!isTestPath(h.path) && (h.text === null || isQuotedKey(h.text, key))) code.add(h.path);
+    else if (!ignored.has(h.path)) {
+      const why = isTestPath(h.path) ? "test file" : "not a quoted key";
+      ignored.set(h.path, `${h.path} (${why}: ${(h.text ?? "").trim().slice(0, 100)})`);
+    }
+  }
+  return {
+    code: [...code],
+    docs: [...docs],
+    ignored: [...ignored].filter(([p]) => !code.has(p)).map(([, line]) => line),
+  };
 }
 
 async function mustGit(git: GitRunner, args: string[]): Promise<string> {
@@ -223,22 +288,38 @@ export async function collectProdBuilds(gh: GhRunner, git: GitRunner): Promise<P
   return builds;
 }
 
-async function grepRev(git: GitRunner, rev: string, key: string, folder?: string): Promise<string[]> {
-  const scope = folder ? [folder, ":!*.md"] : [];
-  const r = await git(["grep", "-F", "-l", "-e", key, rev, "--", ...scope]);
-  if (r.code === 1) return [];
-  if (r.code !== 0) throw new Error(`git grep failed at ${rev} (exit ${r.code})`);
+// Every matching line at rev: "<rev>:<path>:<line>:<text>". A binary file
+// prints "Binary file <rev>:<path> matches" and carries no text.
+export function parseGrepLines(stdout: string, rev: string): Hit[] {
   const prefix = `${rev}:`;
-  return r.stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => (l.startsWith(prefix) ? l.slice(prefix.length) : l));
+  const hits: Hit[] = [];
+  for (const raw of stdout.split("\n")) {
+    if (!raw) continue;
+    const bin = /^Binary file (.*) matches$/.exec(raw);
+    if (bin) {
+      const p = bin[1]!;
+      hits.push({ path: p.startsWith(prefix) ? p.slice(prefix.length) : p, text: null });
+      continue;
+    }
+    const l = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+    const m = /^(.*?):(\d+):(.*)$/.exec(l);
+    hits.push(m ? { path: m[1]!, text: m[3]! } : { path: l, text: null });
+  }
+  return hits;
 }
 
-type SearchRow = { repository?: { nameWithOwner?: string }; path?: string };
+async function grepRev(git: GitRunner, rev: string, key: string, folder?: string): Promise<Hit[]> {
+  const scope = folder ? [folder, ":!*.md"] : [];
+  const r = await git(["grep", "-n", "-F", "-e", key, rev, "--", ...scope]);
+  if (r.code === 1) return [];
+  if (r.code !== 0) throw new Error(`git grep failed at ${rev} (exit ${r.code})`);
+  return parseGrepLines(r.stdout, rev);
+}
 
-export async function searchOrg(gh: GhRunner, key: string): Promise<{ code: string[]; docs: string[] }> {
-  const args = ["search", "code", `"${key}"`, "--owner", ORG, "--json", "repository,path", "--limit", String(SEARCH_LIMIT)];
+type SearchRow = { repository?: { nameWithOwner?: string }; path?: string; textMatches?: { fragment?: string }[] };
+
+export async function searchOrg(gh: GhRunner, key: string): Promise<Classified> {
+  const args = ["search", "code", `"${key}"`, "--owner", ORG, "--json", "repository,path,textMatches", "--limit", String(SEARCH_LIMIT)];
   let out: string;
   try {
     out = await gh(args);
@@ -247,10 +328,17 @@ export async function searchOrg(gh: GhRunner, key: string): Promise<{ code: stri
   }
   const rows = JSON.parse(out) as SearchRow[];
   if (rows.length >= SEARCH_LIMIT) throw new Error(`too many org search results (${rows.length}), cannot classify`);
-  const hits = rows
-    .filter((r) => r.repository?.nameWithOwner !== GEMINI_REPO)
-    .map((r) => `${r.repository?.nameWithOwner ?? "?"}:${r.path ?? "?"}`);
-  return classifyMatches(hits);
+  // Code search's fragments are the text around each match. A row with none
+  // can't be judged, so it counts as code (fail closed).
+  const hits: Hit[] = [];
+  for (const r of rows) {
+    if (r.repository?.nameWithOwner === GEMINI_REPO) continue;
+    const path = `${r.repository?.nameWithOwner ?? "?"}:${r.path ?? "?"}`;
+    const fragments = (r.textMatches ?? []).map((m) => m.fragment ?? "").filter(Boolean);
+    if (fragments.length === 0) hits.push({ path, text: null });
+    for (const text of fragments) hits.push({ path, text });
+  }
+  return classifyHits(hits, key);
 }
 
 const summarize = (paths: string[]) => paths.slice(0, 10).join(", ") + (paths.length > 10 ? `, +${paths.length - 10} more` : "");
@@ -266,39 +354,53 @@ async function guarded(name: string, run: () => Promise<{ pass: boolean; detail:
 export async function runFlagArchiveCheck(opts: { key: string; gh: GhRunner; git: GitRunner }): Promise<FlagArchiveReport> {
   const { key, gh, git } = opts;
   const docMatches: string[] = [];
+  const ignoredMatches: string[] = [];
+  const ignoredNote = (n: number) => (n ? ` (${n} non-reference match${n === 1 ? "" : "es"} ignored, see ignoredMatches)` : "");
   let prodShas: string[] = [];
   let builds: ProdBuild[] = [];
 
   const main = await guarded("main-gemini", async () => {
     await mustGit(git, ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
-    const { code, docs } = classifyMatches(await grepRev(git, "origin/main", key));
+    const { code, docs, ignored } = classifyHits(await grepRev(git, "origin/main", key), key);
     docMatches.push(...docs.map((d) => `origin/main:${d}`));
+    ignoredMatches.push(...ignored.map((i) => `origin/main:${i}`));
     return code.length
       ? { pass: false, detail: `key found on origin/main in: ${summarize(code)}` }
-      : { pass: true, detail: "no code references on origin/main" };
+      : { pass: true, detail: `no code references on origin/main${ignoredNote(ignored.length)}` };
   });
 
   const org = await guarded("org-search", async () => {
-    const { code, docs } = await searchOrg(gh, key);
+    const { code, docs, ignored } = await searchOrg(gh, key);
     docMatches.push(...docs);
+    ignoredMatches.push(...ignored);
     return code.length
       ? { pass: false, detail: `key found elsewhere in the org: ${summarize(code)}` }
-      : { pass: true, detail: `no code references in ${ORG} outside gemini` };
+      : { pass: true, detail: `no code references in ${ORG} outside gemini${ignoredNote(ignored.length)}` };
   });
 
   const prod = await guarded("prod-commits", async () => {
     builds = await collectProdBuilds(gh, git);
     prodShas = [...new Set(builds.map((b) => b.commit))];
     const failures: string[] = [];
+    let skipped = 0;
     for (const b of builds) {
-      const code = await grepRev(git, b.commit, key, b.folder);
+      const { code, ignored } = classifyHits(await grepRev(git, b.commit, key, b.folder), key);
+      skipped += ignored.length;
+      ignoredMatches.push(...ignored.map((i) => `${b.commit.slice(0, 9)}:${i}`));
       if (code.length) failures.push(`${b.app} ${b.chart} @ ${b.commit.slice(0, 9)} in ${b.folder}/ (${summarize(code)})`);
     }
     return failures.length
       ? { pass: false, detail: `key found in deployed builds: ${failures.join("; ")}` }
-      : { pass: true, detail: `no code references in ${builds.length} deployed builds` };
+      : { pass: true, detail: `no code references in ${builds.length} deployed builds${ignoredNote(skipped)}` };
   });
 
   const checks = [main, org, prod];
-  return { pass: checks.every((c) => c.pass), checks, builds, prodShas, docMatches: [...new Set(docMatches)] };
+  return {
+    pass: checks.every((c) => c.pass),
+    checks,
+    builds,
+    prodShas,
+    docMatches: [...new Set(docMatches)],
+    ignoredMatches: [...new Set(ignoredMatches)],
+  };
 }

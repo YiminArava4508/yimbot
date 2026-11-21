@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   checkQuiet,
+  classifyHits,
   classifyMatches,
+  isQuotedKey,
+  isTestPath,
+  parseGrepLines,
   collectProdBuilds,
   flagKeyFromTitle,
   pickFlagByKey,
@@ -153,10 +157,13 @@ function fakeGit(repo: Repo, opts: { fetchable?: string[]; failFetchMain?: boole
       if (!name) return { code: 128, stdout: "" };
       const skipMd = rest.includes(":!*.md");
       const inDir = (p: string) => dir === "." || p.startsWith(`${dir}/`);
-      const hits = Object.entries(repo[name]?.files ?? {}).filter(
-        ([p, body]) => inDir(p) && !(skipMd && p.endsWith(".md")) && body.includes(key),
-      );
-      return hits.length ? { code: 0, stdout: hits.map(([p]) => `${rev}:${p}`).join("\n") } : { code: 1, stdout: "" };
+      // Mirrors `git grep -n`: one "<rev>:<path>:<line>:<text>" per matching line.
+      const lines = Object.entries(repo[name]?.files ?? {})
+        .filter(([p]) => inDir(p) && !(skipMd && p.endsWith(".md")))
+        .flatMap(([p, body]) =>
+          body.split("\n").flatMap((text, i) => (text.includes(key) ? [`${rev}:${p}:${i + 1}:${text}`] : [])),
+        );
+      return lines.length ? { code: 0, stdout: lines.join("\n") } : { code: 1, stdout: "" };
     }
     return { code: 2, stdout: "" };
   };
@@ -294,7 +301,7 @@ test("searchOrg retries once, then fails closed", async () => {
     if (n === 1) throw new Error("rate limited");
     return "[]";
   };
-  assert.deepEqual(await searchOrg(flaky, "k"), { code: [], docs: [] });
+  assert.deepEqual(await searchOrg(flaky, "k"), { code: [], docs: [], ignored: [] });
   assert.equal(n, 2);
   let m = 0;
   await assert.rejects(
@@ -309,13 +316,14 @@ test("searchOrg retries once, then fails closed", async () => {
 
 test("searchOrg ignores gemini, splits md from code, and fails on a full page", async () => {
   const rows = [
-    { repository: { nameWithOwner: "MatthewsREIS/gemini" }, path: "a.ts" },
-    { repository: { nameWithOwner: "MatthewsREIS/hyperion-ai" }, path: "flags.py" },
+    { repository: { nameWithOwner: "MatthewsREIS/gemini" }, path: "a.ts", textMatches: [{ fragment: "use('k')" }] },
+    { repository: { nameWithOwner: "MatthewsREIS/hyperion-ai" }, path: "flags.py", textMatches: [{ fragment: "is_enabled('k')" }] },
     { repository: { nameWithOwner: "MatthewsREIS/hyperion-ai" }, path: "NOTES.md" },
   ];
   assert.deepEqual(await searchOrg(async () => JSON.stringify(rows), "k"), {
     code: ["MatthewsREIS/hyperion-ai:flags.py"],
     docs: ["MatthewsREIS/hyperion-ai:NOTES.md"],
+    ignored: [],
   });
   const full = Array.from({ length: 100 }, (_, i) => ({ repository: { nameWithOwner: "o/r" }, path: `f${i}.md` }));
   await assert.rejects(searchOrg(async () => JSON.stringify(full), "k"), /too many/i);
@@ -479,4 +487,112 @@ test("pickFlagByKey needs exactly one exact-key match", () => {
   assert.match((pickFlagByKey(flags, "nope") as { error: string }).error, /not found/);
   const dupes = [{ id: 1, key: "foo" }, { id: 9, key: "foo" }];
   assert.match((pickFlagByKey(dupes, "foo") as { error: string }).error, /more than one/);
+});
+
+test("searchOrg asks for text matches, ignores unquoted and test-file hits, and fails closed without text", async () => {
+  let argsSeen: string[] = [];
+  const rows = [
+    { repository: { nameWithOwner: "MatthewsREIS/infra" }, path: "buckets.tf", textMatches: [{ fragment: 'name = "k-uploads"' }] },
+    { repository: { nameWithOwner: "MatthewsREIS/app" }, path: "src/x.test.ts", textMatches: [{ fragment: "mock('k')" }] },
+    { repository: { nameWithOwner: "MatthewsREIS/app" }, path: "src/no-text.ts" },
+  ];
+  const r = await searchOrg(async (args) => {
+    argsSeen = args;
+    return JSON.stringify(rows);
+  }, "k");
+  assert.ok(argsSeen.join(" ").includes("textMatches"));
+  assert.deepEqual(r.code, ["MatthewsREIS/app:src/no-text.ts"]);
+  assert.equal(r.ignored.length, 2);
+});
+
+test("isQuotedKey matches the exact key in any quote style, not inside longer text", () => {
+  for (const t of [`useFlag('old-flag')`, `IsEnabled("old-flag")`, "flag(`old-flag`)", `KEY = "old-flag";`]) {
+    assert.equal(isQuotedKey(t, "old-flag"), true, t);
+  }
+  for (const t of [
+    "// the old-flag gate",
+    `"old-flags"`,
+    `'old-flag-ttl'`,
+    `"x-old-flag"`,
+    `'old-flag"`,
+    "old-flag",
+  ]) {
+    assert.equal(isQuotedKey(t, "old-flag"), false, t);
+  }
+  assert.equal(isQuotedKey(`f("a.b")`, "a.b"), true);
+  assert.equal(isQuotedKey(`f("axb")`, "a.b"), false, "regex metacharacters in the key are literal");
+});
+
+test("isTestPath recognises test files and test folders", () => {
+  for (const p of [
+    "api/v1/integration/escrow/export_helpers_test.go",
+    "react-ui/src/app/x/layout.test.tsx",
+    "react-ui/src/a.spec.ts",
+    "react-ui/src/__tests__/a.ts",
+    "api-tests/scripts/run.mjs",
+    "svc/tests/test_flags.py",
+    "e2e/flags.ts",
+  ]) {
+    assert.equal(isTestPath(p), true, p);
+  }
+  for (const p of ["react-ui/src/flags.ts", "api/v1/export/streamer.go", "src/latest.ts", "contest/a.ts"]) {
+    assert.equal(isTestPath(p), false, p);
+  }
+});
+
+test("classifyHits: quoted key outside tests is code; comments, longer names and tests are ignored; binaries count", () => {
+  const r = classifyHits(
+    [
+      { path: "api/gate.go", text: 'posthog.IsEnabled("old-flag")' },
+      { path: "api/flags.go", text: '// replaces the old-flag gate' },
+      { path: "api/flags.go", text: 'Name: "old-flag-ttl",' },
+      { path: "ui/a.test.tsx", text: '<div data-testid="old-flag" />' },
+      { path: "docs/flags.md", text: "old-flag" },
+      { path: "ui/bundle.bin", text: null },
+    ],
+    "old-flag",
+  );
+  assert.deepEqual(r.code.sort(), ["api/gate.go", "ui/bundle.bin"]);
+  assert.deepEqual(r.docs, ["docs/flags.md"]);
+  assert.equal(r.ignored.length, 2);
+  assert.match(r.ignored.join("\n"), /api\/flags\.go \(not a quoted key/);
+  assert.match(r.ignored.join("\n"), /ui\/a\.test\.tsx \(test file/);
+});
+
+test("a file with one real reference is code, not ignored, even if other lines are not", () => {
+  const r = classifyHits(
+    [
+      { path: "api/gate.go", text: "// old-flag" },
+      { path: "api/gate.go", text: 'IsEnabled("old-flag")' },
+    ],
+    "old-flag",
+  );
+  assert.deepEqual(r.code, ["api/gate.go"]);
+  assert.deepEqual(r.ignored, []);
+});
+
+test("parseGrepLines splits rev:path:line:text and keeps binary hits without text", () => {
+  const out = [
+    "origin/main:a/b.go:12:x := \"k\" // a:b",
+    "Binary file origin/main:c/d.tgz matches",
+  ].join("\n");
+  assert.deepEqual(parseGrepLines(out, "origin/main"), [
+    { path: "a/b.go", text: 'x := "k" // a:b' },
+    { path: "c/d.tgz", text: null },
+  ]);
+});
+
+test("runFlagArchiveCheck passes on the 2026-11-20 false positives and lists them in ignoredMatches", async () => {
+  const falsePositives = {
+    "api/v1/integration/misc/export_helpers_test.go": "// mockPosthogForExport returns true for every flag, including old-flag.",
+    "react-ui/src/app/x/layout.test.tsx": '  ObjectHistory: () => <div data-testid="old-flag" />,',
+    "api/v1/cmd/appflags/flags.go": '\t\tName:        "old-flag-stale-sweep-cron",\n\t// old-flag/data-import siblings',
+    "api-tests/scripts/run.mjs": "    S3_BUCKET: 'old-flags',",
+  };
+  const repo: Repo = { ...PIN_REPO, "origin/main": { files: falsePositives } };
+  const { git } = fakeGit(repo);
+  const r = await runFlagArchiveCheck({ key: "old-flag", gh: runner(), git });
+  assert.equal(r.checks.find((c) => c.name === "main-gemini")!.pass, true);
+  assert.match(r.checks.find((c) => c.name === "main-gemini")!.detail, /4 non-reference matches ignored/);
+  assert.equal(r.ignoredMatches.filter((m) => m.startsWith("origin/main:")).length, 4);
 });

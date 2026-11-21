@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BoardRow, YimbotEvent } from "./events.ts";
-import { MAX_RESUME_ATTEMPTS, detectStuckSessions, isClaudeCommand, stuckIdleMs, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
+import { IDLE_NUDGE_PROMPT, MAX_RESUME_ATTEMPTS, detectStuckSessions, isClaudeCommand, stuckIdleMs, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
 
 const MIN = 60_000;
 const NOW = 100 * MIN;
@@ -27,11 +27,14 @@ type Setup = {
   panes?: Map<string, { cmd: string; activityMs: number; session: string }> | null;
   hasSession?: boolean;
   now?: number;
+  canNudge?: boolean;
+  nudgeDelivers?: boolean;
 };
 
 function run(setup: Setup, state = freshStuckState()) {
   const emitted: { kind: string; key: string; reason?: string }[] = [];
   const resumed: string[] = [];
+  const nudged: { pane: string; prompt: string }[] = [];
   const deps: StuckDeps = {
     events: () => setup.events ?? [],
     rows: () => setup.rows ?? [row()],
@@ -42,10 +45,15 @@ function run(setup: Setup, state = freshStuckState()) {
     idleMs: 30 * MIN,
     emit: (e) => emitted.push(e),
     resume: (pane) => resumed.push(pane),
+    canNudge: () => setup.canNudge ?? false,
+    nudge: (pane, prompt) => {
+      nudged.push({ pane, prompt });
+      return setup.nudgeDelivers ?? true;
+    },
     log: () => {},
   };
   detectStuckSessions(state, deps);
-  return { emitted, resumed, state };
+  return { emitted, resumed, nudged, state };
 }
 
 const info = (cmd: string, ageMin = 0, session = "eng-1-task") => ({ cmd, activityMs: NOW - ageMin * MIN, session });
@@ -201,4 +209,56 @@ test("a pane running a version-named binary counts as claude: idle fires, no res
   const { emitted, resumed } = run({ events: [paneEvent("%1")], panes: pane("2.1.327", 45) });
   assert.deepEqual(emitted.map((e) => [e.kind, e.reason]), [["session_stuck", "no activity 45m"]]);
   assert.deepEqual(resumed, []);
+});
+
+test("an idle live claude is nudged in its own pane when nudging is allowed", () => {
+  const { emitted, resumed, nudged } = run({ events: [paneEvent("%1")], panes: pane("claude", 45), canNudge: true });
+  assert.deepEqual(emitted.map((e) => [e.kind, e.reason]), [["session_stuck", "no activity 45m"]]);
+  assert.deepEqual(resumed, []);
+  assert.deepEqual(nudged, [{ pane: "%1", prompt: IDLE_NUDGE_PROMPT }]);
+});
+
+test("an idle live claude is not nudged when nudging is disallowed (manual mode or low disk)", () => {
+  const state = freshStuckState();
+  const { nudged } = run({ events: [paneEvent("%1")], panes: pane("claude", 45), canNudge: false }, state);
+  assert.deepEqual(nudged, []);
+  // and no attempt was spent, so the full budget is there once nudging is allowed
+  assert.equal(state.resumeAttempts.get("ENG-1"), undefined);
+});
+
+test("an active claude is never nudged", () => {
+  const { nudged } = run({ events: [paneEvent("%1")], panes: pane("claude", 5), canNudge: true });
+  assert.deepEqual(nudged, []);
+});
+
+test("idle nudges share the resume budget and stop after MAX_RESUME_ATTEMPTS", () => {
+  const state = freshStuckState();
+  let total = 0;
+  for (let i = 0; i < MAX_RESUME_ATTEMPTS + 2; i++) {
+    const rows = [row(i === 0 ? {} : { status: "stuck", stuckReason: "no activity 45m" })];
+    total += run({ rows, events: [paneEvent("%1")], panes: pane("claude", 45), canNudge: true, now: NOW + i * MIN }, state).nudged.length;
+  }
+  assert.equal(total, MAX_RESUME_ATTEMPTS);
+});
+
+test("an undelivered nudge still spends an attempt", () => {
+  const state = freshStuckState();
+  run({ events: [paneEvent("%1")], panes: pane("claude", 45), canNudge: true, nudgeDelivers: false }, state);
+  assert.equal(state.resumeAttempts.get("ENG-1")?.length, 1);
+});
+
+test("when the row's pane is a sibling non-claude window, the idle claude beside it is nudged", () => {
+  const panes = new Map([
+    ["%1", info("vim", 50)],
+    ["%2", info("claude", 60)],
+    ["%3", info("claude", 40)],
+  ]);
+  const { nudged } = run({ events: [paneEvent("%1")], panes, canNudge: true });
+  assert.deepEqual(nudged.map((n) => n.pane), ["%3"]);
+});
+
+test("an exited claude is resumed, not nudged, even when nudging is allowed", () => {
+  const { resumed, nudged } = run({ events: [paneEvent("%1")], panes: pane("zsh"), canNudge: true });
+  assert.deepEqual(resumed, ["%1"]);
+  assert.deepEqual(nudged, []);
 });

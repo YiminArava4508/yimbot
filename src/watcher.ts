@@ -774,6 +774,10 @@ export type WatcherConfig = {
   // State a codeless spike moves to when it enters review (DONE_STATE_NAME).
   doneStateName: string;
   heartbeatIntervalMinutes: number;
+  // True while the daemon's disk guard reports low free space. Holds new ticket
+  // launches (claim + deploy) and idle nudges, which would only hit ENOSPC.
+  // Absent means never low.
+  diskLow?: () => boolean;
   // How long a fix session may stay in flight before the reaper tears it down as
   // stale, regardless of PR state (backstop for bailed/crashed/stuck sessions and
   // for comment fixes, which have no crisp PR-state objective).
@@ -1439,7 +1443,11 @@ export function resumeClaudeInPane(pane: string, exec: Exec = runExec): boolean 
 // tmux server restart recycles %N ids onto unrelated panes) — literal
 // keystrokes into an arbitrary shell or editor would execute the prompt as
 // commands. Other tmux failures throw; the nudge step logs and retries.
-export function sendNudge(pane: string, prompt: string): boolean {
+//
+// interrupt: false skips the Escape, for a Claude believed idle: if it is in
+// fact mid-turn, the text then queues as its next message rather than
+// cancelling the work in progress.
+export function sendNudge(pane: string, prompt: string, { interrupt = true }: { interrupt?: boolean } = {}): boolean {
   let cmd: string;
   try {
     cmd = execFileSync("tmux", ["display", "-p", "-t", pane, "#{pane_current_command}"], {
@@ -1449,7 +1457,7 @@ export function sendNudge(pane: string, prompt: string): boolean {
     return false; // pane gone
   }
   if (!isClaudeCommand(cmd)) return false;
-  execFileSync("tmux", ["send-keys", "-t", pane, "Escape"], { stdio: "ignore" });
+  if (interrupt) execFileSync("tmux", ["send-keys", "-t", pane, "Escape"], { stdio: "ignore" });
   execFileSync("tmux", ["send-keys", "-t", pane, "-l", prompt], { stdio: "ignore" });
   execFileSync("tmux", ["send-keys", "-t", pane, "Enter"], { stdio: "ignore" });
   return true;
@@ -2143,8 +2151,12 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: (msg) => console.log(`[stale] ${msg}`),
   };
 
+  const diskLow = config.diskLow ?? (() => false);
+
   // Stuck-session step: a working row whose Claude is gone or silent shows as
-  // stuck, and an exited Claude in a surviving pane is resumed in place.
+  // stuck, and an exited Claude in a surviving pane is resumed in place. In
+  // autonomous mode an idle live Claude is prompted to carry on (held while the
+  // disk is low, where a retry would just hit ENOSPC again).
   const stuckState = freshStuckState();
   const stuckDeps: StuckDeps = {
     events: readEvents,
@@ -2159,6 +2171,14 @@ export function startWatcher(config: WatcherConfig): () => void {
     idleMs: stuckIdleMs(process.env.STUCK_IDLE_MINUTES),
     emit: (e) => emitEvent(e),
     resume: resumeClaudeInPane,
+    canNudge: () => readMode() === "autonomous" && !diskLow(),
+    nudge: (pane, prompt) => {
+      try {
+        return sendNudge(pane, prompt, { interrupt: false });
+      } catch {
+        return false;
+      }
+    },
     log: (msg) => console.log(`[stuck] ${msg}`),
   };
 
@@ -2173,7 +2193,11 @@ export function startWatcher(config: WatcherConfig): () => void {
       detectStuckSessions(stuckState, stuckDeps);
       nudgeOnce(nudgeState, nudgeDeps);
       if (reconcileDeps) await reconcileBlockedInProgress(reconcileDeps);
-      await deployOnce(deployState, deployDeps);
+      // A low disk holds new ticket sessions: each new worktree adds a checkout,
+      // dependencies and builds, and would hit ENOSPC on its first command.
+      // Deploy catches up once space is back (its latch only sets on launch).
+      if (diskLow()) console.log("[watcher] disk low: holding deploy and claim");
+      else await deployOnce(deployState, deployDeps);
       await pollOnce(reviewIconState, reviewIconDeps);
       await pollOnce(reviewNoticeState, reviewNoticeDeps);
       if (prReviewDeps) {
@@ -2203,7 +2227,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps
       // the WIP cap accounting correct.
-      await claimOnce(claimState, claimDeps);
+      if (!diskLow()) await claimOnce(claimState, claimDeps);
     } finally {
       running = false;
       heartbeatActive = false;

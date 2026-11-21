@@ -1,10 +1,12 @@
 import { createQueueGate, type QueueGate } from "./queue-overlap.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
+import { checkDisk, freshDiskGuardState, parseDiskGb, tightestVolume } from "./disk-guard.ts";
 import { goCacheDir, trimGoCache } from "./go-cache.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
@@ -58,7 +60,7 @@ import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { QA_MARKER, qaConfigFor } from "./qa.ts";
 import { ensureHostLinks } from "./setup.ts";
-import { sessionScriptPath, startWatcher } from "./watcher.ts";
+import { sessionScriptPath, startWatcher, worktreesDir } from "./watcher.ts";
 
 export async function startDaemon(): Promise<() => void> {
   pinEventsLog();
@@ -121,6 +123,16 @@ export async function startDaemon(): Promise<() => void> {
   if (!Number.isFinite(goCacheMaxAgeHours) || goCacheMaxAgeHours <= 0) {
     throw new Error("GO_CACHE_MAX_AGE_HOURS must be a positive number");
   }
+  // Disk guard: below DISK_LOW_GB free, trim the Go cache down to entries used in
+  // the last GO_CACHE_EMERGENCY_MAX_AGE_MINUTES and hold new launches and idle
+  // nudges until DISK_RECOVER_GB is free again.
+  const diskLowBytes = parseDiskGb(process.env.DISK_LOW_GB, 20);
+  const diskRecoverBytes = Math.max(diskLowBytes, parseDiskGb(process.env.DISK_RECOVER_GB, 40));
+  const goCacheEmergencyMaxAgeMinutes = Number(envOr("GO_CACHE_EMERGENCY_MAX_AGE_MINUTES", "30"));
+  if (!Number.isFinite(goCacheEmergencyMaxAgeMinutes) || goCacheEmergencyMaxAgeMinutes <= 0) {
+    throw new Error("GO_CACHE_EMERGENCY_MAX_AGE_MINUTES must be a positive number");
+  }
+  const diskState = freshDiskGuardState();
 
   if (!apiKey) throw new Error("LINEAR_API_KEY is required");
   if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
@@ -571,6 +583,7 @@ export async function startDaemon(): Promise<() => void> {
     spikeReviewContext,
     doneStateName: envOr("DONE_STATE_NAME", "Done"),
     heartbeatIntervalMinutes,
+    diskLow: () => diskState.low,
     reapStaleMs: reapStaleMinutes * 60 * 1000,
     clearedStates,
     claim: {
@@ -611,16 +624,18 @@ export async function startDaemon(): Promise<() => void> {
   void safeSync();
   const syncTimer = setInterval(() => void safeSync(), heartbeatIntervalMinutes * 60 * 1000);
 
+  // One trim at a time: the routine sweep and the disk guard's emergency sweep
+  // share this latch, so a slow walk of a huge cache never runs twice at once.
   let trimming = false;
-  const safeTrim = async (): Promise<void> => {
+  const safeTrim = async (maxAgeMs: number, label: string): Promise<void> => {
     if (trimming) return;
     trimming = true;
     try {
       const dir = await goCacheDir();
       if (!dir) return;
-      const { removed, freedBytes } = await trimGoCache(dir, goCacheMaxAgeHours * 60 * 60 * 1000);
+      const { removed, freedBytes } = await trimGoCache(dir, maxAgeMs);
       if (removed > 0) {
-        console.log(`[go-cache] removed ${removed} entries unused for ${goCacheMaxAgeHours}h, freed ${(freedBytes / 1e9).toFixed(1)}G`);
+        console.log(`[go-cache] ${label}: removed ${removed} entries, freed ${(freedBytes / 1e9).toFixed(1)}G`);
       }
     } catch (err) {
       console.warn(`[go-cache] trim failed: ${err}`);
@@ -628,15 +643,48 @@ export async function startDaemon(): Promise<() => void> {
       trimming = false;
     }
   };
+  const routineTrim = () => safeTrim(goCacheMaxAgeHours * 60 * 60 * 1000, `unused for ${goCacheMaxAgeHours}h`);
   let trimTimer: NodeJS.Timeout | undefined;
   if (goCacheTrim) {
-    void safeTrim();
-    trimTimer = setInterval(() => void safeTrim(), 60 * 60 * 1000);
+    void routineTrim();
+    // Every 15 minutes rather than hourly: with many worktrees building, the
+    // cache has grown 50G+ between hourly sweeps.
+    trimTimer = setInterval(() => void routineTrim(), 15 * 60 * 1000);
   }
+
+  // Disk guard, checked every minute (a statfs per volume is cheap). Watches
+  // Claude Code's temp dir (/tmp/claude-<uid>), the worktrees and the Go cache.
+  let checkingDisk = false;
+  const safeDiskCheck = async (): Promise<void> => {
+    if (checkingDisk) return;
+    checkingDisk = true;
+    try {
+      const goDir = goCacheTrim ? await goCacheDir() : null;
+      const paths = ["/tmp", tmpdir(), worktreesDir, ...(goDir ? [goDir] : [])];
+      await checkDisk(diskState, {
+        free: () => tightestVolume(paths),
+        lowBytes: diskLowBytes,
+        highBytes: diskRecoverBytes,
+        relieve: async () => {
+          if (goCacheTrim) {
+            await safeTrim(goCacheEmergencyMaxAgeMinutes * 60 * 1000, `disk low, unused for ${goCacheEmergencyMaxAgeMinutes}m`);
+          }
+        },
+        log: (msg) => console.warn(`[disk] ${msg}`),
+      });
+    } catch (err) {
+      console.warn(`[disk] check failed: ${err}`);
+    } finally {
+      checkingDisk = false;
+    }
+  };
+  void safeDiskCheck();
+  const diskTimer = setInterval(() => void safeDiskCheck(), 60 * 1000);
 
   return () => {
     clearInterval(syncTimer);
     clearInterval(trimTimer);
+    clearInterval(diskTimer);
     stop();
   };
 }

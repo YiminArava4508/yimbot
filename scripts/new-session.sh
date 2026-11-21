@@ -106,7 +106,7 @@ event_key_from_branch() {
 # Best-effort: a missing log or unresolvable branch is a silent no-op, never
 # failing the Claude hook that calls it.
 emit_hook_event() {
-  local kind=$1 reason=${2:-} branch key ts extra=""
+  local kind=$1 reason=${2:-} transcript=${3:-} branch key ts extra=""
   [ -n "${EVENTS_LOG:-}" ] || return 0
   branch=$(git branch --show-current 2>/dev/null) || return 0
   [ -n "$branch" ] || return 0
@@ -125,6 +125,13 @@ emit_hook_event() {
   reason=${reason//\\/\\\\}
   reason=${reason//\"/\\\"}
   [ -n "$reason" ] && extra=",\"reason\":\"$reason\""
+  # Claude's transcript path (turn_ended): the stuck detector reads its mtime to
+  # tell a quiet-but-working session from an idle one. Escaped like the reason.
+  if [ -n "$transcript" ]; then
+    transcript=${transcript//\\/\\\\}
+    transcript=${transcript//\"/\\\"}
+    extra="$extra,\"transcript\":\"$transcript\""
+  fi
   # The emitting pane, so the autonomous-mode nudge can address this exact
   # Claude. tmux pane ids are %N; no escaping needed.
   [ -n "${TMUX_PANE:-}" ] && extra="$extra,\"pane\":\"$TMUX_PANE\""
@@ -185,6 +192,21 @@ emit_notification_event() {
   fi
   case " $NOTIFY_QUIET " in *" $type "*) return 0 ;; esac
   emit_hook_event needs_input
+}
+
+# Claude Code Stop hook: Claude finished a turn and is back at its prompt.
+# Emits turn_ended with the payload's transcript_path, so the stuck detector
+# measures idleness from Claude's own turn state and transcript writes instead
+# of screen output (which a person viewing the pane, a resize or a banner
+# refresh all bump). No payload on stdin (a hand-run) emits nothing.
+emit_turn_ended_event() {
+  local payload="" transcript=""
+  [ -t 0 ] && return 0
+  payload=$(cat 2>/dev/null)
+  if [[ $payload =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    transcript=${BASH_REMATCH[1]}
+  fi
+  emit_hook_event turn_ended "" "$transcript"
 }
 
 # Fail fast if this session hands off to a skill that isn't installed, rather than

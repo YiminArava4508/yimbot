@@ -173,6 +173,23 @@ rm -f "$HOOK_LOG_PANE"
 ( cd "$HOOK_REPO" && unset EVENTS_LOG; emit_hook_event needs_input )
 assert_eq "$?" "0" "emit_hook_event with no EVENTS_LOG exits 0"
 
+# emit_turn_ended_event (Stop hook) writes turn_ended carrying the payload's
+# transcript_path, JSON-escaped, so the stuck detector can stat it.
+assert_defined emit_turn_ended_event
+TURN_LOG=$(mktemp)
+( cd "$HOOK_REPO" && EVENTS_LOG="$TURN_LOG" TMUX_PANE="%9" emit_turn_ended_event \
+    <<<'{"session_id":"s","transcript_path":"/home/u/.claude/projects/p/s.jsonl","hook_event_name":"Stop","stop_hook_active":false}' )
+assert_eq "$(grep -c '"kind":"turn_ended".*"transcript":"/home/u/.claude/projects/p/s.jsonl".*"pane":"%9"' "$TURN_LOG")" "1" "turn_ended carries transcript and pane"
+assert_eq "$(grep -c '"key":"ENG-7"' "$TURN_LOG")" "1" "turn_ended is keyed from the branch"
+: > "$TURN_LOG"
+( cd "$HOOK_REPO" && EVENTS_LOG="$TURN_LOG" emit_turn_ended_event <<<'{"session_id":"s","hook_event_name":"Stop"}' )
+assert_eq "$(grep -c '"kind":"turn_ended"' "$TURN_LOG")" "1" "a payload without transcript_path still writes turn_ended"
+assert_eq "$(grep -c '"transcript"' "$TURN_LOG")" "0" "no transcript_path, no transcript field"
+: > "$TURN_LOG"
+( cd "$HOOK_REPO" && EVENTS_LOG="$TURN_LOG" emit_hook_event turn_ended "" '/a "b"/c\d.jsonl' )
+assert_eq "$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).transcript)' "$TURN_LOG" 2>/dev/null || python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["transcript"],end="")' "$TURN_LOG")" '/a "b"/c\d.jsonl' "transcript with quotes and backslashes stays valid JSON"
+rm -f "$TURN_LOG"
+
 # emit_notification_event filters Claude Code's Notification payload: only a
 # notification that means a human is blocking becomes a needs_input line.
 assert_defined emit_notification_event

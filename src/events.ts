@@ -29,6 +29,9 @@ export type EventKind =
   | "unflagged"
   | "needs_input"
   | "input_received"
+  // Stop hook: Claude finished a turn and is back at its prompt. Only the stuck
+  // detector reads it; it is not a status or an attention signal.
+  | "turn_ended"
   | "session_ended"
   | "session_stuck"
   | "session_resumed"
@@ -65,6 +68,9 @@ export type YimbotEvent = {
   // it; the autonomous-mode nudge uses it to target the exact stuck Claude, and
   // the stale-raise step to notice that Claude is gone.
   pane?: string;
+  // turn_ended: the session's Claude transcript (.jsonl), whose writes, and its
+  // subagents', show the session is still working after its turn ended.
+  transcript?: string;
   // The queued PRs a blocked_waiting row is waiting on to land.
   waitingOn?: number[];
   // Why the holder itself is stuck, e.g. "needs approval"; shown on the wait text.

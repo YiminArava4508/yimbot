@@ -43,7 +43,7 @@ import { freshNudgeState, type NudgeDeps, nudgeOnce } from "./nudge.ts";
 import { clearDeadRaises, type StaleRaiseDeps } from "./stale-raise.ts";
 import { claimWorktreeForFixer, fsLockDeps, releaseWorktreeFromFixer } from "./worktree-lock.ts";
 import { readPaneActivity } from "./blocked-pane.ts";
-import { SHELL_COMMANDS, detectStuckSessions, isClaudeCommand, freshStuckState, stuckIdleMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
+import { SHELL_COMMANDS, detectStuckSessions, isClaudeCommand, freshStuckState, stuckIdleMs, transcriptLastWriteMs, type PaneInfo, type StuckDeps } from "./stuck-sessions.ts";
 import {
   countAssignedInState,
   createBlocksRelation,
@@ -2169,6 +2169,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     },
     now: Date.now,
     idleMs: stuckIdleMs(process.env.STUCK_IDLE_MINUTES),
+    lastWriteMs: transcriptLastWriteMs,
     emit: (e) => emitEvent(e),
     resume: resumeClaudeInPane,
     canNudge: () => readMode() === "autonomous" && !diskLow(),

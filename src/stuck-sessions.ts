@@ -4,10 +4,18 @@
 // working row's known panes with tmux and emits session_stuck / session_resumed
 // so the board shows what is really happening. When Claude exited but its pane
 // survives as a shell, it also types `claude --continue` back into that pane.
+// Idle is judged from Claude's own turn state when its hooks report it: after a
+// turn_ended (Stop hook) with no input since, the quiet time runs from the later
+// of the turn's end and the last transcript write (its own or a subagent's).
+// Screen output is ignored then, since a person viewing the pane, a resize or a
+// banner refresh all redraw it. Mid-turn, or for a session predating the Stop
+// hook, the pane's last output time is used instead.
 // When Claude is alive but has sat at its prompt past the idle limit (it ended
 // its turn waiting for a "continue" no one will type, e.g. after a transient
 // disk-full or network error), it types IDLE_NUDGE_PROMPT into that pane, if
 // canNudge allows (autonomous mode, disk not low).
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { STUCK_STATUS, isWorkingStatus, rowKeyOf, type BoardRow, type YimbotEvent } from "./events.ts";
 
 export const MAX_RESUME_ATTEMPTS = 3;
@@ -33,6 +41,32 @@ export function stuckIdleMs(raw: string | undefined): number {
   return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 30 * 60_000;
 }
 
+// Newest write time across a Claude transcript and its subagents' transcripts
+// (<session>.jsonl and <session>/subagents/*.jsonl), or null when the transcript
+// cannot be statted. Background agents write only to their own files, so the
+// main transcript alone would call a session whose agents are working idle.
+export function transcriptLastWriteMs(transcript: string): number | null {
+  let newest: number;
+  try {
+    newest = statSync(transcript).mtimeMs;
+  } catch {
+    return null;
+  }
+  const subagents = join(transcript.replace(/\.jsonl$/, ""), "subagents");
+  try {
+    for (const name of readdirSync(subagents)) {
+      try {
+        newest = Math.max(newest, statSync(join(subagents, name)).mtimeMs);
+      } catch {
+        // removed mid-scan
+      }
+    }
+  } catch {
+    // no subagents dir
+  }
+  return newest;
+}
+
 export type PaneInfo = { cmd: string; activityMs: number; session: string };
 
 export type StuckDeps = {
@@ -45,6 +79,8 @@ export type StuckDeps = {
   ownsSession: (session: string, key: string) => boolean;
   now: () => number;
   idleMs: number;
+  // Newest transcript write in ms (see transcriptLastWriteMs), or null.
+  lastWriteMs: (transcript: string) => number | null;
   emit: (e: { kind: "session_stuck" | "session_resumed"; key: string; label: string; reason?: string }) => void;
   resume: (pane: string) => void;
   // Whether an idle live Claude may be prompted right now. False (outside
@@ -64,7 +100,10 @@ export function freshStuckState(): StuckState {
   return { resumeAttempts: new Map() };
 }
 
-type LastPane = { pane: string; ended: boolean };
+// turn: the row's newest turn signal from this pane, when it is a turn_ended
+// (Claude back at its prompt) with no input_received since. Absent mid-turn,
+// or when the pane's hooks never reported one.
+type LastPane = { pane: string; ended: boolean; turn?: { ts: number; transcript?: string } };
 
 // The newest pane each row's events came from, and whether that pane's last
 // word was a SessionEnd (a deliberate exit rather than a crash).
@@ -75,7 +114,11 @@ function lastPanes(events: YimbotEvent[]): Map<string, LastPane> {
     const key = rowKeyOf(e);
     const prev = byKey.get(key);
     const ended = e.kind === "session_ended";
-    byKey.set(key, { pane: e.pane, ended: prev?.pane === e.pane && !ended ? false : ended });
+    // Carry the turn state forward only while the pane stays the same.
+    let turn = prev?.pane === e.pane ? prev.turn : undefined;
+    if (e.kind === "turn_ended") turn = { ts: e.ts, transcript: e.transcript };
+    else if (e.kind === "input_received") turn = undefined;
+    byKey.set(key, { pane: e.pane, ended: prev?.pane === e.pane && !ended ? false : ended, turn });
   }
   return byKey;
 }
@@ -96,7 +139,7 @@ function judge(key: string, last: LastPane | undefined, live: Map<string, PaneIn
     return { reason: "claude exited", resumePane: last.ended ? undefined : last.pane };
   }
   if (claudePanes.length === 0) return null;
-  const quietMs = deps.now() - Math.max(...claudePanes.map(([, p]) => p.activityMs));
+  const quietMs = deps.now() - lastActiveMs(last, info, claudePanes, deps);
   if (quietMs <= deps.idleMs) return null;
   // Prompt the row's own pane when it is the Claude; otherwise (its last event
   // came from a sibling window running something else, e.g. an editor) the most
@@ -105,6 +148,22 @@ function judge(key: string, last: LastPane | undefined, live: Map<string, PaneIn
     ? last.pane
     : claudePanes.reduce((a, b) => (b[1].activityMs > a[1].activityMs ? b : a))[0];
   return { reason: `no activity ${Math.round(quietMs / 60_000)}m`, nudgePane };
+}
+
+// When the row's own Claude has ended its turn, its last sign of life is the
+// later of that turn end and its newest transcript write; otherwise the newest
+// screen output among the session's Claude panes.
+function lastActiveMs(
+  last: LastPane,
+  info: PaneInfo,
+  claudePanes: [string, PaneInfo][],
+  deps: StuckDeps,
+): number {
+  if (last.turn && isClaudeCommand(info.cmd)) {
+    const wrote = last.turn.transcript ? deps.lastWriteMs(last.turn.transcript) : null;
+    return Math.max(last.turn.ts, wrote ?? 0);
+  }
+  return Math.max(...claudePanes.map(([, p]) => p.activityMs));
 }
 
 // "no activity 31m" and "no activity 45m" are the same stuck state.

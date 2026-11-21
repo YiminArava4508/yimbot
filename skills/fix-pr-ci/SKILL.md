@@ -50,8 +50,21 @@ A very common cause is not a code defect at all: the branch is behind
    git merge origin/main
    ```
 
-   If the `--ff-only` merge refuses, the branch has diverged from its remote;
-   stop and report it.
+   If the `--ff-only` merge refuses, the branch has diverged: a bot (e.g. an
+   automated "merge main" workflow) or another session pushed while this worktree
+   held unpushed commits. That is routine, not a reason to stop. Merge the remote
+   branch in, never rebase, never `git reset --hard`, never force push:
+
+   ```bash
+   git merge --no-edit "origin/$(git branch --show-current)"
+   ```
+
+   then carry on with the `origin/main` merge. Resolve the remote merge's conflicts
+   the same way as main's (next paragraph). A diverged branch often carries the
+   same migration under two numbers (one side renumbered it, the other did not):
+   keep the copy that sorts after main's latest, `git rm` the other, and rehash
+   `atlas.sum`. Stop only when a conflict in hand-written code cannot be reconciled
+   safely (see "Stopping for a human" below).
 
    Do not run the project's full sync task (`task merge-main` or similar): its
    codegen output is gitignored, so it produces nothing committable and can eat
@@ -104,9 +117,12 @@ A very common cause is not a code defect at all: the branch is behind
    git pull --no-rebase --no-edit origin "$(git branch --show-current)" && git push
    ```
 
-   If the merge hits a conflict or the push still fails, **stop**: run
-   `git merge --abort`, leave the session open, and report in the summary that
-   the branch diverged and needs a human. Never force push.
+   If that merge conflicts, resolve it like any other: an `atlas.sum` or
+   migration-numbering conflict is mechanical (renumber or drop the duplicate
+   migration, rehash, stage), then commit and push. Only if a conflict in
+   hand-written code cannot be reconciled safely, or the push still fails, stop:
+   `git merge --abort`, follow "Stopping for a human" below, and leave the session
+   open. Never force push.
 
 6. **Flag the session ready to test** so the user knows they can run local dev
    here:
@@ -136,3 +152,17 @@ A very common cause is not a code defect at all: the branch is behind
    Only close on this success path. If you stopped at step 5 because the branch
    diverged, or you could not legitimately make the build green, leave the session
    open as those steps say.
+
+## Stopping for a human
+
+Every path above that ends with "stop" or "needs a human" also raises it on the
+board, so the row shows "needs decision" instead of still looking busy, and
+whoever is watching knows to look:
+
+```bash
+~/needs-decision.sh "PR #<number>: <one-line reason, e.g. conflict in api/foo.go needs a product call>"
+```
+
+Then print your summary and leave the session open. Do not stop for anything a
+rule above tells you how to resolve (a diverged remote, an `atlas.sum` or
+migration-numbering conflict): those are routine.

@@ -1,3 +1,4 @@
+import { filterArchiveReady, freshPrecheckState, type PrecheckResult, type PrecheckState } from "./claim-precheck.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -526,6 +527,9 @@ export type ClaimDeps = {
   // Adjudicates the picked ticket's description for a dependency never recorded
   // as a Linear relation; null or absent disables the step.
   dependencyScan?: DependencyScanDeps | null;
+  // Flag-archive reference checks (2 and 3) for an "Archive `<key>` flag ..."
+  // ticket; the claim step leaves it in Todo until they pass. Absent disables.
+  flagArchivePrecheck?: (key: string) => Promise<PrecheckResult>;
   log: (msg: string) => void;
 };
 
@@ -611,11 +615,15 @@ async function recordInferredBlockers(
 // fails closed on the same write, and the claim step never reaches any other
 // ticket. Latching it here lets the next tick fall through to the
 // next-priority ticket instead, so only the broken ticket stalls.
-export type ClaimState = { skip: Set<string>; orphansLogged: Set<string> };
+export type ClaimState = { skip: Set<string>; orphansLogged: Set<string>; archivePrecheck: PrecheckState };
 
 export function freshClaimState(): ClaimState {
-  return { skip: new Set(), orphansLogged: new Set() };
+  return { skip: new Set(), orphansLogged: new Set(), archivePrecheck: freshPrecheckState() };
 }
+
+// A precheck result stands this long; a check that threw is retried sooner.
+export const ARCHIVE_PRECHECK_TTL_MS = 60 * 60_000;
+export const ARCHIVE_PRECHECK_ERROR_TTL_MS = 10 * 60_000;
 
 // A started parent means its session may still be carving slices. A parent in
 // a cleared state (Merged or later) has landed, so its Todo children are late
@@ -719,7 +727,20 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
     maxEstimate: deps.maxEstimate,
   });
 
-  for (const next of ranked.slice(0, slots)) {
+  // An archive-flag ticket whose prod references are not gone yet would only
+  // park a session on a hand-back; skip it so the next ticket takes the slot.
+  const candidates = deps.flagArchivePrecheck
+    ? filterArchiveReady(ranked, slots, {
+        check: deps.flagArchivePrecheck,
+        state: state.archivePrecheck,
+        ttlMs: ARCHIVE_PRECHECK_TTL_MS,
+        errorTtlMs: ARCHIVE_PRECHECK_ERROR_TTL_MS,
+        now: Date.now,
+        log: deps.log,
+      })
+    : ranked;
+
+  for (const next of candidates.slice(0, slots)) {
     // Adjudicates each ticket about to be claimed, so at most `slots` per heartbeat.
     if (deps.dependencyScan) {
       const verdict = await recordInferredBlockers(deps.dependencyScan, next, deps.log);
@@ -800,6 +821,8 @@ export async function reconcileBlockedInProgress(deps: ReconcileDeps): Promise<v
 
 export type ClaimConfig = {
   autoClaim: boolean;
+  // See ClaimDeps.flagArchivePrecheck; absent disables the precheck.
+  flagArchivePrecheck?: (key: string) => Promise<PrecheckResult>;
   riskLabels: string[];
   rejectLabel: string;
   afterReleaseLabel: string;
@@ -2188,6 +2211,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       }
     },
     dependencyScan: dependencyScanDeps,
+    flagArchivePrecheck: claim.flagArchivePrecheck,
     log: claimLog,
   };
 

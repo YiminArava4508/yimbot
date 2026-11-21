@@ -67,3 +67,25 @@ export function cellWidth(cell: string): number {
 export function paneLabel(name: string, count: number): string {
   return ` ${name} ${count} `;
 }
+
+// The one look for "this pane has the keys", shared by every board pane: its
+// own color with a bold border, and its title as a solid block with a ▶
+// marker. Every other pane goes grey, so exactly one pane is lit at a time.
+export const UNFOCUSED_PANE = "grey";
+
+export function focusedPaneLabel(name: string, count: number): string {
+  return `{inverse}{bold} ▶ ${name} ${count} {/bold}{/inverse}`;
+}
+
+export function paneTitle(name: string, count: number, focused: boolean): string {
+  return focused ? focusedPaneLabel(name, count) : paneLabel(name, count);
+}
+
+type PaneStyle = { border: { fg: string; bold?: boolean }; label: { fg: string } };
+
+export function stylePaneFocus(style: PaneStyle, color: string, focused: boolean): void {
+  const fg = focused ? color : UNFOCUSED_PANE;
+  style.border.fg = fg;
+  style.border.bold = focused;
+  style.label.fg = fg;
+}

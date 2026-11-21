@@ -1,6 +1,5 @@
 import blessed from "neo-blessed";
-import { FOCUS_BORDER } from "./arch-layout.ts";
-import { paneLabel } from "./board-format.ts";
+import { UNFOCUSED_PANE, paneTitle, stylePaneFocus } from "./board-format.ts";
 import type { BoardRow } from "./events.ts";
 import { PR_COLUMN, TABLE_IDS, alignTables, boardTable, columnAt, type ReviewEntry, type TableBoxes, type TableId } from "./table-view.ts";
 
@@ -22,7 +21,8 @@ export type TableView = {
   hide(): void;
 };
 
-const TABLE_BORDER: Record<TableId, string> = { attention: "red", tasks: "grey", review: "yellow", merge: "green" };
+// Each pane's color while it holds the focus; unfocused panes are all grey.
+const TABLE_COLOR: Record<TableId, string> = { attention: "red", tasks: "white", review: "yellow", merge: "green" };
 
 const TABLE_TITLE: Record<TableId, string> = {
   attention: "needs attention",
@@ -59,8 +59,8 @@ export function createTableView(opts: {
       style: {
         header: { bold: true },
         cell: { selected: { inverse: true } },
-        border: { fg: TABLE_BORDER[id] },
-        label: { fg: TABLE_BORDER[id] },
+        border: { fg: UNFOCUSED_PANE },
+        label: { fg: UNFOCUSED_PANE },
       },
     });
 
@@ -154,11 +154,10 @@ export function createTableView(opts: {
       Object.assign(widgets.merge, boxes.merge);
       const data = { attention: attentionData, tasks: tasksData, review: reviewData, merge: mergeData };
       for (const id of TABLE_IDS) {
-        widgets[id].setLabel(paneLabel(TABLE_TITLE[id], counts[id]));
+        const focused = id === input.focusedId;
+        widgets[id].setLabel(paneTitle(TABLE_TITLE[id], counts[id], focused));
         widgets[id].setData(data[id]);
-        const fg = id === input.focusedId ? FOCUS_BORDER : TABLE_BORDER[id];
-        widgets[id].style.border.fg = fg;
-        widgets[id].style.label.fg = fg;
+        stylePaneFocus(widgets[id].style, TABLE_COLOR[id], focused);
         // neo-blessed aliases style.selected to style.cell.selected on a
         // listtable and resolves it at paint time, so mutating it is enough.
         widgets[id].style.selected.inverse = id === input.focusedId;

@@ -407,7 +407,9 @@ ready to review, ready to merge). Needs attention holds every row waiting on a
 person, whichever pane its PR would otherwise sit in: a session that handed
 back a decision or review findings, and a session the stuck detector or the
 nudge gave up on. It is a board-only grouping: those tickets stay In Progress
-in Linear and still count toward `MAX_IN_PROGRESS`. In both views, at 80 columns and wider, a rail on the
+in Linear and still count toward `MAX_IN_PROGRESS`. The pane that has the keys (Tab cycles)
+is the only one lit: its own color (red, white, yellow, green) with a bold
+border and a solid `▶` title, while every other pane is grey. In both views, at 80 columns and wider, a rail on the
 left holds the background jobs and the parent tickets box of a split. On a
 narrower screen there is no rail: the table folds the parent tickets into the
 in progress pane, and the kanban does not show them. Press `v` to switch to the kanban view

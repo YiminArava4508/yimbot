@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BoardRow, YimbotEvent } from "./events.ts";
-import { IDLE_NUDGE_PROMPT, MAX_RESUME_ATTEMPTS, detectStuckSessions, isClaudeCommand, stuckIdleMs, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
+import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tempDir } from "./test-temp.ts";
+import { IDLE_NUDGE_PROMPT, MAX_RESUME_ATTEMPTS, detectStuckSessions, transcriptLastWriteMs, isClaudeCommand, stuckIdleMs, freshStuckState, type StuckDeps } from "./stuck-sessions.ts";
 
 const MIN = 60_000;
 const NOW = 100 * MIN;
@@ -29,6 +32,7 @@ type Setup = {
   now?: number;
   canNudge?: boolean;
   nudgeDelivers?: boolean;
+  writes?: Record<string, number>;
 };
 
 function run(setup: Setup, state = freshStuckState()) {
@@ -43,6 +47,7 @@ function run(setup: Setup, state = freshStuckState()) {
     ownsSession: (session, key) => session.toLowerCase().startsWith(key.toLowerCase()),
     now: () => setup.now ?? NOW,
     idleMs: 30 * MIN,
+    lastWriteMs: (t) => setup.writes?.[t] ?? null,
     emit: (e) => emitted.push(e),
     resume: (pane) => resumed.push(pane),
     canNudge: () => setup.canNudge ?? false,
@@ -261,4 +266,81 @@ test("an exited claude is resumed, not nudged, even when nudging is allowed", ()
   const { resumed, nudged } = run({ events: [paneEvent("%1")], panes: pane("zsh"), canNudge: true });
   assert.deepEqual(resumed, ["%1"]);
   assert.deepEqual(nudged, []);
+});
+
+const turnEnded = (ageMin: number, transcript?: string, pane = "%1"): YimbotEvent => ({
+  ts: NOW - ageMin * MIN,
+  kind: "turn_ended",
+  key: "ENG-1",
+  label: "ENG-1",
+  pane,
+  ...(transcript ? { transcript } : {}),
+});
+const inputAt = (ageMin: number, pane = "%1"): YimbotEvent => ({ ts: NOW - ageMin * MIN, kind: "input_received", key: "ENG-1", label: "ENG-1", pane });
+
+test("a turn ended long ago is idle even when the screen just redrew (someone viewed the pane)", () => {
+  const { emitted, nudged } = run({ events: [turnEnded(45)], panes: pane("claude", 0), canNudge: true });
+  assert.deepEqual(emitted.map((e) => [e.kind, e.reason]), [["session_stuck", "no activity 45m"]]);
+  assert.deepEqual(nudged.map((n) => n.pane), ["%1"]);
+});
+
+test("a stuck row stays stuck when only the screen redraws after its turn ended", () => {
+  const { emitted } = run({
+    rows: [row({ status: "stuck", stuckReason: "no activity 40m" })],
+    events: [turnEnded(45)],
+    panes: pane("claude", 0),
+  });
+  assert.deepEqual(emitted, []);
+});
+
+test("a recent turn end is not idle, however quiet the screen", () => {
+  const { emitted } = run({ events: [turnEnded(5)], panes: pane("claude", 60) });
+  assert.deepEqual(emitted, []);
+});
+
+test("a recent transcript write (e.g. a background agent) keeps an ended turn active", () => {
+  const { emitted } = run({ events: [turnEnded(45, "/t/s.jsonl")], panes: pane("claude", 60), writes: { "/t/s.jsonl": NOW - 2 * MIN } });
+  assert.deepEqual(emitted, []);
+});
+
+test("an old transcript write does not rescue an ended turn", () => {
+  const { emitted } = run({ events: [turnEnded(45, "/t/s.jsonl")], panes: pane("claude", 0), writes: { "/t/s.jsonl": NOW - 50 * MIN } });
+  assert.deepEqual(emitted.map((e) => e.reason), ["no activity 45m"]);
+});
+
+test("input after the turn end means mid-turn: screen output decides again", () => {
+  const busy = run({ events: [turnEnded(45), inputAt(40)], panes: pane("claude", 1) });
+  assert.deepEqual(busy.emitted, []);
+  const quiet = run({ events: [turnEnded(45), inputAt(40)], panes: pane("claude", 35) });
+  assert.deepEqual(quiet.emitted.map((e) => e.reason), ["no activity 35m"]);
+});
+
+test("a stuck row whose nudge was taken (input_received, screen busy) is healthy again", () => {
+  const { emitted } = run({
+    rows: [row({ status: "stuck", stuckReason: "no activity 45m" })],
+    events: [turnEnded(45), inputAt(0)],
+    panes: pane("claude", 0),
+  });
+  assert.deepEqual(emitted.map((e) => e.kind), ["session_resumed"]);
+});
+
+test("a turn end from an older pane is ignored once the row moved to a new pane", () => {
+  const panes = new Map([["%2", info("claude", 1)]]);
+  const { emitted } = run({ events: [turnEnded(45, undefined, "%1"), paneEvent("%2", "ENG-1", "input_received")], panes });
+  assert.deepEqual(emitted, []);
+});
+
+test("transcriptLastWriteMs takes the newest of the transcript and its subagents", () => {
+  const dir = tempDir("transcript-");
+  const transcript = join(dir, "s.jsonl");
+  writeFileSync(transcript, "{}");
+  const t = (ms: number) => new Date(ms);
+  utimesSync(transcript, t(NOW - 40 * MIN), t(NOW - 40 * MIN));
+  assert.equal(transcriptLastWriteMs(transcript), NOW - 40 * MIN);
+  mkdirSync(join(dir, "s", "subagents"), { recursive: true });
+  const agent = join(dir, "s", "subagents", "agent-a.jsonl");
+  writeFileSync(agent, "{}");
+  utimesSync(agent, t(NOW - 3 * MIN), t(NOW - 3 * MIN));
+  assert.equal(transcriptLastWriteMs(transcript), NOW - 3 * MIN);
+  assert.equal(transcriptLastWriteMs(join(dir, "missing.jsonl")), null);
 });

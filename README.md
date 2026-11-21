@@ -246,7 +246,10 @@ flowchart TD
 - **Nudge idle sessions:** in autonomous mode, a working session whose Claude has
   sat at its prompt past `STUCK_IDLE_MINUTES` (default 30), e.g. after it stopped
   on a transient disk-full or network error and asked for "continue", is
-  prompted to retry or decide and carry on. It shares the 3-per-hour budget with
+  prompted to retry or decide and carry on. Idle is judged from Claude's Stop
+  hook (`turn_ended`) and its transcript writes, including its subagents', so
+  viewing the pane doesn't reset the clock. Mid-turn, and for sessions started
+  before the hook existed, the pane's last screen output is used instead. It shares the 3-per-hour budget with
   the `claude --continue` relaunch of an exited Claude; past it the row stays
   stuck for a person.
 - **Advance the work (teal):** every heartbeat, once one of your PRs is merged,

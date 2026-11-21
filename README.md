@@ -408,8 +408,8 @@ person, whichever pane its PR would otherwise sit in: a session that handed
 back a decision or review findings, and a session the stuck detector or the
 nudge gave up on. It is a board-only grouping: those tickets stay In Progress
 in Linear and still count toward `MAX_IN_PROGRESS`. Each pane keeps its color (red, grey,
-yellow, green). The pane that has the keys (Tab cycles) also gets a solid frame
-in that color and a dark tint of it behind its rows. In both views, at 80 columns and wider, a rail on the
+yellow, green). The pane that has the keys (Tab cycles) shows inward arrows
+around its title, like `▶ in progress 3 ◀`. In both views, at 80 columns and wider, a rail on the
 left holds the background jobs and the parent tickets box of a split. On a
 narrower screen there is no rail: the table folds the parent tickets into the
 in progress pane, and the kanban does not show them. Press `v` to switch to the kanban view

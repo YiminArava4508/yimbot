@@ -4,7 +4,6 @@ import { test } from "node:test";
 import blessed from "neo-blessed";
 import type { BoardRow } from "./events.ts";
 import { BOARD_HEADER, tableBoxes } from "./table-view.ts";
-import { focusTint } from "./board-format.ts";
 import { createTableView, type TableViewInput } from "./tui-table-view.ts";
 
 function fakeTty(columns: number, rows: number) {
@@ -73,7 +72,7 @@ test("render fills the four panes and labels them with counts", () => {
   const { view } = setup({ attention: 1, tasks: 3, review: 2, merge: 1 });
   assert.equal(view.widgets.attention._label.content, " needs attention 1 ");
   assert.equal(view.widgets.attention.rows.length, 2);
-  assert.equal(view.widgets.tasks._label.content, " in progress 3 ");
+  assert.equal(view.widgets.tasks._label.content, " \u25b6 in progress 3 \u25c0 ");
   assert.equal(view.widgets.review._label.content, " ready to review 2 ");
   assert.equal(view.widgets.merge._label.content, " ready to merge 1 ");
   assert.equal(view.widgets.tasks.rows.length, 4);
@@ -81,7 +80,7 @@ test("render fills the four panes and labels them with counts", () => {
   assert.equal(view.widgets.merge.rows.length, 2);
 });
 
-test("every pane keeps its color; only the focused one wears a solid frame, a tinted fill, and an inverse row", () => {
+test("every pane keeps its color and thin frame; only the focused one gets arrows in its title and an inverse row", () => {
   const { view, input } = setup({ attention: 1, tasks: 2, review: 2, merge: 2 });
   const colors = { attention: "red", tasks: "grey", review: "yellow", merge: "green" } as const;
   for (const focusedId of ["attention", "tasks", "review", "merge"] as const) {
@@ -91,12 +90,9 @@ test("every pane keeps its color; only the focused one wears a solid frame, a ti
       const focused = id === focusedId;
       assert.equal(w.style.border.fg, colors[id], `${id} border color with ${focusedId} focused`);
       assert.equal(w.style.label.fg, colors[id]);
-      assert.equal(w.border.type, focused ? "bg" : "line", `${id} frame with ${focusedId} focused`);
-      assert.equal(w.style.border.bg, focused ? colors[id] : undefined);
-      const fill = focused ? focusTint(colors[id]) : undefined;
-      assert.equal(w.style.bg, fill, `${id} fill with ${focusedId} focused`);
-      assert.equal(w.style.header.bg, fill);
-      assert.equal(w.style.cell.bg, fill);
+      assert.equal(w.border.type, "line");
+      assert.equal(w.style.bg, undefined);
+      assert.equal(w._label.content.includes("\u25b6"), focused, `${id} arrows with ${focusedId} focused`);
       assert.equal(w.style.selected.inverse, focused);
     }
   }

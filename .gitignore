@@ -6,6 +6,7 @@ daemon.log.bak.*
 events.jsonl
 review-state.json
 fix-timers.json
+last-update.json
 architecture-map-*.json
 docs/superpowers/
 mode

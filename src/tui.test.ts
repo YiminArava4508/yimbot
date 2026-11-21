@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
-import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleOpenPr, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent, updateChip, bootNotice, NOTICE_ERROR_TTL_MS } from "./tui.ts";
+import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleOpenPr, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent, updateChip, lastUpdateChip, bootNotice, NOTICE_ERROR_TTL_MS } from "./tui.ts";
 import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
@@ -365,6 +365,18 @@ test("bindFlagKey gates f while settings is open", () => {
   settingsOpen = false;
   handlers["f"]();
   assert.equal(toggleCalls, 1, "f flags again once the panel is closed");
+});
+
+test("lastUpdateChip shows the last self-update's local date and time, nothing when there is none", () => {
+  const at = new Date(2026, 10, 20, 9, 5).getTime();
+  assert.equal(lastUpdateChip({ at, from: "a", to: "b" }), grey("updated Nov 20 09:05 "));
+  assert.equal(lastUpdateChip(null), "");
+});
+
+test("statusContent puts the last self-update before the mode chip", () => {
+  const at = new Date(2026, 10, 20, 21, 12).getTime();
+  const bar = statusContent("supervised", null, 0, [], null, false, { at, from: "a", to: "b" });
+  assert.ok(bar.indexOf("updated Nov 20 21:12") < bar.indexOf("SUPERVISED"));
 });
 
 test("statusContent shows an unexpired notice and drops it after its ttl", () => {

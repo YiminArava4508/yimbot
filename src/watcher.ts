@@ -1,4 +1,4 @@
-import { filterArchiveReady, type PrecheckCache, type PrecheckResult } from "./claim-precheck.ts";
+import { filterArchiveReady, freshPrecheckState, type PrecheckResult, type PrecheckState } from "./claim-precheck.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -615,10 +615,10 @@ async function recordInferredBlockers(
 // fails closed on the same write, and the claim step never reaches any other
 // ticket. Latching it here lets the next tick fall through to the
 // next-priority ticket instead, so only the broken ticket stalls.
-export type ClaimState = { skip: Set<string>; orphansLogged: Set<string>; archivePrecheck: PrecheckCache };
+export type ClaimState = { skip: Set<string>; orphansLogged: Set<string>; archivePrecheck: PrecheckState };
 
 export function freshClaimState(): ClaimState {
-  return { skip: new Set(), orphansLogged: new Set(), archivePrecheck: new Map() };
+  return { skip: new Set(), orphansLogged: new Set(), archivePrecheck: freshPrecheckState() };
 }
 
 // A precheck result stands this long; a check that threw is retried sooner.
@@ -730,9 +730,9 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
   // An archive-flag ticket whose prod references are not gone yet would only
   // park a session on a hand-back; skip it so the next ticket takes the slot.
   const candidates = deps.flagArchivePrecheck
-    ? await filterArchiveReady(ranked, slots, {
+    ? filterArchiveReady(ranked, slots, {
         check: deps.flagArchivePrecheck,
-        cache: state.archivePrecheck,
+        state: state.archivePrecheck,
         ttlMs: ARCHIVE_PRECHECK_TTL_MS,
         errorTtlMs: ARCHIVE_PRECHECK_ERROR_TTL_MS,
         now: Date.now,

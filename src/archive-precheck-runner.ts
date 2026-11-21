@@ -1,10 +1,10 @@
 // src/archive-precheck-runner.ts
 // Runs flag-archive checks 2 and 3 against the gemini checkout for the claim
 // step's precheck (see claim-precheck.ts), the same way flag-archive-check.sh
-// does, and boils the report down to pass plus the failing checks' details.
+// does, and boils the report down with summarizeReport.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { PrecheckResult } from "./claim-precheck.ts";
+import { summarizeReport, type PrecheckResult } from "./claim-precheck.ts";
 import { runFlagArchiveCheck, type GitRunner } from "./flag-archive.ts";
 import { ghRunner } from "./gh.ts";
 
@@ -23,8 +23,5 @@ function gitIn(dir: string): GitRunner {
 }
 
 export async function runArchivePrecheck(key: string, geminiDir: string): Promise<PrecheckResult> {
-  const report = await runFlagArchiveCheck({ key, gh: ghRunner(geminiDir), git: gitIn(geminiDir) });
-  if (report.pass) return { pass: true, detail: "reference checks pass" };
-  const failed = report.checks.filter((c) => !c.pass).map((c) => `${c.name}: ${c.detail}`);
-  return { pass: false, detail: failed.join("; ").slice(0, 400) };
+  return summarizeReport(await runFlagArchiveCheck({ key, gh: ghRunner(geminiDir), git: gitIn(geminiDir) }));
 }

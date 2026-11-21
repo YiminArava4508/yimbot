@@ -316,8 +316,10 @@ without the label behave as before.
   and 3 of `flag-archive-check.sh`: no references on gemini `main`, elsewhere
   in the org, or in any build prod runs). It leaves the ticket in Todo while
   they fail, logging `deferring ENG-1: flag-archive precheck for <key> failed
-  (…)`, and lets the next ticket take the slot. A result is reused for an hour
-  (10 minutes after an error). The quiet-time and PostHog checks still run in
+  (…)`, and lets the next ticket take the slot. The checks run in the
+  background, one ticket at a time, so a ticket is claimed on the first
+  heartbeat after its checks pass. A result is reused for an hour (10 minutes
+  after a check that could not run). The quiet-time and PostHog checks still run in
   the session. Disable with `FLAG_ARCHIVE_PRECHECK=false`.
 - **Creating one:** `~/create-subticket.sh <PARENT> "<title>" <points> --after-release`
   adds the label on top of the inherited ones, makes the parent block the new

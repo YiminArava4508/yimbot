@@ -361,11 +361,13 @@ export async function searchOrg(gh: GhRunner, key: string): Promise<Classified> 
 
 const summarize = (paths: string[]) => paths.slice(0, 10).join(", ") + (paths.length > 10 ? `, +${paths.length - 10} more` : "");
 
+export const COULD_NOT_RUN = "check could not run";
+
 async function guarded(name: string, run: () => Promise<{ pass: boolean; detail: string }>): Promise<Check> {
   try {
     return { name, ...(await run()) };
   } catch (e) {
-    return { name, pass: false, detail: `check could not run: ${errMsg(e)}` };
+    return { name, pass: false, detail: `${COULD_NOT_RUN}: ${errMsg(e)}` };
   }
 }
 

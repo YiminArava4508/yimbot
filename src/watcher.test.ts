@@ -1867,6 +1867,7 @@ test("claimOnce skips an archive-flag ticket whose reference precheck fails and 
   });
   const state = freshClaimState();
   await claimOnce(state, deps);
+  await state.archivePrecheck.running;
   assert.deepEqual(checked, ["old-flag"]);
   assert.deepEqual(moved.map((m) => m.identifier), ["ENG-2"]);
   assert.ok(logs.some((l) => /deferring ENG-1: flag-archive precheck for old-flag failed/.test(l)));
@@ -1875,7 +1876,7 @@ test("claimOnce skips an archive-flag ticket whose reference precheck fails and 
   assert.deepEqual(checked, ["old-flag"]);
 });
 
-test("claimOnce claims an archive-flag ticket once its reference precheck passes", async () => {
+test("claimOnce claims an archive-flag ticket on the heartbeat after its reference precheck passes", async () => {
   const { deps, moved } = claimDeps({
     fetchCycleTodos: async () => [
       cycleTodo({
@@ -1888,7 +1889,11 @@ test("claimOnce claims an archive-flag ticket once its reference precheck passes
     ],
     flagArchivePrecheck: async () => ({ pass: true, detail: "reference checks pass" }),
   });
-  await claimOnce(freshClaimState(), deps);
+  const state = freshClaimState();
+  await claimOnce(state, deps);
+  assert.equal(moved.length, 0);
+  await state.archivePrecheck.running;
+  await claimOnce(state, deps);
   assert.deepEqual(moved.map((m) => m.identifier), ["ENG-1"]);
 });
 

@@ -262,8 +262,10 @@ check fails. Never pass a check on missing data, and never skip one.
    app's chart and its local subcharts, at the commit their `appVersion` names;
    `builds` lists every app, chart, commit, and folder searched). `*.md` files
    are never searched in prod builds; on `origin/main` and the org they land in
-   `docMatches` and don't fail. A code reference is the exact key as a quoted
-   string (`"key"`, `'key'`, `` `key` ``) in a non-test file. Every other match
+   `docMatches` and don't fail. A code reference, in a non-test file, is the
+   exact key as a quoted string (`"key"`, `'key'`, `` `key` ``), the key as a
+   whole token in a config file (yaml, json, tf, `.env`, ...), or `.key` /
+   `key:` in code. Every other match
    (the key inside a comment or a longer name such as a bucket or option, a test
    id, a mock, anything in a test file) lands in `ignoredMatches` and doesn't
    fail. The check is the gate: don't second-guess an ignored match, and don't

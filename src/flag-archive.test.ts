@@ -4,6 +4,7 @@ import {
   checkQuiet,
   classifyHits,
   classifyMatches,
+  isBareReference,
   isQuotedKey,
   isTestPath,
   parseGrepLines,
@@ -523,6 +524,44 @@ test("isQuotedKey matches the exact key in any quote style, not inside longer te
   assert.equal(isQuotedKey(`f("axb")`, "a.b"), false, "regex metacharacters in the key are literal");
 });
 
+test("isBareReference catches unquoted reads: a config value, an object or type key, a property", () => {
+  for (const [path, text, key] of [
+    ["deploy/values.yaml", "  FEATURE_FLAG: dealExport", "dealExport"],
+    ["deploy/values.yml", "flags: [object-history, other]", "object-history"],
+    ["infra/flags.tf", "  flag = marketing-package", "marketing-package"],
+    [".env.production", "FLAGS=dealExport,other", "dealExport"],
+    ["react-ui/src/flags.ts", "  dealExport: true,", "dealExport"],
+    ["react-ui/src/flags.ts", "type Flags = { dealExport: boolean }", "dealExport"],
+    ["react-ui/src/x.tsx", "if (flags.dealExport) {", "dealExport"],
+    ["react-ui/src/x.tsx", "const on = useFlags()?.dealExport;", "dealExport"],
+  ] as const) {
+    assert.equal(isBareReference(path, text, key), true, `${path}: ${text}`);
+  }
+  for (const [path, text, key] of [
+    ["compose.yaml", "mc mb local/marketing-packages local/app-objects", "marketing-package"],
+    ["values.yaml", "cron: marketing-package-stale-sweep-cron", "marketing-package"],
+    ["api/export.go", "// the dealExport gate was removed", "dealExport"],
+    ["api/export.go", "func dealExportRows() {}", "dealExport"],
+    ["api/export.go", "x := s.dealExportRows", "dealExport"],
+    ["api/flags.go", "// marketing-package: removed", "marketing-package"],
+  ] as const) {
+    assert.equal(isBareReference(path, text, key), false, `${path}: ${text}`);
+  }
+});
+
+test("classifyHits counts an unquoted config value or property read as code", () => {
+  const r = classifyHits(
+    [
+      { path: "deploy/values.yaml", text: "  FEATURE_FLAG: dealExport" },
+      { path: "ui/x.tsx", text: "if (flags.dealExport) {" },
+      { path: "ui/y.tsx", text: "// dealExport used to gate this" },
+    ],
+    "dealExport",
+  );
+  assert.deepEqual(r.code.sort(), ["deploy/values.yaml", "ui/x.tsx"]);
+  assert.match(r.ignored.join("\n"), /ui\/y\.tsx \(not a reference/);
+});
+
 test("isTestPath recognises test files and test folders", () => {
   for (const p of [
     "api/v1/integration/escrow/export_helpers_test.go",
@@ -555,7 +594,7 @@ test("classifyHits: quoted key outside tests is code; comments, longer names and
   assert.deepEqual(r.code.sort(), ["api/gate.go", "ui/bundle.bin"]);
   assert.deepEqual(r.docs, ["docs/flags.md"]);
   assert.equal(r.ignored.length, 2);
-  assert.match(r.ignored.join("\n"), /api\/flags\.go \(not a quoted key/);
+  assert.match(r.ignored.join("\n"), /api\/flags\.go \(not a reference/);
   assert.match(r.ignored.join("\n"), /ui\/a\.test\.tsx \(test file/);
 });
 

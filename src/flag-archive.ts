@@ -1,9 +1,10 @@
 // Checks 2 and 3 of the prod flag-archive policy: the flag key must be absent
 // from gemini's origin/main, from the rest of the org, and from the source
-// folder of every gemini build prod runs. A reference is the exact key as a
-// quoted string ("key", 'key', `key`) in a non-test file; other matches (the
-// key inside a comment, a longer name, a test id or mock) are reported in
-// ignoredMatches but don't fail. Every failure to read an input fails
+// folder of every gemini build prod runs. A reference, in a non-test file, is
+// the exact key as a quoted string ("key", 'key', `key`), a whole-token match
+// in a config file, or `.key` / `key:` in code; other matches (the key inside
+// a comment, a longer name, a test id or mock) are reported in ignoredMatches
+// but don't fail. Every failure to read an input fails
 // the check; nothing passes on missing data.
 import { posix } from "node:path";
 import type { GhRunner } from "./gh.ts";
@@ -202,6 +203,23 @@ export function isQuotedKey(text: string, key: string): boolean {
   return new RegExp(`(["'\`])${escapeRegExp(key)}\\1`).test(text);
 }
 
+const CONFIG_PATH = /\.(ya?ml|json|tf|tfvars|toml|ini|properties|conf)$|(^|\/)\.env[^/]*$/i;
+const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+
+// A flag can also be read without quotes: a config value (`FLAG: key`), an
+// object or type key (`key: true`), a property (`flags.key`). In config any
+// whole-token match counts; in code only those two shapes, and only for keys
+// that can be identifiers.
+export function isBareReference(path: string, text: string, key: string): boolean {
+  const k = escapeRegExp(key);
+  if (CONFIG_PATH.test(path)) return new RegExp(`(^|[^\\w-])${k}($|[^\\w-])`).test(text);
+  if (!IDENTIFIER.test(key)) return false;
+  return new RegExp(`\\.${k}(?![\\w$])|(?<![\\w$])${k}\\s*:`).test(text);
+}
+
+const isReference = (h: Hit, key: string) =>
+  h.text === null || isQuotedKey(h.text, key) || isBareReference(h.path, h.text, key);
+
 // One grep or search hit: the file and the text around the match (null when
 // the source gave no text, e.g. a binary file, which then counts as code).
 export type Hit = { path: string; text: string | null };
@@ -217,9 +235,9 @@ export function classifyHits(hits: Hit[], key: string): Classified {
   const ignored = new Map<string, string>();
   for (const h of hits) {
     if (isDoc(h.path)) docs.add(h.path);
-    else if (!isTestPath(h.path) && (h.text === null || isQuotedKey(h.text, key))) code.add(h.path);
+    else if (!isTestPath(h.path) && isReference(h, key)) code.add(h.path);
     else if (!ignored.has(h.path)) {
-      const why = isTestPath(h.path) ? "test file" : "not a quoted key";
+      const why = isTestPath(h.path) ? "test file" : "not a reference";
       ignored.set(h.path, `${h.path} (${why}: ${(h.text ?? "").trim().slice(0, 100)})`);
     }
   }

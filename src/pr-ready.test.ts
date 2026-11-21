@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
+import { createQueueGate } from "./queue-overlap.ts";
 import { boardReadyToMerge, boardSection, boardReadyKind, freshReadyState, type PrReadyDeps, readyOnce } from "./pr-ready.ts";
 
 const LABEL = "ready-to-merge";
@@ -58,12 +59,13 @@ function harness(overrides: Partial<PrReadyDeps> = {}, currentLabels: string[] =
     prState: async (n: number) => {
       calls.labels++;
       const listed = await (overrides.listOpenPRs ?? (async () => [pr(4706)]))();
-      return { labels: currentLabels, isDraft: listed.find((p) => p.number === n)?.isDraft ?? false };
+      return { labels: currentLabels, isDraft: listed.find((p) => p.number === n)?.isDraft ?? false, approved: false };
     },
     addLabel: async (n: number, label: string) => void added.push({ n, label }),
     removeLabel: async (n: number, label: string) => void removed.push({ n, label }),
     label: LABEL,
     blockedLabel: "blocked",
+    maxQueued: 3,
     soakMs: 0,
     now: () => 0,
     mode: () => "autonomous" as const,
@@ -366,7 +368,7 @@ test("readyOnce does not call onBlocked for an unblocked PR", async () => {
 // merge queue is final, not fought every heartbeat.
 test("readyOnce does not re-add the label after adding it once and seeing it removed", async () => {
   let labels: string[] = [];
-  const h = harness({ prState: async () => ({ labels, isDraft: false }) }, []);
+  const h = harness({ prState: async () => ({ labels, isDraft: false, approved: false }) }, []);
   await readyOnce(h.state, h.deps);
   assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
   labels = []; // label removed externally; PR still classifies as ready
@@ -377,7 +379,7 @@ test("readyOnce does not re-add the label after adding it once and seeing it rem
 
 test("readyOnce does not add the label to a PR that once carried it, even if the bot never added it", async () => {
   let labels = [LABEL]; // human-applied
-  const h = harness({ prState: async () => ({ labels, isDraft: false }) }, []);
+  const h = harness({ prState: async () => ({ labels, isDraft: false, approved: false }) }, []);
   await readyOnce(h.state, h.deps);
   assert.equal(h.added.length, 0);
   labels = []; // human took it back off
@@ -388,7 +390,7 @@ test("readyOnce does not add the label to a PR that once carried it, even if the
 test("readyOnce observed in supervised mode still latches, so switching to autonomous does not re-add", async () => {
   let mode: "supervised" | "autonomous" = "supervised";
   let labels = [LABEL];
-  const h = harness({ mode: () => mode, prState: async () => ({ labels, isDraft: false }) }, []);
+  const h = harness({ mode: () => mode, prState: async () => ({ labels, isDraft: false, approved: false }) }, []);
   await readyOnce(h.state, h.deps);
   mode = "autonomous";
   labels = []; // removed while supervised
@@ -415,25 +417,14 @@ test("readyOnce does not latch on an addLabel failure, so the add retries next t
   assert.deepEqual(added, [4706]);
 });
 
-test("readyOnce latches per PR: one latched PR does not block labeling another", async () => {
-  const labelsByPr = new Map<number, string[]>([
-    [1, [LABEL]],
-    [2, []],
-  ]);
-  const h = harness(
-    {
-      listOpenPRs: async () => [pr(1), pr(2)],
-      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
-    },
-    [],
-  );
+test("readyOnce latches per PR: a latched PR whose label was removed is never relabeled", async () => {
+  const h = fleet({ 1: { labels: [LABEL] }, 2: {} });
   await readyOnce(h.state, h.deps);
-  assert.equal(h.added.length, 0); // PR 1 occupies the queue slot
-  labelsByPr.set(1, []); // PR 1's label removed: latched, stays off; slot frees
-  await readyOnce(h.state, h.deps);
-  assert.deepEqual(h.added, [{ n: 2, label: LABEL }]); // latch is per PR: 2 still labels
-  await readyOnce(h.state, h.deps);
-  assert.equal(h.added.length, 1);
+  assert.deepEqual(h.added, [{ n: 2, label: LABEL }]); // labeled PR 1 blocks nothing
+  const next = fleet({ 1: {}, 2: {} });
+  next.state = h.state;
+  await readyOnce(next.state, next.deps); // PR 1's label removed: latched, stays off
+  assert.equal(next.added.length, 0);
 });
 
 // The soak: a ready verdict must hold for soakMs before the label goes on, so a
@@ -471,80 +462,149 @@ test("readyOnce resets the soak clock when readiness lapses", async () => {
   assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
 });
 
-// Serialization: at most one bot-queued PR at a time. While any open PR carries
-// the ready label (queued) or the blocked label (Aviator's, will be re-queued),
-// the step adds nothing, so two bot-queued PRs can never fight in the queue.
-test("readyOnce adds nothing while another open PR carries the ready label", async () => {
-  const labelsByPr = new Map<number, string[]>([
-    [1, []],
-    [2, [LABEL]],
-  ]);
-  const h = harness(
+// Queue slots: only a labeled AND approved PR (or a blocked one, due a re-queue)
+// is something Aviator batches, so only those take one of maxQueued slots.
+// Labeling an unapproved PR takes no slot: the label is what pings reviewers.
+type PrSpec = { labels?: string[]; approved?: boolean };
+function fleet(specs: Record<number, PrSpec>, overrides: Partial<PrReadyDeps> = {}): Harness {
+  const live = new Map(Object.entries(specs).map(([n, s]) => [Number(n), { labels: s.labels ?? [], approved: s.approved ?? false }]));
+  const h: Harness = harness(
     {
-      listOpenPRs: async () => [pr(1), pr(2)],
-      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
-    },
-    [],
-  );
-  await readyOnce(h.state, h.deps); // PR 2 occupies the slot even though it comes after PR 1
-  assert.equal(h.added.length, 0);
-  labelsByPr.delete(2);
-  const merged = harness(
-    { listOpenPRs: async () => [pr(1)], prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }) },
-    [],
-  );
-  merged.state = h.state;
-  await readyOnce(merged.state, merged.deps); // PR 2 merged (gone from the list): slot free
-  assert.deepEqual(merged.added, [{ n: 1, label: LABEL }]);
-});
-
-test("readyOnce adds nothing while another open PR is blocked", async () => {
-  const labelsByPr = new Map<number, string[]>([
-    [1, []],
-    [2, ["blocked"]],
-  ]);
-  const h = harness(
-    {
-      listOpenPRs: async () => [pr(1), pr(2)],
-      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
-    },
-    [],
-  );
-  await readyOnce(h.state, h.deps);
-  assert.equal(h.added.length, 0);
-});
-
-test("readyOnce labels at most one PR per tick, then waits for it to leave the queue", async () => {
-  const labelsByPr = new Map<number, string[]>([
-    [1, []],
-    [2, []],
-  ]);
-  const h = harness(
-    {
-      listOpenPRs: async () => [pr(1), pr(2)],
-      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
+      listOpenPRs: async () => [...live.keys()].map((n) => pr(n)),
+      prState: async (n: number) => ({ ...live.get(n)!, isDraft: false }),
       addLabel: async (n, label) => {
         h.added.push({ n, label });
-        labelsByPr.set(n, [label]);
+        live.get(n)!.labels = [label];
       },
+      ...overrides,
     },
     [],
   );
+  return h;
+}
+
+test("readyOnce: an unapproved labeled PR does not block labeling others", async () => {
+  const h = fleet({ 1: {}, 2: { labels: [LABEL] } }, { maxQueued: 1 });
   await readyOnce(h.state, h.deps);
-  assert.deepEqual(h.added, [{ n: 1, label: LABEL }]); // both ready: only the first labels
-  await readyOnce(h.state, h.deps);
-  assert.equal(h.added.length, 1); // PR 1 still queued: PR 2 keeps waiting
-  labelsByPr.delete(1);
-  const next = harness(
+  assert.deepEqual(h.added, [{ n: 1, label: LABEL }]);
+});
+
+test("readyOnce: approved labeled PRs fill the slots, so an approved candidate waits", async () => {
+  const h = fleet(
     {
-      listOpenPRs: async () => [pr(2)],
-      prState: async (n: number) => ({ labels: labelsByPr.get(n) ?? [], isDraft: false }),
+      1: { labels: [LABEL], approved: true },
+      2: { labels: [LABEL], approved: true },
+      3: { labels: [LABEL], approved: true },
+      4: { approved: true },
     },
-    [],
+    { maxQueued: 3 },
   );
-  next.state = h.state;
-  await readyOnce(next.state, next.deps); // PR 1 merged: PR 2's turn
-  assert.deepEqual(next.added, [{ n: 2, label: LABEL }]);
+  await readyOnce(h.state, h.deps);
+  assert.equal(h.added.length, 0);
+});
+
+test("readyOnce: unapproved candidates still get labeled when every slot is taken", async () => {
+  const h = fleet(
+    { 1: { labels: [LABEL], approved: true }, 2: { labels: [LABEL], approved: true }, 3: { labels: [LABEL], approved: true }, 4: {}, 5: {} },
+    { maxQueued: 3 },
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [4, 5]);
+});
+
+test("readyOnce: an approved candidate takes a free slot", async () => {
+  const h = fleet({ 1: { labels: [LABEL], approved: true }, 2: { approved: true } }, { maxQueued: 3 });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, [{ n: 2, label: LABEL }]);
+});
+
+test("readyOnce: approved candidates beyond the free slots wait, oldest-ready first", async () => {
+  const since = new Map([[1, 300], [2, 100], [3, 200]]);
+  const h = fleet({ 1: { approved: true }, 2: { approved: true }, 3: { approved: true } }, { maxQueued: 2, now: () => 1000 });
+  for (const [n, t] of since) h.state.readySince.set(n, t);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [2, 3]);
+});
+
+test("readyOnce: a blocked PR takes a slot whether or not it is approved", async () => {
+  const h = fleet({ 1: { labels: ["blocked"] }, 2: { approved: true } }, { maxQueued: 1 });
+  await readyOnce(h.state, h.deps);
+  assert.equal(h.added.length, 0);
+});
+
+test("readyOnce: a blocked PR leaves the other slots free", async () => {
+  const h = fleet({ 1: { labels: ["blocked"] }, 2: { approved: true } }, { maxQueued: 2 });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, [{ n: 2, label: LABEL }]);
+});
+
+test("readyOnce labels every eligible candidate in one tick", async () => {
+  const h = fleet({ 1: {}, 2: {}, 3: {}, 4: {}, 5: {} }, { maxQueued: 1 });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [1, 2, 3, 4, 5]);
+});
+
+test("readyOnce: an addLabel failure on one candidate does not stop the rest", async () => {
+  const h = fleet({ 1: {}, 2: {}, 3: {} });
+  const base = h.deps.addLabel;
+  h.deps.addLabel = async (n, label) => {
+    if (n === 2) throw new Error("boom");
+    return base(n, label);
+  };
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [1, 3]);
+  assert.ok(h.logs.some((l) => l.includes("add label failed for PR #2")));
+  assert.equal(h.state.latched.has(2), false);
+});
+
+test("readyOnce: a failed add on an approved candidate does not use up its slot", async () => {
+  const h = fleet({ 1: { approved: true }, 2: { approved: true } }, { maxQueued: 1, now: () => 1000 });
+  const base = h.deps.addLabel;
+  h.deps.addLabel = async (n, label) => {
+    if (n === 1) throw new Error("boom");
+    return base(n, label);
+  };
+  h.state.readySince.set(1, 0);
+  h.state.readySince.set(2, 1);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [2]);
+});
+
+test("readyOnce: maxAwaitingReview caps unapproved labels, oldest-ready first", async () => {
+  const h = fleet({ 1: {}, 2: {}, 3: {}, 4: {} }, { maxAwaitingReview: 2, now: () => 1000 });
+  h.state.readySince.set(1, 400);
+  h.state.readySince.set(2, 100);
+  h.state.readySince.set(3, 300);
+  h.state.readySince.set(4, 200);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [2, 4]);
+});
+
+test("readyOnce: maxAwaitingReview counts already-labeled unapproved PRs", async () => {
+  const h = fleet({ 1: { labels: [LABEL] }, 2: {}, 3: {} }, { maxAwaitingReview: 2 });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [2]);
+});
+
+test("readyOnce: approved labeled PRs do not count toward maxAwaitingReview", async () => {
+  const h = fleet({ 1: { labels: [LABEL], approved: true }, 2: {} }, { maxAwaitingReview: 1 });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [2]);
+});
+
+test("readyOnce: maxAwaitingReview does not hold back approved candidates", async () => {
+  const h = fleet({ 1: { labels: [LABEL] }, 2: { approved: true } }, { maxAwaitingReview: 1, maxQueued: 3 });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [2]);
+});
+
+test("readyOnce: a labeled manual-merge PR counts toward no cap", async () => {
+  const h = fleet(
+    { 1: { labels: [LABEL] }, 2: {} },
+    { maxAwaitingReview: 1, mergesManually: async (n) => n === 1 },
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [2]);
 });
 
 test("boardReadyToMerge: ready always, hold only when already labeled, never regressed", () => {
@@ -557,16 +617,20 @@ test("boardReadyToMerge: ready always, hold only when already labeled, never reg
 });
 
 test("boardSection: a draft always belongs to the review pane, label or not", () => {
-  assert.equal(boardSection(true, false), "review");
-  assert.equal(boardSection(true, true), "review");
+  assert.equal(boardSection(true, false, false), "review");
+  assert.equal(boardSection(true, true, false), "review");
 });
 
 test("boardSection: a labeled non-draft belongs to the merge pane", () => {
-  assert.equal(boardSection(false, true), "merge");
+  assert.equal(boardSection(false, true, false), "merge");
 });
 
-test("boardSection: everything else belongs to the tasks pane", () => {
-  assert.equal(boardSection(false, false), "tasks");
+test("boardSection: an unlabeled open PR waits in the review pane with the drafts, in either mode", () => {
+  assert.equal(boardSection(false, false, false), "review");
+});
+
+test("boardSection: a blocked PR stays in the tasks pane for the fix", () => {
+  assert.equal(boardSection(false, false, true), "tasks");
 });
 
 test("boardReadyKind: a draft says draft pr whatever the label or mode", () => {
@@ -598,6 +662,32 @@ test("readyOnce reports each open PR's section", async () => {
     { n: 1, section: "merge" },
     { n: 2, section: "review" },
   ]);
+});
+
+test("readyOnce moves a PR it labels this tick to the merge section right away", async () => {
+  const seen: { n: number; section: string }[] = [];
+  const h = harness({ onSection: (n, s) => void seen.push({ n, section: s }) }, []);
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, [{ n: 4706, label: LABEL }]);
+  assert.deepEqual(seen, [
+    { n: 4706, section: "review" },
+    { n: 4706, section: "merge" },
+  ]);
+});
+
+test("readyOnce leaves the section alone when the label add fails", async () => {
+  const seen: { n: number; section: string }[] = [];
+  const h = harness(
+    {
+      addLabel: async () => {
+        throw new Error("boom");
+      },
+      onSection: (n, s) => void seen.push({ n, section: s }),
+    },
+    [],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [{ n: 4706, section: "review" }]);
 });
 
 test("readyOnce reports a section for a blocked PR even though it reports no verdict", async () => {
@@ -659,7 +749,7 @@ test("readyOnce places a PR by its live draft state, not the list snapshot's", a
   const h = harness(
     {
       listOpenPRs: async () => [pr(4706, { isDraft: true })],
-      prState: async () => ({ labels: [LABEL], isDraft: false }),
+      prState: async () => ({ labels: [LABEL], isDraft: false, approved: false }),
       onSection: (n, s) => void seen.push({ n, section: s }),
     },
   );
@@ -671,7 +761,7 @@ test("readyOnce reports the live draft state via onVerdict too", async () => {
   const seen: boolean[] = [];
   const h = harness({
     listOpenPRs: async () => [pr(4706, { isDraft: true })],
-    prState: async () => ({ labels: [], isDraft: false }),
+    prState: async () => ({ labels: [], isDraft: false, approved: false }),
     onVerdict: (_n, _v, _hasLabel, isDraft) => void seen.push(isDraft),
   });
   await readyOnce(h.state, h.deps);
@@ -681,8 +771,142 @@ test("readyOnce reports the live draft state via onVerdict too", async () => {
 test("readyOnce does not label a PR the live read still shows as a draft", async () => {
   const h = harness({
     listOpenPRs: async () => [pr(4706, { isDraft: false })],
-    prState: async () => ({ labels: [], isDraft: true }),
+    prState: async () => ({ labels: [], isDraft: true, approved: false }),
   });
   await readyOnce(h.state, h.deps);
   assert.deepEqual(h.added, []);
+});
+
+test("boardReadyKind: a repo without a merge queue says merge manually, label or not", () => {
+  assert.equal(boardReadyKind(false, true, "supervised", true), "ready_manual");
+  assert.equal(boardReadyKind(false, false, "supervised", true), "ready_manual");
+  assert.equal(boardReadyKind(false, true, "autonomous", true), "ready_manual");
+  assert.equal(boardReadyKind(true, true, "supervised", true), "draft_pr");
+});
+
+test("boardReadyKind: a labeled PR with no approval says needs approval", () => {
+  assert.equal(boardReadyKind(false, true, "supervised", false, false), "needs_approval");
+  assert.equal(boardReadyKind(false, true, "autonomous", false, false), "needs_approval");
+  assert.equal(boardReadyKind(false, true, "supervised", false, true), "ready_to_merge");
+  assert.equal(boardReadyKind(false, false, "supervised", false, false), "ready_unqueued");
+  assert.equal(boardReadyKind(true, true, "supervised", false, false), "draft_pr");
+  assert.equal(boardReadyKind(false, true, "supervised", true, false), "ready_manual");
+});
+
+test("readyOnce tells onVerdict whether the PR is approved", async () => {
+  const seen: boolean[] = [];
+  const h = harness(
+    { onVerdict: (_n, _v, _hasLabel, _isDraft, _reason, _manual, approved) => void seen.push(approved) },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  h.deps.prState = async () => ({ labels: [LABEL], isDraft: false, approved: true });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [false, true]);
+});
+
+test("readyOnce tells onVerdict whether the PR's repo merges manually", async () => {
+  const seen: { n: number; manual: boolean }[] = [];
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(1), pr(2)],
+      mergesManually: async (n) => n === 2,
+      onVerdict: (n, _v, _hasLabel, _isDraft, _reason, manual) => void seen.push({ n, manual }),
+    },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, [
+    { n: 1, manual: false },
+    { n: 2, manual: true },
+  ]);
+});
+
+test("readyOnce skips the verdict when the merge-queue read fails", async () => {
+  const seen: boolean[] = [];
+  const h = harness(
+    {
+      mergesManually: async () => {
+        throw new Error("boom");
+      },
+      onVerdict: (_n, _v, _hasLabel, _isDraft, _reason, manual) => void seen.push(manual),
+    },
+    [LABEL],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(seen, []);
+});
+
+test("readyOnce never labels a PR in a repo without a merge queue", async () => {
+  const h = harness({ mergesManually: async () => true, soakMs: 0 }, []);
+  await readyOnce(h.state, h.deps);
+  assert.equal(h.added.length, 0);
+});
+
+test("readyOnce does not let a labeled manual-merge PR hold the queue slot", async () => {
+  const h = harness(
+    {
+      listOpenPRs: async () => [pr(1), pr(2)],
+      prState: async (n: number) => ({ labels: n === 1 ? [LABEL] : [], isDraft: false, approved: false }),
+      mergesManually: async (n) => n === 1,
+      soakMs: 0,
+    },
+    [],
+  );
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added, [{ n: 2, label: LABEL }]);
+});
+
+test("a PR the overlap gate holds is not labeled and is reported with its holder", async () => {
+  const heldReports: [number, number][] = [];
+  const h = harness({
+    listOpenPRs: async () => [pr(10), pr(20)],
+    queueGate: async () => new Map([[10, null], [20, 10]]),
+    onHeld: (n, holder) => void heldReports.push([n, holder]),
+  });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [10]);
+  assert.deepEqual(heldReports, [[20, 10]]);
+  assert.equal(h.state.latched.has(20), false);
+});
+
+test("a gate that throws fails open", async () => {
+  const h = harness({
+    queueGate: async () => {
+      throw new Error("boom");
+    },
+  });
+  await readyOnce(h.state, h.deps);
+  assert.deepEqual(h.added.map((a) => a.n), [4706]);
+});
+
+test("three overlapping PRs are labeled one per merge", async () => {
+  const files: Record<number, string[]> = { 8082: ["flags.ts"], 8087: ["flags.ts"], 8090: ["flags.ts"] };
+  const open = new Set([8082, 8087, 8090]);
+  const labeled = new Set<number>();
+  const gate = createQueueGate({
+    listQueued: async () => [...labeled].filter((n) => open.has(n)).map((n) => ({ n, headSha: "s", files: files[n] })),
+    fetchFiles: async (n) => ({ headSha: "s", files: files[n] }),
+    log: () => {},
+  });
+  const state = freshReadyState();
+  const tick = async () => {
+    const h = harness({
+      listOpenPRs: async () => [...open].map((n) => pr(n)),
+      prState: async (n: number) => ({ labels: labeled.has(n) ? [LABEL] : [], isDraft: false, approved: true }),
+      addLabel: async (n: number) => void labeled.add(n),
+      queueGate: gate,
+    });
+    await readyOnce(state, h.deps);
+  };
+  await tick();
+  assert.deepEqual([...labeled], [8082]);
+  await tick();
+  assert.deepEqual([...labeled], [8082]);
+  open.delete(8082);
+  await tick();
+  assert.deepEqual([...labeled], [8082, 8087]);
+  open.delete(8087);
+  await tick();
+  assert.deepEqual([...labeled], [8082, 8087, 8090]);
 });

@@ -1,62 +1,66 @@
-// highlight.js 10 (pinned by cli-highlight) ships no GraphQL or HCL grammar,
-// so these small definitions are registered on the shared hljs instance at
-// import time. They aim at the tokens the review diff theme colors, not at
-// full-language fidelity.
-// hljs 10 declares HLJSApi, Language, and Mode as ambient globals.
-import hljs from "highlight.js";
+// Grammars the review diff can tokenize. Each import is one shiki TextMate
+// grammar (with its embedded dependencies); only the languages mapped below
+// are loaded so the highlighter stays small.
+import type { LanguageRegistration } from "shiki/core";
+import bash from "shiki/langs/bash.mjs";
+import c from "shiki/langs/c.mjs";
+import cpp from "shiki/langs/cpp.mjs";
+import csharp from "shiki/langs/csharp.mjs";
+import css from "shiki/langs/css.mjs";
+import dockerfile from "shiki/langs/dockerfile.mjs";
+import go from "shiki/langs/go.mjs";
+import graphql from "shiki/langs/graphql.mjs";
+import hcl from "shiki/langs/hcl.mjs";
+import html from "shiki/langs/html.mjs";
+import ini from "shiki/langs/ini.mjs";
+import java from "shiki/langs/java.mjs";
+import javascript from "shiki/langs/javascript.mjs";
+import json from "shiki/langs/json.mjs";
+import jsx from "shiki/langs/jsx.mjs";
+import kotlin from "shiki/langs/kotlin.mjs";
+import makefile from "shiki/langs/makefile.mjs";
+import markdown from "shiki/langs/markdown.mjs";
+import php from "shiki/langs/php.mjs";
+import prisma from "shiki/langs/prisma.mjs";
+import python from "shiki/langs/python.mjs";
+import ruby from "shiki/langs/ruby.mjs";
+import rust from "shiki/langs/rust.mjs";
+import scss from "shiki/langs/scss.mjs";
+import sql from "shiki/langs/sql.mjs";
+import svelte from "shiki/langs/svelte.mjs";
+import swift from "shiki/langs/swift.mjs";
+import terraform from "shiki/langs/terraform.mjs";
+import toml from "shiki/langs/toml.mjs";
+import tsx from "shiki/langs/tsx.mjs";
+import typescript from "shiki/langs/typescript.mjs";
+import vue from "shiki/langs/vue.mjs";
+import xml from "shiki/langs/xml.mjs";
+import yaml from "shiki/langs/yaml.mjs";
 
-function graphql(api?: HLJSApi): Language {
-  const h = api ?? hljs;
-  return {
-    name: "GraphQL",
-    aliases: ["gql"],
-    keywords: {
-      keyword:
-        "query mutation subscription type input schema directive interface union scalar " +
-        "fragment enum on extend implements repeatable",
-      literal: "true false null",
-    },
-    contains: [
-      h.HASH_COMMENT_MODE,
-      h.QUOTE_STRING_MODE,
-      h.NUMBER_MODE,
-      { className: "variable", begin: /\$\w+/, relevance: 0 },
-      { className: "meta", begin: /@\w+/ },
-      { className: "symbol", begin: /[_A-Za-z][_0-9A-Za-z]*(?=\s*(\(|:))/, relevance: 0 },
-    ],
-    illegal: [/[;<']/, /BEGIN/],
-  };
+export const GRAMMARS: LanguageRegistration[][] = [
+  bash, c, cpp, csharp, css, dockerfile, go, graphql, hcl, html, ini, java, javascript, json, jsx,
+  kotlin, makefile, markdown, php, prisma, python, ruby, rust, scss, sql, svelte, swift, terraform,
+  toml, tsx, typescript, vue, xml, yaml,
+];
+
+const EXT_LANG: Record<string, string> = {
+  ts: "typescript", mts: "typescript", cts: "typescript", tsx: "tsx",
+  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx",
+  py: "python", rb: "ruby", go: "go", rs: "rust", java: "java", kt: "kotlin",
+  c: "c", h: "c", cpp: "cpp", hpp: "cpp", cs: "csharp", swift: "swift",
+  sh: "bash", bash: "bash", zsh: "bash", json: "json", md: "markdown",
+  yml: "yaml", yaml: "yaml", toml: "toml", ini: "ini", sql: "sql",
+  css: "css", scss: "scss", html: "html", htm: "html", xml: "xml", svg: "xml",
+  vue: "vue", svelte: "svelte", php: "php", prisma: "prisma",
+  graphql: "graphql", gql: "graphql", tf: "terraform", tfvars: "terraform", hcl: "hcl",
+  dockerfile: "dockerfile", mk: "makefile",
+};
+
+const NAME_LANG: Record<string, string> = { dockerfile: "dockerfile", makefile: "makefile" };
+
+export function languageFor(path: string): string | null {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  if (dot === -1 || dot === base.length - 1) return NAME_LANG[base.toLowerCase()] ?? null;
+  return EXT_LANG[base.slice(dot + 1).toLowerCase()] ?? null;
 }
-
-function terraform(api?: HLJSApi): Language {
-  const h = api ?? hljs;
-  const interpolation: Mode = {
-    className: "variable",
-    begin: /\$\{/,
-    end: /\}/,
-    contains: [{ className: "string", begin: /"/, end: /"/ }],
-  };
-  const string: Mode = { className: "string", begin: /"/, end: /"/, contains: [interpolation] };
-  return {
-    name: "Terraform",
-    aliases: ["tf", "hcl"],
-    keywords: {
-      keyword:
-        "resource variable provider output locals module data terraform backend dynamic " +
-        "lifecycle provisioner connection moved import check removed for in if",
-      literal: "true false null",
-    },
-    contains: [
-      h.HASH_COMMENT_MODE,
-      h.C_LINE_COMMENT_MODE,
-      h.C_BLOCK_COMMENT_MODE,
-      h.NUMBER_MODE,
-      string,
-      { className: "built_in", begin: /\b(var|local|module|data|each|count|path|self|terraform)\./ },
-      { className: "attr", begin: /\b[A-Za-z_][\w-]*(?=\s*=[^=])/, relevance: 0 },
-    ],
-  };
-}
-
-hljs.registerLanguage("graphql", graphql);
-hljs.registerLanguage("terraform", terraform);

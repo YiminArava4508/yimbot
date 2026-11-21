@@ -19,10 +19,9 @@ assert_eq "$(sanitize_worktree_dir "$(printf 'a%.0s' {1..60})")" "$(printf 'a%.0
 assert_eq "$(branch_delete_flag true)" "-D" "headless force delete"
 assert_eq "$(branch_delete_flag false)" "-d" "interactive safe delete"
 
-# CODEBASE_PATH defaults to the daemon's ~/Work/gemini when unset (an interactive
-# teardown has no env var), and honors an explicit override.
+# CODEBASE_PATH has no default: honors the env var and fails when unset.
 assert_eq "$(CODEBASE_PATH=/tmp/repo codebase_path)" "/tmp/repo" "honors CODEBASE_PATH override"
-assert_eq "$(unset CODEBASE_PATH; codebase_path)" "$HOME/Work/gemini" "defaults to ~/Work/gemini when unset"
+assert_eq "$( (unset CODEBASE_PATH; codebase_path) 2>&1 | grep -c 'CODEBASE_PATH is not set')" "1" "fails with a hint when unset"
 
 # Teardown step order. Headless (the daemon) kills the tmux session FIRST so a
 # dev server (or anything) writing into the worktree stops before removal - else

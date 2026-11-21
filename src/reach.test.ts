@@ -187,3 +187,8 @@ test("observeReach marks the service down on an unauthorized failure and rethrow
 test("classifyError keeps a claude exit as reached even when its stderr quotes a credential hint", () => {
   assert.equal(classifyError(new Error("claude exited 1: tool failed: run gh auth login first")), "reached");
 });
+
+test("classifyError treats codex exits and timeouts like claude's", () => {
+  assert.equal(classifyError(new Error("codex exited 1: invalid model")), "reached");
+  assert.equal(classifyError(new Error("codex timed out after 120000ms")), "timeout");
+});

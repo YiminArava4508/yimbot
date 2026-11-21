@@ -1,10 +1,16 @@
 import { isBlocked } from "./blocked.ts";
-import { labelFilterAllows, type LabelFilter } from "./labels.ts";
+import { hasLabel, labelFilterAllows, type LabelFilter } from "./labels.ts";
 import type { CycleTodoIssue } from "./linear-api.ts";
 
 export type SelectOptions = {
   // Label names (any casing) that disqualify a ticket from being claimed.
   riskLabels: string[];
+  // Label (any casing) a rejected ticket carries; such tickets are never claimed.
+  rejectLabel: string;
+  // Label (any casing) that makes a ticket wait for its blockers to be completed, not merely merged.
+  afterReleaseLabel: string;
+  // State an after-release ticket's blockers must be in (DONE_STATE_NAME).
+  doneStateName: string;
   // Merged ticket identifiers. When non-null, todos with a blocker whose work
   // has not landed are dropped; null skips the blocked filter (gh unavailable).
   merged: Set<string> | null;
@@ -34,25 +40,43 @@ function priorityRank(priority: number): number {
   return priority === 0 ? Number.POSITIVE_INFINITY : priority;
 }
 
-// Choose the next Todo ticket to claim: drop risk-labeled tickets, then order
-// by priority (Urgent first, None last), breaking ties on the manual cycle
-// order. Returns null when nothing qualifies.
-export function selectNextClaim(
-  todos: CycleTodoIssue[],
-  opts: SelectOptions,
-): CycleTodoIssue | null {
+// An after-release ticket is gated on blocker state alone, so it is checked even
+// when the merged-PR list is unavailable.
+function isHeldByBlockers(t: CycleTodoIssue, opts: SelectOptions): boolean {
+  const afterRelease = hasLabel(t.labels, opts.afterReleaseLabel);
+  if (!afterRelease && opts.merged === null) return false;
+  return isBlocked(
+    t.blockedBy,
+    opts.merged ?? new Set(),
+    opts.clearedStates,
+    afterRelease ? opts.doneStateName : null,
+  );
+}
+
+// Rank the Todo tickets that may be claimed: drop risk-labeled tickets, then
+// order by priority (Urgent first, None last), breaking ties on the manual
+// cycle order.
+export function selectClaims(todos: CycleTodoIssue[], opts: SelectOptions): CycleTodoIssue[] {
   const risky = new Set(opts.riskLabels.map((l) => l.toLowerCase()));
   const eligible = todos.filter(
     (t) =>
       labelFilterAllows(opts.labelFilter, t.labels) &&
       !t.labels.some((label) => risky.has(label.toLowerCase())) &&
-      !(opts.merged !== null && isBlocked(t.blockedBy, opts.merged, opts.clearedStates)) &&
+      !hasLabel(t.labels, opts.rejectLabel) &&
+      !isHeldByBlockers(t, opts) &&
       t.estimate !== 0 &&
       !(opts.requireEstimate && t.estimate === null) &&
       !(opts.maxEstimate !== null && t.estimate !== null && t.estimate > opts.maxEstimate),
   );
-  eligible.sort(
+  return eligible.sort(
     (a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.sortOrder - b.sortOrder,
   );
-  return eligible[0] ?? null;
+}
+
+// The next ticket to claim, or null when nothing qualifies.
+export function selectNextClaim(
+  todos: CycleTodoIssue[],
+  opts: SelectOptions,
+): CycleTodoIssue | null {
+  return selectClaims(todos, opts)[0] ?? null;
 }

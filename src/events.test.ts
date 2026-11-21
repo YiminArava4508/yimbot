@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, readEvents, eventsLogPath, reduceRows, filterToLiveRows, isFlagged, pinEventsLog, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, fixStartKind, isFlagged, isWorkingStatus, isFixerStatus, isParentRow, pinEventsLog, yieldsToVerdict, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +47,39 @@ test("reduceRows: a legacy extra-repo event keyed by ticket alone folds into the
   assert.equal(byKey.get("ENG-2063")?.section, "tasks");
   assert.equal(byKey.get("ENG-2063@acme/tf")?.pr, 1507);
   assert.equal(byKey.get("ENG-2063@acme/tf")?.section, "review");
+});
+
+test("reduceRows: a section event's pr fills the row without changing its status or timestamps", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-7", label: "ENG-7" }),
+      ev({ ts: 2, kind: "section_review", key: "ENG-7", label: "ENG-7", pr: 123 }),
+    ],
+    100,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].pr, 123);
+  assert.equal(rows[0].section, "review");
+  assert.equal(rows[0].status, statusFor("task_started")?.status);
+  assert.equal(rows[0].ts, 1);
+  assert.equal(rows[0].startTs, 1);
+});
+
+test("reduceRows: a later section event's pr replaces an older one", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-7", label: "ENG-7" }),
+      ev({ ts: 2, kind: "section_review", key: "ENG-7", label: "ENG-7", pr: 123 }),
+      ev({ ts: 3, kind: "section_review", key: "ENG-7", label: "ENG-7", pr: 456 }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].pr, 456);
+});
+
+test("reduceRows: a section event for a key with no row creates no row", () => {
+  const rows = reduceRows([ev({ ts: 1, kind: "section_review", key: "ENG-8", label: "ENG-8", pr: 9 })], 100);
+  assert.equal(rows.length, 0);
 });
 
 test("mergedRowKeys: a codebase branch is merged once no codebase PR on its ticket is open; extra-repo PRs have their own rows", () => {
@@ -118,6 +151,8 @@ test("titleFromBranch strips ticket prefix and humanizes", () => {
 });
 
 test("statusFor maps kinds; only merged is terminal", () => {
+  assert.deepEqual(statusFor("ready_manual"), { status: "ready: merge manually", terminal: false });
+  assert.deepEqual(statusFor("fix_ended"), { status: "fix done", terminal: false });
   assert.deepEqual(statusFor("task_started"), { status: "working", terminal: false });
   assert.deepEqual(statusFor("review_started"), { status: "addressing review", terminal: false });
   assert.deepEqual(statusFor("ci_fix_started"), { status: "fixing CI", terminal: false });
@@ -129,6 +164,7 @@ test("statusFor maps kinds; only merged is terminal", () => {
   assert.deepEqual(statusFor("ready_to_merge"), { status: "ready to merge", terminal: false });
   assert.deepEqual(statusFor("draft_pr"), { status: "draft pr", terminal: false });
   assert.deepEqual(statusFor("ready_unqueued"), { status: "ready: r to queue", terminal: false });
+  assert.deepEqual(statusFor("needs_approval"), { status: "needs approval", terminal: false });
   assert.deepEqual(statusFor("ready_regressed"), { status: "working", terminal: false });
   assert.deepEqual(statusFor("awaiting_slices"), { status: "waiting on slices", terminal: false });
   assert.deepEqual(statusFor("tracking"), { status: "tracker ticket", terminal: false });
@@ -221,6 +257,38 @@ test("emitStatus skips an observation that does not change the derived status", 
     emitStatus({ kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" });
     emitStatus({ kind: "ci_fix_started", key: "ENG-1", label: "ENG-1" });
     assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitStatus skips a waiting row whose waitingOn is the same set in any order", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8062, 8081] });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8081, 8062] });
+    assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitStatus writes a waiting row again when waitingOn changes, and the board shows the newest list", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8062, 8081] });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090] });
+    emitStatus({ kind: "queue_held", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090] });
+    assert.equal(readEvents(path).length, 3);
+    const [row] = reduceRows(readEvents(path), Date.now());
+    assert.deepEqual(row.waitingOn, [8090]);
+    assert.equal(row.waitingKind, "overlap");
+  });
+});
+
+test("emitStatus writes a waiting row again when the holder note changes", () => {
+  withTmpLog((path) => {
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090] });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090], waitNote: "needs approval" });
+    emitStatus({ kind: "blocked_waiting", key: "ENG-1", label: "ENG-1", pr: 5, waitingOn: [8090], waitNote: "needs approval" });
+    assert.equal(readEvents(path).length, 2);
+    const [row] = reduceRows(readEvents(path), Date.now());
+    assert.equal(row.waitingNote, "needs approval");
+    assert.equal(row.waitingKind, "landing");
   });
 });
 
@@ -683,6 +751,67 @@ test("filterToLiveRows: worktree-less row kept when its PR is still open", () =>
   );
 });
 
+test("filterToLiveRows: a PR-less ticket row is hidden when its extra-repo PR row exists", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set(["ENG-2906@acme/tf"]));
+  assert.deepEqual(kept.map((r) => r.key), ["ENG-2906@acme/tf"]);
+});
+
+test("filterToLiveRows: a ticket row with its own codebase PR stays beside the extra-repo row", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906", pr: 12 }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set(["ENG-2906@acme/tf"]));
+  assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-2906@acme/tf"]);
+});
+
+test("filterToLiveRows: a PR-less ticket row stays when no extra-repo row shares its ticket", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-3000@acme/tf", pr: 8, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set(["ENG-3000@acme/tf"]));
+  assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-3000@acme/tf"]);
+});
+
+test("filterToLiveRows: a PR-less ticket row stays when its extra-repo row is itself filtered out", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set());
+  assert.deepEqual(kept.map((r) => r.key), ["ENG-2906"]);
+});
+
+test("filterToLiveRows: a merged extra-repo row does not hide an in-progress ticket row", () => {
+  const rows = [
+    liveRow({ key: "ENG-2906" }),
+    liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", status: "merged", terminal: true, section: "merge" }),
+  ];
+  const kept = filterToLiveRows(rows, new Set(["ENG-2906"]), new Set());
+  assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-2906@acme/tf"]);
+});
+
+test("filterToLiveRows: a flagged, held or parent ticket row is never folded away", () => {
+  const repoRow = liveRow({ key: "ENG-2906@acme/tf", pr: 357, repo: "acme/tf", section: "review" });
+  const open = new Set(["ENG-2906@acme/tf"]);
+  const live = new Set(["ENG-2906"]);
+  for (const over of [
+    { flagged: true, flagReasons: ["needs input"] },
+    { status: "needs decision" },
+    { status: "review findings" },
+    { status: AWAITING_SLICES_STATUS },
+    { status: TRACKING_STATUS },
+  ]) {
+    const kept = filterToLiveRows([liveRow({ key: "ENG-2906", ...over }), repoRow], live, open);
+    assert.deepEqual(kept.map((r) => r.key).sort(), ["ENG-2906", "ENG-2906@acme/tf"], JSON.stringify(over));
+  }
+});
+
 test("filterToLiveRows: an empty open-PR cache leaves the worktree rule alone", () => {
   const rows = [liveRow({ key: "ENG-1" }), liveRow({ key: "ENG-2", pr: 42 })];
   const kept = filterToLiveRows(rows, new Set(["ENG-1"]), new Set());
@@ -942,6 +1071,12 @@ test("statusFor maps the two hand-back kinds", () => {
   assert.deepEqual(statusFor("review_findings"), { status: "review findings", terminal: false });
 });
 
+test("spike event kinds map to board statuses, and awaiting approval is not working", () => {
+  assert.deepEqual(statusFor("spike_awaiting_approval"), { status: "awaiting approval", terminal: false });
+  assert.deepEqual(statusFor("spike_closed"), { status: "spike closed", terminal: true });
+  assert.equal(isWorkingStatus("awaiting approval"), false);
+});
+
 test("refine event kinds map to board statuses", () => {
   assert.deepEqual(statusFor("refine_started"), { status: "refining", terminal: false });
   assert.deepEqual(statusFor("refined"), { status: "refined", terminal: true });
@@ -973,11 +1108,39 @@ test("foldSections takes the newest section event per key", () => {
     ev("section_merge", "ENG-1", 1),
     ev("section_review", "ENG-2", 2),
     ev("section_tasks", "ENG-1", 3),
-    ev("task_started", "ENG-1", 4),
+    ev("ci_fix_started", "ENG-1", 4),
   ]);
   assert.equal(folded.get("ENG-1"), "tasks");
   assert.equal(folded.get("ENG-2"), "review");
   assert.equal(folded.get("ENG-3"), undefined);
+});
+
+test("a fresh task start clears the section a closed PR left behind", () => {
+  const rows = reduceRows(
+    [
+      { ts: 1, kind: "section_review", key: "ENG-1", label: "ENG-1", pr: 6645 },
+      { ts: 2, kind: "task_started", key: "ENG-1", label: "ENG-1" },
+    ],
+    1000,
+  );
+  assert.equal(rows[0].section, "tasks");
+});
+
+test("a task start that carries its PR keeps the row's section", () => {
+  const folded = foldSections([
+    { ts: 1, kind: "section_review", key: "ENG-1", label: "ENG-1", pr: 9 },
+    { ts: 2, kind: "task_started", key: "ENG-1", label: "ENG-1", pr: 9, repo: "acme/x" },
+  ]);
+  assert.equal(folded.get("ENG-1"), "review");
+});
+
+test("emitSection reports review again after a fresh task start", () => {
+  withTmpLog((path) => {
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 12 });
+    emitEvent({ kind: "task_started", key: "ENG-9", label: "ENG-9" });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 13 });
+    assert.deepEqual(readEvents(path).map((e) => e.kind), ["section_review", "task_started", "section_review"]);
+  });
 });
 
 test("reduceRows defaults a row with no section event to tasks", () => {
@@ -1218,4 +1381,85 @@ test("qa kinds map to statuses; posted and failed are terminal", () => {
   assert.deepEqual(statusFor("qa_started"), { status: "qa: in session", terminal: false });
   assert.deepEqual(statusFor("qa_posted"), { status: "qa posted", terminal: true });
   assert.deepEqual(statusFor("qa_failed"), { status: "qa failed", terminal: true });
+});
+
+test("isParentRow is true for the tracker and waiting-on-slices statuses only", () => {
+  assert.equal(isParentRow({ status: TRACKING_STATUS }), true);
+  assert.equal(isParentRow({ status: AWAITING_SLICES_STATUS }), true);
+  assert.equal(isParentRow({ status: "needs decision" }), false);
+  assert.equal(isParentRow({ status: "working" }), false);
+});
+
+test("foldStuck: session_stuck marks a key and session_resumed clears it", () => {
+  const stuck = ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1", reason: "claude exited" });
+  assert.equal(foldStuck([ev({ ts: 1, kind: "task_started", key: "ENG-1", label: "ENG-1" }), stuck]).get("ENG-1"), "claude exited");
+  const resumed = ev({ ts: 3, kind: "session_resumed", key: "ENG-1", label: "ENG-1" });
+  assert.equal(foldStuck([stuck, resumed]).has("ENG-1"), false);
+});
+
+test("foldStuck: input_received or a later status event clears it", () => {
+  const stuck = ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1" });
+  assert.equal(foldStuck([stuck]).get("ENG-1"), "session ended");
+  assert.equal(foldStuck([stuck, ev({ ts: 3, kind: "input_received", key: "ENG-1", label: "ENG-1" })]).has("ENG-1"), false);
+  assert.equal(foldStuck([stuck, ev({ ts: 3, kind: "draft_pr", key: "ENG-1", label: "ENG-1" })]).has("ENG-1"), false);
+});
+
+test("reduceRows: a stuck working row shows the stuck status and reason", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-1", label: "ENG-1" }),
+      ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1", reason: "no activity 45m" }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].status, STUCK_STATUS);
+  assert.equal(rows[0].stuckReason, "no activity 45m");
+});
+
+test("reduceRows: a terminal row is never shown as stuck", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "merged", key: "ENG-1", label: "ENG-1" }),
+      ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1" }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].status, "merged");
+  assert.equal(rows[0].stuckReason, undefined);
+});
+
+test("reduceRows: a non-working status (draft pr) is not overridden by stuck", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "draft_pr", key: "ENG-1", label: "ENG-1" }),
+      ev({ ts: 2, kind: "session_stuck", key: "ENG-1", label: "ENG-1" }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].status, "draft pr");
+});
+
+test("isFixerStatus: true only for the statuses a fix session sets", () => {
+  for (const kind of ["review_started", "ci_fix_started", "conflict_fix_started", "blocked_fix_started"]) {
+    assert.equal(isFixerStatus(statusFor(kind)!.status), true, kind);
+  }
+  for (const kind of ["task_started", "ready_to_merge", "ci_failing", "fix_ended", "needs_decision"]) {
+    assert.equal(isFixerStatus(statusFor(kind)!.status), false, kind);
+  }
+  assert.equal(isFixerStatus(undefined), false);
+});
+
+test("yieldsToVerdict: ready claims and a finished fix give way to a regressed verdict, live fixes do not", () => {
+  assert.equal(yieldsToVerdict(statusFor("ready_to_merge")!.status), true);
+  assert.equal(yieldsToVerdict(statusFor("fix_ended")!.status), true);
+  assert.equal(yieldsToVerdict(statusFor("needs_approval")!.status), true);
+  assert.equal(yieldsToVerdict(statusFor("ci_fix_started")!.status), false);
+  assert.equal(yieldsToVerdict(undefined), false);
+});
+
+test("fixStartKind maps each fix kind to the event its session starts with", () => {
+  assert.equal(fixStartKind("fix"), "review_started");
+  assert.equal(fixStartKind("ci"), "ci_fix_started");
+  assert.equal(fixStartKind("conflict"), "conflict_fix_started");
+  assert.equal(fixStartKind("blocked"), "blocked_fix_started");
 });

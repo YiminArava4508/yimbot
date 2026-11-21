@@ -9,7 +9,7 @@
 #     ln -s "$PWD/scripts/new-session.sh" ~/new-session.sh
 #
 # Config (all overridable via the environment):
-#   CODEBASE_PATH          base git repo to branch from             (~/Work/gemini)
+#   CODEBASE_PATH          base git repo to branch from (required)
 #   DEFAULT_BRANCH         branch new feature branches are cut from;
 #                          auto-detected from origin/HEAD when unset (main)
 #   WORKTREES_DIR          where worktrees are created              (~/Work/worktrees)
@@ -106,7 +106,7 @@ event_key_from_branch() {
 # Best-effort: a missing log or unresolvable branch is a silent no-op, never
 # failing the Claude hook that calls it.
 emit_hook_event() {
-  local kind=$1 reason=${2:-} branch key ts extra=""
+  local kind=$1 reason=${2:-} transcript=${3:-} branch key ts extra=""
   [ -n "${EVENTS_LOG:-}" ] || return 0
   branch=$(git branch --show-current 2>/dev/null) || return 0
   [ -n "$branch" ] || return 0
@@ -117,11 +117,53 @@ emit_hook_event() {
   key=${key//\\/\\\\}
   key=${key//\"/\\\"}
   ts=$(( $(date +%s%N) / 1000000 ))
+  # Reasons can be free text (needs-decision.sh): flatten control characters,
+  # then escape like the key so one event stays one valid JSONL line.
+  reason=${reason//$'\n'/ }
+  reason=${reason//$'\r'/ }
+  reason=${reason//$'\t'/ }
+  reason=${reason//\\/\\\\}
+  reason=${reason//\"/\\\"}
   [ -n "$reason" ] && extra=",\"reason\":\"$reason\""
+  # Claude's transcript path (turn_ended): the stuck detector reads its mtime to
+  # tell a quiet-but-working session from an idle one. Escaped like the reason.
+  if [ -n "$transcript" ]; then
+    transcript=${transcript//\\/\\\\}
+    transcript=${transcript//\"/\\\"}
+    extra="$extra,\"transcript\":\"$transcript\""
+  fi
   # The emitting pane, so the autonomous-mode nudge can address this exact
   # Claude. tmux pane ids are %N; no escaping needed.
   [ -n "${TMUX_PANE:-}" ] && extra="$extra,\"pane\":\"$TMUX_PANE\""
   printf '{"ts":%s,"kind":"%s","key":"%s","label":"%s"%s}\n' "$ts" "$kind" "$key" "$key" "$extra" >> "$EVENTS_LOG" 2>/dev/null || true
+}
+
+# Record that a queue-blocked PR is only waiting on other queued PRs to land:
+# emit_blocked_waiting <pr> <waiting-on-pr>... Same blocked_waiting event the
+# daemon writes itself, keyed by the current branch. Best-effort like the above.
+emit_blocked_waiting() {
+  local pr=$1 branch key ts waiting
+  shift
+  [ -n "${EVENTS_LOG:-}" ] && [ -n "$pr" ] && [ "$#" -gt 0 ] || return 0
+  branch=$(git branch --show-current 2>/dev/null) || return 0
+  [ -n "$branch" ] || return 0
+  key=$(event_key_from_branch "$branch")
+  key=${key//\\/\\\\}
+  key=${key//\"/\\\"}
+  ts=$(( $(date +%s%N) / 1000000 ))
+  waiting=$(printf '%s,' "$@")
+  printf '{"ts":%s,"kind":"blocked_waiting","key":"%s","label":"%s","pr":%s,"waitingOn":[%s]}\n' \
+    "$ts" "$key" "$key" "$pr" "${waiting%,}" >> "$EVENTS_LOG" 2>/dev/null || true
+}
+
+# Claude Code PreToolUse hook for AskUserQuestion: while the yimbot mode file
+# (next to $EVENTS_LOG) reads autonomous no human is there to answer, so deny
+# the tool and tell the session to decide. Any other state prints nothing,
+# which lets the tool through.
+deny_ask_user_question() {
+  [ -n "${EVENTS_LOG:-}" ] || return 0
+  [ "$(cat "$(dirname "$EVENTS_LOG")/mode" 2>/dev/null)" = autonomous ] || return 0
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"No human is available. Pick the option you would recommend, state why in one line, and continue."}}'
 }
 
 # Notification types that do not mean a human is blocking: the ~60s idle prompt
@@ -150,6 +192,21 @@ emit_notification_event() {
   fi
   case " $NOTIFY_QUIET " in *" $type "*) return 0 ;; esac
   emit_hook_event needs_input
+}
+
+# Claude Code Stop hook: Claude finished a turn and is back at its prompt.
+# Emits turn_ended with the payload's transcript_path, so the stuck detector
+# measures idleness from Claude's own turn state and transcript writes instead
+# of screen output (which a person viewing the pane, a resize or a banner
+# refresh all bump). No payload on stdin (a hand-run) emits nothing.
+emit_turn_ended_event() {
+  local payload="" transcript=""
+  [ -t 0 ] && return 0
+  payload=$(cat 2>/dev/null)
+  if [[ $payload =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    transcript=${BASH_REMATCH[1]}
+  fi
+  emit_hook_event turn_ended "" "$transcript"
 }
 
 # Fail fast if this session hands off to a skill that isn't installed, rather than
@@ -235,7 +292,7 @@ create_worktree() {
 # pickup-ticket skill (all optional). Pure (reads env + checks one file);
 # unit-tested via sourcing.
 build_claude_cmd() {
-  local cmd="claude --permission-mode auto"
+  local cmd="MREIS_WORKTREE_LOCK_DISABLE=1 claude --permission-mode auto"
   local settings=${SESSION_SETTINGS:-$HOME/.config/yimbot/session-settings.json}
   [ -f "$settings" ] && cmd="$cmd --settings $settings"
   [ -n "${PLAN_MODEL:-}" ] && cmd="$cmd --model $PLAN_MODEL"
@@ -243,6 +300,8 @@ build_claude_cmd() {
   # start, so a re-couple (session died, worktree lives) never re-runs the seed.
   [ -n "${SESSION_RESUME:-}" ] && cmd="$cmd --continue"
   [ -n "${IMPL_MODEL:-}" ] && cmd="IMPL_MODEL=$IMPL_MODEL $cmd"
+  [ -n "${SPLIT_TICKETS:-}" ] && cmd="SPLIT_TICKETS=$SPLIT_TICKETS $cmd"
+  [ -n "${EVENTS_LOG:-}" ] && cmd="EVENTS_LOG=$(printf '%q' "$EVENTS_LOG") $cmd"
   printf '%s' "$cmd"
 }
 
@@ -295,7 +354,7 @@ NAME=${1:-}
 # is keyed by (and reuses) the branch's existing worktree.
 BRANCH=${2:-$NAME}
 
-CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
+: "${CODEBASE_PATH:?CODEBASE_PATH is not set; run pnpm onboard or export it}"
 git -C "$CODEBASE_PATH" rev-parse --git-dir >/dev/null 2>&1 ||
   die "CODEBASE_PATH is not a git repo: $CODEBASE_PATH"
 

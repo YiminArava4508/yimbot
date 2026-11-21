@@ -1,33 +1,37 @@
 // index.ts
 import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { format } from "node:util";
 import { execFile } from "node:child_process";
-import { envOr } from "./src/env.ts";
+import { codebasePath, envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
-import { applyReadyLabel, ghRunner, prDiff, prReviewMeta } from "./src/gh.ts";
+import { worktreeSyncStatus } from "./src/worktree-sync.ts";
+import { applyReadyLabel, ghRunner, prDiff, prHeadSha, prReviewMeta } from "./src/gh.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
 import { loadQaState } from "./src/qa-state.ts";
 import { loadTrackerState } from "./src/tracker-state.ts";
-import { readRefineEnabled, refineEnvDefault, writeRefineEnabled } from "./src/refine-toggle.ts";
-import { isConfigured, runSetup, configToEnvRecord } from "./src/setup.ts";
+import { writeRefineEnabled } from "./src/refine-toggle.ts";
+import { runSetup, configToEnvRecord } from "./src/setup.ts";
+import { needsSetup, setupMode } from "./src/setup-core.ts";
+import { linearSettingsDeps, reconfigureFinish, runTuiSetup, setupDeps, shouldRunCliSetup } from "./src/setup-boot.ts";
 import { startDaemon } from "./src/daemon.ts";
-import { returnKey, runTui } from "./src/tui.ts";
-import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./src/linear-api.ts";
+import { bootNotice, returnKey, runTui, type TuiHandle } from "./src/tui.ts";
+import { fetchCycleBoard } from "./src/linear-api.ts";
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
 import { archMapPath, readFlow, readGroups, readViewed, writeFlow, writeGroups, writeViewed } from "./src/review-state.ts";
 import type { ReviewDeps } from "./src/tui-review.ts";
-import { runHeadless } from "./src/headless.ts";
+import { headlessInFlight, runHeadless, withoutApiKey } from "./src/headless.ts";
+import { readBootSha, startSelfUpdate } from "./src/self-update-wiring.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
 import {
   bindReturnKey,
   currentTmuxPane,
+  heartbeatRunning,
   listGitWorktrees,
   listTmuxSessions,
   liveQaKeys,
@@ -41,8 +45,20 @@ import {
   unbindReturnKey,
 } from "./src/watcher.ts";
 
-if (!isConfigured(process.env)) {
-  const config = await runSetup();
+process.env.MREIS_WORKTREE_LOCK_DISABLE = "1";
+
+// Read before anything else runs, so a pull by another process during startup
+// still shows up as an update.
+const bootSha = readBootSha(import.meta.dirname);
+
+const firstRun = setupMode({
+  isTTY: Boolean(process.stdout.isTTY && process.stdin.isTTY),
+  term: process.env.TERM,
+  needed: (await needsSetup(process.env)).needed,
+});
+if (firstRun === "tui" || shouldRunCliSetup(firstRun, process.env)) {
+  const config = firstRun === "tui" ? await runTuiSetup() : await runSetup();
+  if (!config) process.exit(0);
   for (const [key, value] of Object.entries(configToEnvRecord(config))) {
     process.env[key] = value;
   }
@@ -73,7 +89,11 @@ function redirectConsoleToFile(): void {
 // Read fresh rather than captured once: the settings panel can restart the
 // daemon on a new CODEBASE_PATH mid-session, and callers that closed over a
 // stale value would keep filtering/opening sessions against the old repo.
-const currentCodebasePath = () => envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+const currentCodebasePath = () => codebasePath();
+
+// Exit code scripts/run.sh treats as "relaunch me on the new code".
+const UPDATE_EXIT = 75;
+const daemonIdle = () => !heartbeatRunning() && headlessInFlight() === 0;
 
 if (process.stdout.isTTY) {
   redirectConsoleToFile();
@@ -86,19 +106,7 @@ if (process.stdout.isTTY) {
   const apiKey = () => process.env.LINEAR_API_KEY?.trim() ?? "";
   const settings: SettingsDeps = {
     loadConfig: () => configFromEnv(process.env),
-    assignee: async () => (await fetchViewer(apiKey())).name,
-    teams: async () => (await fetchTeams(apiKey())).map((t) => t.name),
-    states: async (teamName) => {
-      // Matched case-insensitively, same as the daemon's own resolveContext
-      // (eqIgnoreCase in linear-api.ts), so a team name that differs only in
-      // case from Linear's still resolves instead of silently returning [].
-      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
-      return team ? (await fetchTeamStates(apiKey(), team.id)).map((s) => s.name) : [];
-    },
-    labels: async (teamName) => {
-      const team = (await fetchTeams(apiKey())).find((t) => t.name.toLowerCase() === teamName.toLowerCase());
-      return team ? await fetchTeamLabels(apiKey(), team.id) : [];
-    },
+    ...linearSettingsDeps(apiKey),
     apply: async (next, prev) => {
       const result = await applySettings(next, prev, {
         readEnv: () => (existsSync(envPath) ? readFileSync(envPath, "utf8") : null),
@@ -119,16 +127,13 @@ if (process.stdout.isTTY) {
   };
   // Same headless claude -p shape as the daemon's judgeRun; the given model env
   // overrides, falling back to the judge's model knob.
-  const headless = (model: string) => runHeadless(model, currentCodebasePath());
+  const headless = (model: string) => runHeadless(model, currentCodebasePath(), undefined, undefined, withoutApiKey());
   const claudeRegistry = makeSessionRegistry(spawnClaudePty);
   // The claude session runs in the PR's worktree so it can read the actual
   // branch; a PR-only row with no worktree falls back to the main checkout.
-  const worktreeForKey = (key: string): string => {
-    const wt = listGitWorktrees(currentCodebasePath()).find(
-      (w) => deriveKey({ branch: w.branch }).key === key,
-    );
-    return wt?.path ?? currentCodebasePath();
-  };
+  const worktreeFor = (key: string) =>
+    listGitWorktrees(currentCodebasePath()).find((w) => deriveKey({ branch: w.branch }).key === key);
+  const worktreeForKey = (key: string): string => worktreeFor(key)?.path ?? currentCodebasePath();
   // Queue a PR the operator signed off on by hand: promote it if it is still a
   // draft, label it, then move its row now rather than leaving it where it was
   // until the next heartbeat re-reports the section. Shared by the board's r
@@ -143,10 +148,13 @@ if (process.stdout.isTTY) {
   const reviewDeps = (pr: number, key: string, label: string, repo?: string): ReviewDeps => {
     const run = ghRunner(currentCodebasePath(), repo);
     const cwd = worktreeForKey(key);
+    const hasWorktree = worktreeFor(key) !== undefined;
     return {
       pr,
       fetchDiff: () => prDiff(run, pr),
       fetchMeta: () => prReviewMeta(run, pr),
+      fetchHeadSha: () => prHeadSha(run, pr),
+      syncStatus: async () => (hasWorktree ? worktreeSyncStatus(cwd) : null),
       runGrouping: (prompt) => headless(envOr("REVIEW_GROUP_MODEL", envOr("AC_JUDGE_MODEL", "")))(prompt),
       queueToMerge: () => queueToMerge(pr, key, label, repo),
       loadViewed: (headSha) => readViewed(pr, headSha),
@@ -184,6 +192,12 @@ if (process.stdout.isTTY) {
       sessionName: () =>
         resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions()),
       openSession: (session) => switchToSession(session),
+      setPaneKeys: (on) => {
+        const pane = process.env.TMUX_PANE;
+        if (!pane) return;
+        const args = on ? ["set-option", "-p", "-t", pane, "@yimbot_keys", "1"] : ["set-option", "-p", "-u", "-t", pane, "@yimbot_keys"];
+        execFile("tmux", args, () => {});
+      },
       writeContext: (content) => {
         try {
           ensureContextScaffold(cwd);
@@ -196,7 +210,27 @@ if (process.stdout.isTTY) {
       },
     };
   };
-  runTui({
+  let tui: TuiHandle | undefined;
+  const updater = startSelfUpdate({
+    repoDir: import.meta.dirname,
+    env: process.env,
+    bootSha,
+    headless: false,
+    isSafe: () => tui !== undefined && !tui.isBusy() && daemonIdle(),
+    restart: () => {
+      tui?.teardown();
+      if (boardPane) unbindReturnKey(returnKeyName);
+      claudeRegistry.detachAll();
+      stop();
+      updater?.stop();
+      process.exit(UPDATE_EXIT);
+    },
+    log: (msg) => console.log(msg),
+  });
+  tui = runTui({
+    updateState: updater?.state,
+    updateManualRestart: updater ? !updater.autoRestart : false,
+    bootNotice: updater ? bootNotice(process.env, updater.bootSha) : null,
     onQuit: () => {
       if (boardPane) unbindReturnKey(returnKeyName);
       claudeRegistry.killAll();
@@ -226,11 +260,15 @@ if (process.stdout.isTTY) {
       const session = resolveSessionForKey(key, listGitWorktrees(currentCodebasePath()), listTmuxSessions());
       if (session) switchToSession(session);
     },
+    onOpenPr: async (pr, repo) => {
+      await ghRunner(currentCodebasePath(), repo)(["pr", "view", String(pr), "--web"]);
+    },
     mode: readMode,
     onToggleMode: toggleMode,
-    refineEnabled: () => readRefineEnabled(refineEnvDefault(process.env)),
     settings,
+    setupDeps: () => setupDeps(reconfigureFinish),
     reviewDeps,
+    fetchBoard: () => fetchCycleBoard(apiKey(), configFromEnv(process.env).teamName),
     orderDeps: {
       fetchMeta: (pr, repo) => prReviewMeta(ghRunner(currentCodebasePath(), repo), pr),
       run: (prompt) =>
@@ -239,6 +277,19 @@ if (process.stdout.isTTY) {
   });
 } else {
   const stop = await startDaemon();
+  const updater = startSelfUpdate({
+    repoDir: import.meta.dirname,
+    env: process.env,
+    bootSha,
+    headless: true,
+    isSafe: daemonIdle,
+    restart: () => {
+      stop();
+      updater?.stop();
+      process.exit(UPDATE_EXIT);
+    },
+    log: (msg) => console.log(msg),
+  });
   const shutdown = () => {
     stop();
     process.exit(0);

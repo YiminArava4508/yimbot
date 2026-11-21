@@ -1183,7 +1183,7 @@ test("cleanupOnce keeps the whole group when a closed slice has unsaved work", a
   assert.ok(logs.some((l) => /eng-1/.test(l) && /unsaved/.test(l)));
 });
 
-test("cleanupOnce keeps the whole group when the integration worktree has unsaved work", async () => {
+test("cleanupOnce keeps the whole group when a slice was closed unmerged and the integration worktree has unsaved work", async () => {
   const { deps: d, torn } = deps({
     listWorktrees: () => [
       { path: `${WT}/eng-1`, branch: "eng-1" },
@@ -1199,6 +1199,29 @@ test("cleanupOnce keeps the whole group when the integration worktree has unsave
   });
   await cleanupOnce(d);
   assert.deepEqual(torn, []);
+});
+
+test("cleanupOnce does not gate the integration worktree once every slice merged", async () => {
+  // The ENG-2249 / ENG-1925 wedge: slices are squash-merged and the integration
+  // branch's own PR was closed and its origin branch deleted when the split began,
+  // so none of the integration worktree's commits are reachable from any origin
+  // ref and it reads as "unpushed" forever. With every slice merged and the
+  // ticket Done, that content already landed: the integration worktree is safe.
+  const { deps: d, torn } = deps({
+    listWorktrees: () => [
+      { path: `${WT}/eng-1`, branch: "eng-1" },
+      { path: `${WT}/eng-1-p1`, branch: "eng-1-p1" },
+      { path: `${WT}/eng-1-p2`, branch: "eng-1-p2" },
+    ],
+    readParentSession: (p) =>
+      p === `${WT}/eng-1-p1` || p === `${WT}/eng-1-p2` ? "eng-1" : null,
+    listMergedPRs: async () => [mpr(1, "eng-1-p1"), mpr(2, "eng-1-p2")],
+    listClosedUnmergedPRs: async () => [],
+    hasNoUnpushedWork: (p) => p !== `${WT}/eng-1`, // squash-merged slices strand its SHAs
+    issueState: async () => st("completed"),
+  });
+  await cleanupOnce(d);
+  assert.deepEqual([...torn].sort(), ["eng-1", "eng-1-p1", "eng-1-p2"]);
 });
 
 test("cleanupOnce does not gate a merged slice whose upstream is gone (branch deleted on merge)", async () => {

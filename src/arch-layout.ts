@@ -2,7 +2,7 @@
 // Sugiyama-lite for a terminal: break cycles, rank by longest path, order each
 // rank by barycenter, place one-line boxes, route orthogonal edges onto a char
 // grid. Every pass is pure and exported so the hard parts test on their own.
-import type { ArchEdge, ArchMap, NodeState } from "./arch-map.ts";
+import type { ArchEdge, ArchMap, Category, NodeState } from "./arch-map.ts";
 import { escapeTags } from "./review-diff.ts";
 
 const key = (e: ArchEdge): string => `${e.from}->${e.to}`;
@@ -284,7 +284,19 @@ export function renderGrid(
 // #222222, about 2.4:1), leaving the tier unreadable rather than quiet. A hex
 // grey sidesteps the palette: blessed maps it into the 256-colour cube, whose
 // greys are fixed, and 247 is an exact hit.
-export const DIM_TAG = "#9e9e9e-fg";
+export const DIM_TAG = "#b0b6c3-fg";
+export const BODY_TAG = "#e6e9f0-fg";
+
+export const CATEGORY_TAGS: Record<Category, string> = {
+  new: "green-fg",
+  contract: "#e0af68-fg",
+  behavior: "#7dcfff-fg",
+  config: "#bb9af7-fg",
+  risk: "red-fg",
+};
+
+export const chip = (category: Category): string =>
+  `{${CATEGORY_TAGS[category]}}[${category}]{/${CATEGORY_TAGS[category]}}`;
 
 // The focus ring: the outline and label of whichever pane the keys act on, on
 // the board and in the review overlay. ANSI white sits too close to the resting

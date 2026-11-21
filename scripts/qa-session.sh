@@ -47,7 +47,7 @@ PRS=${4:-}
 [ -n "$PARENT" ] && [ -n "$NONPROD_URL" ] || { echo "Usage: $0 <PARENT> <NONPROD_URL> <CHILDREN_CSV> <PRS_CSV>"; exit 1; }
 qa_args_safe "$PARENT" "$NONPROD_URL" "$CHILDREN" "$PRS" ||
   { echo "ERROR: qa-session.sh arguments must not contain quotes, backticks, \$ or backslashes" >&2; exit 1; }
-CODEBASE_PATH=${CODEBASE_PATH:-$HOME/Work/gemini}
+: "${CODEBASE_PATH:?CODEBASE_PATH is not set; run pnpm onboard or export it}"
 
 ID_UPPER=$(printf '%s' "$PARENT" | tr '[:lower:]' '[:upper:]')
 SESSION=$(qa_session_name "$ID_UPPER")

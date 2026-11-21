@@ -5,7 +5,7 @@
 import blessed from "neo-blessed";
 import { attachClaudeOutput, claudeKeyAction } from "./claude-pane.ts";
 import type { ClaudeSession } from "./claude-sessions.ts";
-import { escapeTags, parseUnifiedDiff, renderFileDiff, renderSideBySide, type FileDiff } from "./review-diff.ts";
+import { changeSignature, escapeTags, parseUnifiedDiff, renderFileDiff, renderSideBySide, warmHighlighter, type FileDiff } from "./review-diff.ts";
 import { contextMarkdown, contextSignature, toggleContext } from "./review-context.ts";
 import { fetchGroups, fileStats, normalizeGroups } from "./review-groups.ts";
 import type { ReviewGroup, ReviewGroups } from "./review-groups.ts";
@@ -82,8 +82,8 @@ export function planLines(
   return { lines, selectedLine };
 }
 
-export function diffPaneLines(fd: FileDiff | null): string[] {
-  if (fd) return renderFileDiff(fd);
+export function diffPaneLines(fd: FileDiff | null, width: number): string[] {
+  if (fd) return renderFileDiff(fd, width);
   return [`{${DIM_TAG}}loading diff…{/${DIM_TAG}}`];
 }
 
@@ -138,8 +138,24 @@ export function guideHeight(lines: string[], innerWidth: number, maxHeight: numb
   return Math.min(maxHeight, Math.max(3, rows + 2));
 }
 
-export function reviewHeader(pr: number, title: string, viewedCount: number, total: number): string {
-  return `PR #${pr}  ${escapeTags(title)}  |  ${viewedCount}/${total} viewed`;
+export function reviewHeader(pr: number, title: string, viewedCount: number, total: number, chip = ""): string {
+  const base = `PR #${pr}  ${escapeTags(title)}  |  ${viewedCount}/${total} viewed`;
+  return chip ? `${base}  |  ${chip}` : base;
+}
+
+// Where the review chat's work stands relative to the PR on the remote.
+export type SyncStatus = { dirty: boolean; unpushed: number; head: string };
+
+export function syncChip(sync: SyncStatus | null, pushedSha: string): string {
+  if (sync === null) return "";
+  const parts: string[] = [];
+  if (sync.dirty) parts.push("uncommitted");
+  if (sync.unpushed > 0) parts.push(`${sync.unpushed} unpushed`);
+  if (parts.length === 0 && sync.head !== pushedSha) {
+    return `local ${sync.head.slice(0, 7)} differs from PR ${pushedSha.slice(0, 7)}`;
+  }
+  if (parts.length === 0) return `pushed @ ${pushedSha.slice(0, 7)}`;
+  return parts.join(", ");
 }
 
 export type ReviewPane = "plan" | "diff" | "claude";
@@ -161,13 +177,13 @@ export function reviewFooterHint(s: {
 }): string {
   if (!s.loaded) return "loading…   q back";
   if (s.total === 0) return "no changes in this PR   q back";
-  if (s.focused === "claude") return "typing goes to claude   C-q or C-\\ back";
+  if (s.focused === "claude") return "typing goes to claude   C-h or C-\\ back";
   let done = "";
   if (s.allViewed) done = "   {green-fg}r ready to merge{/green-fg}";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   const sess = s.hasSession ? "   o session" : "";
   const ask = s.hasClaude ? "   a claude" : "";
-  return `j/k move   space viewed   c context${clear}   tab pane${ask}${done}${sess}   q back`;
+  return `j/k move   space viewed   c context${clear}   tab pane${ask}   R refresh${done}${sess}   q back`;
 }
 
 // Same rule as the board's paneBorderColor: the focused pane takes the focus
@@ -180,7 +196,7 @@ export function reviewPaneBorderColor(focused: boolean): string {
 // shared one would repaint every border when paint() recolors the focused one.
 const paneStyle = () => ({ border: { fg: "grey" }, label: { fg: "grey" } });
 
-// Same discipline as footerLayout/settingsPanelLayout: exported plain records
+// Same discipline as footerLayout/settingsLayout: exported plain records
 // so the layout test exercises these exact objects. keys+vi on the diff pane
 // gives blessed's own j/k scrolling when it is focused; the plan pane's keys
 // are handled by openReview so headers can be skipped during selection.
@@ -200,7 +216,7 @@ export function reviewLayout(): Record<"header" | "guide" | "plan" | "diff" | "c
       border: { type: "line" }, label: " review plan ", style: paneStyle(),
     },
     diff: {
-      top: 6, left: "25%", width: "45%", bottom: 1, tags: true, keys: true, vi: true, mouse: true,
+      top: 6, left: "25%", width: "45%", bottom: 1, tags: true, wrap: false, keys: true, vi: true, mouse: true,
       scrollable: true, alwaysScroll: true,
       border: { type: "line" }, label: " diff ", style: paneStyle(),
       scrollbar: { ch: " ", style: { inverse: true } },
@@ -276,7 +292,7 @@ export function wideFooterHint(s: {
   const done = s.allViewed ? "   {green-fg}r ready to merge{/green-fg}" : "";
   const clear = s.contextCount > 0 ? "   C clear context" : "";
   const sess = s.hasSession ? "   o session" : "";
-  return `j/k scroll   n/p file   space viewed   c context${clear}${done}${sess}   z/q back`;
+  return `j/k scroll   n/p file   space viewed   c context${clear}   R refresh${done}${sess}   z/q back`;
 }
 
 const NO_ARCH_MAP = "{red-fg}no map in this repo   G build{/red-fg}";
@@ -285,6 +301,14 @@ export type ReviewDeps = {
   pr: number;
   fetchDiff: () => Promise<string>;
   fetchMeta: () => Promise<{ title: string; body: string; headSha: string }>;
+  // Just the PR's current head SHA: one cheap call per poll, so a push from the
+  // review chat is noticed without refetching the whole diff every tick.
+  fetchHeadSha: () => Promise<string>;
+  // The reviewed worktree's uncommitted and unpushed state, null when it
+  // cannot be read.
+  syncStatus: () => Promise<SyncStatus | null>;
+  // Poll interval in ms; 0 turns the poll off. Defaults to 10s.
+  pollMs?: number;
   runGrouping: (prompt: string) => Promise<string>;
   // Sign off on the review: promote the PR if it is still a draft, put the ready
   // label on it, and land it in the board's ready-to-merge pane. Bound to r, the
@@ -319,6 +343,9 @@ export type ReviewDeps = {
   // False when the switch did not happen — outside tmux, or the session died
   // between the resolve and the switch — so o can say so instead of no-oping.
   openSession: (session: string) => boolean;
+  // Tells tmux to hand C-h and C-l to this pane instead of switching panes,
+  // for as long as the review is open. A no-op outside tmux.
+  setPaneKeys: (on: boolean) => void;
 };
 
 // The returned claudeFocused getter feeds tui.ts's C-c gate: while the claude
@@ -340,6 +367,7 @@ export function openReview(
   const chart: any = blessed.box({ parent: s, ...flowLayout().chart });
   const wide: any = blessed.box({ parent: s, ...wideLayout().wide });
   plan.focus();
+  deps.setPaneKeys(true);
 
   let meta: { title: string; body: string; headSha: string } | null = null;
   let fileDiffs: FileDiff[] = [];
@@ -373,6 +401,10 @@ export function openReview(
   // moveNode walks exactly what the brief put on screen.
   let flowNodes: string[] = [];
   let regenerating = false;
+  let sync: SyncStatus | null = null;
+  let refreshing = false;
+  let polling = false;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
   // Refreshed on every o press, so a session that starts or dies mid-review
   // is picked up rather than stranding the key until the overlay is reopened.
   let ticketSession = deps.sessionName();
@@ -434,14 +466,20 @@ export function openReview(
     return rendered;
   };
 
+  function paintHeader(fs: string[]): void {
+    const title = meta ? meta.title : "loading…";
+    header.setContent(
+      reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length, meta ? syncChip(sync, meta.headSha) : ""),
+    );
+  }
+
   function paint(footerOverride?: string): void {
     if (closed) return;
     rendered = null;
     const g = currentGroups();
     const fs = files();
     if (selectedPath === null || !fs.includes(selectedPath)) selectedPath = fs[0] ?? null;
-    const title = meta ? meta.title : "loading…";
-    header.setContent(reviewHeader(deps.pr, title, fs.filter((f) => viewed.has(f)).length, fs.length));
+    paintHeader(fs);
     const { lines, selectedLine } = planLines(g.groups, viewed, contextFiles, selectedPath);
     plan.setContent(lines.join("\n"));
     if (selectedLine >= 0 && selectedLine !== lastPlanScroll) {
@@ -469,7 +507,8 @@ export function openReview(
     diff.left = cols.diffLeft;
     diff.width = cols.diffWidth;
     claude.left = cols.claudeLeft;
-    diff.setContent(diffPaneLines(fd).join("\n"));
+    // Border on both sides plus the column blessed reserves for the scrollbar.
+    diff.setContent(diffPaneLines(fd, Math.max(20, diff.width - 3)).join("\n"));
     for (const [pane, box] of [["plan", plan], ["diff", diff], ["claude", claude]] as const) {
       const fg = reviewPaneBorderColor(focused === pane);
       box.style.border.fg = fg;
@@ -480,8 +519,8 @@ export function openReview(
     // whatever stale dimensions it last had; re-fitting the pty to them would
     // resize it against a box nobody sees.
     if (overlay === "wide") {
-      // Border on both sides plus the column blessed reserves for the scrollbar.
-      wide.setContent(fd ? renderSideBySide(fd, Math.max(20, wide.width - 3)).join("\n") : diffPaneLines(fd).join("\n"));
+      const wideWidth = Math.max(20, wide.width - 3);
+      wide.setContent(fd ? renderSideBySide(fd, wideWidth).join("\n") : diffPaneLines(fd, wideWidth).join("\n"));
       wide.style.border.fg = reviewPaneBorderColor(true);
       wide.style.label.fg = reviewPaneBorderColor(true);
     }
@@ -499,6 +538,7 @@ export function openReview(
           stale: unmapped.length,
           width: Math.max(12, chart.width - 2),
           selected: selectedNode,
+          title: meta?.title,
         });
         flowNodes = view.nodes;
         chart.setContent(view.rows.map((r) => r.text).join("\n"));
@@ -549,6 +589,8 @@ export function openReview(
   function close(notice: string | null, isError: boolean): void {
     if (closed) return;
     closed = true;
+    if (pollTimer) clearInterval(pollTimer);
+    deps.setPaneKeys(false);
     if (meta) deps.saveViewed(meta.headSha, viewed);
     s.removeListener("resize", onScreenResize);
     exitSub?.dispose();
@@ -726,6 +768,7 @@ export function openReview(
     if (archMap !== map) return;
     // A null is a transient model failure, never something to remember:
     // caching it would freeze the fallback in until the next push.
+    if (meta?.headSha !== m.headSha) return;
     if (fresh) {
       annotation = fresh;
       deps.saveFlow(m.headSha, fresh);
@@ -780,16 +823,20 @@ export function openReview(
   const plainA = (key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) =>
     key.name === "a" && !key.shift && !key.ctrl && !key.meta;
 
-  plan.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) => {
+  const ctrlL = (key: { name: string; ctrl?: boolean }) => key.name === "l" && key.ctrl === true;
+  const ctrlH = (key: { sequence?: string }) => key.sequence === "\b";
+
+  plan.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean; sequence?: string }) => {
     if (key.name === "j" || key.name === "down") select(selectedIndex() + 1);
     else if (key.name === "k" || key.name === "up") select(selectedIndex() - 1);
     else if (key.name === "g" && key.shift) select(files().length - 1);
     else if (key.name === "g") select(0);
     else if (key.name === "space") toggleViewed();
+    else if (key.name === "r" && key.shift) void refresh();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
-    else if (key.name === "tab") focusPane("diff");
+    else if (key.name === "tab" || ctrlL(key)) focusPane("diff");
     else if (plainA(key)) focusPane("claude");
     else if (key.name === "f" && !key.ctrl) openFlow();
     else if (key.name === "z" && !key.ctrl) setWide(true);
@@ -797,10 +844,11 @@ export function openReview(
     else if (key.name === "q" || key.name === "escape") close(null, false);
   });
 
-  diff.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean }) => {
-    if (key.name === "tab") focusPane("plan");
-    else if (plainA(key)) focusPane("claude");
+  diff.on("keypress", (_ch: string, key: { name: string; shift?: boolean; ctrl?: boolean; meta?: boolean; sequence?: string }) => {
+    if (key.name === "tab" || ctrlH(key)) focusPane("plan");
+    else if (plainA(key) || ctrlL(key)) focusPane("claude");
     else if (key.name === "space") toggleViewed();
+    else if (key.name === "r" && key.shift) void refresh();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
@@ -814,6 +862,7 @@ export function openReview(
     if (key.name === "n") select(selectedIndex() + 1);
     else if (key.name === "p") select(selectedIndex() - 1);
     else if (key.name === "space") toggleViewed();
+    else if (key.name === "r" && key.shift) void refresh();
     else if (key.name === "r") queueToMerge();
     else if (key.name === "c" && key.shift) clearContext();
     else if (key.name === "c") toggleContextSelected();
@@ -828,7 +877,12 @@ export function openReview(
       paint();
       return;
     }
-    if (claudeKeyAction(key) === "unfocus") {
+    const action = claudeKeyAction(key);
+    if (action === "left") {
+      focusPane("diff");
+      return;
+    }
+    if (action === "unfocus") {
       focused = "plan";
       plan.focus();
       paint();
@@ -859,6 +913,7 @@ export function openReview(
 
   const metaP = deps.fetchMeta();
   const diffP = deps.fetchDiff();
+  setImmediate(warmHighlighter);
   metaP.then(
     (m) => {
       if (closed) return;
@@ -887,8 +942,7 @@ export function openReview(
   );
   // Grouping needs the diff's file list and the PR title/body, so it starts
   // once both land; the placeholder group keeps the diff readable meanwhile.
-  Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
-    if (closed || rawDiff === null) return;
+  async function groupAndAnnotate(m: { title: string; body: string; headSha: string }): Promise<void> {
     if (fileDiffs.length === 0) {
       groups = { summary: "", groups: [], notes: {} };
       paint();
@@ -912,17 +966,101 @@ export function openReview(
       applyGroups(cached, false);
     } else {
       const res = await fetchGroups(deps.runGrouping, { number: deps.pr, title: m.title, body: m.body }, fileStats(fileDiffs));
-      if (closed) return;
+      if (closed || meta?.headSha !== m.headSha) return;
       // A fallback is what we show when the model was unreachable, never what we
       // remember: caching it would freeze a transient failure in until the next push.
       if (!res.usedFallback) deps.saveGroups(m.headSha, res.groups);
       applyGroups(res.groups, res.usedFallback);
     }
     await loadAnnotation(true);
+  }
+
+  Promise.all([metaP, diffP.catch(() => null)]).then(async ([m, rawDiff]) => {
+    if (closed || rawDiff === null) return;
+    await groupAndAnnotate(m);
   }).catch(() => {
     // metaP rejection: already reported and closed by metaP.then's own
     // rejection handler above.
   });
+
+  // Pull the PR's current meta and diff into the open overlay. A new head SHA
+  // re-keys everything cached per SHA; viewed marks carry over only for files
+  // whose diff did not change, so a pushed fix is reviewed again.
+  async function refresh(): Promise<void> {
+    if (refreshing || closed || meta === null) return;
+    refreshing = true;
+    paint("refreshing…");
+    let moved: { title: string; body: string; headSha: string } | null = null;
+    try {
+      // A push between the meta and diff calls would pair the new SHA with the
+      // old diff, so refetch until the head holds still (bounded: the next poll
+      // catches anything that keeps moving).
+      let m = await deps.fetchMeta();
+      let raw = await deps.fetchDiff();
+      for (let i = 0; i < 2 && (await deps.fetchHeadSha()) !== m.headSha; i++) {
+        m = await deps.fetchMeta();
+        raw = await deps.fetchDiff();
+      }
+      if (closed) return;
+      const next = parseUnifiedDiff(raw);
+      const changed = m.headSha !== meta.headSha;
+      if (changed) {
+        deps.saveViewed(meta.headSha, viewed);
+        const before = new Map(fileDiffs.map((f) => [f.path, changeSignature(f)]));
+        const kept = next.filter((f) => viewed.has(f.path) && before.get(f.path) === changeSignature(f)).map((f) => f.path);
+        viewed = new Set([...deps.loadViewed(m.headSha), ...kept]);
+        deps.saveViewed(m.headSha, viewed);
+        const live = new Set(next.map((f) => f.path));
+        contextFiles = new Set([...contextFiles].filter((p) => live.has(p)));
+        groups = null;
+        annotation = null;
+        moved = m;
+      }
+      meta = m;
+      fileDiffs = next;
+      lastCtxSig = null;
+      paint(changed ? `{green-fg}PR updated @ ${m.headSha.slice(0, 7)}{/green-fg}` : undefined);
+      void refreshSync();
+    } catch (err: unknown) {
+      if (closed) return;
+      paint(`{red-fg}refresh failed: ${err instanceof Error ? err.message : String(err)}{/red-fg}`);
+    } finally {
+      refreshing = false;
+    }
+    if (moved) await groupAndAnnotate(moved).catch(() => {});
+  }
+
+  async function refreshSync(): Promise<void> {
+    let next: SyncStatus | null = null;
+    try {
+      next = await deps.syncStatus();
+    } catch {
+      next = null;
+    }
+    if (closed || JSON.stringify(next) === JSON.stringify(sync)) return;
+    sync = next;
+    paintHeader(files());
+    s.render();
+  }
+
+  async function pollHead(): Promise<void> {
+    if (polling || refreshing || closed || meta === null) return;
+    polling = true;
+    try {
+      void refreshSync();
+      const head = await deps.fetchHeadSha();
+      if (!closed && meta !== null && head !== meta.headSha) await refresh();
+    } catch {
+      // A missed poll is retried on the next tick.
+    } finally {
+      polling = false;
+    }
+  }
+
+  const pollMs = deps.pollMs ?? 10_000;
+  pollTimer = pollMs > 0 ? setInterval(() => void pollHead(), pollMs) : null;
+  pollTimer?.unref();
+  void refreshSync();
 
   return { claudeFocused: () => !closed && focused === "claude" };
 }

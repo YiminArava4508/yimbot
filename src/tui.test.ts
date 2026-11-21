@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { alignTables, applyOrder, bindFlagKey, bindModeKey, bindPaneFocusSync, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, boardLayout, boardTable, BOARD_HEADER, cellWidth, fmtDuration, footerHint, footerLayout, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, movePane, nextPane, paneBorderColor, applyPaneFocusStyle, parentRows, partitionRows, resolvePane, returnKey, reachWarnings, screenTerm, selectedBoardRow, statusContent, type Pane, type PaneCounts } from "./tui.ts";
+import { TABLE_IDS, isTableId } from "./table-view.ts";
+import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleOpenPr, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent, updateChip, bootNotice, NOTICE_ERROR_TTL_MS } from "./tui.ts";
+import { stepFocus, type Card, type Column } from "./kanban.ts";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
@@ -18,83 +20,6 @@ const row = (over: Partial<BoardRow>): BoardRow => ({
   flagged: false,
   flagReasons: [],
   ...over,
-});
-
-test("every pane shares one header, in one order", () => {
-  assert.deepEqual(BOARD_HEADER, [
-    "TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON",
-  ]);
-  assert.deepEqual(boardTable([])[0], BOARD_HEADER);
-});
-
-test("boardTable renders #N in the PR column and the title", () => {
-  const [, body] = boardTable([{ row: row({ pr: 481, title: "add column" }) }], 0);
-  assert.equal(body[4], "#481");
-  assert.equal(body[6], "add column");
-});
-
-test("boardTable prefixes a research title with a magenta type chip, plain titles untouched", () => {
-  const [, research, plain] = boardTable(
-    [{ row: row({ title: "Decide retention for exports" }) }, { row: row({ title: "add column" }) }],
-    0,
-  );
-  assert.equal(research[6], "{magenta-fg}[research]{/magenta-fg} Decide retention for exports");
-  assert.equal(plain[6], "add column");
-});
-
-test("boardTable fills REPO from the extra repo slug name, the codebase name for codebase PRs, blank without a PR", () => {
-  const extra = boardTable([{ row: row({ pr: 1507, repo: "acme/terraform-x" }) }], 0, "gemini")[1];
-  assert.equal(extra[5], "terraform-x");
-  const codebase = boardTable([{ row: row({ pr: 5970 }) }], 0, "gemini")[1];
-  assert.equal(codebase[5], "gemini");
-  const none = boardTable([{ row: row({}) }], 0, "gemini")[1];
-  assert.equal(none[5], "");
-});
-
-test("boardTable leaves the PR cell blank when pr is absent", () => {
-  const [, body] = boardTable([{ row: row({}) }], 0);
-  assert.equal(body[4], "");
-});
-
-test("boardTable DUR uses now - startTs for an active row", () => {
-  const [, body] = boardTable([{ row: row({ startTs: 0, ts: 0 }) }], 65_000);
-  assert.equal(body[1], "1m");
-});
-
-test("boardTable DUR is frozen at ts - startTs for a terminal row", () => {
-  const [, body] = boardTable([{ row: row({ terminal: true, startTs: 0, ts: 60_000 }) }], 999_999);
-  assert.equal(body[1], "1m");
-});
-
-test("boardTable marks a flagged row and leaves others blank", () => {
-  const [, flagged] = boardTable([{ row: row({ flagged: true, flagReasons: ["manual"] }) }], 0);
-  assert.equal(flagged[7], "{red-fg}⚑{/red-fg}");
-  const [, plain] = boardTable([{ row: row({}) }], 0);
-  assert.equal(plain[7], "");
-});
-
-test("boardTable joins the flag reasons in the REASON cell", () => {
-  const [, body] = boardTable(
-    [{ row: row({ flagged: true, flagReasons: ["input", "changes-requested"] }) }],
-    0,
-  );
-  assert.equal(body[8], "{red-fg}input,changes-requested{/red-fg}");
-});
-
-test("boardTable leaves the REASON cell blank when unflagged", () => {
-  const [, body] = boardTable([{ row: row({}) }], 0);
-  assert.equal(body[8], "");
-});
-
-test("boardTable dims a terminal row's status", () => {
-  const [, body] = boardTable([{ row: row({ status: "merged", terminal: true }) }], 0);
-  assert.equal(body[2], "{grey-fg}merged{/grey-fg}");
-});
-
-test("boardTable has no column past REASON", () => {
-  const [, body] = boardTable([{ row: row({ pr: 11 }) }], 0);
-  assert.equal(body.length, BOARD_HEADER.length);
-  assert.equal(body.at(-1), "");
 });
 
 test("fmtDuration formats seconds, minutes, and hours", () => {
@@ -129,29 +54,28 @@ test("returnKey honors TUI_RETURN_KEY and falls back when it is blank", () => {
 });
 
 test("footerHint is a lean legend: help and quit everywhere, the rest lives under ?", () => {
-  for (const pane of ["tasks", "review", "merge"] as const) {
-    const hint = footerHint(pane);
-    assert.match(hint, /\? help/);
-    assert.match(hint, /\^c quit/);
-    assert.doesNotMatch(hint, /\bq quit/);
-    assert.doesNotMatch(hint, /j\/k move|f flag|m mode|s settings|returns here|tab pane/);
-  }
+  const hint = footerHint();
+  assert.match(hint, /\? help/);
+  assert.match(hint, /\^c quit/);
+  assert.doesNotMatch(hint, /\bq quit/);
+  assert.doesNotMatch(hint, /j\/k move|f flag|m mode|s settings|returns here|tab pane/);
 });
 
-test("footerHint shows r/R on every pane: r reaches an unlabeled row wherever it sits", () => {
-  assert.match(footerHint("review"), /r ready {3}R review/);
-  assert.match(footerHint("merge"), /r ready {3}R review/);
-  assert.match(footerHint("tasks"), /r ready {3}R review/);
+test("footerHint shows r/R: r reaches an unlabeled row wherever it sits", () => {
+  assert.match(footerHint(), /r ready {3}R review/);
 });
 
 test("helpLines carries every keybind the footer no longer shows", () => {
   const text = helpLines("F12").join("\n");
   for (const needle of [
-    "j/k", "^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "?", "^c", "prefix+F12",
+    "j/k", "^j/^k", "tab", "enter", "f", "r", "R", "m", "s", "v", "h/l", "?", "^c", "prefix+F12",
   ]) {
     assert.ok(text.includes(needle), `help must mention ${needle}`);
   }
   assert.doesNotMatch(text, /review pane/);
+  assert.match(text, /switch pane \(tab cycles\)/);
+  assert.doesNotMatch(text, /card/, "the default table view has rows, not cards");
+  assert.match(text, /flag\/unflag the selected row/);
   assert.doesNotMatch(text, /\{bold\}q\s*\{\/bold\}/, "q is no longer a quit key");
 });
 
@@ -193,24 +117,153 @@ test("bindModeKey gates m while settings is open", () => {
 });
 
 test("the settings key moved to the help overlay", () => {
-  assert.doesNotMatch(footerHint("tasks"), /s settings/);
+  assert.doesNotMatch(footerHint(), /s settings/);
   assert.match(helpLines("Y").join("\n"), /settings/);
 });
 
 test("footerHint no longer advertises a refine key (refine lives in settings)", () => {
-  assert.doesNotMatch(footerHint("review"), /refine/);
+  assert.doesNotMatch(footerHint(), /refine/);
 });
 
-test("statusContent shows a red refine-off chip while refine is off", () => {
-  const off = statusContent("supervised", false, 2, null, 0, []);
-  assert.match(off, /REFINE OFF/);
-  assert.match(off, /red-bg/);
+test("statusContent is the mode chip alone: no refine, split or activity text", () => {
+  const bar = statusContent("supervised", null, 0, []);
+  assert.equal(bar, modeContent("supervised"));
+  assert.doesNotMatch(bar, /REFINE|SPLIT|live|active/);
 });
 
-test("statusContent shows a green refine-on chip while refine is on", () => {
-  const on = statusContent("supervised", true, 2, null, 0, []);
-  assert.match(on, /REFINE ON/);
-  assert.match(on, /green-bg.*REFINE ON/);
+test("paneLabel is the plain pane name and its count", () => {
+  assert.equal(paneLabel("tasks", 3), " tasks 3 ");
+});
+
+test("titleContent is the plain cyan wordmark until a board arrives", () => {
+  assert.equal(titleContent(null), "{cyan-fg}{bold}yimbot{/bold}{/cyan-fg}");
+});
+
+test("titleContent appends the cycle number in grey", () => {
+  assert.equal(titleContent({ cycleNumber: 42 }), `{cyan-fg}{bold}yimbot{/bold}{/cyan-fg}${grey(" cycle 42")}`);
+});
+
+test("titleContent says no active cycle in grey when the team has none", () => {
+  assert.equal(titleContent({ cycleNumber: null }), `{cyan-fg}{bold}yimbot{/bold}{/cyan-fg}${grey(" no active cycle")}`);
+});
+
+const card = (over: Partial<Card>): Card => ({ key: "ENG-1", title: "t", stateName: "Todo", row: null, ...over });
+
+test("rowForAction hands back the card's yimbot row", () => {
+  const r = row({ key: "ENG-1" });
+  assert.deepEqual(rowForAction(card({ row: r })), { row: r });
+});
+
+test("prActionRefusal refuses r and R on a parent card whatever its section or PR", () => {
+  const parent = row({ status: "waiting on slices", section: "merge", pr: 7 });
+  assert.equal(prActionRefusal(parent), "{red-fg}parent tickets have no PR of their own{/red-fg}");
+  assert.equal(prActionRefusal(row({ status: "tracker ticket", pr: 8 })), "{red-fg}parent tickets have no PR of their own{/red-fg}");
+  assert.equal(prActionRefusal(row({ status: "ready to merge", section: "merge", pr: 9 })), undefined);
+});
+
+test("rowForAction gives a notice for a card yimbot has no session for", () => {
+  assert.deepEqual(rowForAction(card({ row: null })), { notice: "{red-fg}no yimbot session for this ticket{/red-fg}" });
+});
+
+test("rowForAction says no ticket is selected when the column is empty", () => {
+  assert.deepEqual(rowForAction(undefined), { notice: "{red-fg}no ticket selected{/red-fg}" });
+});
+
+test("resolveFocus keeps a focus id that is still on the board", () => {
+  assert.equal(resolveFocus(["a", "b", "parents"], "b"), "b");
+  assert.equal(resolveFocus(["a", "parents"], "parents"), "parents");
+});
+
+test("resolveFocus falls back to the first column when the focused one disappears", () => {
+  assert.equal(resolveFocus(["a", "b"], "gone"), "a");
+  assert.equal(resolveFocus(["a", "b"], "parents"), "a");
+});
+
+test("resolveFocus keeps the id while the board has nothing to focus", () => {
+  assert.equal(resolveFocus([], "a"), "a");
+});
+
+test("resolveFocus leaves an unset focus alone until the first column arrives", () => {
+  assert.equal(resolveFocus(["parents"], ""), "");
+  assert.equal(resolveFocus(["a", "b", "parents"], ""), "a");
+});
+
+test("resolveFocus still hands a vanished column's focus to the parents pane", () => {
+  assert.equal(resolveFocus(["parents"], "gone"), "parents");
+});
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+test("latestOnly drops a slow older result that lands after a newer one", async () => {
+  const pending = [deferred<number>(), deferred<number>()];
+  let call = 0;
+  const applied: number[] = [];
+  const refresh = latestOnly(() => pending[call++].promise, (v) => applied.push(v));
+  refresh();
+  refresh();
+  pending[1].resolve(2);
+  await pending[1].promise;
+  pending[0].resolve(1);
+  await pending[0].promise;
+  await Promise.resolve();
+  assert.deepEqual(applied, [2]);
+});
+
+test("latestOnly applies results that land in order and ignores rejections", async () => {
+  const applied: number[] = [];
+  let n = 0;
+  const refresh = latestOnly(async () => {
+    n++;
+    if (n === 2) throw new Error("down");
+    return n;
+  }, (v) => applied.push(v));
+  refresh();
+  await new Promise((r) => setImmediate(r));
+  refresh();
+  await new Promise((r) => setImmediate(r));
+  refresh();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(applied, [1, 3]);
+});
+
+test("placeColumns lays every column side by side when they fit, the last taking the leftover cells", () => {
+  const { start, slots } = placeColumns(["a", "b", "c"], "a", 0, 10, 100);
+  assert.equal(start, 0);
+  assert.deepEqual(slots, [
+    { id: "a", left: 10, width: 33 },
+    { id: "b", left: 43, width: 33 },
+    { id: "c", left: 76, width: 34 },
+  ]);
+});
+
+test("placeColumns scrolls to keep the focused column in view", () => {
+  const ids = ["a", "b", "c", "d", "e"];
+  const { start, slots } = placeColumns(ids, "e", 0, 0, 50);
+  assert.equal(start, 3);
+  assert.deepEqual(slots.map((s) => s.id), ["d", "e"]);
+  assert.deepEqual(slots.map((s) => s.width), [25, 25]);
+});
+
+test("placeColumns keeps the previous window while the parents pane holds the focus", () => {
+  const ids = ["a", "b", "c", "d", "e"];
+  assert.deepEqual(placeColumns(ids, "parents", 2, 0, 50).slots.map((s) => s.id), ["c", "d"]);
+  assert.deepEqual(placeColumns(ids, "parents", 9, 0, 50).slots.map((s) => s.id), ["d", "e"]);
+});
+
+test("placeColumns places nothing on an empty board", () => {
+  assert.deepEqual(placeColumns([], "", 0, 0, 80), { start: 0, slots: [] });
+});
+
+test("styleParentsPane outlines and inverses the parents pane only while it holds the focus", () => {
+  const pane = { style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } };
+  styleParentsPane(pane, true);
+  assert.deepEqual(pane.style, { border: { fg: FOCUS_BORDER }, label: { fg: FOCUS_BORDER }, selected: { inverse: true } });
+  styleParentsPane(pane, false);
+  assert.deepEqual(pane.style, { border: { fg: "grey" }, label: { fg: "grey" }, selected: { inverse: false } });
 });
 
 test("bindQuitKeys binds only C-c: q and escape must not quit the board", () => {
@@ -273,7 +326,7 @@ test("bindSettingsKey does not reopen the panel on a second s while it is alread
 });
 
 test("footerHint advertises the manual ready-label key on the review pane", () => {
-  assert.match(footerHint("review"), /r ready/);
+  assert.match(footerHint(), /r ready/);
 });
 
 test("bindReadyKey gates r while settings is open", () => {
@@ -316,10 +369,27 @@ test("bindFlagKey gates f while settings is open", () => {
 
 test("statusContent shows an unexpired notice and drops it after its ttl", () => {
   const notice = { text: "adding ready label to #481…", until: 10_000 };
-  assert.match(statusContent("supervised", true, 2, notice, 9_999, []), /adding ready label to #481/);
-  assert.match(statusContent("supervised", true, 2, notice, 9_999, []), /2 active/);
-  assert.doesNotMatch(statusContent("supervised", true, 2, notice, 10_000, []), /adding ready label/);
-  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0, []), /adding ready label/);
+  assert.match(statusContent("supervised", notice, 9_999, []), /adding ready label to #481/);
+  assert.doesNotMatch(statusContent("supervised", notice, 10_000, []), /adding ready label/);
+  assert.doesNotMatch(statusContent("supervised", null, 0, []), /adding ready label/);
+});
+
+test("handleOpenPr opens the row's PR in its repo and stays quiet on success", async () => {
+  const seen: [number, string | undefined][] = [];
+  const notices: string[] = [];
+  await handleOpenPr(row({ pr: 12, repo: "acme/tf" }), (pr, repo) => {
+    seen.push([pr, repo]);
+    return Promise.resolve();
+  }, (text) => notices.push(text));
+  assert.deepEqual(seen, [[12, "acme/tf"]]);
+  assert.deepEqual(notices, []);
+});
+
+test("handleOpenPr surfaces a failure as a notice", async () => {
+  const notices: string[] = [];
+  await handleOpenPr(row({ pr: 12 }), () => Promise.reject(new Error("gh missing")), (text) => notices.push(text));
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /opening #12 failed: gh missing/);
 });
 
 test("handleReadyPress reports the same outcome the review overlay does", async () => {
@@ -446,7 +516,7 @@ function renderBoardLines(columns: number, rows: number): string[] {
 // Renders just the header row plus the bordered tasks pane beneath it, using
 // production's own titleLayout/statusLayout objects, so an inset regression
 // fails this test.
-function renderHeaderLines(columns: number, rows: number): string[] {
+function renderHeaderLines(columns: number, rows: number, board: { cycleNumber: number | null } | null = null): string[] {
   const { input, output } = fakeTty(columns, rows);
   const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true, fullUnicode: true });
   blessed.listtable({
@@ -460,11 +530,11 @@ function renderHeaderLines(columns: number, rows: number): string[] {
     noCellBorders: true,
     data: [["TICKET"], ["ENG-1"]],
   });
-  blessed.text({ parent: screen, ...titleLayout(), content: "yimbot" });
+  blessed.text({ parent: screen, ...titleLayout(), content: titleContent(board) });
   blessed.text({
     parent: screen,
     ...statusLayout(),
-    content: statusContent("supervised", true, 3, null, Date.now(), []),
+    content: statusContent("supervised", null, Date.now(), []),
   });
   screen.render();
   const lines = screen.lines.map((line: [number, string][]) =>
@@ -514,11 +584,17 @@ test("the header row sits inside the pane below it, not over its border columns"
   assert.ok(paneTop.length >= columns - 1, "the pane border should span the width");
   const padded = header.padEnd(columns, " ");
   assert.equal(padded.slice(columns - headerInset), " ".repeat(headerInset), "right margin must be blank");
-  assert.match(header, /active/);
+  assert.match(header, /SUPERVISED/);
+});
+
+test("the header shows the cycle number right after the wordmark", () => {
+  const header = renderHeaderLines(80, 24, { cycleNumber: 42 })[0];
+  assert.equal(header.indexOf("yimbot cycle 42"), headerInset);
+  assert.match(header, /SUPERVISED/);
 });
 
 test("footerHint names the review key", () => {
-  assert.ok(footerHint("review").includes("R review"));
+  assert.ok(footerHint().includes("R review"));
 });
 
 test("bindReviewKey opens only when no overlay is open", () => {
@@ -532,30 +608,6 @@ test("bindReviewKey opens only when no overlay is open", () => {
   overlay = true;
   handlers["S-r"]();
   assert.equal(opened, 1);
-});
-
-test("partitionRows splits on the row's section, preserving order", () => {
-  const a = row({ key: "ENG-1", section: "review", pr: 11 });
-  const b = row({ key: "ENG-2", section: "tasks" });
-  const c = row({ key: "ENG-3", section: "review", pr: 12 });
-  const d = row({ key: "ENG-4", section: "merge", pr: 13 });
-  const e = row({ key: "ENG-5", section: "merge", pr: 14, terminal: true });
-  const { review, merge, tasks } = partitionRows([a, b, c, d, e]);
-  assert.deepEqual(review.map((r) => r.key), ["ENG-1", "ENG-3"]);
-  assert.deepEqual(merge.map((r) => r.key), ["ENG-4", "ENG-5"]);
-  assert.deepEqual(tasks.map((r) => r.key), ["ENG-2"]);
-});
-
-test("partitionRows lifts split parents out of tasks into their own pane", () => {
-  const a = row({ key: "ENG-1", status: "tracker ticket" });
-  const b = row({ key: "ENG-2", status: "working" });
-  const c = row({ key: "ENG-3", status: "waiting on slices" });
-  const d = row({ key: "ENG-4", status: "needs decision" });
-  const { tasks, parents, review, merge } = partitionRows([a, b, c, d]);
-  assert.deepEqual(parents.map((r) => r.key), ["ENG-1", "ENG-3"]);
-  assert.deepEqual(tasks.map((r) => r.key), ["ENG-2", "ENG-4"]);
-  assert.deepEqual(review, []);
-  assert.deepEqual(merge, []);
 });
 
 test("parentRows renders one compact line per parent: the ticket, then its title in grey", () => {
@@ -574,68 +626,16 @@ test("parentRows clips a long title to the box's interior", () => {
   assert.ok(cell.includes("…"));
 });
 
-test("partitionRows puts a parent in its pane over a section its pre-split PR left behind", () => {
-  const a = row({ key: "ENG-1", status: "waiting on slices", section: "merge", pr: 7 });
-  const { parents, merge } = partitionRows([a]);
-  assert.deepEqual(parents.map((r) => r.key), ["ENG-1"]);
-  assert.deepEqual(merge, []);
-});
-
-test("partitionRows ignores status: a queued PR being fixed stays in the merge pane", () => {
-  const a = row({ key: "ENG-1", section: "merge", status: "fixing CI", pr: 13 });
-  const b = row({ key: "ENG-2", section: "review", status: "addressing review", pr: 14 });
-  const { review, merge, tasks } = partitionRows([a, b]);
-  assert.deepEqual(merge.map((r) => r.key), ["ENG-1"]);
-  assert.deepEqual(review.map((r) => r.key), ["ENG-2"]);
-  assert.deepEqual(tasks, []);
-});
-
-test("applyOrder sorts rows by the order entries and carries their reasons", () => {
-  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
-  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
-  const out = applyOrder([a, c], [{ pr: 12, reason: "base" }, { pr: 11, reason: "on top" }]);
-  assert.deepEqual(out.map((e) => e.row.pr), [12, 11]);
-  assert.deepEqual(out.map((e) => e.reason), ["base", "on top"]);
-});
-
-test("applyOrder with no order yet keeps board order and shows a pending reason", () => {
-  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
-  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
-  const out = applyOrder([a, c], null);
-  assert.deepEqual(out.map((e) => e.row.pr), [11, 12]);
-  assert.deepEqual(out.map((e) => e.reason), ["…", "…"]);
-});
-
-test("applyOrder appends rows the order forgot, in board order", () => {
-  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
-  const c = row({ key: "ENG-3", status: "draft pr", pr: 12 });
-  const d = row({ key: "ENG-4", status: "draft pr", pr: 13 });
-  const out = applyOrder([a, c, d], [{ pr: 13, reason: "r" }]);
-  assert.deepEqual(out.map((e) => e.row.pr), [13, 11, 12]);
-  assert.deepEqual(out.map((e) => e.reason), ["r", "…", "…"]);
-});
-
-test("applyOrder keeps a row without a PR at the end rather than dropping it", () => {
-  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
-  const weird = row({ key: "ENG-9", status: "draft pr", pr: undefined });
-  const out = applyOrder([a, weird], [{ pr: 11, reason: "r" }]);
-  assert.deepEqual(out.map((e) => e.row.key), ["ENG-1", "ENG-9"]);
-});
-
-test("boardLayout reserves an equal third of the body for every pane", () => {
+test("boardLayout gives the columns the body between the title and the footer, past the queue", () => {
   const l = boardLayout(24, 200);
-  // Body is 22 rows (title + footer), a third is 7; tasks keeps the remainder.
-  assert.equal(l.merge.height, 7);
-  assert.equal(l.merge.bottom, 1);
-  assert.equal(l.review.height, 7);
-  assert.equal(l.review.bottom, 8);
-  assert.deepEqual(l.tasks, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 15 });
+  assert.deepEqual(l.board, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 1 });
 });
 
 test("boardLayout keeps the parents box out of the way while it has no rows", () => {
   const l = boardLayout(24, 200, 0);
   assert.equal(l.parents, null);
   assert.equal(l.queue!.bottom, 1);
+  assert.equal(l.board.left, QUEUE_PANE_WIDTH);
   assert.deepEqual(boardLayout(24, 200), l);
 });
 
@@ -644,11 +644,7 @@ test("boardLayout stacks the parents box under the queue, at the queue's width",
   // 2 rows + header + 2 border rows.
   assert.deepEqual(l.parents, { left: 0, width: QUEUE_PANE_WIDTH, bottom: 1, height: 5 });
   assert.equal(l.queue!.bottom, 6);
-  // The work panes keep their full thirds: body is 28, a third is 9.
-  assert.equal(l.merge.bottom, 1);
-  assert.equal(l.merge.height, 9);
-  assert.equal(l.review.bottom, 10);
-  assert.equal(l.tasks.bottom, 19);
+  assert.deepEqual(l.board, { top: 1, left: QUEUE_PANE_WIDTH, right: 0, bottom: 1 });
 });
 
 test("boardLayout caps the parents box at half the body so the queue keeps the rest", () => {
@@ -677,9 +673,7 @@ test("boardLayout reserves the left edge for the queue pane", () => {
   assert.ok(layout.queue, "a wide screen gets a queue pane");
   assert.equal(layout.queue!.width, QUEUE_PANE_WIDTH);
   assert.equal(layout.queue!.left, 0);
-  assert.equal(layout.tasks.left, QUEUE_PANE_WIDTH);
-  assert.equal(layout.review.left, QUEUE_PANE_WIDTH);
-  assert.equal(layout.merge.left, QUEUE_PANE_WIDTH);
+  assert.equal(layout.board.left, QUEUE_PANE_WIDTH);
 });
 
 test("boardLayout drops the queue pane rather than let it crowd the board", () => {
@@ -690,50 +684,13 @@ test("boardLayout drops the queue pane rather than let it crowd the board", () =
 test("boardLayout drops the queue pane on a narrow screen", () => {
   const layout = boardLayout(40, 50);
   assert.equal(layout.queue, null);
-  assert.equal(layout.tasks.left, 0);
-  assert.equal(layout.merge.left, 0);
+  assert.equal(layout.board.left, 0);
 });
 
 test("boardLayout keeps the queue pane spanning the full board height", () => {
   const layout = boardLayout(40, 200);
-  assert.equal(layout.queue!.top, layout.tasks.top);
+  assert.equal(layout.queue!.top, layout.board.top);
   assert.equal(layout.queue!.bottom, 1);
-});
-
-test("movePane moves up and down the stack, skipping empty panes", () => {
-  const all: PaneCounts = { tasks: 2, review: 1, merge: 1, parents: 0 };
-  assert.equal(movePane("tasks", "down", all), "review");
-  assert.equal(movePane("review", "down", all), "merge");
-  assert.equal(movePane("merge", "up", all), "review");
-  assert.equal(movePane("review", "up", all), "tasks");
-  assert.equal(movePane("merge", "down", { ...all, parents: 1 }), "parents");
-  assert.equal(movePane("parents", "up", { ...all, parents: 1 }), "merge");
-  // Edges stay put.
-  assert.equal(movePane("tasks", "up", all), "tasks");
-  assert.equal(movePane("merge", "down", all), "merge");
-  // Empty panes are skipped over, not landed on.
-  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 1, parents: 0 }), "merge");
-  assert.equal(movePane("merge", "up", { tasks: 2, review: 0, merge: 1, parents: 0 }), "tasks");
-  assert.equal(movePane("tasks", "down", { tasks: 2, review: 0, merge: 0, parents: 0 }), "tasks");
-});
-
-test("nextPane cycles tasks, review, merge and skips empty panes", () => {
-  const all: PaneCounts = { tasks: 1, review: 1, merge: 1, parents: 0 };
-  assert.equal(nextPane("tasks", all), "review");
-  assert.equal(nextPane("review", all), "merge");
-  assert.equal(nextPane("merge", all), "tasks");
-  assert.equal(nextPane("merge", { ...all, parents: 1 }), "parents");
-  assert.equal(nextPane("parents", { ...all, parents: 1 }), "tasks");
-  assert.equal(nextPane("tasks", { tasks: 1, review: 0, merge: 1, parents: 0 }), "merge");
-  assert.equal(nextPane("tasks", { tasks: 1, review: 0, merge: 0, parents: 0 }), "tasks");
-});
-
-test("paneBorderColor gives each pane its own outline and the focus hue to the focused one", () => {
-  assert.equal(paneBorderColor("tasks", false), "grey");
-  assert.equal(paneBorderColor("review", false), "yellow");
-  assert.equal(paneBorderColor("merge", false), "green");
-  assert.equal(paneBorderColor("parents", false), "grey");
-  assert.equal(paneBorderColor("review", true), FOCUS_BORDER);
 });
 
 test("bindPaneNavKeys maps ctrl-jk (and the linefeed alias) to moves, gated by overlays", () => {
@@ -753,12 +710,64 @@ test("bindPaneNavKeys maps ctrl-jk (and the linefeed alias) to moves, gated by o
   assert.equal(moves.length, 3);
 });
 
+function fakeScreen() {
+  const handlers: Record<string, () => void> = {};
+  return { handlers, screen: { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } } };
+}
+
+test("bindColumnKeys moves left on h and right on l while active", () => {
+  const { handlers, screen } = fakeScreen();
+  const moves: string[] = [];
+  bindColumnKeys(screen, () => false, () => true, (dir) => moves.push(dir));
+  handlers["h"]();
+  handlers["l"]();
+  assert.deepEqual(moves, ["left", "right"]);
+});
+
+test("bindColumnKeys does nothing while inactive or while an overlay is open", () => {
+  const { handlers, screen } = fakeScreen();
+  const moves: string[] = [];
+  let overlay = false;
+  let active = false;
+  bindColumnKeys(screen, () => overlay, () => active, (dir) => moves.push(dir));
+  handlers["h"]();
+  handlers["l"]();
+  active = true;
+  overlay = true;
+  handlers["h"]();
+  handlers["l"]();
+  assert.deepEqual(moves, []);
+});
+
+test("stepping past either end keeps the focus and an empty board is a no-op", () => {
+  const order = ["a", "b", "parents"];
+  assert.equal(stepFocus(order, "parents", "next"), "parents");
+  assert.equal(stepFocus(order, "a", "prev"), "a");
+  assert.equal(stepFocus([], "", "next"), "");
+  assert.equal(stepFocus([], "", "prev"), "");
+});
+
+test("makeSelectGuard consumes an armed flag once", () => {
+  const guard = makeSelectGuard();
+  assert.equal(guard.consume(), false);
+  guard.arm();
+  assert.equal(guard.consume(), true);
+  assert.equal(guard.consume(), false);
+});
+
+test("makeSelectGuard clears itself on the next tick", async () => {
+  const guard = makeSelectGuard();
+  guard.arm();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(guard.consume(), false);
+});
+
 test("the pane-switch keys moved to the help overlay", () => {
   assert.ok(helpLines("Y").join("\n").includes("^j/^k"));
 });
 
 test("footerHint fits a 130-column terminal so the tail hints survive wrap:false", () => {
-  assert.ok(footerHint("review").length <= 130, `footer is ${footerHint("review").length} chars`);
+  assert.ok(footerHint().length <= 130, `footer is ${footerHint().length} chars`);
 });
 
 test("bindPaneToggle gates tab while an overlay is open", () => {
@@ -774,56 +783,8 @@ test("bindPaneToggle gates tab while an overlay is open", () => {
   assert.equal(toggles, 1);
 });
 
-test("selectedBoardRow reads from the focused pane's own selection", () => {
-  const a = row({ key: "ENG-1", status: "draft pr", pr: 11 });
-  const b = row({ key: "ENG-2", status: "working" });
-  const c = row({ key: "ENG-3", status: "ready to merge", pr: 13 });
-  const d = row({ key: "ENG-4", status: "tracker ticket" });
-  const panes = {
-    tasks: { rows: [b], selected: 1 },
-    review: { entries: [{ row: a, reason: "" }], selected: 1 },
-    merge: { rows: [c], selected: 1 },
-    parents: { rows: [d], selected: 1 },
-  };
-  assert.equal(selectedBoardRow("review", panes), a);
-  assert.equal(selectedBoardRow("parents", panes), d);
-  assert.equal(selectedBoardRow("tasks", panes), b);
-  assert.equal(selectedBoardRow("merge", panes), c);
-  assert.equal(selectedBoardRow("review", { ...panes, review: { entries: [], selected: 1 } }), undefined);
-  assert.equal(selectedBoardRow("tasks", { ...panes, tasks: { rows: [], selected: 1 } }), undefined);
-});
-
-
-
-test("resolvePane forces a pane with rows when the current one is empty", () => {
-  assert.equal(resolvePane("tasks", { tasks: 0, review: 2, merge: 0, parents: 0 }), "review");
-  assert.equal(resolvePane("review", { tasks: 3, review: 0, merge: 0, parents: 0 }), "tasks");
-  assert.equal(resolvePane("merge", { tasks: 0, review: 0, merge: 1, parents: 0 }), "merge");
-  assert.equal(resolvePane("review", { tasks: 2, review: 2, merge: 0, parents: 0 }), "review");
-  assert.equal(resolvePane("tasks", { tasks: 0, review: 0, merge: 2, parents: 0 }), "merge");
-  assert.equal(resolvePane("review", { tasks: 0, review: 0, merge: 0, parents: 0 }), "tasks");
-});
-
-test("bindPaneFocusSync tracks blessed focus, so a mouse click that moves focus moves the pane", () => {
-  const { input, output } = fakeTty(80, 24);
-  const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true });
-  const tasks = blessed.listtable({ parent: screen, top: 5, height: 5, keys: true, mouse: true });
-  const review = blessed.listtable({ parent: screen, top: 0, height: 5, keys: true, mouse: true });
-  const merge = blessed.listtable({ parent: screen, top: 10, height: 5, keys: true, mouse: true });
-  const parents = blessed.listtable({ parent: screen, top: 15, height: 5, keys: true, mouse: true });
-  let pane = "tasks";
-  bindPaneFocusSync({ tasks, review, merge, parents }, (p) => { pane = p; });
-  review.focus(); // what neo-blessed list.js does on item mousedown
-  assert.equal(pane, "review");
-  merge.focus();
-  assert.equal(pane, "merge");
-  tasks.focus();
-  assert.equal(pane, "tasks");
-  screen.destroy();
-});
-
 test("onPaneFocusChange repaints once the mouse moves focus to another pane", () => {
-  let pane: Pane = "tasks";
+  let pane = "tasks";
   const deferred: Array<() => void> = [];
   let renders = 0;
   const onFocus = onPaneFocusChange(
@@ -856,13 +817,13 @@ test("hidePanesKeepingFocus survives blessed rewinding focus onto a sibling pane
   const merge = blessed.listtable({ parent: screen, top: 10, height: 5, keys: true, mouse: true });
   const parents = blessed.listtable({ parent: screen, top: 15, height: 5, keys: true, mouse: true });
   const widgets = { tasks, review, merge, parents };
-  let pane: Pane = "tasks";
-  bindPaneFocusSync(widgets, (p) => { pane = p; });
+  let pane = "tasks";
+  for (const [id, w] of Object.entries(widgets)) w.on("focus", () => { pane = id; });
   // Operator visited merge, then came back to tasks: blessed's focus history
   // now holds merge behind tasks, so hiding tasks rewinds focus onto merge.
   merge.focus();
   tasks.focus();
-  hidePanesKeepingFocus(widgets, () => pane, (p) => { pane = p; });
+  hidePanesKeepingFocus(Object.values(widgets), () => pane, (p) => { pane = p; });
   assert.equal(pane, "tasks");
   assert.equal(tasks.hidden, true);
   assert.equal(review.hidden, true);
@@ -886,62 +847,6 @@ test("cellWidth measures visible width, ignoring blessed tags", () => {
   assert.equal(cellWidth("{red-fg}⚑{/red-fg}"), 1);
 });
 
-test("alignTables pads every cell to the widest in its column across all tables", () => {
-  const [a, b] = alignTables([
-    [["TIME", "STATUS"], ["09:14", "working"]],
-    [["TIME", "STATUS"], ["10:02", "ready to merge"]],
-  ]);
-  assert.deepEqual(a, [["TIME ", "STATUS        "], ["09:14", "working       "]]);
-  assert.deepEqual(b, [["TIME ", "STATUS        "], ["10:02", "ready to merge"]]);
-});
-
-test("alignTables pads by visible width so tagged cells line up with plain ones", () => {
-  const [a] = alignTables([[["{grey-fg}merged{/grey-fg}"], ["ready to merge"]]]);
-  assert.equal(cellWidth(a[0][0]), 14);
-  assert.equal(cellWidth(a[1][0]), 14);
-});
-
-test("alignTables gives an empty pane the same widths as a busy one", () => {
-  // A pane with no rows still renders its header, and that header has to sit on
-  // the same grid as the panes that do have rows.
-  const [empty, busy] = alignTables([
-    [BOARD_HEADER],
-    boardTable([{ row: row({ status: "resolving conflict", title: "a long branch title" }) }], 0),
-  ]);
-  assert.deepEqual(empty[0].map(cellWidth), busy[0].map(cellWidth));
-});
-
-// The alignment claim, checked against blessed itself rather than against the
-// padded strings: render three panes carrying very different content and assert
-// every column starts at the same screen offset in all three.
-test("the three panes render their columns on identical offsets", () => {
-  const { input, output } = fakeTty(200, 30);
-  const screen = blessed.screen({ input, output, terminal: "xterm", smartCSR: true, fullUnicode: true });
-  const make = (top: number) =>
-    blessed.listtable({
-      parent: screen, top, left: 0, right: 0, height: 6,
-      tags: true, align: "left", keys: true, vi: true, mouse: true,
-      border: { type: "line" }, noCellBorders: true,
-      style: { header: { bold: true }, cell: { selected: { inverse: true } } },
-    });
-  const panes = [make(0), make(6), make(12)];
-  const data = alignTables([
-    boardTable([{ row: row({ label: "ENG-1", status: "resolving conflict", title: "a much longer branch title" }) }], 0),
-    boardTable([{ row: row({ label: "SC-22", pr: 4712, status: "draft pr" }) }], 0),
-    boardTable([], 0),
-  ]);
-  panes.forEach((p, i) => p.setData(data[i]));
-  screen.render();
-  const lines: string[] = screen.lines.map((line: [number, string][]) => line.map((c) => c[1]).join(""));
-  // Header row of each pane: one row below its border.
-  const headers = [lines[1], lines[7], lines[13]];
-  const offsets = headers.map((h) => BOARD_HEADER.map((col) => h.indexOf(col)));
-  assert.ok(offsets[0].every((o) => o > 0), `header not rendered: ${headers[0]}`);
-  assert.deepEqual(offsets[1], offsets[0]);
-  assert.deepEqual(offsets[2], offsets[0]);
-  screen.destroy();
-});
-
 test("cellWidth measures display width the way blessed does", () => {
   // The screen runs fullUnicode, so blessed sizes columns by display width:
   // a CJK title is two columns per character and a combining mark is zero.
@@ -953,15 +858,6 @@ test("cellWidth strips the same tags blessed does", () => {
   assert.equal(cellWidth("{red-fg}⚑{/red-fg}"), 1);
   // Not a blessed tag: braces around arbitrary text are literal content.
   assert.equal(cellWidth("{a b}"), 5);
-});
-
-test("alignTables keeps wide-character titles on the shared grid", () => {
-  const [a, b] = alignTables([
-    boardTable([{ row: row({ title: "需要审核" }) }], 0),
-    boardTable([{ row: row({ title: "ok" }) }], 0),
-  ]);
-  const titleIdx = BOARD_HEADER.indexOf("TITLE");
-  assert.equal(cellWidth(a[1][titleIdx]), cellWidth(b[1][titleIdx]));
 });
 
 test("reachWarnings is empty while everything answers", () => {
@@ -976,25 +872,291 @@ test("reachWarnings names each failing service in red", () => {
   );
 });
 
-test("statusContent leads with the reach warnings, ahead of the chips", () => {
-  const bar = statusContent("supervised", true, 2, null, 0, ["github"]);
+test("statusContent leads with the reach warnings, ahead of the mode chip", () => {
+  const bar = statusContent("supervised", null, 0, ["github"]);
   assert.ok(bar.startsWith("{red-fg}⚠ github{/red-fg}"));
-  assert.ok(bar.indexOf("github") < bar.indexOf("REFINE"));
-  assert.match(bar, /2 active/);
+  assert.ok(bar.indexOf("github") < bar.indexOf("SUPERVISED"));
 });
 
 test("statusContent says nothing about reachability while every service answers", () => {
-  assert.doesNotMatch(statusContent("supervised", true, 2, null, 0, []), /⚠/);
+  assert.doesNotMatch(statusContent("supervised", null, 0, []), /⚠/);
 });
 
-test("applyPaneFocusStyle highlights the focused pane's row and nobody else's", () => {
-  const pane = () => ({ style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } });
-  const widgets = { tasks: pane(), review: pane(), merge: pane(), parents: pane() };
-  applyPaneFocusStyle(widgets, "review");
-  assert.equal(widgets.review.style.selected.inverse, true);
-  assert.equal(widgets.tasks.style.selected.inverse, false);
-  assert.equal(widgets.merge.style.selected.inverse, false);
-  assert.equal(widgets.review.style.border.fg, FOCUS_BORDER);
-  assert.equal(widgets.tasks.style.border.fg, "grey");
-  assert.equal(widgets.merge.style.label.fg, "green");
+
+test("footerHint names the view key", () => {
+  assert.equal(footerHint(), "r ready   R review   v view   ? help   ^c quit");
+});
+
+test("helpLines lists v and h/l", () => {
+  const text = helpLines("Y").join("\n");
+  assert.match(text, /\{bold\}v\s*\{\/bold\}  toggle kanban view/);
+  assert.match(text, /\{bold\}h\/l\s*\{\/bold\}  move between columns \(kanban\)/);
+});
+
+test("nextView toggles", () => {
+  assert.equal(nextView("table"), "kanban");
+  assert.equal(nextView("kanban"), "table");
+});
+
+test("the default view is table", () => {
+  assert.equal(DEFAULT_VIEW, "table");
+});
+
+test("bindViewKey fires on v and not while an overlay is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const screen = { key: (keys: string[], fn: () => void) => { for (const k of keys) handlers[k] = fn; } };
+  let overlay = true;
+  let toggles = 0;
+  bindViewKey(screen, () => overlay, () => toggles++);
+  handlers["v"]();
+  assert.equal(toggles, 0, "v must not switch views while an overlay is open");
+  overlay = false;
+  handlers["v"]();
+  assert.equal(toggles, 1);
+});
+
+const column = (id: string): Column => ({ id, title: id, color: "white", cards: [] });
+
+test("viewFocusOrder lists the non-empty table panes in table view and the column ids in kanban view, parents last when present", () => {
+  const counts = { tasks: 2, review: 0, merge: 1 };
+  const columns = [column("a"), column("b")];
+  assert.deepEqual(viewFocusOrder("table", counts, columns, false), ["tasks", "merge"]);
+  assert.deepEqual(viewFocusOrder("table", counts, columns, true), ["tasks", "merge", "parents"]);
+  assert.deepEqual(viewFocusOrder("kanban", counts, columns, false), ["a", "b"]);
+  assert.deepEqual(viewFocusOrder("kanban", counts, columns, true), ["a", "b", "parents"]);
+});
+
+test("a stale id resolves to the first stop of the new view", () => {
+  assert.equal(viewFocus("kanban", ["a", "b", "parents"], "review"), "a");
+  assert.equal(viewFocus("table", ["tasks", "merge", "parents"], "a"), "tasks");
+  assert.equal(viewFocus("table", ["review", "parents"], "a"), "review");
+  assert.equal(viewFocus("table", ["merge"], "tasks"), "merge");
+});
+
+test("a focus id still in the view's order stays put, parents included", () => {
+  assert.equal(viewFocus("table", ["tasks", "parents"], "parents"), "parents");
+  assert.equal(viewFocus("kanban", ["a", "parents"], "parents"), "parents");
+  assert.equal(viewFocus("kanban", ["a", "b"], "b"), "b");
+});
+
+test("an empty table falls back to the tasks pane, never a stale column id", () => {
+  assert.equal(viewFocus("table", [], "a"), "tasks");
+  assert.equal(viewFocus("table", [], "merge"), "merge");
+});
+
+test("headerBoard hides the cycle in table view and passes the board in kanban view", () => {
+  const board = { cycleNumber: 7 } as Parameters<typeof headerBoard>[1];
+  assert.equal(headerBoard("table", board), null);
+  assert.equal(headerBoard("kanban", board), board);
+  assert.equal(headerBoard("kanban", null), null);
+});
+
+test("tableSections keeps parents in their own box when it has room", () => {
+  const t = row({ key: "T" });
+  const p = row({ key: "P", status: "waiting on slices" });
+  const r = row({ key: "R", section: "review" });
+  const m = row({ key: "M", section: "merge" });
+  const s = tableSections([t, p, r, m], true);
+  assert.deepEqual(s.tasks.map((x) => x.key), ["T"]);
+  assert.deepEqual(s.parents.map((x) => x.key), ["P"]);
+  assert.deepEqual(s.review.map((x) => x.key), ["R"]);
+  assert.deepEqual(s.merge.map((x) => x.key), ["M"]);
+});
+
+test("tableSections puts parents back in tasks when the rail has no room", () => {
+  const t = row({ key: "T" });
+  const p = row({ key: "P", status: "waiting on slices" });
+  const s = tableSections([p, t], false);
+  assert.deepEqual(s.tasks.map((x) => x.key), ["T", "P"]);
+  assert.deepEqual(s.parents, []);
+});
+
+test("onlyInView runs the callback only while that view shows", () => {
+  let view: "table" | "kanban" = "table";
+  let calls = 0;
+  const tick = onlyInView("kanban", () => view, () => calls++);
+  tick();
+  assert.equal(calls, 0, "no Linear board fetch in table view");
+  view = "kanban";
+  tick();
+  assert.equal(calls, 1);
+});
+
+test("switching into kanban before the board loads waits for the first column instead of the parents pane", () => {
+  assert.equal(viewFocus("kanban", ["parents"], "tasks", false), "");
+  assert.equal(viewFocus("kanban", ["a", "b", "parents"], "", true), "a");
+});
+
+test("a loaded kanban board still hands a stale table id to its first stop", () => {
+  assert.equal(viewFocus("kanban", ["a", "parents"], "tasks", true), "a");
+  assert.equal(viewFocus("kanban", ["parents"], "parents", false), "parents");
+});
+
+test("switching back to the table from parents or a column lands on the first table stop", () => {
+  assert.equal(viewFocus("table", ["tasks", "review"], "parents"), "tasks");
+  assert.equal(viewFocus("table", ["tasks", "review"], "col-1"), "tasks");
+  assert.equal(viewFocus("table", ["tasks", "parents"], ""), "tasks");
+  assert.equal(viewFocus("table", ["parents"], ""), "tasks");
+});
+
+test("isTableId accepts exactly the table pane ids", () => {
+  for (const id of TABLE_IDS) assert.equal(isTableId(id), true);
+  assert.equal(isTableId("parents"), false);
+  assert.equal(isTableId("col-1"), false);
+});
+
+test("focusMove focuses the resolved pane when it is visible and not already focused", () => {
+  const pane = { hidden: false };
+  const other = { hidden: false };
+  const neutral = { hidden: false };
+  assert.equal(focusMove(pane, other, neutral), pane);
+  assert.equal(focusMove(pane, pane, neutral), null);
+});
+
+test("focusMove parks blessed focus on the neutral widget while kanban waits for its first column", () => {
+  const parents = { hidden: false };
+  const neutral = { hidden: false };
+  assert.equal(focusMove(undefined, parents, neutral), neutral, "keys must not reach a parents pane styled unfocused");
+  assert.equal(focusMove(undefined, neutral, neutral), null);
+  assert.equal(focusMove(undefined, undefined, neutral), null);
+});
+
+test("focusMove parks focus when the resolved pane is hidden", () => {
+  const parents = { hidden: false };
+  const neutral = { hidden: false };
+  assert.equal(focusMove({ hidden: true }, parents, neutral), neutral);
+});
+
+test("bindSetupKey opens the wizard on W only when no overlay is open", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let open = false;
+  let openCalls = 0;
+  bindSetupKey(fakeScreen, () => open, () => {
+    open = true;
+    openCalls++;
+  });
+  handlers["S-w"]();
+  assert.equal(openCalls, 1);
+  handlers["S-w"]();
+  assert.equal(openCalls, 1, "a second W while the wizard is open must not stack another");
+  open = false;
+  handlers["S-w"]();
+  assert.equal(openCalls, 2);
+});
+
+test("helpLines lists W for re-running setup", () => {
+  assert.match(helpLines("Y").join("\n"), /\{bold\}W\s*\{\/bold\}  re-run setup/);
+});
+
+test("setupApplyOutcome reports a restart on success", () => {
+  assert.deepEqual(setupApplyOutcome({ ok: true }), { text: "setup saved, daemon restarted", isError: false, daemonStopped: false });
+});
+
+test("setupApplyOutcome keeps the daemon running after a rollback", () => {
+  assert.deepEqual(setupApplyOutcome({ ok: false, error: "bad key", rolledBack: true }), {
+    text: "{red-fg}setup not applied: bad key{/red-fg}",
+    isError: true,
+    daemonStopped: false,
+  });
+});
+
+test("setupApplyOutcome marks the daemon stopped when the rollback failed too", () => {
+  assert.deepEqual(setupApplyOutcome({ ok: false, error: "boom", rolledBack: false }), {
+    text: "{red-fg}setup not applied: boom, daemon stopped{/red-fg}",
+    isError: true,
+    daemonStopped: true,
+  });
+});
+
+test("setupApplyOutcome escapes tags in the error text", () => {
+  const out = setupApplyOutcome({ ok: false, error: "{bold}x", rolledBack: true });
+  assert.doesNotMatch(out.text, /\{bold\}x/);
+});
+
+test("settingsGate keeps s closed while W's apply restarts the daemon", () => {
+  const handlers: Record<string, () => void> = {};
+  const fakeScreen = {
+    key: (keys: string[], fn: () => void) => {
+      for (const k of keys) handlers[k] = fn;
+    },
+  };
+  let applying = true;
+  let openCalls = 0;
+  bindSettingsKey(fakeScreen, settingsGate(() => false, () => applying), () => openCalls++);
+  handlers["s"]();
+  assert.equal(openCalls, 0, "s must not open a second apply path during W's restart");
+  applying = false;
+  handlers["s"]();
+  assert.equal(openCalls, 1);
+});
+
+test("settingsGate is closed while an overlay is open", () => {
+  assert.equal(settingsGate(() => true, () => false)(), true);
+  assert.equal(settingsGate(() => false, () => false)(), false);
+});
+
+test("readyRefusal refuses r on a manual-merge row and defers to prActionRefusal otherwise", () => {
+  assert.match(readyRefusal({ status: "ready: merge manually" }) ?? "", /merge it by hand/);
+  assert.equal(readyRefusal({ status: "ready to merge" }), undefined);
+  assert.equal(readyRefusal({ status: "tracker ticket" }), prActionRefusal({ status: "tracker ticket" }));
+});
+
+test("updateChip renders nothing for null and current, a chip for ready, red text for blocked", () => {
+  assert.equal(updateChip(null), "");
+  assert.equal(updateChip({ kind: "current" }), "");
+  assert.equal(updateChip({ kind: "ready", target: "abc" }), "{black-fg}{cyan-bg} update ready {/cyan-bg}{/black-fg}");
+  assert.equal(updateChip({ kind: "blocked", reason: "dirty tree" }), "{red-fg}update blocked: dirty tree{/red-fg}");
+});
+
+test("updateChip asks for a manual restart when nothing will relaunch the board", () => {
+  assert.equal(
+    updateChip({ kind: "ready", target: "abc" }, true),
+    "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg}",
+  );
+  assert.equal(updateChip({ kind: "blocked", reason: "dirty tree" }, true), "{red-fg}update blocked: dirty tree{/red-fg}");
+});
+
+test("statusContent passes the manual restart flag to the update chip", () => {
+  const bar = statusContent("supervised", null, 0, [], { kind: "ready", target: "abc" }, true);
+  assert.ok(bar.includes("update ready (restart to apply)"));
+});
+
+test("statusContent shows the update chip before the mode chip", () => {
+  const bar = statusContent("supervised", null, 0, [], { kind: "ready", target: "abc" });
+  assert.ok(bar.indexOf("update ready") >= 0);
+  assert.ok(bar.indexOf("update ready") < bar.indexOf(modeContent("supervised")));
+});
+
+test("bootNotice reports an update with the heartbeat ttl", () => {
+  const n = bootNotice({ YIMBOT_UPDATED_FROM: "1111111aaaa", HEARTBEAT_INTERVAL_MINUTES: "2" }, "2222222bbbb", 1_000);
+  assert.equal(n?.text, "updated 1111111 → 2222222");
+  assert.equal(n?.until, 121_000);
+});
+
+test("bootNotice falls back to the poll interval then 3 minutes", () => {
+  assert.equal(bootNotice({ YIMBOT_UPDATED_FROM: "1111111", POLL_INTERVAL_MINUTES: "5" }, "2222222", 0)?.until, 300_000);
+  assert.equal(bootNotice({ YIMBOT_UPDATED_FROM: "1111111" }, "2222222", 0)?.until, 180_000);
+});
+
+test("bootNotice reports a rollback as an error", () => {
+  const n = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123" }, "2222222", 1_000);
+  assert.equal(n?.text, "update rolled back: deadbee crashed on boot");
+  assert.equal(n?.until, 1_000 + NOTICE_ERROR_TTL_MS);
+});
+
+test("bootNotice is null when head is unchanged or env is empty", () => {
+  assert.equal(bootNotice({ YIMBOT_UPDATED_FROM: "2222222" }, "2222222"), null);
+  assert.equal(bootNotice({}, "2222222"), null);
+});
+
+test("bootNotice prefers the rollback notice when a stale UPDATED_FROM is also set", () => {
+  const same = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123", YIMBOT_UPDATED_FROM: "2222222" }, "2222222", 0);
+  assert.equal(same?.text, "update rolled back: deadbee crashed on boot");
+  const diff = bootNotice({ YIMBOT_ROLLED_BACK: "deadbeef123", YIMBOT_UPDATED_FROM: "1111111" }, "2222222", 0);
+  assert.equal(diff?.until, NOTICE_ERROR_TTL_MS);
 });

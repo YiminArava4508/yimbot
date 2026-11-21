@@ -14,6 +14,7 @@ export type Ticket = {
   assignee: string | null;
   description: string;
   comments: TicketComment[];
+  blockedBy?: { identifier: string; stateName: string }[];
 };
 
 function day(iso: string): string {
@@ -30,6 +31,7 @@ export function formatTicket(t: Ticket): string {
     `Labels: ${t.labels.length > 0 ? t.labels.join(", ") : "none"}`,
   ];
   if (t.parent) lines.push(`Parent: ${t.parent}`);
+  if (t.blockedBy?.length) lines.push(`Blocked by: ${t.blockedBy.map((b) => `${b.identifier} (${b.stateName})`).join(", ")}`);
   lines.push(`Assignee: ${t.assignee ?? "unassigned"}`, "", "## Description", "", t.description || "(none)", "", "## Comments", "");
   if (t.comments.length === 0) lines.push("(none)");
   for (const c of t.comments) {

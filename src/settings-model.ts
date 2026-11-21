@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
+import { AGENTS, agentOr, type Agent } from "./agent.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
 // collects these; the daemon reads them back via envOr() at startup.
@@ -19,6 +20,7 @@ export type YimbotConfig = {
   autoClaim: boolean;
   riskLabels: string[];
   maxInProgress: number;
+  claimsPerHeartbeat: number;
   autoCleanup: boolean;
   autoContinue: boolean;
   maxContinuations: number;
@@ -30,6 +32,8 @@ export type YimbotConfig = {
   refineUsers: string;
   refineLabelFilter: string;
   maxRefining: number;
+  splitTickets: boolean;
+  agent: Agent;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -80,6 +84,7 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     TODO_STATE_NAME: c.todoStateName,
     RISK_LABELS: c.riskLabels.join(","),
     MAX_IN_PROGRESS: String(c.maxInProgress),
+    CLAIMS_PER_HEARTBEAT: String(c.claimsPerHeartbeat),
     LABEL_FILTER: c.labelFilter,
     MAX_ESTIMATE: c.maxEstimate,
     AUTO_CLEANUP: String(c.autoCleanup),
@@ -90,10 +95,12 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     REFINE_USERS: c.refineUsers,
     REFINE_LABEL_FILTER: c.refineLabelFilter,
     MAX_REFINING: String(c.maxRefining),
+    SPLIT_TICKETS: String(c.splitTickets),
+    AGENT: c.agent,
   };
 }
 
-// The 22 keys this file's generated sections own. Anything else found in an
+// The 24 keys this file's generated sections own. Anything else found in an
 // existing .env is a hand-edited setting (BLOCKED_LABEL, TUI_*, ...) that a
 // regenerated file must not drop.
 const OWNED_ENV_KEYS = new Set([
@@ -109,6 +116,7 @@ const OWNED_ENV_KEYS = new Set([
   "TODO_STATE_NAME",
   "RISK_LABELS",
   "MAX_IN_PROGRESS",
+  "CLAIMS_PER_HEARTBEAT",
   "LABEL_FILTER",
   "MAX_ESTIMATE",
   "AUTO_CLEANUP",
@@ -119,6 +127,8 @@ const OWNED_ENV_KEYS = new Set([
   "REFINE_USERS",
   "REFINE_LABEL_FILTER",
   "MAX_REFINING",
+  "SPLIT_TICKETS",
+  "AGENT",
 ]);
 
 // The KEY=value lines of an existing .env that this file's generated sections
@@ -146,7 +156,10 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `HEARTBEAT_INTERVAL_MINUTES=${r.HEARTBEAT_INTERVAL_MINUTES}`,
     `CODEBASE_PATH=${r.CODEBASE_PATH}`,
     "",
-    "# --- Session models (Claude Code model alias or id) ---",
+    "# --- Coding agent (claude or codex) ---",
+    `AGENT=${r.AGENT}`,
+    "",
+    "# --- Session models (model alias or id for the agent) ---",
     `PLAN_MODEL=${r.PLAN_MODEL}`,
     `IMPL_MODEL=${r.IMPL_MODEL}`,
     "",
@@ -155,6 +168,7 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `TODO_STATE_NAME=${r.TODO_STATE_NAME}`,
     `RISK_LABELS=${r.RISK_LABELS}`,
     `MAX_IN_PROGRESS=${r.MAX_IN_PROGRESS}`,
+    `CLAIMS_PER_HEARTBEAT=${r.CLAIMS_PER_HEARTBEAT}`,
     `LABEL_FILTER=${r.LABEL_FILTER}`,
     `MAX_ESTIMATE=${r.MAX_ESTIMATE}`,
     "",
@@ -171,6 +185,7 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `REFINE_USERS=${r.REFINE_USERS}`,
     `REFINE_LABEL_FILTER=${r.REFINE_LABEL_FILTER}`,
     `MAX_REFINING=${r.MAX_REFINING}`,
+    `SPLIT_TICKETS=${r.SPLIT_TICKETS}`,
   ];
   if (passthroughLines.length > 0) {
     lines.push("", "# --- Hand-edited settings this file's writer doesn't manage (preserved) ---", ...passthroughLines);
@@ -182,7 +197,11 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
 // Write .env, backing up any existing file to .env.bak first. Mode 0600 because
 // it holds the Linear API key.
 export function writeEnvFile(contents: string, path: string = envPath): void {
-  if (existsSync(path)) renameSync(path, `${path}.bak`);
+  // rename keeps the old mode, and a hand-made .env is often 0644.
+  if (existsSync(path)) {
+    renameSync(path, `${path}.bak`);
+    chmodSync(`${path}.bak`, 0o600);
+  }
   writeFileSync(path, contents, { mode: 0o600 });
 }
 
@@ -224,12 +243,13 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     reviewStateName: or("REVIEW_STATE_NAME", "In Review"),
     todoStateName: or("TODO_STATE_NAME", "Todo"),
     heartbeatIntervalMinutes: Number(or("HEARTBEAT_INTERVAL_MINUTES", or("POLL_INTERVAL_MINUTES", "3"))),
-    codebasePath: or("CODEBASE_PATH", join(homedir(), "Work/gemini")),
+    codebasePath: or("CODEBASE_PATH", ""),
     planModel: or("PLAN_MODEL", "opus"),
     implModel: or("IMPL_MODEL", "sonnet"),
     autoClaim: !isOff(or("AUTO_CLAIM", or("AUTO_PICK", "true"))),
     riskLabels: parseCommaList(or("RISK_LABELS", "migration,infra,security,breaking")),
     maxInProgress: Number(or("MAX_IN_PROGRESS", "3")),
+    claimsPerHeartbeat: Number(or("CLAIMS_PER_HEARTBEAT", "1")),
     autoCleanup: !isOff(or("AUTO_CLEANUP", "true")),
     autoContinue: !isOff(or("AUTO_CONTINUE", "true")),
     maxContinuations: Number(or("MAX_CONTINUATIONS", "5")),
@@ -240,6 +260,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     refineUsers: or("REFINE_USERS", ""),
     refineLabelFilter: or("REFINE_LABEL_FILTER", ""),
     maxRefining: Number(or("MAX_REFINING", "1")),
+    splitTickets: !isOff(or("SPLIT_TICKETS", "true")),
+    agent: agentOr(or("AGENT", "claude")),
   };
 }
 
@@ -248,16 +270,22 @@ export type EditorKind =
   | "secret"
   | "number"
   | "toggle"
+  | "choice"
   | "list"
   | "pickTeam"
   | "pickState"
   | "labelFilter"
   | "readonly";
 
+export const SETTING_CATEGORIES = ["Linear", "Claim", "Refine", "Advance", "Models", "System"] as const;
+export type SettingCategory = (typeof SETTING_CATEGORIES)[number];
+
 export type SettingRow = {
   envKey: string;
   label: string;
   editor: EditorKind;
+  category: SettingCategory;
+  help: string;
   value: string;
   display: string;
 };
@@ -269,31 +297,40 @@ function maskKey(key: string): string {
   return `${head}${"*".repeat(6)}${key.slice(-4)}`;
 }
 
-const ROW_SPECS: { envKey: string; label: string; editor: EditorKind }[] = [
-  { envKey: "LINEAR_API_KEY", label: "linear api key", editor: "secret" },
-  { envKey: "ASSIGNEE", label: "assignee", editor: "readonly" },
-  { envKey: "LINEAR_TEAM_NAME", label: "team", editor: "pickTeam" },
-  { envKey: "DEPLOY_STATE_NAME", label: "deploy state", editor: "pickState" },
-  { envKey: "TODO_STATE_NAME", label: "todo state", editor: "pickState" },
-  { envKey: "REVIEW_STATE_NAME", label: "review state", editor: "pickState" },
-  { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter" },
-  { envKey: "MAX_ESTIMATE", label: "max estimate", editor: "number" },
-  { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number" },
-  { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle" },
-  { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle" },
-  { envKey: "REFINE_USERS", label: "refine users", editor: "text" },
-  { envKey: "REFINE_LABEL_FILTER", label: "refine tickets", editor: "labelFilter" },
-  { envKey: "MAX_REFINING", label: "refine cap", editor: "number" },
-  { envKey: "RISK_LABELS", label: "risk labels", editor: "list" },
-  { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number" },
-  { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text" },
-  { envKey: "PLAN_MODEL", label: "plan model", editor: "text" },
-  { envKey: "IMPL_MODEL", label: "impl model", editor: "text" },
-  { envKey: "AUTO_CLEANUP", label: "auto-cleanup", editor: "toggle" },
-  { envKey: "AUTO_CONTINUE", label: "auto-continue", editor: "toggle" },
-  { envKey: "MAX_CONTINUATIONS", label: "max continuations", editor: "number" },
-  { envKey: "AC_JUDGE_MODEL", label: "judge model", editor: "text" },
+type RowSpec = Pick<SettingRow, "envKey" | "label" | "editor" | "category" | "help">;
+
+const ROW_SPECS: RowSpec[] = [
+  { envKey: "LINEAR_API_KEY", label: "linear api key", editor: "secret", category: "Linear", help: "Personal API key yimbot uses to read and move tickets." },
+  { envKey: "ASSIGNEE", label: "assignee", editor: "readonly", category: "Linear", help: "The Linear user behind the API key. Tickets assigned to them are yimbot's." },
+  { envKey: "LINEAR_TEAM_NAME", label: "team", editor: "pickTeam", category: "Linear", help: "Linear team yimbot watches. Changing it resets which states you can pick." },
+  { envKey: "DEPLOY_STATE_NAME", label: "deploy state", editor: "pickState", category: "Linear", help: "State a ticket sits in while a session works on it." },
+  { envKey: "TODO_STATE_NAME", label: "todo state", editor: "pickState", category: "Linear", help: "State auto-claim pulls tickets from." },
+  { envKey: "REVIEW_STATE_NAME", label: "review state", editor: "pickState", category: "Linear", help: "State a ticket moves to once its PR is open." },
+  { envKey: "LABEL_FILTER", label: "tickets", editor: "labelFilter", category: "Claim", help: "Which tickets auto-claim may take: all, only a label, or all except a label." },
+  { envKey: "MAX_ESTIMATE", label: "max estimate", editor: "number", category: "Claim", help: "Skip tickets estimated above this. Empty means no cap." },
+  { envKey: "MAX_IN_PROGRESS", label: "wip cap", editor: "number", category: "Claim", help: "Most tickets yimbot works at once." },
+  { envKey: "CLAIMS_PER_HEARTBEAT", label: "claims per beat", editor: "number", category: "Claim", help: "Most tickets auto-claim takes in one heartbeat. The wip cap still applies." },
+  { envKey: "AUTO_CLAIM", label: "auto-claim", editor: "toggle", category: "Claim", help: "Pick up Todo tickets on each heartbeat without being asked." },
+  { envKey: "RISK_LABELS", label: "risk labels", editor: "list", category: "Claim", help: "Comma-separated labels that make a ticket wait for a human." },
+  { envKey: "AUTO_REFINE", label: "auto-refine", editor: "toggle", category: "Refine", help: "Size unestimated tickets and split large ones on their own." },
+  { envKey: "REFINE_USERS", label: "refine users", editor: "text", category: "Refine", help: "Comma-separated users whose tickets get refined. Empty uses the API key's user." },
+  { envKey: "REFINE_LABEL_FILTER", label: "refine tickets", editor: "labelFilter", category: "Refine", help: "Label filter for refinement. Empty inherits the claim filter." },
+  { envKey: "MAX_REFINING", label: "refine cap", editor: "number", category: "Refine", help: "Most tickets refined at once." },
+  { envKey: "SPLIT_TICKETS", label: "split tickets", editor: "toggle", category: "Refine", help: "Let refinement decompose a ticket into subtickets." },
+  { envKey: "AUTO_CONTINUE", label: "auto-continue", editor: "toggle", category: "Advance", help: "Nudge a session forward when it stops before its acceptance criteria pass." },
+  { envKey: "MAX_CONTINUATIONS", label: "max continuations", editor: "number", category: "Advance", help: "Nudges per ticket before yimbot gives up and flags it." },
+  { envKey: "AC_JUDGE_MODEL", label: "judge model", editor: "text", category: "Advance", help: "Model that judges acceptance criteria. Empty uses the agent's default." },
+  { envKey: "AUTO_CLEANUP", label: "auto-cleanup", editor: "toggle", category: "Advance", help: "Remove worktrees and sessions once a ticket is merged." },
+  { envKey: "AGENT", label: "agent", editor: "choice", category: "Models", help: "Coding agent CLI yimbot runs: claude or codex. Set the model rows below to names that agent accepts." },
+  { envKey: "PLAN_MODEL", label: "plan model", editor: "text", category: "Models", help: "Model alias or id for planning sessions." },
+  { envKey: "IMPL_MODEL", label: "impl model", editor: "text", category: "Models", help: "Model alias or id for implementation sessions." },
+  { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number", category: "System", help: "Minutes between daemon passes over the board." },
+  { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", category: "System", help: "Git repo that worktrees are cut from. Must exist." },
 ];
+
+export function rowsInCategory(rows: SettingRow[], category: SettingCategory): SettingRow[] {
+  return rows.filter((r) => r.category === category);
+}
 
 function displayValue(envKey: string, value: string): string {
   switch (envKey) {
@@ -307,9 +344,10 @@ function displayValue(envKey: string, value: string): string {
     case "AUTO_CLEANUP":
     case "AUTO_CONTINUE":
     case "AUTO_REFINE":
+    case "SPLIT_TICKETS":
       return isOff(value) ? "off" : "on";
     case "AC_JUDGE_MODEL":
-      return value || "(claude default)";
+      return value || "(agent default)";
     case "REFINE_USERS":
       return value || "(this API key)";
     case "MAX_ESTIMATE":
@@ -360,6 +398,7 @@ export function validateDraft(draft: Draft): Record<string, string> {
   for (const [envKey, raw] of Object.entries(draft.edits)) {
     switch (envKey) {
       case "MAX_IN_PROGRESS":
+      case "CLAIMS_PER_HEARTBEAT":
       case "MAX_CONTINUATIONS":
       case "MAX_REFINING":
         if (!isPositiveInt(raw)) errors[envKey] = "must be a positive integer";
@@ -371,7 +410,11 @@ export function validateDraft(draft: Draft): Record<string, string> {
         if (raw.trim() && !isPositiveInt(raw)) errors[envKey] = "must be a positive integer or empty";
         break;
       case "CODEBASE_PATH":
-        if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
+        if (!isAbsolute(expandTilde(raw.trim()))) errors[envKey] = "must be an absolute path";
+        else if (!isGitRepo(raw)) errors[envKey] = "must be an existing git repository";
+        break;
+      case "AGENT":
+        if (!AGENTS.includes(raw as Agent)) errors[envKey] = `must be ${AGENTS.join(" or ")}`;
         break;
       // These non-empty rules match the wizard's Required validators.
       case "LINEAR_API_KEY":
@@ -397,4 +440,12 @@ export function commitDraft(draft: Draft): YimbotConfig {
   // itself, so a literal "~/..." must not reach .env.
   if ("CODEBASE_PATH" in edits) edits.CODEBASE_PATH = expandTilde(edits.CODEBASE_PATH);
   return configFromEnv({ ...configToEnvRecord(draft.base), ...edits });
+}
+
+export function categoryDirtyCounts(draft: Draft, assignee: string): Record<SettingCategory, number> {
+  const dirty = new Set(dirtyKeys(draft));
+  const rows = draftRows(draft, assignee);
+  const counts = {} as Record<SettingCategory, number>;
+  for (const c of SETTING_CATEGORIES) counts[c] = rowsInCategory(rows, c).filter((r) => dirty.has(r.envKey)).length;
+  return counts;
 }

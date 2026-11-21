@@ -9,8 +9,8 @@ source "$(dirname "$0")/heavy-queue.sh"
 fail=0
 assert_eq() { if [ "$1" != "$2" ]; then echo "FAIL: $3 - got [$1] want [$2]"; fail=1; fi; }
 assert_defined() { if ! declare -F "$1" >/dev/null; then echo "FAIL: $1 not defined after sourcing"; fail=1; fi; }
-assert_ok() { if ! "$@"; then echo "FAIL: expected success: $*"; fail=1; fi; }
-assert_fails() { if "$@"; then echo "FAIL: expected failure: $*"; fail=1; fi; }
+assert_ok() { if ! "$@" >/dev/null; then echo "FAIL: expected success: $*"; fail=1; fi; }
+assert_fails() { if "$@" >/dev/null; then echo "FAIL: expected failure: $*"; fail=1; fi; }
 
 assert_defined heavy_conf_load
 assert_defined strip_cd_prefix
@@ -83,6 +83,54 @@ assert_fails is_heavy "/home/ymbo/.config/yimbot/heavy-queue.sh hold 'task gener
 assert_fails is_heavy "$(printf 'cat > plan.md <<'"'"'EOF'"'"'\n# Plan\npnpm compile\npnpm typecheck\nEOF\necho written')"
 assert_ok is_heavy "$(printf 'cat > note.md <<EOF\nnotes\nEOF\ngo build ./...')"
 assert_ok is_heavy "$(printf 'echo start\ngo build ./...')"
+
+# A heavy job chained behind a cheap one (`pgrep ...; task generate`) is still
+# heavy: every simple command in the chain is matched, not just the head.
+CHAIN='cd /x/api && pgrep -fl "air|graphql-codegen" | head -3; task generate > /tmp/g.log 2>&1; echo exit=$?; tail -5 /tmp/g.log'
+assert_defined heavy_command
+assert_ok is_heavy "$CHAIN"
+assert_eq "$(heavy_command "$CHAIN")" "task generate > /tmp/g.log 2>&1" "names the heavy segment of a chain"
+assert_ok is_heavy 'git pull && task generate'
+assert_ok is_heavy 'ls || go test ./...'
+assert_ok is_heavy 'task generate 2>&1 | tail -20'
+assert_eq "$(heavy_command 'task generate 2>&1 | tail -20')" "task generate 2>&1" "a redirection is not a separator"
+assert_ok is_heavy 'echo start; (cd api && CGO_ENABLED=0 go build ./...)'
+assert_ok is_heavy 'echo start; (echo a; go build ./...)'
+assert_ok is_heavy 'go build ./... & wait'
+# Separators inside quotes or a $( ) do not split, so a quoted or captured
+# mention of a build command stays cheap.
+assert_fails is_heavy 'echo "task generate; go build"'
+assert_fails is_heavy "echo 'a && task generate'"
+assert_fails is_heavy "grep 'go build' Taskfile.yaml | head"
+assert_fails is_heavy 'echo $(echo "x; task generate")'
+assert_fails is_heavy 'pgrep -fl "air|graphql-codegen" | head -3'
+
+# Splitting happens before peeling, so two wrapped commands in one chain are
+# seen apart rather than one greedy match swallowing the separator.
+assert_ok is_heavy '(cd a && echo x) && (cd b && go build ./...)'
+assert_eq "$(heavy_command '(cd api && go build ./...) && (echo done)')" "go build ./..." "a subshell segment is peeled cleanly"
+assert_ok is_heavy 'bash -c "echo a" && bash -c "go build ./..."'
+# A quoted or parenthesised segment spanning lines stays one segment.
+assert_fails is_heavy "$(printf 'git commit -m "fix build\n\ngo build passes now"')"
+assert_ok is_heavy "$(printf 'echo start\n(\n  cd api\n  go build ./...\n)')"
+# A trailing comment is not a command.
+assert_fails is_heavy 'pgrep -fl air | head -3 # then; task generate later'
+assert_ok is_heavy 'echo "#not a comment"; task generate # build it'
+# Heavy jobs also hide behind a group, a compound, or a runner prefix.
+assert_ok is_heavy '{ go build ./...; } 2>&1'
+assert_ok is_heavy 'if go test ./...; then echo ok; fi'
+assert_ok is_heavy 'for d in a b; do (cd $d && go build ./...); done'
+assert_ok is_heavy 'time go test ./...'
+assert_ok is_heavy 'timeout 600 task generate'
+assert_ok is_heavy 'timeout -k 5 10m task generate'
+assert_ok is_heavy 'nohup task generate &'
+assert_eq "$(heavy_command 'timeout 600 task generate')" "task generate" "the runner prefix is peeled from the ticket"
+# heavy_command is the one parse the hook does, so the guards live there too.
+assert_fails heavy_command "/home/ymbo/.config/yimbot/heavy-queue.sh hold 'task generate'"
+assert_fails env YIMBOT_HEAVY_HELD=1 bash -c "source '$(dirname "$0")/heavy-queue.sh'; heavy_conf_load; heavy_command 'task generate'"
+assert_defined ticket_command
+assert_eq "$(ticket_command 'echo a; task generate')" "task generate" "ticket text is the heavy segment"
+assert_eq "$(ticket_command 'cd /a && echo cheap')" "echo cheap" "a cheap hold shows the unwrapped command"
 
 # --- ticket primitives ---
 assert_defined queue_dir
@@ -503,7 +551,7 @@ assert_eq "$(node -e 'process.stdout.write(require(process.argv[1]).hooks.PostTo
 # --- status ---
 assert_defined cmd_status
 rm -f "$(queue_dir)"/*.json
-assert_eq "$(cmd_status --json | jq -c '.')" '{"running":null,"waiting":[]}' "an empty queue reports nothing running"
+assert_eq "$(cmd_status --json | jq -c '.')" '{"running":null,"waiting":[],"stack":null}' "an empty queue reports nothing running"
 assert_eq "$(cmd_status)" "" "an idle queue prints nothing on the human table"
 assert_eq "$(cmd_status >/dev/null 2>&1; echo $?)" "0" "an idle queue exits cleanly on the human table"
 
@@ -521,5 +569,195 @@ assert_eq "$(cmd_status | head -1 | cut -f2)" "1m" "the human table shows how lo
 printf '{"key":"ENG-1","cmd":"task generate","state":"running","since":%s}\n' "$(( $(date +%s%N) / 1000000 - 5000 ))" > "$R"
 assert_eq "$(cmd_status | head -1 | cut -f2)" "5s" "a short hold reports in seconds"
 rm -f "$(queue_dir)"/*.json
+
+# --- api-tests stack commands queue ---
+# up and restart run `go build -cover` before they detach the stack and exit, so
+# they take the heavy slot. down, report and wrike-waits stay cheap.
+assert_ok is_heavy 'task api-tests:up'
+assert_ok is_heavy 'task api-tests:restart'
+assert_ok is_heavy 'task api-tests'
+assert_ok is_heavy 'task api-tests > /tmp/x.log 2>&1'
+assert_ok is_heavy 'task api-tests:up > /tmp/x.log 2>&1; echo exit=$?'
+assert_ok is_heavy 'task api-tests:up > /tmp/pr8148-up.log 2>&1 &'
+assert_ok is_heavy 'cd /w/gemini && task api-tests:up'
+assert_ok is_heavy 'node api-tests/scripts/run.mjs all'
+assert_ok is_heavy 'node api-tests/scripts/run.mjs up'
+assert_ok is_heavy 'node api-tests/scripts/run.mjs restart'
+assert_ok is_heavy 'node api-tests/scripts/run.mjs --skip-build up'
+assert_ok is_heavy 'node api-tests/scripts/run.mjs up --skip-build'
+assert_ok is_heavy 'node /w/gemini/api-tests/scripts/run.mjs up'
+assert_ok is_heavy 'cd api-tests && node scripts/run.mjs up'
+assert_fails is_heavy 'task api-tests:down'
+assert_fails is_heavy 'task api-tests:report'
+assert_fails is_heavy 'task api-tests:wrike-waits'
+assert_fails is_heavy 'node api-tests/scripts/run.mjs down'
+assert_fails is_heavy 'node api-tests/scripts/run.mjs report'
+assert_fails is_heavy 'node api-tests/scripts/run.mjs wrike-waits'
+assert_fails is_heavy 'task env:start'
+assert_fails is_heavy 'task up'
+assert_fails is_heavy 'task dev:up'
+assert_fails is_heavy 'echo task api-tests:up'
+assert_defined stack_command
+assert_defined stack_down_command
+assert_eq "$(stack_command 'task api-tests:up > /tmp/x.log 2>&1; echo exit=$?')" "task api-tests:up > /tmp/x.log 2>&1" "names the stack segment of the incident command"
+assert_fails stack_command 'task generate'
+assert_fails stack_command 'task api-tests:down'
+assert_ok stack_down_command 'task api-tests:down'
+assert_ok stack_down_command 'cd /w && node api-tests/scripts/run.mjs down'
+assert_fails stack_down_command 'task api-tests:up'
+
+# --- one api-tests stack per machine ---
+assert_defined stack_claim
+assert_defined stack_mark_up
+assert_defined stack_release
+assert_defined wait_for_stack
+assert_eq "$HEAVY_STACK_WAIT" "600" "stack wait timeout from conf"
+SW_A=$(mktemp -d); SW_B=$(mktemp -d)
+rm -f "$HEAVY_STATE_DIR/stack.json"
+export HEAVY_STACK_PROBE='exit 0'
+assert_ok stack_claim "$SW_A" ENG-376
+assert_ok stack_claim "$SW_A" ENG-376
+assert_eq "$(stack_claim "$SW_B" ENG-3892; echo " rc=$?")" "ENG-376 rc=1" "a second worktree is refused and told who holds the stack"
+assert_eq "$(jq -r '.state' "$HEAVY_STATE_DIR/stack.json")" "pending" "a claim is pending until bring-up succeeds"
+stack_mark_up "$SW_A"
+assert_eq "$(jq -r '.state' "$HEAVY_STATE_DIR/stack.json")" "up" "bring-up success marks the stack up"
+assert_eq "$(jq -r '.worktree' "$HEAVY_STATE_DIR/stack.json")" "$SW_A" "the state file records the owning worktree"
+assert_eq "$(jq -r '.key' "$HEAVY_STATE_DIR/stack.json")" "ENG-376" "the state file records the owning branch key"
+assert_fails stack_claim "$SW_B" ENG-3892
+stack_release "$SW_B"
+assert_ok test -f "$HEAVY_STATE_DIR/stack.json"
+assert_eq "$(HEAVY_STACK_WAIT=1 wait_for_stack "$SW_B" ENG-3892 >/dev/null; echo $?)" "1" "waiting on a held stack times out"
+stack_release "$SW_A"
+assert_fails test -f "$HEAVY_STATE_DIR/stack.json"
+assert_ok stack_claim "$SW_B" ENG-3892
+rm -f "$HEAVY_STATE_DIR/stack.json"
+
+# A stack whose containers and processes are gone is reaped, like a dead ticket.
+assert_ok stack_claim "$SW_A" ENG-376
+stack_mark_up "$SW_A"
+export HEAVY_STACK_PROBE='exit 1'
+assert_ok stack_claim "$SW_B" ENG-3892
+assert_eq "$(jq -r '.key' "$HEAVY_STATE_DIR/stack.json")" "ENG-3892" "a dead stack hands over to the next claimant"
+# A claim whose worktree is gone is reaped even if the probe still sees a stack.
+export HEAVY_STACK_PROBE='exit 0'
+rm -f "$HEAVY_STATE_DIR/stack.json"
+SW_GONE=$(mktemp -d); stack_claim "$SW_GONE" ENG-1 >/dev/null; stack_mark_up "$SW_GONE"; rmdir "$SW_GONE"
+assert_ok stack_claim "$SW_B" ENG-3892
+# A pending claim whose bring-up died is reaped by its dead pid.
+sleep 0 & DEAD_PID=$!; wait $DEAD_PID
+rm -f "$HEAVY_STATE_DIR/stack.json"
+printf '{"key":"ENG-5","worktree":"%s","state":"pending","pid":%s,"since":%s}\n' "$SW_A" "$DEAD_PID" "$(date +%s)" > "$HEAVY_STATE_DIR/stack.json"
+assert_ok stack_claim "$SW_B" ENG-3892
+rm -f "$HEAVY_STATE_DIR/stack.json"
+
+# pre denies a stack bring-up that waited out a foreign stack, naming the owner.
+export HEAVY_STACK_PROBE='exit 0'
+stack_claim "$SW_A" ENG-376 >/dev/null; stack_mark_up "$SW_A"
+STACK_DENY=$(printf '{"tool_input":{"command":"task api-tests:up"},"cwd":"%s","tool_use_id":"tu_stack"}' "$SW_B" | HEAVY_STACK_WAIT=1 cmd_pre)
+assert_eq "$(printf '%s' "$STACK_DENY" | jq -r '.hookSpecificOutput.permissionDecision')" "deny" "a held stack denies a second bring-up"
+assert_eq "$(printf '%s' "$STACK_DENY" | jq -r '.hookSpecificOutput.permissionDecisionReason')" "api-tests stack is held by ENG-376; wait or ask it to run task api-tests:down" "the deny reason names the owning ticket"
+assert_eq "$(ls -1 "$(queue_dir)" | wc -l | tr -d ' ')" "0" "a denied bring-up leaves no ticket"
+# The owner itself is allowed through, and a cheap command never touches the stack.
+STACK_OK=$(printf '{"tool_input":{"command":"task api-tests:up"},"cwd":"%s","tool_use_id":"tu_stack2"}' "$SW_A" | HEAVY_STACK_WAIT=1 cmd_pre)
+assert_eq "$(printf '%s' "$STACK_OK" | jq -r '.hookSpecificOutput.permissionDecision')" "allow" "the stack owner may bring it up again"
+rm -f "$(queue_dir)"/*.json "$HEAVY_STATE_DIR"/current/*
+# post releases the stack when down succeeds in the owning worktree.
+export HEAVY_STACK_PROBE='exit 1'
+printf '{"tool_input":{"command":"task api-tests:down"},"cwd":"%s","tool_use_id":"tu_down"}' "$SW_A" | cmd_post
+assert_fails test -f "$HEAVY_STATE_DIR/stack.json"
+# hold records the stack as up when the stack answers after bring-up, and drops
+# the claim when it does not.
+rm -f "$HEAVY_STATE_DIR/stack.json"
+stack_claim "$SW_A" ENG-376 >/dev/null
+export HEAVY_STACK_PROBE='exit 0'
+(cd "$SW_A" && cmd_hold 'task() { :; }; task api-tests:up' >/dev/null)
+assert_eq "$(jq -r '.state' "$HEAVY_STATE_DIR/stack.json")" "up" "a successful bring-up under hold marks the stack up"
+rm -f "$HEAVY_STATE_DIR/stack.json"
+stack_claim "$SW_A" ENG-376 >/dev/null
+export HEAVY_STACK_PROBE='exit 1'
+(cd "$SW_A" && cmd_hold 'task() { return 1; }; task api-tests:up' >/dev/null)
+assert_fails test -f "$HEAVY_STATE_DIR/stack.json"
+# A command that exited 0 before the stack answers (backgrounded, still
+# starting) keeps its claim, so a slow build is not handed to another worktree.
+stack_claim "$SW_A" ENG-376 >/dev/null
+(cd "$SW_A" && cmd_hold 'task() { :; }; task api-tests:up' >/dev/null)
+assert_eq "$(jq -r '.state' "$HEAVY_STATE_DIR/stack.json")" "pending" "a clean exit with no stack yet keeps the claim"
+assert_fails stack_claim "$SW_B" ENG-3892
+# The unqueued fallbacks settle the claim too.
+rm -f "$HEAVY_STATE_DIR/stack.json"
+stack_claim "$SW_A" ENG-376 >/dev/null
+export HEAVY_STACK_PROBE='exit 0'
+(cd "$SW_A" && hold_unqueued 'true' "$SW_A")
+assert_eq "$(jq -r '.state' "$HEAVY_STATE_DIR/stack.json")" "up" "an unqueued bring-up marks the stack up"
+unset HEAVY_STACK_PROBE
+
+# A stack command queues even when an older conf's HEAVY_PATTERNS omits it.
+assert_eq "$(HEAVY_PATTERNS='^(task generate)' stack_command 'task api-tests:up' >/dev/null; echo $?)" "0" "the stack check does not depend on HEAVY_PATTERNS"
+STALE_CONF=$(mktemp); printf "HEAVY_PATTERNS='^(task generate)'\n" > "$STALE_CONF"
+STALE_OUT=$(printf '{"tool_input":{"command":"task api-tests:up"},"cwd":"%s","tool_use_id":"tu_old"}' "$SW_A" | HEAVY_CONF=$STALE_CONF bash "$(dirname "$0")/heavy-queue.sh" pre)
+assert_eq "$(printf '%s' "$STALE_OUT" | jq -r '.hookSpecificOutput.updatedInput.command' | grep -c 'hold')" "1" "an older conf still queues a stack bring-up"
+rm -f "$HEAVY_STATE_DIR/stack.json" "$(queue_dir)"/*.json "$HEAVY_STATE_DIR"/current/*
+
+# --- status shows the stack owner ---
+rm -f "$(queue_dir)"/*.json "$HEAVY_STATE_DIR/stack.json"
+export HEAVY_STACK_PROBE='exit 0'
+stack_claim "$SW_A" ENG-376 >/dev/null; stack_mark_up "$SW_A"
+assert_eq "$(cmd_status --json | jq -r '.stack.key')" "ENG-376" "status --json names the stack owner"
+assert_eq "$(cmd_status --json | jq -r '.stack.worktree')" "$SW_A" "status --json names the stack worktree"
+assert_eq "$(cmd_status --json | jq -r '.stack.state')" "up" "status --json reports the stack state"
+assert_eq "$(cmd_status | grep -c 'ENG-376')" "1" "the human table names the stack owner"
+rm -f "$HEAVY_STATE_DIR/stack.json"
+unset HEAVY_STACK_PROBE
+
+# --- status with a single ticket (bash 3.2 treats an empty array as unbound) ---
+rm -f "$(queue_dir)"/*.json
+ONE=$(ticket_path); ticket_write "$ONE" "ENG-1" "task generate" running
+assert_eq "$(bash "$(dirname "$0")/heavy-queue.sh" status 2>&1 | cut -f1)" "ENG-1" "status runs with exactly one ticket"
+assert_eq "$(bash "$(dirname "$0")/heavy-queue.sh" status 2>&1 | grep -c unbound)" "0" "status reports no unbound variable with one ticket"
+assert_eq "$(grep -c ' "\${entries\[@\]}"' "$(dirname "$0")/heavy-queue.sh")" "0" "no unguarded empty-array expansion in the script"
+rm -f "$ONE"
+
+# --- memory gate ---
+assert_eq "$HEAVY_MIN_FREE_PCT" "20" "min free memory defaults to 20 percent"
+assert_eq "$(printf 'The system has 17179869184 (4194304 pages with a page size of 4096).\nSystem-wide memory free percentage: 42%%\n' | pct_from_memory_pressure)" "42" "parses memory_pressure -Q"
+VM=$(printf 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               100.\nPages active:                             500.\nPages inactive:                           200.\nPages speculative:                        100.\n')
+assert_eq "$(printf '%s\n' "$VM" | pct_from_vm_stat 16384000)" "40" "parses vm_stat: free+inactive+speculative over total"
+MI=$(mktemp); printf 'MemTotal:       16000000 kB\nMemFree:          100000 kB\nMemAvailable:    4000000 kB\n' > "$MI"
+assert_eq "$(pct_from_meminfo "$MI")" "25" "parses MemAvailable from meminfo"
+assert_eq "$(pct_from_meminfo /nonexistent; echo "rc=$?")" "rc=1" "a missing meminfo yields no reading"
+free_memory_pct() { printf '%s' "${FAKE_FREE:-}"; }
+FAKE_FREE=10; assert_ok memory_low
+FAKE_FREE=20; assert_fails memory_low
+FAKE_FREE=80; assert_fails memory_low
+FAKE_FREE=;   assert_fails memory_low
+HEAVY_MIN_FREE_PCT=0; FAKE_FREE=1; assert_fails memory_low
+HEAVY_MIN_FREE_PCT=20
+rm -f "$(queue_dir)"/*.json
+MEM_T=$(ticket_path); ticket_write "$MEM_T" "ENG-7" "task generate" waiting
+HEAVY_TICKET=$MEM_T
+FAKE_FREE=5
+MEM_START=$(date +%s)
+assert_eq "$(HEAVY_WAIT_TIMEOUT=2 wait_for_head ENG-7 'task generate'; echo "$? $HEAVY_WAIT_REASON")" "1 memory" "a head ticket waits while memory is low, and times out as a memory wait"
+assert_ok test "$(( $(date +%s) - MEM_START ))" -ge 2
+FAKE_FREE=50
+assert_eq "$(HEAVY_WAIT_TIMEOUT=2 wait_for_head ENG-7 'task generate'; echo $?)" "0" "enough free memory grants the slot"
+rm -f "$MEM_T"
+# pre logs a memory timeout distinctly and still lets the command run.
+FAKE_FREE=5
+: > "$HEAVY_STATE_DIR/queue.log"
+MEM_OUT=$(printf '{"tool_input":{"command":"task generate"},"cwd":"/x","tool_use_id":"tu_mem"}' | HEAVY_WAIT_TIMEOUT=1 cmd_pre)
+assert_eq "$(printf '%s' "$MEM_OUT" | jq -r '.hookSpecificOutput.permissionDecision')" "allow" "a memory timeout still allows the command"
+assert_eq "$(grep -c 'free memory' "$HEAVY_STATE_DIR/queue.log")" "1" "a memory timeout is logged as a memory timeout"
+assert_eq "$(grep -c 'timed out waiting for the slot' "$HEAVY_STATE_DIR/queue.log")" "0" "a memory timeout is not logged as a queue timeout"
+rm -f "$(queue_dir)"/*.json "$HEAVY_STATE_DIR"/current/*
+unset -f free_memory_pct
+FAKE_FREE=
+
+# --- proc_start on a host without /proc ---
+assert_defined proc_start_ps
+assert_ok test -n "$(proc_start_ps $$)"
+assert_eq "$(proc_start_ps $$)" "$(proc_start_ps $$)" "ps-based start time is stable"
+assert_eq "$(proc_start_ps $$ | tr -d '0-9')" "" "ps-based start time is a bare number, safe in ticket JSON"
+assert_eq "$(proc_start_ps 999999999)" "" "no start time for a missing process"
 
 if [ "$fail" -eq 0 ]; then echo "PASS: heavy-queue.sh tests"; else exit 1; fi

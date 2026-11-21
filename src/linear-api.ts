@@ -1,5 +1,5 @@
 import type { Blocker } from "./blocked.ts";
-import { labelFilterAllows, type LabelFilter } from "./labels.ts";
+import { hasLabel, labelFilterAllows, type LabelFilter } from "./labels.ts";
 import { observeReach } from "./reach.ts";
 import type { Ticket } from "./ticket-format.ts";
 import { readFileSync } from "node:fs";
@@ -32,6 +32,9 @@ export type CycleTodoIssue = LinearIssue & {
   // Tickets this one is blocked by (from inverse "blocks" relations).
   blockedBy: Blocker[];
   estimate: number | null;
+  // The parent ticket when this is a sub-issue; its Linear state type tells the
+  // claim step whether a split of it is in flight ("started").
+  parent: { identifier: string; stateName: string; stateType: string } | null;
 };
 
 type RelatedIssueNode = { identifier: string; state: { name: string; type: string } };
@@ -192,9 +195,15 @@ export async function fetchTeamStates(
 // The viewer's assigned issues in one state of the watched team. Shared by the
 // deploy step (In Progress) and the review step (In Review) — both watch a
 // single state, so this is deliberately state-agnostic.
-// `estimate` and `hasChildren` are the deploy step's tracker check (a decomposed
-// parent: children plus a 0-point estimate); the review step ignores them.
-export type StateIssue = LinearIssue & { labels: string[]; estimate: number | null; hasChildren: boolean };
+export type StateIssue = LinearIssue & {
+  labels: string[];
+  people: string[];
+  creator: string | null;
+  // The deploy step's tracker check (a decomposed parent: children plus a
+  // 0-point estimate); the review step ignores them.
+  estimate: number | null;
+  hasChildren: boolean;
+};
 
 export async function fetchIssuesInState(
   apiKey: string,
@@ -205,6 +214,7 @@ export async function fetchIssuesInState(
     estimate: number | null;
     labels: { nodes: { name: string }[] };
     children: { nodes: { id: string }[] };
+    creator?: { id: string; displayName: string } | null;
   };
   type IssuesData = { issues: { nodes: Node[] } };
   const data = await gql<IssuesData>(
@@ -222,20 +232,28 @@ export async function fetchIssuesInState(
           id identifier title estimate
           labels { nodes { name } }
           children(first: 1) { nodes { id } }
+          creator { id displayName }
         }
       }
     }`,
     { teamId: ctx.teamId, stateId: ctx.stateId, viewerId: ctx.viewerId },
     fetchImpl,
   );
-  return data.issues.nodes.map((n) => ({
-    id: n.id,
-    identifier: n.identifier,
-    title: n.title,
-    labels: n.labels.nodes.map((l) => l.name),
-    estimate: n.estimate ?? null,
-    hasChildren: n.children.nodes.length > 0,
-  }));
+  return data.issues.nodes.map((n) => {
+    // Every issue here is assigned to the viewer, so the only one worth pinging
+    // is a creator other than the viewer.
+    const creator = n.creator && n.creator.id !== ctx.viewerId ? n.creator.displayName : null;
+    return {
+      id: n.id,
+      identifier: n.identifier,
+      title: n.title,
+      labels: n.labels.nodes.map((l) => l.name),
+      people: creator ? [creator] : [],
+      creator,
+      estimate: n.estimate ?? null,
+      hasChildren: n.children.nodes.length > 0,
+    };
+  });
 }
 
 export type IssueWithBlockers = LinearIssue & { blockedBy: Blocker[]; labels: string[] };
@@ -397,6 +415,7 @@ export async function fetchCycleTodoIssues(
     estimate: number | null;
     labels: { nodes: { name: string }[] };
     inverseRelations: InverseRelationNodes;
+    parent?: { identifier: string; state: { name: string; type: string } } | null;
   };
   type IssuesData = { issues: { nodes: Node[] } };
   const data = await gql<IssuesData>(
@@ -421,6 +440,7 @@ export async function fetchCycleTodoIssues(
           estimate
           labels { nodes { name } }
           ${BLOCKERS_SELECTION}
+          parent { identifier state { name type } }
         }
       }
     }`,
@@ -437,7 +457,164 @@ export async function fetchCycleTodoIssues(
     estimate: n.estimate ?? null,
     labels: n.labels.nodes.map((l) => l.name),
     blockedBy: blockersFrom(n.inverseRelations),
+    parent: n.parent
+      ? { identifier: n.parent.identifier, stateName: n.parent.state.name, stateType: n.parent.state.type }
+      : null,
   }));
+}
+
+export type CycleParent = {
+  identifier: string;
+  title: string;
+  children: { labels: string[] }[];
+};
+
+// Active-cycle issues (sub-issues included) titled "Remove ..." with their children's label
+// names, for finding tickets that lack a given follow-up child.
+export async function fetchCycleParents(
+  apiKey: string,
+  teamId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CycleParent[]> {
+  type Data = {
+    issues: {
+      nodes: {
+        identifier: string;
+        title: string;
+        children: { nodes: { labels: { nodes: { name: string }[] } }[] };
+      }[];
+    };
+  };
+  const data = await gql<Data>(
+    apiKey,
+    `query CycleParents($teamId: ID!) {
+      issues(
+        first: 250
+        filter: {
+          team: { id: { eq: $teamId } }
+          cycle: { isActive: { eq: true } }
+          title: { startsWith: "Remove" }
+        }
+      ) {
+        nodes {
+          identifier
+          title
+          children(first: 250) { nodes { labels { nodes { name } } } }
+        }
+      }
+    }`,
+    { teamId },
+    fetchImpl,
+  );
+  return data.issues.nodes.map((n) => ({
+    identifier: n.identifier,
+    title: n.title,
+    children: n.children.nodes.map((c) => ({ labels: c.labels.nodes.map((l) => l.name) })),
+  }));
+}
+
+export type CycleBoardState = { id: string; name: string; type: string; position: number; color: string };
+export type CycleBoardIssue = {
+  identifier: string;
+  title: string;
+  stateId: string;
+  sortOrder: number;
+  estimate: number | null;
+};
+export type CycleBoard = {
+  cycleNumber: number | null;
+  states: CycleBoardState[];
+  issues: CycleBoardIssue[];
+};
+
+// The watched team's workflow states plus the viewer's issues in the team's
+// active cycle, for the kanban board. Skips the issue query when no cycle is active.
+export async function fetchCycleBoard(
+  apiKey: string,
+  teamName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CycleBoard> {
+  type TeamData = {
+    viewer: { id: string };
+    teams: {
+      nodes: {
+        id: string;
+        states: { nodes: (Omit<CycleBoardState, "color"> & { color?: string | null })[] };
+        activeCycle: { number: number } | null;
+      }[];
+    };
+  };
+  const teamData = await gql<TeamData>(
+    apiKey,
+    `query CycleBoardTeam($teamName: String!) {
+      viewer { id }
+      teams(filter: { name: { eqIgnoreCase: $teamName } }) {
+        nodes {
+          id
+          states { nodes { id name type position color } }
+          activeCycle { number }
+        }
+      }
+    }`,
+    { teamName },
+    fetchImpl,
+  );
+  const team = teamData.teams.nodes[0];
+  if (!team) throw new Error(`No Linear team named "${teamName}"`);
+  const states = team.states.nodes.map((s) => ({
+    id: s.id,
+    name: s.name,
+    type: s.type,
+    position: s.position,
+    color: s.color ?? "",
+  }));
+  if (!team.activeCycle) return { cycleNumber: null, states, issues: [] };
+
+  type IssuesData = {
+    issues: {
+      nodes: {
+        identifier: string;
+        title: string;
+        sortOrder: number;
+        estimate: number | null;
+        state: { id: string };
+      }[];
+    };
+  };
+  const issueData = await gql<IssuesData>(
+    apiKey,
+    `query CycleBoardIssues($teamId: ID!, $viewerId: ID!) {
+      issues(
+        first: 250
+        filter: {
+          team: { id: { eq: $teamId } }
+          assignee: { id: { eq: $viewerId } }
+          cycle: { isActive: { eq: true } }
+        }
+      ) {
+        nodes {
+          identifier
+          title
+          sortOrder
+          estimate
+          state { id }
+        }
+      }
+    }`,
+    { teamId: team.id, viewerId: teamData.viewer.id },
+    fetchImpl,
+  );
+  return {
+    cycleNumber: team.activeCycle.number,
+    states,
+    issues: issueData.issues.nodes.map((n) => ({
+      identifier: n.identifier,
+      title: n.title,
+      stateId: n.state.id,
+      sortOrder: n.sortOrder,
+      estimate: n.estimate ?? null,
+    })),
+  };
 }
 
 // Count the viewer's assigned issues in a state matched by name, across ALL
@@ -449,6 +626,7 @@ export async function countAssignedInState(
   stateName: string,
   filter: LabelFilter = null,
   fetchImpl: typeof fetch = fetch,
+  rejectLabel: string | null = null,
 ): Promise<number> {
   type IssuesData = { issues: { nodes: { id: string; labels: { nodes: { name: string }[] } }[] } };
   const data = await gql<IssuesData>(
@@ -467,7 +645,10 @@ export async function countAssignedInState(
     { viewerId, stateName },
     fetchImpl,
   );
-  return data.issues.nodes.filter((n) => labelFilterAllows(filter, n.labels.nodes.map((l) => l.name))).length;
+  return data.issues.nodes.filter((n) => {
+    const names = n.labels.nodes.map((l) => l.name);
+    return labelFilterAllows(filter, names) && !(rejectLabel !== null && hasLabel(names, rejectLabel));
+  }).length;
 }
 
 // Move an issue to a new workflow state. Throws if Linear reports the update
@@ -605,6 +786,7 @@ export type SubIssueInput = {
   stateId?: string;
   cycleId?: string;
   labelIds?: string[];
+  description?: string;
 };
 
 export async function createSubIssue(
@@ -648,6 +830,60 @@ export async function setIssueEstimate(
   if (!data.issueUpdate.success) {
     throw new Error(`issueUpdate failed for ${issueId}`);
   }
+}
+
+// The id of a team label by name (case-insensitive), created when missing.
+export async function resolveTeamLabelId(
+  apiKey: string,
+  teamId: string,
+  labelName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  type ListData = { team: { labels: { nodes: { id: string; name: string }[] } } };
+  const list = await gql<ListData>(
+    apiKey,
+    `query TeamLabelIds($teamId: String!) {
+      team(id: $teamId) { labels(first: 250) { nodes { id name } } }
+    }`,
+    { teamId },
+    fetchImpl,
+  );
+  const want = labelName.trim().toLowerCase();
+  const existing = list.team.labels.nodes.find((l) => l.name.trim().toLowerCase() === want)?.id;
+  if (existing) return existing;
+  type CreateData = { issueLabelCreate: { success: boolean; issueLabel: { id: string } | null } };
+  const created = await gql<CreateData>(
+    apiKey,
+    `mutation CreateLabel($name: String!, $teamId: String!) {
+      issueLabelCreate(input: { name: $name, teamId: $teamId }) { success issueLabel { id } }
+    }`,
+    { name: labelName, teamId },
+    fetchImpl,
+  );
+  if (!created.issueLabelCreate.success || !created.issueLabelCreate.issueLabel) {
+    throw new Error(`issueLabelCreate failed for "${labelName}"`);
+  }
+  return created.issueLabelCreate.issueLabel.id;
+}
+
+export async function addIssueLabel(
+  apiKey: string,
+  issueId: string,
+  teamId: string,
+  labelName: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const labelId = await resolveTeamLabelId(apiKey, teamId, labelName, fetchImpl);
+  type AddData = { issueAddLabel: { success: boolean } };
+  const added = await gql<AddData>(
+    apiKey,
+    `mutation AddLabel($id: String!, $labelId: String!) {
+      issueAddLabel(id: $id, labelId: $labelId) { success }
+    }`,
+    { id: issueId, labelId },
+    fetchImpl,
+  );
+  if (!added.issueAddLabel.success) throw new Error(`issueAddLabel failed for ${issueId}`);
 }
 
 export async function upsertMarkedComment(
@@ -725,6 +961,7 @@ export async function fetchTicket(
       assignee: { name: string } | null;
       team: { id: string };
       comments: { nodes: { body: string; createdAt: string; user: { name: string } | null }[] };
+      inverseRelations: InverseRelationNodes;
     } | null;
   };
   const data = await gql<Data>(
@@ -738,6 +975,7 @@ export async function fetchTicket(
         assignee { name }
         team { id }
         comments(first: 250) { nodes { body createdAt user { name } } }
+        ${BLOCKERS_SELECTION}
       }
     }`,
     { id: identifier },
@@ -763,6 +1001,7 @@ export async function fetchTicket(
     parent: issue.parent?.identifier ?? null,
     assignee: issue.assignee?.name ?? null,
     comments,
+    blockedBy: blockersFrom(issue.inverseRelations).map((b) => ({ identifier: b.identifier, stateName: b.stateName })),
   };
 }
 

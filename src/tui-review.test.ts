@@ -23,6 +23,7 @@ import {
   planLines,
   reviewFooterHint,
   reviewHeader,
+  syncChip,
   reviewColumns,
   reviewLayout,
   WIDE_LABEL,
@@ -102,12 +103,12 @@ test("diffPaneLines renders just the diff, guidance lives in the guide band", ()
   const fd: FileDiff = {
     path: "src/a.ts", oldPath: "src/a.ts", status: "modified", additions: 0, deletions: 0, lines: [],
   };
-  const out = diffPaneLines(fd);
+  const out = diffPaneLines(fd, 80);
   assert.ok(out[0].includes("src/a.ts"));
 });
 
 test("diffPaneLines shows a loading stub without a diff", () => {
-  assert.ok(diffPaneLines(null)[0].includes("loading"));
+  assert.ok(diffPaneLines(null, 80)[0].includes("loading"));
 });
 
 test("guideLines shows organizing while groups are in flight", () => {
@@ -215,7 +216,7 @@ test("reviewFooterHint offers a claude only while a claude session is live", () 
 test("reviewFooterHint routes keys to claude when the claude pane is focused", () => {
   const base = { total: 3, loaded: true, allViewed: false, focused: "claude" as const, contextCount: 0, hasSession: false, hasClaude: true };
   const hint = reviewFooterHint(base);
-  assert.ok(hint.includes("C-q or C-\\ back"));
+  assert.ok(hint.includes("C-h or C-\\ back"));
   assert.ok(!hint.includes("q back"));
 });
 
@@ -265,6 +266,10 @@ test("reviewColumns leaves no uncovered column between the panes at any width", 
     assert.equal(c.diffLeft + c.diffWidth, c.claudeLeft, `seam ${w}`);
     assert.equal(c.claudeLeft, Math.floor(w * 0.7), `claude ${w}`);
   }
+});
+
+test("reviewLayout keeps diff rows on one line so a narrow pane clips instead of wrapping", () => {
+  assert.equal(reviewLayout().diff.wrap, false);
 });
 
 test("reviewLayout makes the plan and diff panes wheel-scrollable", () => {
@@ -371,6 +376,9 @@ function testDeps(
     pr: 42,
     fetchDiff: async () => DIFF,
     fetchMeta: async () => ({ title: "t", body: "b", headSha: "sha1" }),
+    fetchHeadSha: async () => "sha1",
+    syncStatus: async () => ({ dirty: false, unpushed: 0, head: "sha1" }),
+    pollMs: 0,
     runGrouping: async () => GROUP_JSON,
     queueToMerge: async () => {},
     loadViewed: () => new Set(),
@@ -386,6 +394,7 @@ function testDeps(
     regenerateArchMap: async () => {},
     sessionName: () => null,
     openSession: () => true,
+    setPaneKeys: () => {},
     saved,
     savedGroups,
     ...overrides,
@@ -398,7 +407,7 @@ function testDeps(
 function fakeClaudeSession() {
   const writes: string[] = [];
   const dataSubs: { disposed: boolean }[] = [];
-  const exitCbs: (() => void)[] = [];
+  const exitCbs: ((code: number | undefined) => void)[] = [];
   let killed = false;
   const session: ClaudeSession = {
     pr: 42,
@@ -414,7 +423,7 @@ function fakeClaudeSession() {
         dataSubs.push(sub);
         return { dispose: () => { sub.disposed = true; } };
       },
-      onExit: (cb: () => void) => {
+      onExit: (cb: (code: number | undefined) => void) => {
         exitCbs.push(cb);
         return { dispose: () => {} };
       },
@@ -422,7 +431,7 @@ function fakeClaudeSession() {
   };
   const emitExit = () => {
     session.exited = true;
-    for (const cb of exitCbs) cb();
+    for (const cb of exitCbs) cb(0);
   };
   return { session, writes, dataSubs, wasKilled: () => killed, emitExit };
 }
@@ -594,6 +603,42 @@ test("openReview: a focuses claude from plan and diff; tab never reaches it", as
   assert.equal(claude.style.border.fg, FOCUS_BORDER, "a from diff must focus claude");
   pressUnfocus(screen);
   assert.deepEqual(fake.writes, [], "the jump key must not reach the pty");
+  screen.destroy();
+});
+
+test("openReview moves between plan, diff and claude with C-h and C-l", async () => {
+  const fake = fakeClaudeSession();
+  const screen = makeScreen();
+  openReview(screen, testDeps({ claudeSession: () => fake.session }), () => {});
+  await flush();
+  await flush();
+  const plan = paneByLabel(screen, " review plan ");
+  const diff = paneByLabel(screen, " diff ");
+  const claude = paneByLabel(screen, " claude ");
+  const ctrlL = () => screen.focused.emit("keypress", "", { name: "l", ctrl: true, sequence: "\f" });
+  const ctrlH = () => pressSeq(screen, "", "\b", "backspace");
+  ctrlL();
+  assert.equal(diff.style.border.fg, FOCUS_BORDER, "C-l from plan must land on diff");
+  ctrlL();
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "C-l from diff must land on claude");
+  ctrlL();
+  assert.equal(claude.style.border.fg, FOCUS_BORDER, "C-l stays on the rightmost pane");
+  ctrlH();
+  assert.equal(diff.style.border.fg, FOCUS_BORDER, "C-h from claude must land on diff");
+  ctrlH();
+  assert.equal(plan.style.border.fg, FOCUS_BORDER, "C-h from diff must land on plan");
+  assert.deepEqual(fake.writes, ["\f"], "only C-l pressed inside claude reaches the pty");
+  screen.destroy();
+});
+
+test("openReview claims the pane's C-h and C-l from tmux while open and releases them on close", async () => {
+  const calls: boolean[] = [];
+  const screen = makeScreen();
+  openReview(screen, testDeps({ setPaneKeys: (on) => { calls.push(on); } }), () => {});
+  await flush();
+  assert.deepEqual(calls, [true]);
+  press(screen, "q");
+  assert.deepEqual(calls, [true, false]);
   screen.destroy();
 });
 
@@ -831,9 +876,9 @@ test("openReview forwards keystrokes (C-c included) to the claude pty; the unfoc
   assert.equal(plan.style.border.fg, FOCUS_BORDER);
   assert.equal(claude.style.border.fg, "grey");
   pressFocusClaude(screen);
-  pressSeq(screen, "", String.fromCharCode(17), "C-q");
-  assert.deepEqual(fake.writes, ["x", INTR], "C-q must unfocus without forwarding");
-  assert.equal(plan.style.border.fg, FOCUS_BORDER);
+  pressSeq(screen, "", "\b", "backspace");
+  assert.deepEqual(fake.writes, ["x", INTR], "C-h must unfocus without forwarding");
+  assert.equal(paneByLabel(screen, " diff ").style.border.fg, FOCUS_BORDER, "C-h must land on diff");
   assert.equal(claude.style.border.fg, "grey");
   screen.destroy();
 });
@@ -1372,7 +1417,7 @@ const inverted = (chart: any, label: string): boolean =>
   new RegExp(`\\{inverse\\}[^\\[]*\\[ ${label} \\]`).test(chart.content);
 
 const selected = (chart: any, label: string): boolean =>
-  new RegExp(`\\{inverse\\}(?:\\{[^{}]*\\})*${label}`).test(chart.content);
+  new RegExp(`\\{inverse\\}(?:\\{[^{}]*\\}|\\[\\w+\\]| )*${label}`).test(chart.content);
 
 test("the chart marks the selected node so j and k show on the chart itself", async () => {
   const screen = makeScreen();
@@ -1677,5 +1722,200 @@ test("the side-by-side render leaves the scrollbar column to blessed", async () 
   assert.ok(row);
   const plain = blessed.helpers.stripTags(row);
   assert.equal(plain.length, wide.width - 3, "border on both sides plus the scrollbar column");
+  screen.destroy();
+});
+
+test("syncChip says pushed, unpushed, or uncommitted, and nothing when unknown", () => {
+  assert.equal(syncChip(null, "abc1234def"), "");
+  const at = (dirty: boolean, unpushed: number, head = "abc1234def") => ({ dirty, unpushed, head });
+  assert.equal(syncChip(at(false, 0), "abc1234def"), "pushed @ abc1234");
+  assert.equal(syncChip(at(false, 2), "abc1234def"), "2 unpushed");
+  assert.equal(syncChip(at(true, 0), "abc1234def"), "uncommitted");
+  assert.equal(syncChip(at(true, 1), "abc1234def"), "uncommitted, 1 unpushed");
+  assert.equal(syncChip(at(false, 0, "9999999aaa"), "abc1234def"), "local 9999999 differs from PR abc1234");
+});
+
+const DIFF2 = DIFF.replace("+y", "+pushed");
+const diffPane = (screen: any) => paneByLabel(screen, " diff ");
+const pressR = (screen: any) => screen.focused.emit("keypress", "R", { name: "r", shift: true, full: "S-r" });
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function liveDeps(overrides: Partial<ReviewDeps> = {}) {
+  const calls = { diff: 0, head: 0 };
+  let head = "sha1";
+  const deps = testDeps({
+    pollMs: 15,
+    fetchHeadSha: async () => { calls.head++; return head; },
+    fetchMeta: async () => ({ title: "t", body: "b", headSha: head }),
+    fetchDiff: async () => { calls.diff++; return head === "sha1" ? DIFF : DIFF2; },
+    ...overrides,
+  });
+  return { deps, calls, push: () => { head = "sha2"; } };
+}
+
+test("openReview refetches the diff when the poll sees a new head sha", async () => {
+  const screen = makeScreen();
+  const { deps, calls, push } = liveDeps();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  press(screen, "tab");
+  assert.ok(!diffPane(screen).getContent().includes("pushed"));
+  push();
+  await wait(60);
+  assert.equal(calls.diff, 2);
+  assert.ok(diffPane(screen).getContent().includes("pushed"), "diff pane must show the pushed change");
+  screen.destroy();
+});
+
+test("openReview does not refetch while the head sha is unchanged", async () => {
+  const screen = makeScreen();
+  const { deps, calls } = liveDeps();
+  openReview(screen, deps, () => {});
+  await wait(60);
+  assert.ok(calls.head > 1, "the poll must run");
+  assert.equal(calls.diff, 1);
+  screen.destroy();
+});
+
+test("R refetches without waiting for the poll", async () => {
+  const screen = makeScreen();
+  const { deps, calls, push } = liveDeps({ pollMs: 0 });
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  push();
+  pressR(screen);
+  await wait(20);
+  assert.equal(calls.diff, 2);
+  assert.ok(diffPane(screen).getContent().includes("pushed"));
+  screen.destroy();
+});
+
+test("the poll stops once the overlay closes", async () => {
+  const screen = makeScreen();
+  const { deps, calls } = liveDeps();
+  openReview(screen, deps, () => {});
+  await wait(40);
+  press(screen, "q");
+  const seen = calls.head;
+  await wait(60);
+  assert.equal(calls.head, seen);
+  screen.destroy();
+});
+
+test("a failed refresh keeps the old diff and reports in the footer", async () => {
+  const screen = makeScreen();
+  let fail = false;
+  const { deps, push } = liveDeps({
+    pollMs: 0,
+    fetchDiff: async () => {
+      if (fail) throw new Error("gh down");
+      return DIFF;
+    },
+  });
+  let closed = false;
+  openReview(screen, deps, () => { closed = true; });
+  await flush();
+  await flush();
+  fail = true;
+  push();
+  pressR(screen);
+  await wait(20);
+  const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
+  assert.ok(footer.getContent().includes("gh down"));
+  assert.ok(!closed);
+  screen.destroy();
+});
+
+test("the header shows the worktree sync chip", async () => {
+  const screen = makeScreen();
+  const deps = testDeps({ syncStatus: async () => ({ dirty: false, unpushed: 3, head: "sha1" }) });
+  openReview(screen, deps, () => {});
+  await wait(20);
+  const header = screen.children.find((c: any) => c.type === "text");
+  assert.ok(header.getContent().includes("3 unpushed"));
+  screen.destroy();
+});
+
+test("a sync status landing after a refresh does not wipe the footer notice", async () => {
+  const screen = makeScreen();
+  let n = 0;
+  const { deps, push } = liveDeps({
+    pollMs: 0,
+    runGrouping: () => new Promise<string>(() => {}),
+    syncStatus: async () => {
+      n++;
+      await wait(15);
+      return { dirty: false, unpushed: n, head: "sha1" };
+    },
+  });
+  openReview(screen, deps, () => {});
+  await wait(40);
+  push();
+  pressR(screen);
+  await wait(60);
+  const footer = screen.children.filter((c: any) => c.type === "text").at(-1);
+  assert.ok(footer.getContent().includes("PR updated"));
+  screen.destroy();
+});
+
+test("a refresh whose meta and diff straddle a push settles on the newer head", async () => {
+  const screen = makeScreen();
+  const metas = ["sha1", "sha2", "sha3"];
+  let m = 0;
+  const { deps, savedGroups } = (() => {
+    const d = testDeps({
+      pollMs: 0,
+      fetchMeta: async () => ({ title: "t", body: "b", headSha: metas[Math.min(m++, 2)] }),
+      fetchHeadSha: async () => "sha3",
+    });
+    return { deps: d, savedGroups: d.savedGroups };
+  })();
+  openReview(screen, deps, () => {});
+  await flush();
+  await flush();
+  pressR(screen);
+  await wait(40);
+  assert.ok(!savedGroups.some(([sha]) => sha === "sha2"), "nothing may be cached under the torn head");
+  assert.ok(savedGroups.some(([sha]) => sha === "sha3"));
+  screen.destroy();
+});
+
+test("a slow annotation for the old head is not saved after a push", async () => {
+  const screen = makeScreen();
+  const gates: (() => void)[] = [];
+  const flows: string[] = [];
+  const { deps, push } = liveDeps({
+    pollMs: 0,
+    runAnnotation: () => new Promise<string>((res) => gates.push(() => res(ANN_JSON))),
+    saveFlow: (sha) => { flows.push(sha); },
+  });
+  openReview(screen, deps, () => {});
+  await wait(20);
+  push();
+  pressR(screen);
+  await wait(30);
+  for (const g of gates) g();
+  await wait(20);
+  assert.ok(!flows.includes("sha1"), "the old head's annotation must be dropped");
+  screen.destroy();
+});
+
+test("a refresh is not blocked while the new head is still being grouped", async () => {
+  const screen = makeScreen();
+  const { deps, calls, push } = liveDeps({
+    pollMs: 0,
+    runGrouping: () => new Promise<string>(() => {}),
+  });
+  openReview(screen, deps, () => {});
+  await wait(20);
+  push();
+  pressR(screen);
+  await wait(30);
+  const after = calls.diff;
+  pressR(screen);
+  await wait(30);
+  assert.ok(calls.diff > after, "R must refetch even though grouping never finished");
   screen.destroy();
 });

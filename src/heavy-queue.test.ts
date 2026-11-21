@@ -38,7 +38,7 @@ test("queueRows marks the holder and lists waiters in order", () => {
     ],
   });
   assert.deepEqual(rows, [
-    ["QUEUE"],
+    ["BACKGROUND JOBS"],
     ["{green-fg}▶ ENG-1{/green-fg} {grey-fg}task generate{/grey-fg}"],
     ["  ENG-2 {grey-fg}pnpm build{/grey-fg}"],
     ["  ENG-3 {grey-fg}go test ./...{/grey-fg}"],
@@ -62,7 +62,7 @@ test("queueRows leaves the key alone when a ticket carries no command", () => {
 });
 
 test("queueRows says idle rather than rendering a bare header", () => {
-  assert.deepEqual(queueRows({ running: null, waiting: [] }), [["QUEUE"], ["{grey-fg}idle{/grey-fg}"]]);
+  assert.deepEqual(queueRows({ running: null, waiting: [] }), [["BACKGROUND JOBS"], ["{grey-fg}idle{/grey-fg}"]]);
 });
 
 test("queueRows truncates a key that would overflow the pane", () => {

@@ -10,12 +10,17 @@ export type EventKind =
   | "ci_fix_started"
   | "conflict_fix_started"
   | "blocked_fix_started"
+  | "blocked_waiting"
+  | "queue_held"
+  | "fix_ended"
   | "merge_blocked"
   | "ci_failing"
   | "review_unresolved"
   | "ready_to_merge"
   | "draft_pr"
   | "ready_unqueued"
+  | "ready_manual"
+  | "needs_approval"
   | "ready_regressed"
   | "awaiting_slices"
   | "tracking"
@@ -24,6 +29,12 @@ export type EventKind =
   | "unflagged"
   | "needs_input"
   | "input_received"
+  // Stop hook: Claude finished a turn and is back at its prompt. Only the stuck
+  // detector reads it; it is not a status or an attention signal.
+  | "turn_ended"
+  | "session_ended"
+  | "session_stuck"
+  | "session_resumed"
   | "needs_decision"
   | "review_findings"
   | "refine_started"
@@ -33,6 +44,8 @@ export type EventKind =
   | "qa_started"
   | "qa_posted"
   | "qa_failed"
+  | "spike_awaiting_approval"
+  | "spike_closed"
   | "section_tasks"
   | "section_review"
   | "section_merge";
@@ -55,6 +68,13 @@ export type YimbotEvent = {
   // it; the autonomous-mode nudge uses it to target the exact stuck Claude, and
   // the stale-raise step to notice that Claude is gone.
   pane?: string;
+  // turn_ended: the session's Claude transcript (.jsonl), whose writes, and its
+  // subagents', show the session is still working after its turn ended.
+  transcript?: string;
+  // The queued PRs a blocked_waiting row is waiting on to land.
+  waitingOn?: number[];
+  // Why the holder itself is stuck, e.g. "needs approval"; shown on the wait text.
+  waitNote?: string;
 };
 
 const TICKET = /^(eng|sc)-(\d+)/i;
@@ -79,6 +99,12 @@ export function deriveKey(opts: { identifier?: string; branch?: string; pr?: num
   return { key, label: key };
 }
 
+// Whether a row key is the pr:<n> fallback, i.e. the branch carried no ticket slug.
+// An extra-repo row's key keeps the prefix (pr:<n>@owner/repo).
+export function isPrKey(key: string): boolean {
+  return key.startsWith("pr:");
+}
+
 // The board row a PR belongs to. A codebase-repo PR folds into its ticket's
 // row; a PR in an EXTRA_REPOS repo gets a row of its own, keyed by ticket and
 // repo but labeled like the ticket, so a ticket spanning repos shows one row
@@ -101,7 +127,7 @@ export function ticketKeyOf(key: string): string {
 // with the repo only in `repo`. Fold them onto the row they would get today,
 // so a replayed events log neither duplicates the row nor leaks the PR onto
 // the ticket row.
-function rowKeyOf(e: YimbotEvent): string {
+export function rowKeyOf(e: YimbotEvent): string {
   if (e.repo && !e.key.includes("@")) return `${e.key}@${e.repo}`;
   return e.key;
 }
@@ -151,12 +177,23 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   ci_fix_started: { status: "fixing CI", terminal: false },
   conflict_fix_started: { status: "resolving conflict", terminal: false },
   blocked_fix_started: { status: "unblocking", terminal: false },
+  // The queue blocked the PR only because of siblings queued ahead of it; the
+  // daemon holds it until they land, then re-queues it. No session involved.
+  blocked_waiting: { status: "waiting on queue", terminal: false },
+  // A ready PR the daemon is not queueing yet because it edits the same files as
+  // an older queued PR; `waitingOn` names that PR.
+  queue_held: { status: "waiting on queue", terminal: false },
+  // A fix session closed itself (or was reaped) and the PR's verdict has not
+  // replaced it yet, typically CI re-running on the fix push.
+  fix_ended: { status: "fix done", terminal: false },
   merge_blocked: { status: "merge queue blocked", terminal: false },
   ci_failing: { status: "CI failing", terminal: false },
   review_unresolved: { status: "unresolved threads", terminal: false },
   ready_to_merge: { status: "ready to merge", terminal: false },
   draft_pr: { status: "draft pr", terminal: false },
   ready_unqueued: { status: "ready: r to queue", terminal: false },
+  ready_manual: { status: "ready: merge manually", terminal: false },
+  needs_approval: { status: "needs approval", terminal: false },
   ready_regressed: { status: "working", terminal: false },
   awaiting_slices: { status: "waiting on slices", terminal: false },
   tracking: { status: "tracker ticket", terminal: false },
@@ -172,6 +209,8 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   // Terminal like `refined`: a failed QA run has nothing left driving it, and
   // the row has to stay put until a human looks at it.
   qa_failed: { status: "qa failed", terminal: true },
+  spike_awaiting_approval: { status: "awaiting approval", terminal: false },
+  spike_closed: { status: "spike closed", terminal: true },
 };
 
 // Takes a plain string, not EventKind: the log persists across versions, so a
@@ -203,12 +242,94 @@ export function sectionKind(section: Section): EventKind {
   return `section_${section}` as EventKind;
 }
 
-const MERGED_STATUS = STATUS.merged!.status;
+export const MERGED_STATUS = STATUS.merged!.status;
 export const HELD_SLICE_STATUS = "merged, waiting on slices";
 export const HELD_MERGED_STATUS = "merged, waiting on ticket";
 export const AWAITING_SLICES_STATUS = STATUS.awaiting_slices!.status;
 export const TRACKING_STATUS = STATUS.tracking!.status;
 export const WORKING_STATUS = STATUS.task_started!.status;
+
+export const STUCK_STATUS = "stuck";
+
+// Refine and QA sessions run in the main checkout under their own names, so
+// their panes cannot be matched to the row: they are left to their own reapers.
+const WORKING_FAMILY = new Set([
+  STATUS.task_started!.status,
+  STATUS.review_started!.status,
+  STATUS.ci_fix_started!.status,
+  STATUS.conflict_fix_started!.status,
+  STATUS.blocked_fix_started!.status,
+  "working (manual)",
+]);
+
+export function isWorkingStatus(status: string): boolean {
+  return WORKING_FAMILY.has(status);
+}
+
+// Keys whose session is currently stuck, with the reason. A stuck mark lasts
+// until the session resumes, the person answers it, or any status event lands.
+export function foldStuck(events: YimbotEvent[]): Map<string, string> {
+  const stuck = new Map<string, string>();
+  for (const e of events) {
+    const key = rowKeyOf(e);
+    if (e.kind === "session_stuck") stuck.set(key, e.reason ?? "session ended");
+    else if (e.kind === "session_resumed" || e.kind === "input_received" || statusFor(e.kind)) stuck.delete(key);
+  }
+  return stuck;
+}
+
+// The statuses that only claim the PR is ready (queued, waiting on r, or a
+// clean draft). Anything else on a review or merge row is progress worth
+// showing next to the section.
+const READY_CLAIM_STATUSES = new Set([
+  STATUS.ready_to_merge!.status,
+  STATUS.ready_unqueued!.status,
+  STATUS.ready_manual!.status,
+  STATUS.draft_pr!.status,
+]);
+
+export function isReadyClaim(status: string | undefined): boolean {
+  return status !== undefined && READY_CLAIM_STATUSES.has(status);
+}
+
+const FIXER_STATUSES = new Set([
+  STATUS.review_started!.status,
+  STATUS.ci_fix_started!.status,
+  STATUS.conflict_fix_started!.status,
+  STATUS.blocked_fix_started!.status,
+]);
+
+// The statuses a fix session sets when it starts. Only true while that session
+// lives; once it is gone the row has to move off them.
+export function isFixerStatus(status: string | undefined): boolean {
+  return status !== undefined && FIXER_STATUSES.has(status);
+}
+
+const FIX_START_KIND: Record<"fix" | "ci" | "conflict" | "blocked", EventKind> = {
+  fix: "review_started",
+  ci: "ci_fix_started",
+  conflict: "conflict_fix_started",
+  blocked: "blocked_fix_started",
+};
+
+export function fixStartKind(kind: keyof typeof FIX_START_KIND): EventKind {
+  return FIX_START_KIND[kind];
+}
+
+// Statuses a regressed readiness verdict may replace with the named failure:
+// a readiness claim, or a finished fix whose result is now known.
+export function yieldsToVerdict(status: string | undefined): boolean {
+  return isReadyClaim(status) || status === STATUS.fix_ended!.status || status === STATUS.needs_approval!.status;
+}
+
+// A split parent's row: it has no work of its own, only slices to wait on.
+// A parent whose status is a hold (needs decision, review findings) is not
+// one of these; it owes a human an answer and stays out of the parents pane.
+const PARENT_STATUSES = new Set([TRACKING_STATUS, AWAITING_SLICES_STATUS]);
+
+export function isParentRow(row: Pick<BoardRow, "status">): boolean {
+  return PARENT_STATUSES.has(row.status);
+}
 
 // Statuses that mean a human already owes this row an answer. A status derived
 // from somewhere other than the row's own session (the split parent's "waiting
@@ -316,9 +437,32 @@ export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
 // (a PR gone green, a merged worktree) without bloating the log or the board, so
 // a row transitions off a stale action status even when no write drove it.
 export function emitStatus(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
-  const lastStatus = currentStatus(ev.key);
-  if (lastStatus !== undefined && lastStatus === statusFor(ev.kind)?.status) return;
+  const last = lastStatusEvent(ev.key);
+  if (last !== undefined && statusFor(last.kind)?.status === statusFor(ev.kind)?.status && sameWait(last, ev)) return;
   emitEvent(ev);
+}
+
+function waitingKindOf(kind: EventKind): "landing" | "overlap" | undefined {
+  if (kind === "blocked_waiting") return "landing";
+  return kind === "queue_held" ? "overlap" : undefined;
+}
+
+// Two observations of one status only differ when they are waiting rows that
+// wait on a different set of PRs, in a different way, or with a different note.
+// Everything else stays a pure status compare, so heartbeats never re-append.
+function sameWait(a: YimbotEvent, b: Pick<YimbotEvent, "kind" | "waitingOn" | "waitNote">): boolean {
+  if (waitingKindOf(a.kind) !== waitingKindOf(b.kind)) return false;
+  if (!waitingKindOf(b.kind)) return true;
+  const was = new Set(a.waitingOn ?? []);
+  const now = new Set(b.waitingOn ?? []);
+  if (was.size !== now.size || [...now].some((n) => !was.has(n))) return false;
+  return (a.waitNote ?? "") === (b.waitNote ?? "");
+}
+
+function lastStatusEvent(key: string, events: YimbotEvent[] = readEvents()): YimbotEvent | undefined {
+  let last: YimbotEvent | undefined;
+  for (const e of events) if (e.key === key && statusFor(e.kind)) last = e;
+  return last;
 }
 
 // The status a key's row currently shows, or undefined for a key with no
@@ -349,9 +493,7 @@ export function emitQueuedToMerge(ev: { key: string; label: string; pr: number; 
 export function emitSection(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
   let last: Section | undefined;
   for (const e of readEvents()) {
-    if (e.key !== ev.key) continue;
-    const mapped = sectionFor(e.kind);
-    if (mapped) last = mapped;
+    if (e.key === ev.key) last = foldSection(last, e);
   }
   if (last !== undefined && last === sectionFor(ev.kind)) return;
   emitEvent(ev);
@@ -413,12 +555,21 @@ export function foldAttention(events: YimbotEvent[]): Map<string, Attention> {
 // Fold each key's placement timeline into its current section: last section
 // event wins. A key the daemon has never reported on (a task row with no PR,
 // or a log written before section events existed) is absent, and reduceRows
-// defaults it to the tasks pane.
+// defaults it to the tasks pane. A task start with no PR is fresh work on the
+// ticket, so it drops the section an earlier, now closed PR left behind: the
+// daemon only reports open PRs and would never move the row back.
+function foldSection(prev: Section | undefined, e: YimbotEvent): Section | undefined {
+  if (e.kind === "task_started" && e.pr === undefined) return undefined;
+  return sectionFor(e.kind) ?? prev;
+}
+
 export function foldSections(events: YimbotEvent[]): Map<string, Section> {
   const sections = new Map<string, Section>();
   for (const e of events) {
-    const mapped = sectionFor(e.kind);
-    if (mapped) sections.set(rowKeyOf(e), mapped);
+    const key = rowKeyOf(e);
+    const next = foldSection(sections.get(key), e);
+    if (next === undefined) sections.delete(key);
+    else sections.set(key, next);
   }
   return sections;
 }
@@ -470,6 +621,13 @@ export type BoardRow = {
   flagged: boolean;
   // The pending raise reasons, in raise order; flagged === (length > 0).
   flagReasons: string[];
+  // Why the row shows "stuck": its session ended or went quiet.
+  stuckReason?: string;
+  // The PRs a "waiting on queue" row is waiting on.
+  waitingOn?: number[];
+  // "landing": PRs ahead in the queue must land. "overlap": held behind a queued PR that edits the same files.
+  waitingKind?: "landing" | "overlap";
+  waitingNote?: string;
 };
 
 function keepMergedMsDefault(): number {
@@ -503,9 +661,17 @@ export function reduceRows(
   const byKey = new Map<string, BoardRow>();
   for (const e of events) {
     const mapped = statusFor(e.kind);
-    if (!mapped) continue; // flag signals + any kind retired in a newer build
     const key = rowKeyOf(e);
     const prev = byKey.get(key);
+    if (!mapped) {
+      // Section events carry the PR before any status event does (a non-draft
+      // PR in review with CI still running), so take the number from them.
+      if (prev && e.pr !== undefined && sectionFor(e.kind)) {
+        prev.pr = e.pr;
+        prev.repo = e.repo ?? prev.repo;
+      }
+      continue; // flag signals + any kind retired in a newer build
+    }
     const startTs = prev ? (prev.terminal ? e.ts : prev.startTs) : e.ts;
     byKey.set(key, {
       key,
@@ -520,6 +686,9 @@ export function reduceRows(
       startTs,
       flagged: false,
       flagReasons: [],
+      waitingOn: e.kind === "blocked_waiting" || e.kind === "queue_held" ? e.waitingOn : undefined,
+      waitingKind: waitingKindOf(e.kind),
+      waitingNote: waitingKindOf(e.kind) ? e.waitNote : undefined,
     });
   }
 
@@ -563,8 +732,15 @@ export function reduceRows(
     }
     return r;
   };
+  const stuck = foldStuck(events);
+  const stuckRow = (r: BoardRow): BoardRow => {
+    const reason = stuck.get(r.key);
+    if (r.terminal || reason === undefined || !isWorkingStatus(r.status)) return r;
+    return { ...r, status: STUCK_STATUS, stuckReason: reason };
+  };
   let rows = [...byKey.values()]
     .map(holdRow)
+    .map(stuckRow)
     .filter((r) => !(r.terminal && now - r.ts > keepMergedMs));
   rows.sort((a, b) => b.ts - a.ts);
 
@@ -593,6 +769,11 @@ export function reduceRows(
 // Terminal (merged) rows are kept regardless: their worktree is already gone by
 // design, and reduceRows still ages them out past the linger window.
 //
+// A PR-less ticket row is dropped when a live, unmerged extra-repo row for the
+// same ticket exists: the PR row tells the ticket's story, and the ticket's
+// session stays reachable through it (ticketKeyOf). A row that is flagged, on
+// hold or a split parent keeps its place, since only it carries that state.
+//
 // `liveKeys` is the deriveKey() keys of the codebase's worktrees; `openPrKeys`
 // is the same for the instance's open PRs. An empty openPrKeys (review step off,
 // or no successful gh list yet) leaves the worktree rule as the only one.
@@ -601,5 +782,15 @@ export function filterToLiveRows(
   liveKeys: Set<string>,
   openPrKeys: Set<string> = new Set(),
 ): BoardRow[] {
-  return rows.filter((r) => r.terminal || liveKeys.has(r.key) || openPrKeys.has(r.key));
+  const live = rows.filter((r) => r.terminal || liveKeys.has(r.key) || openPrKeys.has(r.key));
+  const repoTickets = new Set(live.filter((r) => !r.terminal && r.key.includes("@")).map((r) => ticketKeyOf(r.key)));
+  const foldedIntoRepoRow = (r: BoardRow) =>
+    !r.terminal &&
+    r.pr == null &&
+    !r.flagged &&
+    !isHoldStatus(r.status) &&
+    r.status !== AWAITING_SLICES_STATUS &&
+    r.status !== TRACKING_STATUS &&
+    repoTickets.has(r.key);
+  return live.filter((r) => !foldedIntoRepoRow(r));
 }

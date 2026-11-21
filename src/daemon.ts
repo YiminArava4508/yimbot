@@ -1,18 +1,27 @@
-import { execFile, execFileSync } from "node:child_process";
+import { createQueueGate, type QueueGate } from "./queue-overlap.ts";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
+import { checkDisk, freshDiskGuardState, parseDiskGb, tightestVolume } from "./disk-guard.ts";
+import { goCacheDir, trimGoCache } from "./go-cache.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
-import { envCsvSet, envOr } from "./env.ts";
+import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
+import { runHeadless } from "./headless.ts";
 import {
   addLabel,
   blockedInfo,
+  listQueuedPrs,
+  prFiles,
+  blockReason,
+  prLifecycle,
+  holderNote,
+  removeLabel,
   checksInfo,
   compareStatus,
   defaultBranch,
@@ -25,13 +34,15 @@ import {
   mergeableInfo,
   prMergeCommit,
   prState,
+  repoMergesManually,
   repoSlug,
   type RepoSlug,
   unresolvedThreadInfo,
   viewerLogin,
 } from "./gh.ts";
 import { judgeAcceptance, type JudgeRunner } from "./judge.ts";
-import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
+import { describeLabelFilter, parseAfterReleaseLabel, parseLabelFilter } from "./labels.ts";
+import { parseRejectLabel } from "./reject.ts";
 import {
   countAssignedInState,
   fetchMarkedCommentBody,
@@ -46,11 +57,11 @@ import { readMode } from "./mode.ts";
 import { mergeOpenPRs, parseExtraRepos } from "./multi-repo.ts";
 import { setOpenPrKeys } from "./open-prs.ts";
 import { readRefineEnabled, refineEnvDefault } from "./refine-toggle.ts";
-import { observeReach } from "./reach.ts";
 import { makePrLabelFilter } from "./pr-filter.ts";
 import { QA_MARKER, qaConfigFor } from "./qa.ts";
 import { ensureHostLinks } from "./setup.ts";
-import { sessionScriptPath, startWatcher } from "./watcher.ts";
+import { ensureReadsUnblocked, MANAGED_SETTINGS_PATHS, projectSettingsPaths, userSettingsPath } from "./read-block.ts";
+import { sessionScriptPath, startWatcher, worktreesDir } from "./watcher.ts";
 
 export async function startDaemon(): Promise<() => void> {
   pinEventsLog();
@@ -60,12 +71,13 @@ export async function startDaemon(): Promise<() => void> {
   // back to the legacy TRIGGER_STATE_NAME.
   const stateName = envOr("DEPLOY_STATE_NAME", envOr("TRIGGER_STATE_NAME", "In Progress"));
   const reviewStateName = envOr("REVIEW_STATE_NAME", "In Review");
+  const spikeReviewStateName = envOr("SPIKE_REVIEW_STATE_NAME", "In Review");
   // The heartbeat: how often the central loop ticks. Reads the new
   // HEARTBEAT_INTERVAL_MINUTES, falling back to the legacy POLL_INTERVAL_MINUTES.
   const heartbeatIntervalMinutes = Number(
     envOr("HEARTBEAT_INTERVAL_MINUTES", envOr("POLL_INTERVAL_MINUTES", "3")),
   );
-  const codebasePath = envOr("CODEBASE_PATH", join(homedir(), "Work/gemini"));
+  const codebasePath = requireCodebasePath();
 
   // Claim step config. AUTO_CLAIM is on unless explicitly disabled with a
   // recognized off-value (false/off/no/0), so an intuitive toggle can't silently
@@ -77,6 +89,8 @@ export async function startDaemon(): Promise<() => void> {
     .split(",")
     .map((l) => l.trim())
     .filter(Boolean);
+  const rejectLabel = parseRejectLabel(process.env.REJECT_LABEL);
+  const afterReleaseLabel = parseAfterReleaseLabel(process.env.AFTER_RELEASE_LABEL);
   // Which slice of the board this instance works. Two daemons on one Linear
   // account partition the work by running opposite filters ("bot" / "!bot").
   const labelFilter = parseLabelFilter(process.env.LABEL_FILTER);
@@ -84,6 +98,8 @@ export async function startDaemon(): Promise<() => void> {
   // How many of the viewer's tickets may sit In Progress before the claim step
   // stops claiming. Defaults to 3; set to 1 for the old one-at-a-time behavior.
   const maxInProgress = Number(envOr("MAX_IN_PROGRESS", "3"));
+  // How many tickets one heartbeat may claim; the WIP cap still bounds the total.
+  const claimsPerHeartbeat = Number(envOr("CLAIMS_PER_HEARTBEAT", "1"));
   // Inclusive estimate ceiling on claims; unset claims any size.
   const maxEstimate = parseMaxEstimate(process.env.MAX_ESTIMATE);
 
@@ -103,9 +119,28 @@ export async function startDaemon(): Promise<() => void> {
   // worktree + session once its PR merges.
   const autoCleanup = !["false", "off", "no", "0"].includes(envOr("AUTO_CLEANUP", "true").toLowerCase());
 
+  const goCacheTrim = !["false", "off", "no", "0"].includes(envOr("GO_CACHE_TRIM", "true").toLowerCase());
+  const goCacheMaxAgeHours = Number(envOr("GO_CACHE_MAX_AGE_HOURS", "6"));
+  if (!Number.isFinite(goCacheMaxAgeHours) || goCacheMaxAgeHours <= 0) {
+    throw new Error("GO_CACHE_MAX_AGE_HOURS must be a positive number");
+  }
+  // Disk guard: below DISK_LOW_GB free, trim the Go cache down to entries used in
+  // the last GO_CACHE_EMERGENCY_MAX_AGE_MINUTES and hold new launches and idle
+  // nudges until DISK_RECOVER_GB is free again.
+  const diskLowBytes = parseDiskGb(process.env.DISK_LOW_GB, 20);
+  const diskRecoverBytes = Math.max(diskLowBytes, parseDiskGb(process.env.DISK_RECOVER_GB, 40));
+  const goCacheEmergencyMaxAgeMinutes = Number(envOr("GO_CACHE_EMERGENCY_MAX_AGE_MINUTES", "30"));
+  if (!Number.isFinite(goCacheEmergencyMaxAgeMinutes) || goCacheEmergencyMaxAgeMinutes <= 0) {
+    throw new Error("GO_CACHE_EMERGENCY_MAX_AGE_MINUTES must be a positive number");
+  }
+  const diskState = freshDiskGuardState();
+
   if (!apiKey) throw new Error("LINEAR_API_KEY is required");
   if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
     throw new Error("MAX_IN_PROGRESS must be a positive integer");
+  }
+  if (!Number.isInteger(claimsPerHeartbeat) || claimsPerHeartbeat < 1) {
+    throw new Error("CLAIMS_PER_HEARTBEAT must be a positive integer");
   }
   if (!Number.isFinite(heartbeatIntervalMinutes) || heartbeatIntervalMinutes <= 0) {
     throw new Error("HEARTBEAT_INTERVAL_MINUTES must be a positive number");
@@ -127,9 +162,15 @@ export async function startDaemon(): Promise<() => void> {
   }
 
   for (const line of ensureHostLinks()) console.log(`[yimbot] link: ${line}`);
+  const readBlockPaths = {
+    user: userSettingsPath(),
+    warnOnly: [...MANAGED_SETTINGS_PATHS, ...projectSettingsPaths(codebasePath)],
+  };
+  for (const line of ensureReadsUnblocked(readBlockPaths)) console.log(`[yimbot] read block: ${line}`);
 
   const progressContext = await resolveContext(apiKey, teamName, stateName);
   const reviewContext = await resolveContext(apiKey, teamName, reviewStateName);
+  const spikeReviewContext = await resolveContext(apiKey, teamName, spikeReviewStateName);
   const todoContext = await resolveContext(apiKey, teamName, todoStateName);
 
   // REFINE_USERS names/emails resolve to ids once at startup; misses are logged
@@ -168,6 +209,7 @@ export async function startDaemon(): Promise<() => void> {
   // label) when its combined-CI batch fails; the review step's blocked-fix kind
   // triggers on it and re-queues by removing it and re-adding the ready label.
   const blockedLabelName = envOr("BLOCKED_LABEL", "blocked");
+  const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
 
   // Reviewer logins whose comments/reviews the bot addresses itself in
   // supervised mode; anyone else's raise the board flag and halt that PR's fix
@@ -190,6 +232,17 @@ export async function startDaemon(): Promise<() => void> {
   // codebase repo's, which is what every caller assumed before EXTRA_REPOS.
   const repoByNumber = new Map<number, string>();
   const runnerFor = (n: number) => extraRunners.find((r) => r.repo === repoByNumber.get(n))?.run ?? gh;
+  // Per repo, for the daemon's lifetime: whether a repo has a merge queue does
+  // not change under a running board. The codebase repo is assumed queued (the
+  // blocked-label and queue flows already depend on that).
+  const manualByRepo = new Map<string, boolean>();
+  const mergesManually = async (n: number): Promise<boolean> => {
+    const repo = repoByNumber.get(n);
+    const run = extraRunners.find((r) => r.repo === repo)?.run;
+    if (!repo || !run) return false;
+    if (!manualByRepo.has(repo)) manualByRepo.set(repo, await repoMergesManually(run, repo));
+    return manualByRepo.get(repo)!;
+  };
   const listAllOpenPRs = async () => {
     const [primary, ...extras] = await Promise.all([
       listMyOpenPRs(gh),
@@ -217,6 +270,20 @@ export async function startDaemon(): Promise<() => void> {
     now: Date.now,
     log: (msg) => console.log(`[yimbot] ${msg}`),
   });
+  // One overlap gate for every place yimbot queues a PR (ready label, re-queue
+  // after a block). Only the codebase repo's PRs are compared: PR numbers of
+  // EXTRA_REPOS live in other repos.
+  const queueGate: QueueGate = async (candidates) => {
+    const local = candidates.filter((c) => !repoByNumber.has(c.n));
+    const result = await gateLocal(local);
+    for (const c of candidates) if (!result.has(c.n)) result.set(c.n, null);
+    return result;
+  };
+  const gateLocal = createQueueGate({
+    listQueued: () => listQueuedPrs(gh, readyLabelName),
+    fetchFiles: (n) => prFiles(gh, n),
+    log: (msg) => console.log(`[queue-gate] ${msg}`),
+  });
   let prReview:
     | {
         // Every repo's open PRs (the board, ready, and cleanup steps).
@@ -228,6 +295,10 @@ export async function startDaemon(): Promise<() => void> {
         mergeableInfo: (n: number) => ReturnType<typeof mergeableInfo>;
         checksInfo: (n: number) => ReturnType<typeof checksInfo>;
         blockedInfo: (n: number) => ReturnType<typeof blockedInfo>;
+        blockReason: (n: number) => ReturnType<typeof blockReason>;
+        prLifecycle: (n: number) => ReturnType<typeof prLifecycle>;
+        holderNote: (n: number) => string | undefined;
+        requeue: (n: number) => Promise<number | null>;
         humanChangesRequested: (n: number) => ReturnType<typeof humanChangesRequested>;
       }
     | null = null;
@@ -255,6 +326,16 @@ export async function startDaemon(): Promise<() => void> {
       mergeableInfo: (n) => mergeableInfo(runnerFor(n), n),
       checksInfo: (n) => checksInfo(runnerFor(n), n, ignoreChecks),
       blockedInfo: (n) => blockedInfo(runnerFor(n), n, blockedLabelName),
+      blockReason: (n) => blockReason(runnerFor(n), n),
+      prLifecycle: (n) => prLifecycle(runnerFor(n), n),
+      holderNote,
+      requeue: async (n) => {
+        const holder = (await queueGate([{ n }])).get(n) ?? null;
+        if (holder !== null) return holder;
+        await removeLabel(runnerFor(n), n, blockedLabelName);
+        await addLabel(runnerFor(n), n, readyLabelName);
+        return null;
+      },
       humanChangesRequested: (n) => humanChangesRequested(runnerFor(n), n, trustedReviewers),
     };
     const extraNote = extraRepos.length ? `; also watching ${extraRepos.join(", ")}` : "";
@@ -300,21 +381,7 @@ export async function startDaemon(): Promise<() => void> {
     throw new Error("MAX_CONTINUATIONS must be a positive integer");
   }
   const judgeModel = envOr("AC_JUDGE_MODEL", "");
-  const execFileAsync = promisify(execFile);
-  // The second claude path (runHeadless is the other), wrapped the same way so
-  // the board's reachability warning sees every call the daemon makes.
-  const judgeRun: JudgeRunner = async (prompt) => {
-    const args = ["-p", prompt];
-    if (judgeModel) args.push("--model", judgeModel);
-    const { stdout } = await observeReach("claude", () =>
-      execFileAsync("claude", args, {
-        cwd: codebasePath,
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: 120_000,
-      }),
-    );
-    return stdout;
-  };
+  const judgeRun: JudgeRunner = runHeadless(judgeModel, codebasePath);
   // On unless explicitly disabled, matching AUTO_READY_LABEL. Reuses judgeRun,
   // so AC_JUDGE_MODEL selects the model here too.
   const autoDependencyScan = !["false", "off", "no", "0"].includes(
@@ -341,7 +408,7 @@ export async function startDaemon(): Promise<() => void> {
           },
           judge: (open: AC[]) => judgeAcceptance(judgeRun, open),
           writeAcComment: (issueId: string, body: string) => upsertMarkedComment(apiKey, issueId, AC_COMMENT_MARKER, body),
-          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
+          activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter, fetch, rejectLabel),
           maxInProgress,
           maxRounds: maxContinuations,
         }
@@ -350,6 +417,26 @@ export async function startDaemon(): Promise<() => void> {
     advance
       ? "[yimbot] advance step ON: AC completeness + continuation"
       : `[yimbot] advance step OFF${autoContinue ? " (gh unavailable)" : ""}`,
+  );
+
+  const autoMergedSync = !["false", "off", "no", "0"].includes(envOr("AUTO_MERGED_SYNC", "true").toLowerCase());
+  const graceParsed = Number(envOr("MERGED_SYNC_GRACE_MINUTES", "10"));
+  const mergedSyncGraceMinutes = Number.isFinite(graceParsed) && graceParsed >= 0 ? graceParsed : 10;
+  const mergedSync =
+    autoMergedSync && prReview
+      ? {
+          listMergedPRs: listAllMergedPRs,
+          listOpenPRs: listAllOpenPRs,
+          fetchState: async (identifier: string) => (await fetchIssueState(apiKey, identifier)).name,
+          reviewStateName,
+          mergedStateName,
+          graceMs: mergedSyncGraceMinutes * 60_000,
+        }
+      : null;
+  console.log(
+    mergedSync
+      ? `[yimbot] merged-sync step ON: ${reviewStateName} -> ${mergedStateName} when all PRs merged (${mergedSyncGraceMinutes}m grace)`
+      : `[yimbot] merged-sync step OFF${autoMergedSync ? " (gh unavailable)" : ""}`,
   );
 
   // QA step: once every child of a parent ticket merged and the nonprod deploy
@@ -414,7 +501,7 @@ export async function startDaemon(): Promise<() => void> {
         }
       },
       hasMarker: async (issueId: string) => (await fetchMarkedCommentBody(apiKey, issueId, QA_MARKER)) !== "",
-      activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter),
+      activeCount: () => countAssignedInState(apiKey, progressContext.viewerId, stateName, labelFilter, fetch, rejectLabel),
       maxInProgress,
       sessionTimeoutMs: qaTimeoutMinutes * 60_000,
     };
@@ -430,9 +517,12 @@ export async function startDaemon(): Promise<() => void> {
   // recognized off-value. Gated on the same gh-availability signal as
   // review/cleanup/advance (prReview !== null), reusing its PR-signal closures.
   const autoReadyLabel = !["false", "off", "no", "0"].includes(envOr("AUTO_READY_LABEL", "true").toLowerCase());
-  const readyLabelName = envOr("READY_MERGE_LABEL", "ready-to-merge");
   const readySoakMinutes = Number(envOr("READY_SOAK_MINUTES", "10"));
   const readySoakMs = (Number.isFinite(readySoakMinutes) && readySoakMinutes >= 0 ? readySoakMinutes : 10) * 60_000;
+  const readyMaxQueued = Number(envOr("READY_MAX_QUEUED", "3"));
+  const maxQueued = Number.isInteger(readyMaxQueued) && readyMaxQueued >= 0 ? readyMaxQueued : 3;
+  const readyMaxAwaiting = Number(envOr("READY_MAX_AWAITING_REVIEW", "-1"));
+  const maxAwaitingReview = Number.isInteger(readyMaxAwaiting) && readyMaxAwaiting >= 0 ? readyMaxAwaiting : undefined;
   const ready =
     autoReadyLabel && prReview
       ? {
@@ -442,14 +532,18 @@ export async function startDaemon(): Promise<() => void> {
           checksInfo: prReview.checksInfo,
           prState: (n: number) => prState(runnerFor(n), n),
           addLabel: (n: number, label: string) => addLabel(runnerFor(n), n, label),
+          queueGate,
+          mergesManually,
           label: readyLabelName,
           blockedLabel: blockedLabelName,
           soakMs: readySoakMs,
+          maxQueued,
+          maxAwaitingReview,
         }
       : null;
   console.log(
     ready
-      ? `[yimbot] ready step ON: adding "${readyLabelName}" label to clean PRs (autonomous only, ${readySoakMs / 60_000}m soak, one queued PR at a time, never removed)`
+      ? `[yimbot] ready step ON: adding "${readyLabelName}" label to clean PRs (autonomous only, ${readySoakMs / 60_000}m soak, up to ${maxQueued} approved PRs queued, ${maxAwaitingReview === undefined ? "no cap" : `max ${maxAwaitingReview}`} awaiting review, never removed)`
       : `[yimbot] ready step OFF${autoReadyLabel ? " (gh unavailable)" : ""}`,
   );
 
@@ -477,7 +571,7 @@ export async function startDaemon(): Promise<() => void> {
   );
   console.log(
     autoClaim
-      ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress; skipping labels [${riskLabels.join(", ")}]${maxEstimate !== null ? `; estimates <= ${maxEstimate}` : ""}`
+      ? `[yimbot] auto-claim ON: from "${todoStateName}" in the active cycle, up to ${maxInProgress} in progress, ${claimsPerHeartbeat} per heartbeat; skipping labels [${riskLabels.join(", ")}]${maxEstimate !== null ? `; estimates <= ${maxEstimate}` : ""}`
       : "[yimbot] auto-claim OFF",
   );
   console.log(
@@ -492,14 +586,20 @@ export async function startDaemon(): Promise<() => void> {
     labelFilter,
     progressContext,
     reviewContext,
+    spikeReviewContext,
+    doneStateName: envOr("DONE_STATE_NAME", "Done"),
     heartbeatIntervalMinutes,
+    diskLow: () => diskState.low,
     reapStaleMs: reapStaleMinutes * 60 * 1000,
     clearedStates,
     claim: {
       autoClaim,
       riskLabels,
+      rejectLabel,
+      afterReleaseLabel,
       labelFilter,
       maxInProgress,
+      claimsPerHeartbeat,
       maxEstimate,
       todoContext,
       progressStateName: stateName,
@@ -508,6 +608,7 @@ export async function startDaemon(): Promise<() => void> {
     prReview,
     cleanup,
     advance,
+    mergedSync,
     qa,
     ready,
     blocked,
@@ -529,8 +630,67 @@ export async function startDaemon(): Promise<() => void> {
   void safeSync();
   const syncTimer = setInterval(() => void safeSync(), heartbeatIntervalMinutes * 60 * 1000);
 
+  // One trim at a time: the routine sweep and the disk guard's emergency sweep
+  // share this latch, so a slow walk of a huge cache never runs twice at once.
+  let trimming = false;
+  const safeTrim = async (maxAgeMs: number, label: string): Promise<void> => {
+    if (trimming) return;
+    trimming = true;
+    try {
+      const dir = await goCacheDir();
+      if (!dir) return;
+      const { removed, freedBytes } = await trimGoCache(dir, maxAgeMs);
+      if (removed > 0) {
+        console.log(`[go-cache] ${label}: removed ${removed} entries, freed ${(freedBytes / 1e9).toFixed(1)}G`);
+      }
+    } catch (err) {
+      console.warn(`[go-cache] trim failed: ${err}`);
+    } finally {
+      trimming = false;
+    }
+  };
+  const routineTrim = () => safeTrim(goCacheMaxAgeHours * 60 * 60 * 1000, `unused for ${goCacheMaxAgeHours}h`);
+  let trimTimer: NodeJS.Timeout | undefined;
+  if (goCacheTrim) {
+    void routineTrim();
+    // Every 15 minutes rather than hourly: with many worktrees building, the
+    // cache has grown 50G+ between hourly sweeps.
+    trimTimer = setInterval(() => void routineTrim(), 15 * 60 * 1000);
+  }
+
+  // Disk guard, checked every minute (a statfs per volume is cheap). Watches
+  // Claude Code's temp dir (/tmp/claude-<uid>), the worktrees and the Go cache.
+  let checkingDisk = false;
+  const safeDiskCheck = async (): Promise<void> => {
+    if (checkingDisk) return;
+    checkingDisk = true;
+    try {
+      const goDir = goCacheTrim ? await goCacheDir() : null;
+      const paths = ["/tmp", tmpdir(), worktreesDir, ...(goDir ? [goDir] : [])];
+      await checkDisk(diskState, {
+        free: () => tightestVolume(paths),
+        lowBytes: diskLowBytes,
+        highBytes: diskRecoverBytes,
+        relieve: async () => {
+          if (goCacheTrim) {
+            await safeTrim(goCacheEmergencyMaxAgeMinutes * 60 * 1000, `disk low, unused for ${goCacheEmergencyMaxAgeMinutes}m`);
+          }
+        },
+        log: (msg) => console.warn(`[disk] ${msg}`),
+      });
+    } catch (err) {
+      console.warn(`[disk] check failed: ${err}`);
+    } finally {
+      checkingDisk = false;
+    }
+  };
+  void safeDiskCheck();
+  const diskTimer = setInterval(() => void safeDiskCheck(), 60 * 1000);
+
   return () => {
     clearInterval(syncTimer);
+    clearInterval(trimTimer);
+    clearInterval(diskTimer);
     stop();
   };
 }

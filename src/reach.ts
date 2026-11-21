@@ -7,17 +7,18 @@
 import { connect } from "node:net";
 import { envOr } from "./env.ts";
 
-export type Service = "github" | "linear" | "claude";
+export type Service = "github" | "linear" | "claude" | "codex";
 
 // The order the board lists them in, so two failing services always read the
 // same way round.
-const SERVICES: Service[] = ["github", "linear", "claude"];
+const SERVICES: Service[] = ["github", "linear", "claude", "codex"];
 
 // Where to knock when a call dies without saying why (see "timeout" below).
 const HOSTS: Record<Service, string> = {
   github: "api.github.com",
   linear: "api.linear.app",
   claude: "api.anthropic.com",
+  codex: "api.openai.com",
 };
 
 // How long a recorded failure keeps showing without a further signal. gh and
@@ -140,13 +141,13 @@ export function classifyError(err: unknown): Outcome {
   if (NET_TEXT.some((t) => text.includes(t))) return "unreachable";
   // A claude exit is the API answering, whatever its stderr happens to quote;
   // the credential wordings below belong to gh and Linear only.
-  if (text.startsWith("claude exited ")) return "reached";
+  if (text.startsWith("claude exited ") || text.startsWith("codex exited ")) return "reached";
   if (AUTH_TEXT.some((t) => text.includes(t)) || LINEAR_AUTH_STATUS.test(text)) return "unauthorized";
   // Killed at our own deadline: execFile sets killed/signal with a null exit
   // code, and runHeadless says so in as many words.
   const e = err as { killed?: unknown };
   if (e?.killed === true) return "timeout";
-  if (text.includes("claude timed out after")) return "timeout";
+  if (text.includes("claude timed out after") || text.includes("codex timed out after")) return "timeout";
   // A real exit code means the process ran and reported back, so the service
   // behind it answered. Same for the two wordings we build ourselves.
   if (typeof code === "number") return "reached";

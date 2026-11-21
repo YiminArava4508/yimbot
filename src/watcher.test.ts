@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tempDir } from "./test-temp.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { filterByLabel, parseLabelFilter } from "./labels.ts";
-import type { CycleTodoIssue, LinearIssue } from "./linear-api.ts";
+import type { CycleTodoIssue, LinearIssue, StateIssue } from "./linear-api.ts";
 import type { QaPhase, QaUnit } from "./qa-state.ts";
 import {
   bindReturnKey,
@@ -14,6 +14,7 @@ import {
   claimOnce,
   type ClaimDeps,
   continuationSessionName,
+  heartbeatRunning,
   currentTmuxPane,
   type DependencyScanDeps,
   type DeployDeps,
@@ -39,7 +40,10 @@ import {
   splitParentWorktreeFor,
   splitSliceKeys,
   markFeatureReady,
+  notifyReview,
   parseWorktreePorcelain,
+  pruneSeen,
+  reviewNoticeBody,
   pollOnce,
   porcelainHasNonMarkerChanges,
   reconcileBlockedInProgress,
@@ -52,7 +56,17 @@ import {
   unbindReturnKey,
   type WatchState,
   worktreeFullyPushed,
+  worktreeHasNoCode,
+  isCodelessSpike,
+  type CodelessSpikeDeps,
+  spikeDoneBody,
+  SPIKE_DONE_MARKER,
+  closeCodelessSpikes,
+  freshSpikeSweepState,
+  type SpikeSweepDeps,
   worktreeKeysUnder,
+  parsePaneInfo,
+  resumeClaudeInPane,
 } from "./watcher.ts";
 
 function issue(id: string, identifier: string, title: string): LinearIssue {
@@ -480,6 +494,10 @@ test("findExistingSession matches a tmux session by identifier prefix", () => {
   assert.equal(match, "eng-42-fix-login");
 });
 
+test("findExistingSession ignores yimbot-review sessions", () => {
+  assert.equal(findExistingSession("ENG-123", ["yimbot-review-123"], []), null);
+});
+
 test("findExistingSession falls back to a worktree dir when no session matches", () => {
   const match = findExistingSession("ENG-42", ["eng-7-other"], ["eng-42-old-slug", "eng-99-x"]);
   assert.equal(match, "eng-42-old-slug");
@@ -638,6 +656,33 @@ test("worktreeFullyPushed accepts a branch whose commits are all pushed to its o
   assert.equal(worktreeFullyPushed(clone), true);
 });
 
+test("worktreeHasNoCode accepts a clean branch sitting on main", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "-b", "eng-1104-spike"]);
+  assert.equal(worktreeHasNoCode(clone), true);
+});
+
+test("worktreeHasNoCode rejects a branch whose commits are pushed only to its own origin branch", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "-b", "eng-1104-spike"]);
+  gitIn(clone, ["commit", "--allow-empty", "-m", "kept for reference"]);
+  gitIn(clone, ["push", "-u", "origin", "eng-1104-spike"]);
+  assert.equal(worktreeHasNoCode(clone), false);
+});
+
+test("worktreeHasNoCode rejects a detached HEAD", () => {
+  const clone = tempClone();
+  gitIn(clone, ["checkout", "--detach"]);
+  assert.equal(worktreeHasNoCode(clone), false);
+});
+
+test("worktreeHasNoCode rejects a dirty tree and a missing path", () => {
+  const clone = tempClone();
+  writeFileSync(join(clone, "scratch.txt"), "wip");
+  assert.equal(worktreeHasNoCode(clone), false);
+  assert.equal(worktreeHasNoCode(join(clone, "nope")), false);
+});
+
 test("worktreeFullyPushed rejects a dirty working tree", () => {
   const clone = tempClone();
   writeFileSync(join(clone, "scratch.txt"), "wip");
@@ -791,6 +836,132 @@ test("markFeatureReady skips (no flag) when nothing matches", () => {
   assert.ok(logs.some((l) => l.includes("ENG-42") && /skip/i.test(l)));
 });
 
+function spikeDeps(over: Partial<CodelessSpikeDeps> = {}): CodelessSpikeDeps {
+  return {
+    worktreeDirs: () => ["eng-7-spike", "eng-70-other"],
+    worktreesDir: "/w",
+    prBranches: async () => new Set(["eng-70-other"]),
+    hasNoCode: () => true,
+    ...over,
+  };
+}
+
+test("isCodelessSpike is true for clean ticket worktrees with no PR", async () => {
+  const checked: string[] = [];
+  const ok = await isCodelessSpike("ENG-7", spikeDeps({ hasNoCode: (p) => (checked.push(p), true) }));
+  assert.equal(ok, true);
+  assert.deepEqual(checked, ["/w/eng-7-spike"]);
+});
+
+test("isCodelessSpike is false when any PR branch belongs to the ticket", async () => {
+  for (const branch of ["eng-7-part-2", "yimin/eng-7-other", "ENG-7"]) {
+    assert.equal(await isCodelessSpike("ENG-7", spikeDeps({ prBranches: async () => new Set([branch]) })), false, branch);
+  }
+});
+
+test("isCodelessSpike checks code before calling gh", async () => {
+  let ghCalls = 0;
+  const deps = spikeDeps({ hasNoCode: () => false, prBranches: async () => (ghCalls++, new Set()) });
+  assert.equal(await isCodelessSpike("ENG-7", deps), false);
+  assert.equal(ghCalls, 0);
+});
+
+test("isCodelessSpike is false with no worktree or a failed PR lookup", async () => {
+  assert.equal(await isCodelessSpike("ENG-7", spikeDeps({ worktreeDirs: () => ["eng-70-other"] })), false);
+  const failing = spikeDeps({ prBranches: async () => { throw new Error("gh down"); } });
+  assert.equal(await isCodelessSpike("ENG-7", failing), false);
+});
+
+test("spikeDoneBody carries the marker, mentions only the creator, and has no em dash", () => {
+  const body = spikeDoneBody("sam");
+  assert.ok(body.includes(SPIKE_DONE_MARKER));
+  assert.match(body, /@sam /);
+  assert.match(body, /Done/);
+  assert.ok(!body.includes("\u2014"));
+  assert.doesNotMatch(spikeDoneBody(null), /@/);
+});
+
+function stateIssue(id: string, identifier: string, creator: string | null): StateIssue {
+  return { id, identifier, title: "T", labels: [], people: creator ? [creator] : [], creator, estimate: null, hasChildren: false };
+}
+
+function sweepDeps(over: Partial<SpikeSweepDeps> = {}) {
+  const calls: string[] = [];
+  const rows: string[] = [];
+  const deps: SpikeSweepDeps = {
+    isCodeless: async () => true,
+    upsertComment: async (id, body) => void calls.push(`comment ${id} ${body}`),
+    moveToDone: async (identifier) => void calls.push(`move ${identifier}`),
+    markRow: (identifier, kind) => void rows.push(`${identifier} ${kind}`),
+    log: () => {},
+    ...over,
+  };
+  return { calls, rows, deps };
+}
+
+test("closeCodelessSpikes shows the row awaiting approval, then closed once Done", async () => {
+  const { rows, deps } = sweepDeps();
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, ["ENG-7 spike_awaiting_approval", "ENG-7 spike_closed"]);
+});
+
+test("closeCodelessSpikes leaves the row awaiting approval when the move to Done fails", async () => {
+  const { rows, deps } = sweepDeps({ moveToDone: async () => { throw new Error("no state Done"); } });
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, ["ENG-7 spike_awaiting_approval"]);
+});
+
+test("closeCodelessSpikes leaves the row of a ticket with code alone", async () => {
+  const { rows, deps } = sweepDeps({ isCodeless: async () => false });
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual(rows, []);
+});
+
+test("closeCodelessSpikes pings the creator, then moves the ticket to Done", async () => {
+  const { calls, deps } = sweepDeps();
+  const handled = await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual([...handled], ["i-1"]);
+  assert.match(calls[0], /^comment i-1 .*@sam /s);
+  assert.equal(calls[1], "move ENG-7");
+});
+
+test("closeCodelessSpikes leaves tickets with code alone", async () => {
+  const { calls, deps } = sweepDeps({ isCodeless: async () => false });
+  const handled = await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], freshSpikeSweepState(), deps);
+  assert.deepEqual([...handled], []);
+  assert.deepEqual(calls, []);
+});
+
+test("closeCodelessSpikes retries next sweep when the comment fails, without moving", async () => {
+  const { calls, deps } = sweepDeps({ upsertComment: async () => { throw new Error("rate limited"); } });
+  const state = freshSpikeSweepState();
+  const handled = await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], state, deps);
+  assert.deepEqual([...handled], ["i-1"]);
+  assert.deepEqual(calls, []);
+  assert.equal(state.fellBack.size, 0);
+});
+
+test("closeCodelessSpikes rewrites the comment as a review notice when the move fails, once", async () => {
+  const { calls, deps } = sweepDeps({ moveToDone: async () => { throw new Error("no state Done"); } });
+  const state = freshSpikeSweepState();
+  const issues = [stateIssue("i-1", "ENG-7", "sam")];
+  await closeCodelessSpikes(issues, state, deps);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1], /@sam this ticket moved to review/);
+  assert.ok(calls[1].includes(SPIKE_DONE_MARKER));
+  const again = await closeCodelessSpikes(issues, state, deps);
+  assert.deepEqual([...again], ["i-1"]);
+  assert.equal(calls.length, 2);
+});
+
+test("closeCodelessSpikes forgets fallbacks for tickets that left review", async () => {
+  const { deps } = sweepDeps({ moveToDone: async () => { throw new Error("x"); } });
+  const state = freshSpikeSweepState();
+  await closeCodelessSpikes([stateIssue("i-1", "ENG-7", "sam")], state, deps);
+  await closeCodelessSpikes([], state, deps);
+  assert.equal(state.fellBack.size, 0);
+});
+
 function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTodoIssue {
   return {
     identifier: `ENG-${overrides.id}`,
@@ -801,6 +972,7 @@ function cycleTodo(overrides: Partial<CycleTodoIssue> & { id: string }): CycleTo
     estimate: 2,
     labels: [],
     blockedBy: [],
+    parent: null,
     ...overrides,
   };
 }
@@ -824,10 +996,14 @@ function claimDeps(overrides: Partial<ClaimDeps> = {}): {
   const deps: ClaimDeps = {
     autoClaim: true,
     riskLabels: ["migration"],
+    rejectLabel: "reject",
+    afterReleaseLabel: "after-release",
+    doneStateName: "Done",
     labelFilter: null,
     requireEstimate: () => false,
     maxEstimate: null,
     maxInProgress: 3,
+    claimsPerHeartbeat: 1,
     countInProgress: async () => 0,
     fetchCycleTodos: async () => [cycleTodo({ id: "1", priority: 1 })],
     clearedStates: cleared,
@@ -882,6 +1058,57 @@ test("claimOnce skips (no pick) when In-Progress count is at the cap", async () 
   assert.equal(moved.length, 0);
 });
 
+test("claimOnce claims up to claimsPerHeartbeat tickets in priority order", async () => {
+  const { deps, moved } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 2,
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", priority: 3 }),
+      cycleTodo({ id: "2", priority: 1 }),
+      cycleTodo({ id: "3", priority: 2 }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.id), ["2", "3"]);
+});
+
+test("claimOnce never claims past the WIP cap even when claimsPerHeartbeat is higher", async () => {
+  const { deps, moved } = claimDeps({
+    maxInProgress: 3,
+    claimsPerHeartbeat: 5,
+    countInProgress: async () => 2,
+    fetchCycleTodos: async () => [cycleTodo({ id: "1" }), cycleTodo({ id: "2" }), cycleTodo({ id: "3" })],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 1);
+});
+
+test("claimOnce claims what is eligible when fewer todos than claimsPerHeartbeat qualify", async () => {
+  const { deps, moved } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 4,
+    fetchCycleTodos: async () => [cycleTodo({ id: "1" }), cycleTodo({ id: "2", labels: ["migration"] })],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.id), ["1"]);
+});
+
+test("claimOnce stops the batch when a move fails", async () => {
+  const attempted: string[] = [];
+  const { deps, logs } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 3,
+    fetchCycleTodos: async () => [cycleTodo({ id: "1" }), cycleTodo({ id: "2" }), cycleTodo({ id: "3" })],
+    moveToInProgress: async (issue) => {
+      attempted.push(issue.id);
+      throw new Error("linear down");
+    },
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(attempted, ["1"]);
+  assert.ok(logs.some((l) => l.includes("failed to move ENG-1")));
+});
+
 test("claimOnce defers a blocked todo and logs its blocker's state", async () => {
   const { deps, moved, logs } = claimDeps({
     fetchCycleTodos: async () => [cycleTodo({ id: "5", priority: 1, blockedBy: [blocker("ENG-4")] })],
@@ -890,6 +1117,52 @@ test("claimOnce defers a blocked todo and logs its blocker's state", async () =>
   await claimOnce(freshClaimState(), deps);
   assert.equal(moved.length, 0);
   assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4 (In Review)")));
+});
+
+test("claimOnce defers a slice whose parent ticket is in progress (split in flight)", async () => {
+  // A pickup-ticket split creates its slices in Todo and the active cycle while
+  // the parent session is still carving them: claiming one would launch a second
+  // session on the same work.
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName: "In Progress", stateType: "started" } }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
+});
+
+test("claimOnce claims a late follow-up whose parent already reached the merged state", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName: "Merged", stateType: "started" } }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 1);
+});
+
+test("claimOnce matches the parent's cleared state name ignoring case and padding", async () => {
+  for (const stateName of [" merged ", "DEPLOYED TO NONPROD"]) {
+    const { deps, moved } = claimDeps({
+      fetchCycleTodos: async () => [
+        cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName, stateType: "started" } }),
+      ],
+    });
+    await claimOnce(freshClaimState(), deps);
+    assert.equal(moved.length, 1, stateName);
+  }
+});
+
+test("claimOnce claims a slice whose parent ticket is not started", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName: "Todo", stateType: "unstarted" } }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 1);
 });
 
 test("claimOnce logs unestimated todos it defers to the refine step", async () => {
@@ -1034,6 +1307,8 @@ function reconcileDeps(overrides: Partial<ReconcileDeps> = {}): {
     fetchInProgress: async () => [],
     fetchMergedIdentifiers: async () => new Set<string>(),
     clearedStates: cleared,
+    afterReleaseLabel: "after-release",
+    doneStateName: "Done",
     moveToTodo: async (id) => void movedBack.push(id),
     unlatchDeploy: (id) => void unlatched.push(id),
     log: (msg) => void logs.push(msg),
@@ -1055,6 +1330,79 @@ test("reconcile moves a blocked In-Progress ticket back and unlatches, never tea
   assert.ok(
     logs.some((l) => l.includes("moved ENG-5 back to Todo") && l.includes("ENG-4 (In Review)")),
   );
+});
+
+test("reconcile moves an In-Progress after-release ticket back while its parent has not shipped", async () => {
+  const { deps, movedBack, logs } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [blocker("ENG-4", "Merged")],
+      },
+    ],
+    fetchMergedIdentifiers: async () => new Set(["ENG-4"]),
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.deepEqual(movedBack, ["i-5"]);
+  assert.ok(logs.some((l) => l.includes("ENG-4 (Merged, waiting for release)")));
+});
+
+test("reconcile moves an after-release ticket back while its parent is Ready To Release", async () => {
+  const { deps, movedBack } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [{ identifier: "ENG-4", stateName: "Ready To Release", stateType: "completed" }],
+      },
+    ],
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.deepEqual(movedBack, ["i-5"]);
+});
+
+test("reconcile leaves an after-release ticket alone once its parent is Done", async () => {
+  const { deps, movedBack } = reconcileDeps({
+    fetchInProgress: async () => [
+      {
+        id: "i-5",
+        identifier: "ENG-5",
+        title: "t",
+        labels: ["after-release"],
+        blockedBy: [{ identifier: "ENG-4", stateName: "Done", stateType: "completed" }],
+      },
+    ],
+  });
+  await reconcileBlockedInProgress(deps);
+  assert.equal(movedBack.length, 0);
+});
+
+test("claimOnce defers an after-release ticket with the waiting-for-release log and skips it", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", labels: ["after-release"], blockedBy: [blocker("ENG-9")] }),
+    ],
+    fetchMergedIdentifiers: async () => new Set(["ENG-9"]),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 0);
+  assert.ok(logs.some((l) => l.includes("ENG-9 (In Review, waiting for release)")));
+});
+
+test("claimOnce logs an after-release ticket with no blockers once per ticket", async () => {
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [cycleTodo({ id: "1", labels: ["after-release"] })],
+  });
+  const state = freshClaimState();
+  await claimOnce(state, deps);
+  await claimOnce(state, deps);
+  assert.equal(moved.length, 0);
+  assert.equal(logs.filter((l) => /after-release.*no blockers/.test(l)).length, 1);
 });
 
 test("reconcile leaves unblocked and no-blocker tickets alone", async () => {
@@ -1307,6 +1655,26 @@ test("claimOnce fails closed and does not claim when the relation write errors",
   assert.ok(logs.some((l) => /failed to record blockers/.test(l)));
 });
 
+test("claimOnce moves on to the next ticket in the batch when the scan skips one", async () => {
+  const { scan } = scanDeps({
+    scan: async (identifier) => (identifier === "ENG-1320" ? ["ENG-1319"] : []),
+    createRelation: async () => {
+      throw new Error("linear 500");
+    },
+  });
+  const { deps, moved } = claimDeps({
+    maxInProgress: 6,
+    claimsPerHeartbeat: 2,
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", priority: 1, identifier: "ENG-1320", description: "Must land after ENG-1319." }),
+      cycleTodo({ id: "2", priority: 2, identifier: "ENG-1321" }),
+    ],
+    dependencyScan: scan,
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.identifier), ["ENG-1321"]);
+});
+
 test("claimOnce latches a write-failed ticket into the skip set so a later tick claims the next one instead", async () => {
   const state = freshClaimState();
   let scansOfTicket1 = 0;
@@ -1431,4 +1799,48 @@ test("reportLinearTrackerRow: never writes over a hold or any other status", () 
 test("liveTrackerKeys maps persisted tracker identifiers to board keys", () => {
   assert.deepEqual(liveTrackerKeys(new Set(["ENG-1325", "sc-42"])), new Set(["ENG-1325", "SC-42"]));
   assert.deepEqual(liveTrackerKeys(new Set()), new Set());
+});
+
+test("parsePaneInfo reads pane id, foreground command and activity seconds as ms", () => {
+  const out = "%1\tclaude\t1700000000\teng-1-task\n%2\tzsh\t1700000100\tmain\n\n";
+  assert.deepEqual([...parsePaneInfo(out)], [
+    ["%1", { cmd: "claude", activityMs: 1700000000000, session: "eng-1-task" }],
+    ["%2", { cmd: "zsh", activityMs: 1700000100000, session: "main" }],
+  ]);
+});
+
+test("resumeClaudeInPane types the resume command into a pane whose foreground is a shell", () => {
+  const calls: string[][] = [];
+  const exec = (file: string, args: string[]) => {
+    calls.push([file, ...args]);
+    if (file === "tmux" && args[0] === "display") return "zsh\n";
+    if (file === "bash") return "claude --permission-mode auto --continue";
+    return "";
+  };
+  assert.equal(resumeClaudeInPane("%3", exec), true);
+  const sent = calls.find((c) => c[0] === "tmux" && c[1] === "send-keys");
+  assert.deepEqual(sent, ["tmux", "send-keys", "-t", "%3", "claude --permission-mode auto --continue", "C-m"]);
+});
+
+test("resumeClaudeInPane types nothing when the pane is running claude or something else", () => {
+  for (const fg of ["claude", "node", "vim"]) {
+    const calls: string[][] = [];
+    const exec = (file: string, args: string[]) => {
+      calls.push([file, ...args]);
+      return file === "tmux" && args[0] === "display" ? `${fg}\n` : "";
+    };
+    assert.equal(resumeClaudeInPane("%3", exec), false, fg);
+    assert.equal(calls.some((c) => c[1] === "send-keys"), false, fg);
+  }
+});
+
+test("resumeClaudeInPane returns false when the pane is gone", () => {
+  const exec = () => {
+    throw new Error("can't find pane");
+  };
+  assert.equal(resumeClaudeInPane("%9", exec), false);
+});
+
+test("heartbeatRunning is false outside a heartbeat", () => {
+  assert.equal(heartbeatRunning(), false);
 });

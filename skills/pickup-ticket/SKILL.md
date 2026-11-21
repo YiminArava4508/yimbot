@@ -25,6 +25,10 @@ follow **Spike Tickets** below. Signals: a "spike" label, or a title/description
 that asks a question or asks to investigate, research, or evaluate instead of
 asking for a behavior change.
 
+**Flag-archive check second.** If the ticket is an after-release "Archive
+`<flag>` flag in prod" ticket (the `after-release` label plus that title), skip
+this flow and follow **Flag Archive Tickets** below.
+
 1. **Plan.** Invoke `superpowers:writing-plans` and produce the implementation
    plan for this ticket. Design/plan docs are written under `docs/superpowers/`.
    Before designing any new function, helper, component, type, or module,
@@ -38,6 +42,40 @@ asking for a behavior change.
    not pause to ask. If the work clearly won't fit under the **PR Size
    Limits** below, plan it as a series of shippable slices up front (see that
    section).
+
+   - **Sizing notes are estimation context, not a plan.** A "Sizing",
+     "Justification", or similar estimation section in the ticket may point you
+     at related tickets or code to read, but never take the approach, mechanism,
+     or type from it. Derive the approach from the problem statement,
+     acceptance criteria, comments, and the codebase. If the note's suggestion
+     and an existing pattern disagree, follow the existing pattern and record
+     the choice under Decisions.
+   - **Look up the existing UI pattern.** When the ticket asks for user-facing
+     behavior (a filter, input, column, form field), find a feature in the repo
+     that already behaves the way the ticket asks, or the one a reviewer would
+     compare it to, and copy its configuration and component. Name that
+     reference feature in the plan's Decisions note. Only build new behavior
+     when no existing feature does the same thing.
+   - **Look up the default path.** For that same behavior, trace what a user
+     gets without changing any setting: the default operator, predicate, mode,
+     or variant the UI selects when the feature first renders. Plan for the
+     requested behavior to work on that default path, the same way it does on
+     the reference feature. Behavior that only appears after the user picks a
+     non-default option does not meet the ticket.
+
+1a. **Size check.** Size the plan on the 1, 2, 3, 5, 8, 13, 21 scale. Skip this step
+   when the ticket has no estimate or a 0 estimate. For `eng-*` tickets, write
+   the reason to a file (the estimate, your planned size, and the evidence: files
+   touched, rough changed LOC) and run
+   `~/reject-ticket.sh <TICKET> <planned-points> - < reason.md`. Exit 0 means
+   the ticket was rejected (comment posted, `rejected` label added, ticket moved back to Todo): print one
+   line saying so and **STOP**, write no code. Exit 3 means the plan is within
+   tolerance: continue. Any other exit (1, 127 for a missing script, a network
+   error) means the check itself failed: print the error and **STOP**, do not
+   implement a ticket whose size check did not complete. For `sc-*` tickets, when your planned size is 2 or more
+   steps above the estimate, post the reason with `stories-create-comment`, add
+   the `rejected` label with `stories-update`, and STOP. Never change the
+   estimate yourself.
 
 2. **Classify** the plan against the Hard-Stop Rubric below.
 
@@ -58,6 +96,12 @@ asking for a behavior change.
    Either way, implement the plan task-by-task using
    `superpowers:test-driven-development`.
 
+   For user-facing behavior, the first failing test covers the default path
+   found in step 1: render or build the feature with its default settings
+   (no operator, predicate, or mode chosen by the test), feed it the input the
+   ticket describes, and assert the requested result. Tests that only set a
+   non-default option do not count toward this.
+
 5. **Self-review and fix.** With the tests green, run one round of code review on
    the changes before finishing (before any PR): invoke
    `superpowers:requesting-code-review`. Triage the findings by severity and act:
@@ -76,6 +120,40 @@ asking for a behavior change.
    the full test suite and loop until it is green again. In a split, run
    this once on the full implementation, before slicing it into PRs.
 
+6a. **Local UAT (before any PR).** Use the feature in the running app the way
+   a user would, before a reviewer does.
+   - **When it runs:** the change touches user-facing UI in a repo with
+     Playwright set up (gemini's `react-ui/tests`). Backend-only changes and
+     repos without Playwright skip it; record `UAT: skipped (<reason>)` for
+     the PR body and go to step 7.
+   - **Start the env:** from the worktree root, set `WT=$(git rev-parse
+     --show-toplevel)`, run `~/run-local-env.sh "$(basename "$WT")"`, then
+     `BASE_URL=$(~/wait-local-env.sh "$WT")`. If the wait exits non-zero,
+     retry once with `~/run-local-env.sh --force "$(basename "$WT")"` and wait
+     again. If that also fails, skip UAT with the error as the reason.
+   - **Write the spec** at `react-ui/tests/<ticket-slug>.spec.ts`, following
+     `react-ui/tests/AGENTS.md`. It creates the data it needs, opens the
+     feature with its default settings (the test picks no operator,
+     predicate, or mode), enters the input the ticket describes, and asserts
+     the acceptance criteria. At the passing state it calls
+     `page.screenshot({ path: process.env.UAT_SCREENSHOT })`. Admin-only
+     screens use gemini's `admin-session-stub` skill. This spec is the
+     default-path test from step 4 when step 4 did not already write one in
+     Playwright. It ships in the PR and counts toward the PR Size Limits.
+   - **Run it** from `react-ui`: `SHOT=$(mktemp --suffix=.png)`, then
+     `PLAYWRIGHT_BASE_URL=$BASE_URL UAT_SCREENSHOT=$SHOT npx playwright test
+     tests/<ticket-slug>.spec.ts`.
+   - **On failure:** fix the code (not the spec, unless the spec misreads the
+     ticket), re-run the full test suite, and re-run the spec. After 3 failed
+     rounds, stop fixing: record `UAT: failed` with the last failure output
+     for the PR body and go to step 7, which then opens a draft and leaves the
+     ticket out of Review.
+   - **On pass:** run `~/attach-ticket.sh "$SHOT"`; it prints the asset URL
+     and deletes the file. Record `UAT: passed` with `![uat](<asset-url>)`
+     for the PR body. If the upload fails, record `UAT: passed (screenshot
+     upload failed)` and `shred -u "$SHOT"`.
+   - Leave the env running.
+
 7. **Ship at green.** When the full test suite passes, run the
    end-of-implementation steps in this order:
    - **Check PR size** against the **PR Size Limits** below
@@ -88,10 +166,11 @@ asking for a behavior change.
      file is missing, treat it as `supervised`). In `supervised` mode pass
      `--draft` (a human marks the PR ready for review); in `autonomous`
      mode open it non-draft. The daemon's review and ready steps process
-     drafts too, so this only gates the merge. **Always create a brand-new
+     drafts too, so this only gates the merge. A `UAT: failed` result from
+     step 6a forces `--draft` in either mode. **Always create a brand-new
      PR; never reopen a previously
      closed PR, even one referenced by the branch, commit, or ticket.** Title = the ticket summary; body = a short "what changed /
-     why / test result", any **Decisions** you made to resolve uncertainty
+     why / test result", the `UAT:` line from step 6a, any **Decisions** you made to resolve uncertainty
      (with the alternative you rejected, and what was reused), and the
      ticket reference so the tracker auto-links the PR. Follow the repo's
      commit/PR conventions: never mention Claude, Claude Code, or AI, and
@@ -104,13 +183,29 @@ asking for a behavior change.
      that checkout (`gh pr create` in that directory). The board links a PR to
      this session by the ticket slug in its branch name, so a differently
      named branch leaves the row without a PR.
+   - **Defer post-release work.** If the ticket asks for work that can only
+     happen after the change ships (for example "after it deploys", "after
+     release", archiving a flag in prod), do NOT do that work. Before moving the
+     ticket to Review, run
+     `~/create-subticket.sh <TICKET> "<follow-up title>" <points> --after-release`.
+     For a flag archive, title it exactly "Archive `<flag-key>` flag in prod"
+     and put these two lines in the description, since the checklist in **Flag
+     Archive Tickets** reads them: `Flag key: <exact key>` and
+     `PostHog flag ID: <id>` (prod project 117986, verified). Also list the
+     checks still outstanding (experiments, surveys, dependent flags,
+     scheduled changes, early-access features, replay link, external
+     consumers) and the readback to record. Link the follow-up in the final
+     summary and in a comment on the parent ticket. Use `Resolves <TICKET>` in
+     the PR body. The after-release follow-up holds the remaining work, and the
+     parent has to reach Done for the follow-up to unblock.
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
-     PR, or in a split the whole series, is open.
+     PR, or in a split the whole series, is open. Skip this when UAT failed:
+     the draft PR waits for a human.
    - **Spin up the local server on this session's tmux pane** so the change
      can be inspected running. In a split, run it from the ticket branch,
      since that branch is the one that keeps every change for whole-app
-     local testing.
+     local testing. When step 6a already started it, this no-ops.
    Then STOP. Print a summary of what changed, the PR URL (or URLs, for a
    split), and the test result.
 
@@ -121,25 +216,93 @@ review, split, and local-server steps above do not apply.
 
 1. **Investigate** as cheaply as correctness allows. Any code you write is
    throwaway scaffolding: never open a PR for it.
-2. **Report findings on the ticket.** Post a comment with: the question, what
-   you tried, the answer or recommendation, and suggested next steps (for
-   example the follow-up ticket to write). Linear tickets (`eng-*`): write the
-   markdown to a file and run `~/comment-ticket.sh <TICKET> - < findings.md`.
-   Shortcut tickets (`sc-*`): use the Shortcut MCP.
-3. **Move the ticket to the Review column.** Linear: run
-   `~/move-ticket.sh <TICKET> "In Review"`. Shortcut: use the Shortcut MCP.
-   The human reads the findings there and moves it to Done. For Linear tickets (`eng-*` branches) the daemon then
-   reaps this worktree and session once the ticket reaches Done or Canceled,
-   but only if step 4 was honored. Shortcut tickets (`sc-*`) are not watched by
-   the daemon: note in the findings summary that the session should be ended
-   manually (`~/end-session.sh <branch>`).
-4. **Leave no local-only work**, or the reaper will spare the worktree forever.
+2. **Leave no local-only work**, or the reaper will spare the worktree forever.
    Either discard the scaffolding (`git reset --hard` and
    `git clean -fd -e '.yimbot-*'` so yimbot's marker files survive), or if it
    is worth keeping for
    reference, commit and push the branch (`git push -u origin HEAD`, still no
    PR). The working tree must end clean with every commit on origin.
+3. **Report findings on the ticket.** Post a comment with: the question, what
+   you tried, the answer or recommendation, and suggested next steps (for
+   example the follow-up ticket to write). Linear tickets (`eng-*`): write the
+   markdown to a file and run `~/comment-ticket.sh <TICKET> - < findings.md`.
+   Shortcut tickets (`sc-*`): use the Shortcut MCP.
+4. **Move the ticket to the Review column.** Linear: run
+   `~/move-ticket.sh <TICKET> "In Review"`. Shortcut: use the Shortcut MCP.
+   Always Review, never Done: for Linear tickets the daemon checks the branch
+   when the ticket enters review, and if it has no PR and no code it moves the
+   ticket to Done itself and mentions the creator. Otherwise a human reads it
+   there. The daemon then reaps this worktree and session, but only if step 2
+   was honored. Shortcut tickets (`sc-*`) are not watched by the daemon: note
+   in the findings summary that the session should be ended manually
+   (`~/end-session.sh <branch>`).
 5. **STOP.** Print the findings summary and where it was posted.
+
+## Flag Archive Tickets
+
+An after-release "Archive `<flag>` flag in prod" ticket may archive the flag
+itself, but only through this checklist. There is no PR, review, split, or
+local-server step. Read the exact flag key and PostHog flag ID from the ticket
+description (`~/get-ticket.sh <TICKET>`) when it has `Flag key:` and `PostHog
+flag ID:` lines; the ID must resolve to that key in prod project 117986. Older
+tickets have no such lines: take the key from the backticked name in the title
+("Archive `hubspot-call-list-sync` flag in prod"), search prod project 117986
+for that exact key, and require exactly one flag with that key. Missing lines
+alone never fail check 5. It fails only when the key can't be found or matches
+more than one flag.
+
+**Fail closed.** If any input can't be read (gh, git, Linear, PostHog), that
+check fails. Never pass a check on missing data, and never skip one.
+
+1. **Run the reference checks (checks 2 and 3).** `~/flag-archive-check.sh <key>`
+   prints JSON (`pass`, `checks`, `builds`, `prodShas`, `docMatches`,
+   `quietHours`) and exits non-zero on failure. It covers: no code references
+   on `origin/main` of MatthewsREIS/gemini or anywhere else in the org, and none
+   in the source folder of each gemini build prod runs (each app's chart and its
+   local subcharts, at the commit their `appVersion` names; `builds` lists
+   every app, chart, commit, and folder searched). `*.md` files are never
+   searched in prod builds; on `origin/main` and the org they land in
+   `docMatches` and don't fail.
+2. **Check 1, released.** The `Blocked by:` line of `~/get-ticket.sh <TICKET>`
+   must list at least one blocker, and every blocker must be `Done`. The
+   claim gate already checked this; re-check it anyway.
+3. **Check 4, quiet in prod.** With the PostHog MCP, read the flag in project
+   117986. `last_called_at` must be older than `quietHours` from step 1 (4
+   unless `FLAG_ARCHIVE_QUIET_HOURS` is set). A null or missing `last_called_at`
+   means the flag was never called: the check passes, and the readback says
+   "never called". If the flag can't be read (PostHog error, flag not found),
+   the check fails; that is not the same as never called.
+4. **Check 5, nothing depends on it and archiving changes nothing for users.**
+   In project 117986 all of these must hold:
+   - no experiments, surveys, early-access features, or scheduled changes use
+     the flag;
+   - no other flag depends on it (search other flags' filters for this flag's
+     ID);
+   - session replay isn't linked to it;
+   - the flag is active, at 100% rollout, with no release conditions.
+   Product tours are out of scope (the PostHog key can't read them). Don't
+   fail on them, but say so in the readback.
+
+**If every check passes**, in this order:
+
+a. **Save the flag's state** as a comment on the ticket before touching it: id,
+   key, active, filters/rollout, `last_called_at`, enough to restore it.
+b. **Archive the flag** with the PostHog MCP.
+c. **Read it back** and confirm it now reads as archived. If it doesn't, raise
+   needs-decision (below) with what you saw and stop.
+d. **Post a readback comment** listing every check with its evidence, the prod
+   commits searched (`prodShas`), any `docMatches`, and the note that tours
+   weren't checked.
+e. **Move the ticket to In Review**, same as the spike flow: `~/move-ticket.sh
+   <TICKET> "In Review"` (Shortcut: use the Shortcut MCP). No PR. Then STOP and
+   print the readback.
+
+**If any check fails**, archive nothing:
+
+a. Run `~/needs-decision.sh "<failed check number and name>: <evidence>"` so
+   the board stops showing the session as "working".
+b. Post the same failed check and evidence as a comment on the ticket.
+c. STOP.
 
 ## Hard-Stop Rubric
 
@@ -156,6 +319,10 @@ mutate real resources right now**, before any review can happen:
 - Deleting or overwriting real infrastructure, data, or resources.
 - Any data-destroying or otherwise irreversible command executed during
   implementation.
+
+**Exception: archiving a prod PostHog flag.** It is allowed without a "go",
+only through the **Flag Archive Tickets** checklist, and only when every check
+passes. Every other prod change still needs a "go".
 
 Nothing else pauses. Writing migration, auth, or billing code, touching many
 files, touching shared or core code, or the plan containing an open question is
@@ -175,6 +342,11 @@ and snapshots).
 - **Target: well under 500 LOC.** Aim to land every PR comfortably below the limit.
 - **Hard limit: 500 LOC.** A branch whose changes exceed 500 LOC **must**
   be split into multiple smaller PRs before shipping, no exceptions.
+- **Exception: `echo "$SPLIT_TICKETS"` is `false`, `off`, `0`, or `no`.**
+  Splitting is disabled: never split, whatever the size. Ship the ticket
+  branch as one PR through the single-PR flow, skip the split flow below, and
+  create no slices, subtickets, or `.yimbot-split-parent` flag. Unset or any
+  other value means the limit applies as written.
 
 Implementation always happens as a whole, on the single ticket branch.
 Splitting is a **PR-time operation**, not a set of separate implementation
@@ -196,13 +368,21 @@ the reuse audit above), and only then decide how to slice it into PRs.
   named after that subticket, so each slice tracks and shows on the board as
   its own task. For each slice:
   1. Create the slice's subticket, titled `[i/n] <slice summary>`, with a
-     points estimate sized to the slice:
+     points estimate sized to the slice. **Keep the parent's points:** read the
+     parent's estimate before creating the first slice, and make the slice
+     points add up to exactly that number, never more (the split redistributes
+     the parent's points, it does not add to them). If the parent had no
+     estimate, size the whole ticket as one unit first and use that as the
+     total:
      - Linear tickets (`eng-*`): run
-       `~/create-subticket.sh <TICKET> "[i/n] <slice summary>" <points>`.
-       It creates the sub-issue (zeroing the parent ticket's estimate, so
-       points live only on the slices) and prints two lines: the subticket
-       identifier, then the slice branch name. Use that branch name verbatim
-       in the next step.
+       `~/create-subticket.sh <TICKET> "[i/n] <slice summary>" <points> --claimable`.
+       It creates the sub-issue in Todo and the current cycle, where intake
+       lives (never Triage), carrying the parent's labels and zeroing the
+       parent ticket's estimate so points live only on the slices. It prints
+       two lines: the subticket identifier, then the slice branch name. Use
+       that branch name verbatim in the next step. The daemon will not claim
+       the slice out from under you: it skips Todo sub-issues whose parent is
+       In Progress.
      - Shortcut tickets (`sc-*`): create a subtask under the story via the
        Shortcut MCP (`stories-create-subtask`), set the parent story's
        estimate to 0 (`stories-update`), and derive the slice branch from the

@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { tempDir } from "./test-temp.ts";
 import {
+  appendNavigatorSnippet,
   commandExists,
   configReferencesFeatureStatus,
+  configReferencesNavigator,
   configToEnvRecord,
   detectPackageManager,
   ensureHostLinks,
   expandTilde,
+  fixCommandFor,
   ghHasScopes,
   hasClaudeAuth,
   hostLinks,
@@ -20,6 +23,7 @@ import {
   isConfigured,
   isGitRepo,
   linkState,
+  NAVIGATOR_SNIPPET,
   parseGhScopes,
   parseInstalledPlugins,
   parseMcpServers,
@@ -41,6 +45,7 @@ const sample: YimbotConfig = {
   autoClaim: false,
   riskLabels: ["migration", "infra"],
   maxInProgress: 5,
+  claimsPerHeartbeat: 1,
   autoCleanup: true,
   autoContinue: true,
   maxContinuations: 5,
@@ -51,6 +56,8 @@ const sample: YimbotConfig = {
   refineUsers: "",
   refineLabelFilter: "",
   maxRefining: 1,
+  splitTickets: true,
+  agent: "claude",
 };
 
 test("isConfigured requires a non-empty API key", () => {
@@ -229,7 +236,7 @@ test("PREREQUISITES split into blocking required and non-blocking recommended ch
     assert.equal(sev(k), "required", `${k} is required`);
   }
   // Recommended: warn but never block.
-  for (const k of ["gh-scopes", "git-identity", "shortcut", "tmux-status"]) {
+  for (const k of ["gh-scopes", "git-identity", "shortcut", "posthog", "task", "docker", "docker-running", "atlas", "tmux-navigator", "tmux-status"]) {
     assert.equal(sev(k), "recommended", `${k} is recommended`);
   }
   // Every prerequisite declares one of the two severities.
@@ -340,6 +347,39 @@ test("installHint is a non-empty instruction for every prerequisite", () => {
   }
 });
 
+test("installHint for task names go-task and the pacman task symlink", () => {
+  assert.match(installHint("task", "pacman"), /go-task/);
+  assert.match(installHint("task", "pacman"), /ln -sf \/usr\/bin\/go-task \/usr\/local\/bin\/task/);
+  assert.match(installHint("task", "brew"), /brew install go-task/);
+  assert.match(installHint("task", null), /taskfile\.dev/);
+});
+
+test("configReferencesNavigator detects the vim-tmux-navigator bindings", () => {
+  assert.equal(configReferencesNavigator(NAVIGATOR_SNIPPET), true);
+  assert.equal(configReferencesNavigator("bind-key -n 'C-h' select-pane -L"), false);
+  assert.equal(configReferencesNavigator(""), false);
+});
+
+test("NAVIGATOR_SNIPPET binds all five keys and defers to a yimbot pane", () => {
+  for (const key of ["C-h", "C-j", "C-k", "C-l"]) assert.match(NAVIGATOR_SNIPPET, new RegExp(`'${key}'`));
+  assert.match(NAVIGATOR_SNIPPET, /@yimbot_keys/);
+});
+
+test("appendNavigatorSnippet creates the file, keeps existing content, and is idempotent", () => {
+  const dir = tempDir("yimbot-nav-");
+  const fresh = join(dir, "fresh.conf");
+  assert.equal(appendNavigatorSnippet(fresh), true);
+  assert.equal(configReferencesNavigator(readFileSync(fresh, "utf8")), true);
+
+  const existing = join(dir, "existing.conf");
+  writeFileSync(existing, "set -g mouse on\n");
+  assert.equal(appendNavigatorSnippet(existing), true);
+  const once = readFileSync(existing, "utf8");
+  assert.ok(once.startsWith("set -g mouse on\n"));
+  assert.equal(appendNavigatorSnippet(existing), false);
+  assert.equal(readFileSync(existing, "utf8"), once);
+});
+
 test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/split-pr.sh"));
   assert.ok(link, "split-pr.sh host link is present");
@@ -390,7 +430,42 @@ test("hostLinks installs the session deny-list settings", () => {
   const queueLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/heavy-queue.sh"));
   assert.ok(queueLink, "heavy-queue.sh host link is present");
   assert.ok(queueLink!.source.endsWith("scripts/heavy-queue.sh"), "sourced from scripts/heavy-queue.sh");
+  const rebaseLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/no-self-rebase.sh"));
+  assert.ok(rebaseLink, "no-self-rebase.sh host link is present");
+  assert.ok(rebaseLink!.source.endsWith("scripts/no-self-rebase.sh"), "sourced from scripts/no-self-rebase.sh");
   const confLink = hostLinks.find((l) => l.target.endsWith("/.config/yimbot/heavy-jobs.conf"));
   assert.ok(confLink, "heavy-jobs.conf host link is present");
   assert.ok(confLink!.source.endsWith("settings/heavy-jobs.conf"), "sourced from settings/heavy-jobs.conf");
+});
+
+test("docker is checked before its daemon", () => {
+  const keys = PREREQUISITES.map((pr) => pr.key);
+  assert.ok(keys.indexOf("docker") < keys.indexOf("docker-running"), "docker before docker-running");
+});
+
+test("installCommand installs the docker toolchain per manager", () => {
+  assert.deepEqual(installCommand("docker", "brew"), ["brew", "install", "colima", "docker", "docker-compose"]);
+  assert.deepEqual(installCommand("docker", "pacman"), ["sudo", "pacman", "-S", "--needed", "docker", "docker-compose"]);
+  assert.equal(installCommand("docker", "apt"), null);
+  assert.equal(installCommand("docker", null), null);
+  assert.deepEqual(installCommand("atlas", "brew"), ["brew", "install", "ariga/tap/atlas"]);
+  const script = ["sh", "-c", "curl -sSf https://atlasgo.sh | sh"];
+  assert.deepEqual(installCommand("atlas", "pacman"), script);
+  assert.deepEqual(installCommand("atlas", null), script);
+});
+
+test("fixCommandFor starts colima on brew and has no fix for the docker daemon elsewhere", () => {
+  const pr = PREREQUISITES.find((p) => p.key === "docker-running")!;
+  assert.deepEqual(fixCommandFor(pr, "brew"), ["colima", "start"]);
+  assert.equal(fixCommandFor(pr, "pacman"), null);
+  assert.equal(fixCommandFor(pr, null), null);
+});
+
+test("installHint for docker, docker-running and atlas names the fix", () => {
+  assert.match(installHint("docker", "brew"), /brew install colima docker docker-compose/);
+  assert.match(installHint("docker", "apt"), /docs\.docker\.com/);
+  assert.match(installHint("docker-running", "brew"), /colima start/);
+  assert.match(installHint("docker-running", "pacman"), /systemctl enable --now docker/);
+  assert.match(installHint("atlas", "brew"), /brew install ariga\/tap\/atlas/);
+  assert.match(installHint("atlas", "pacman"), /atlasgo\.sh/);
 });

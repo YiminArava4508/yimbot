@@ -1,16 +1,18 @@
 // subticket.ts - CLI for the split flow: create a Linear sub-issue under a
 // parent ticket, zero the parent's estimate (unless --no-zero-parent), and
 // print the subticket identifier and slice branch name (one per line).
+import { parseAfterReleaseLabel } from "../src/labels.ts";
 import { createSliceSubticket } from "../src/subticket.ts";
 
 const args = process.argv.slice(2);
 const claimable = args.includes("--claimable");
 const zeroParent = !args.includes("--no-zero-parent");
-const flags = new Set(["--claimable", "--no-zero-parent"]);
+const afterRelease = args.includes("--after-release");
+const flags = new Set(["--claimable", "--no-zero-parent", "--after-release"]);
 const positional = args.filter((a) => !flags.has(a));
 const [parent, title, pointsArg] = positional;
 if (!parent || !title) {
-  console.error("Usage: subticket.ts <parent-ticket> <title> [points] [--claimable] [--no-zero-parent]");
+  console.error("Usage: subticket.ts <parent-ticket> <title> [points] [--claimable] [--no-zero-parent] [--after-release]");
   process.exit(1);
 }
 const points = pointsArg == null ? undefined : Number(pointsArg);
@@ -28,6 +30,8 @@ const result = await createSliceSubticket(apiKey, parent, title, {
   points,
   claimable,
   zeroParent,
+  afterRelease,
+  afterReleaseLabel: parseAfterReleaseLabel(process.env.AFTER_RELEASE_LABEL),
   todoStateName: process.env.TODO_STATE_NAME?.trim() || undefined,
 });
 console.log(result.identifier);

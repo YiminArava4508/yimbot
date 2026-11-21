@@ -3,7 +3,7 @@
 // committed architecture map. Paths, diffstats and hunk symbols only, the same
 // input the grouping call gets, so both stay one small prompt each.
 import { extractJsonObject } from "./json-extract.ts";
-import type { ArchAnnotation, ArchMap } from "./arch-map.ts";
+import { CATEGORIES, type ArchAnnotation, type ArchMap, type Category } from "./arch-map.ts";
 import { fileLine } from "./review-groups.ts";
 import type { FileStat, PrMeta } from "./review-groups.ts";
 
@@ -35,9 +35,11 @@ export function annotationPrompt(map: ArchMap, pr: PrMeta, files: FileStat[]): s
     "Do not judge the change, suggest fixes, or list findings. Describe the flow.",
     "Reply with ONLY a JSON object, no prose:",
     '{"flow": "<one paragraph: the path data takes through the part of the system this PR touches>",',
-    ' "touched": [{"node": "<id>", "note": "<what this PR does here>"}],',
-    ' "atRisk": [{"node": "<id>", "why": "<what it consumes that moved>", "viaEdge": "<from->to>"}],',
+    ' "summary": {"what": "<1-2 sentences: what the diff changes, using the PR description for intent>", "why": "<one sentence from the PR description; empty when it states none>"},',
+    ' "touched": [{"node": "<id>", "title": "<under 8 words>", "category": "<category>", "note": "<what this PR does here>"}],',
+    ' "atRisk": [{"node": "<id>", "title": "<under 8 words>", "category": "risk", "why": "<what it consumes that moved>", "viaEdge": "<from->to>"}],',
     ' "added": [{"id": "<new id>", "label": "<short>", "files": ["<path>"], "edges": [{"to": "<id>", "carries": "<what>"}]}]}',
+    `category is one of: ${CATEGORIES.join(", ")}. contract means a shape or signature moved.`,
     "Use only the node ids listed above, plus ids you declare in added.",
   ].join("\n");
 }
@@ -50,11 +52,26 @@ function stringList(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+function categoryOf(v: unknown, fallback: Category): Category {
+  return CATEGORIES.find((c) => c === v) ?? fallback;
+}
+
+function titleOf(v: unknown): { title?: string } {
+  const title = str(v).trim();
+  return title === "" ? {} : { title };
+}
+
+function summaryOf(v: unknown): ArchAnnotation["summary"] {
+  const s = (v ?? {}) as { what?: unknown; why?: unknown };
+  const what = str(s.what).trim();
+  return what === "" ? undefined : { what, why: str(s.why).trim() };
+}
+
 // Tolerant the way normalizeGroups is: field by field, unknown ids dropped,
 // null rather than a throw so the overlay can fall back to lit/dim only.
 export function normalizeAnnotation(obj: unknown, map: ArchMap): ArchAnnotation | null {
   if (obj === null || typeof obj !== "object") return null;
-  const o = obj as { flow?: unknown; touched?: unknown; atRisk?: unknown; added?: unknown };
+  const o = obj as { flow?: unknown; summary?: unknown; touched?: unknown; atRisk?: unknown; added?: unknown };
   if (o.flow !== undefined && typeof o.flow !== "string") return null;
   const known = new Set(map.nodes.map((n) => n.id));
   const rawAdded = Array.isArray(o.added) ? o.added : [];
@@ -76,19 +93,25 @@ export function normalizeAnnotation(obj: unknown, map: ArchMap): ArchAnnotation 
   }
   const touched: ArchAnnotation["touched"] = [];
   for (const entry of Array.isArray(o.touched) ? o.touched : []) {
-    const t = entry as { node?: unknown; note?: unknown };
-    if (typeof t.node === "string" && known.has(t.node)) touched.push({ node: t.node, note: str(t.note) });
+    const t = entry as { node?: unknown; note?: unknown; title?: unknown; category?: unknown };
+    if (typeof t.node === "string" && known.has(t.node)) {
+      touched.push({ node: t.node, note: str(t.note), ...titleOf(t.title), category: categoryOf(t.category, "behavior") });
+    }
   }
   const atRisk: ArchAnnotation["atRisk"] = [];
   for (const entry of Array.isArray(o.atRisk) ? o.atRisk : []) {
-    const r = entry as { node?: unknown; why?: unknown; viaEdge?: unknown };
+    const r = entry as { node?: unknown; why?: unknown; viaEdge?: unknown; title?: unknown; category?: unknown };
     if (typeof r.node === "string" && known.has(r.node)) {
-      atRisk.push({ node: r.node, why: str(r.why), viaEdge: str(r.viaEdge) });
+      atRisk.push({
+        node: r.node, why: str(r.why), viaEdge: str(r.viaEdge),
+        ...titleOf(r.title), category: categoryOf(r.category, "risk"),
+      });
     }
   }
   const flow = str(o.flow);
   if (flow === "" && touched.length === 0 && atRisk.length === 0 && added.length === 0) return null;
-  return { flow, touched, atRisk, added };
+  const summary = summaryOf(o.summary);
+  return summary ? { flow, summary, touched, atRisk, added } : { flow, touched, atRisk, added };
 }
 
 export function parseAnnotation(stdout: string, map: ArchMap): ArchAnnotation | null {

@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { resetReach, unreachable } from "./reach.ts";
 import {
+  addIssueLabel,
   countAssignedInState,
   createBlocksRelation,
   createComment,
   createSubIssue,
   fetchIssueEstimate,
+  fetchCycleParents,
   fetchIssueSplitInfo,
   fetchUnestimatedIssues,
   fetchUsers,
@@ -14,6 +16,7 @@ import {
   fetchMarkedCommentBody,
   fetchIssueFamily,
   uploadFile,
+  fetchCycleBoard,
   fetchCycleTodoIssues,
   fetchInProgressIssuesWithBlockers,
   fetchIssuesInState,
@@ -106,7 +109,7 @@ test("fetchIssuesInState returns issue nodes", async () => {
     fetchImpl,
   );
   assert.deepEqual(issues, [
-    { id: "i-1", identifier: "ENG-42", title: "Fix login", labels: [], estimate: 3, hasChildren: false },
+    { id: "i-1", identifier: "ENG-42", title: "Fix login", labels: [], estimate: 3, hasChildren: false, people: [], creator: null },
   ]);
 });
 
@@ -144,6 +147,20 @@ test("fetchIssuesInState maps a missing estimate to null", async () => {
   });
   const issues = await fetchIssuesInState("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
   assert.equal(issues[0].estimate, null);
+});
+
+test("fetchIssuesInState mentions the creator unless the viewer created it", async () => {
+  const node = (creator: unknown) => ({ id: "i", identifier: "ENG-1", title: "t", labels: { nodes: [] }, estimate: null, children: { nodes: [] }, creator });
+  const body = {
+    data: {
+      issues: {
+        nodes: [node({ id: "s", displayName: "sam" }), node({ id: "u", displayName: "yimin" }), node(null)],
+      },
+    },
+  };
+  const issues = await fetchIssuesInState("k", { viewerId: "u", teamId: "t", stateId: "s" }, fakeFetch(body));
+  assert.deepEqual(issues.map((i) => i.people), [["sam"], [], []]);
+  assert.deepEqual(issues.map((i) => i.creator), ["sam", null, null]);
 });
 
 test("GraphQL errors are surfaced", async () => {
@@ -208,8 +225,32 @@ test("fetchCycleTodoIssues flattens labels and returns enriched issues", async (
       estimate: null,
       labels: ["frontend", "migration"],
       blockedBy: [],
+      parent: null,
     },
   ]);
+});
+
+test("fetchCycleTodoIssues maps the parent ticket's identifier, state name and state type", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            id: "i-1",
+            identifier: "ENG-42",
+            title: "[1/2] slice",
+            priority: 2,
+            sortOrder: 7.5,
+            labels: { nodes: [] },
+            inverseRelations: { nodes: [] },
+            parent: { identifier: "ENG-40", state: { name: "In Progress", type: "started" } },
+          },
+        ],
+      },
+    },
+  });
+  const issues = await fetchCycleTodoIssues("key", { viewerId: "u", teamId: "t", stateId: "s" }, fetchImpl);
+  assert.deepEqual(issues[0].parent, { identifier: "ENG-40", stateName: "In Progress", stateType: "started" });
 });
 
 test("fetchCycleTodoIssues maps blockedBy from inverse blocks relations", async () => {
@@ -777,10 +818,17 @@ test("fetchTicket maps the issue, its parent and its comments oldest first", asy
             { body: "first", createdAt: "2026-09-01T00:00:00.000Z", user: null },
           ],
         },
+        inverseRelations: {
+          nodes: [
+            { type: "blocks", issue: { identifier: "ENG-41", state: { name: "Done", type: "completed" } } },
+            { type: "related", issue: { identifier: "ENG-9", state: { name: "Todo", type: "unstarted" } } },
+          ],
+        },
       },
     },
   ]);
   const t = await fetchTicket("key", "ENG-42", fetchImpl);
+  assert.deepEqual(t.blockedBy, [{ identifier: "ENG-41", stateName: "Done" }]);
   assert.equal(t.id, "uuid-1");
   assert.equal(t.teamId, "team-1");
   assert.equal(t.parent, "ENG-40");
@@ -916,4 +964,195 @@ test("uploadFile rejects when the PUT fails", async () => {
     return { ok: false, status: 403, text: async () => "denied", json: async () => ({}) };
   }) as unknown as typeof fetch;
   await assert.rejects(uploadFile("key", "/tmp/shot.png", fetchImpl, () => Buffer.from("x")), /upload PUT 403/);
+});
+
+function sequencedFetch(bodies: JsonBody[]): { fetchImpl: typeof fetch; calls: JsonBody[] } {
+  const calls: JsonBody[] = [];
+  const fetchImpl = (async (_url: string, init: { body: string }) => {
+    calls.push(JSON.parse(init.body) as JsonBody);
+    const body = bodies[calls.length - 1];
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+const boardStates = [
+  { id: "s-1", name: "Todo", type: "unstarted", position: 1, color: "#e2e2e2" },
+  { id: "s-2", name: "In Progress", type: "started", position: 2, color: "#f2c94c" },
+];
+
+function boardTeamResponse(activeCycle: { number: number } | null): JsonBody {
+  return {
+    data: {
+      viewer: { id: "user-1" },
+      teams: { nodes: [{ id: "team-1", states: { nodes: boardStates }, activeCycle }] },
+    },
+  };
+}
+
+test("fetchCycleBoard returns the team's states, the active cycle number and the viewer's cycle issues", async () => {
+  const { fetchImpl } = sequencedFetch([
+    boardTeamResponse({ number: 42 }),
+    {
+      data: {
+        issues: {
+          nodes: [
+            { identifier: "ENG-1", title: "One", sortOrder: 3.5, estimate: 2, state: { id: "s-1" } },
+            { identifier: "ENG-2", title: "Two", sortOrder: -1, estimate: null, state: { id: "s-2" } },
+          ],
+        },
+      },
+    },
+  ]);
+  const board = await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.equal(board.cycleNumber, 42);
+  assert.deepEqual(board.states, boardStates);
+  assert.deepEqual(board.issues, [
+    { identifier: "ENG-1", title: "One", stateId: "s-1", sortOrder: 3.5, estimate: 2 },
+    { identifier: "ENG-2", title: "Two", stateId: "s-2", sortOrder: -1, estimate: null },
+  ]);
+});
+
+test("fetchCycleBoard carries each state's color", async () => {
+  const { fetchImpl, calls } = sequencedFetch([
+    {
+      data: {
+        viewer: { id: "user-1" },
+        teams: {
+          nodes: [
+            {
+              id: "team-1",
+              states: {
+                nodes: [
+                  { id: "s-2", name: "In Progress", type: "started", position: 2, color: "#f2c94c" },
+                  { id: "s-3", name: "Odd", type: "started", position: 3 },
+                ],
+              },
+              activeCycle: null,
+            },
+          ],
+        },
+      },
+    },
+  ]);
+  const board = await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.match(calls[0].query as string, /states \{ nodes \{ id name type position color \}/);
+  assert.deepEqual(board.states.map((s) => s.color), ["#f2c94c", ""]);
+});
+
+test("fetchCycleBoard filters the issue query by team, viewer and the active cycle", async () => {
+  const { fetchImpl, calls } = sequencedFetch([
+    boardTeamResponse({ number: 42 }),
+    { data: { issues: { nodes: [] } } },
+  ]);
+  await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].query as string, /isActive/);
+  assert.deepEqual(calls[1].variables, { teamId: "team-1", viewerId: "user-1" });
+});
+
+test("fetchCycleBoard returns cycleNumber null and no issues, without a second request, when the team has no active cycle", async () => {
+  const { fetchImpl, calls } = sequencedFetch([boardTeamResponse(null)]);
+  const board = await fetchCycleBoard("key", "Engineering", fetchImpl);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(board, { cycleNumber: null, states: boardStates, issues: [] });
+});
+
+test("fetchCycleBoard throws for an unknown team name", async () => {
+  const { fetchImpl } = sequencedFetch([{ data: { viewer: { id: "u" }, teams: { nodes: [] } } }]);
+  await assert.rejects(fetchCycleBoard("key", "Nope", fetchImpl), /No Linear team named "Nope"/);
+});
+
+function sequenceFetch(bodies: JsonBody[]): { impl: typeof fetch; sent: { query: string; variables: JsonBody }[] } {
+  const sent: { query: string; variables: JsonBody }[] = [];
+  const impl = (async (_url: unknown, init: { body: string }) => {
+    sent.push(JSON.parse(init.body));
+    const body = bodies[sent.length - 1]!;
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+  }) as unknown as typeof fetch;
+  return { impl, sent };
+}
+
+test("addIssueLabel reuses an existing team label matched case-insensitively", async () => {
+  const { impl, sent } = sequenceFetch([
+    { data: { team: { labels: { nodes: [{ id: "l-1", name: "Reject" }] } } } },
+    { data: { issueAddLabel: { success: true } } },
+  ]);
+  await addIssueLabel("k", "issue-1", "team-1", "reject", impl);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1]!.query, /issueAddLabel/);
+  assert.deepEqual(sent[1]!.variables, { id: "issue-1", labelId: "l-1" });
+});
+
+test("addIssueLabel creates the label when the team lacks it", async () => {
+  const { impl, sent } = sequenceFetch([
+    { data: { team: { labels: { nodes: [{ id: "l-9", name: "bot" }] } } } },
+    { data: { issueLabelCreate: { success: true, issueLabel: { id: "l-new" } } } },
+    { data: { issueAddLabel: { success: true } } },
+  ]);
+  await addIssueLabel("k", "issue-1", "team-1", "reject", impl);
+  assert.equal(sent.length, 3);
+  assert.match(sent[1]!.query, /issueLabelCreate/);
+  assert.deepEqual(sent[1]!.variables, { name: "reject", teamId: "team-1" });
+  assert.deepEqual(sent[2]!.variables, { id: "issue-1", labelId: "l-new" });
+});
+
+test("addIssueLabel throws when the add mutation reports failure", async () => {
+  const { impl } = sequenceFetch([
+    { data: { team: { labels: { nodes: [{ id: "l-1", name: "reject" }] } } } },
+    { data: { issueAddLabel: { success: false } } },
+  ]);
+  await assert.rejects(addIssueLabel("k", "issue-1", "team-1", "reject", impl), /issueAddLabel failed/);
+});
+
+test("countAssignedInState leaves out issues carrying the reject label", async () => {
+  const body = {
+    data: {
+      issues: {
+        nodes: [
+          { id: "1", labels: { nodes: [{ name: "Reject" }] } },
+          { id: "2", labels: { nodes: [] } },
+        ],
+      },
+    },
+  };
+  assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body), "reject"), 1);
+  assert.equal(await countAssignedInState("k", "v", "In Progress", null, fakeFetch(body)), 2);
+});
+
+test("fetchCycleParents asks for Remove tickets, sub-issues included, with all their children", async () => {
+  let query = "";
+  const fetchImpl = (async (_u: string, init: { body: string }) => {
+    query = (JSON.parse(init.body) as { query: string }).query;
+    const body = { data: { issues: { nodes: [] } } };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+  }) as unknown as typeof fetch;
+  await fetchCycleParents("k", "team-1", fetchImpl);
+  assert.doesNotMatch(query, /parent:/);
+  assert.match(query, /startsWith: "Remove"/);
+  assert.match(query, /children\(first: 250\)/);
+});
+
+test("fetchCycleParents lists active-cycle issues with their children's label names", async () => {
+  const fetchImpl = fakeFetch({
+    data: {
+      issues: {
+        nodes: [
+          {
+            identifier: "ENG-1",
+            title: "Remove `x` flag (code, then prod)",
+            children: { nodes: [{ labels: { nodes: [{ name: "after-release" }] } }] },
+          },
+        ],
+      },
+    },
+  });
+  const parents = await fetchCycleParents("k", "team-1", fetchImpl);
+  assert.deepEqual(parents, [
+    {
+      identifier: "ENG-1",
+      title: "Remove `x` flag (code, then prod)",
+      children: [{ labels: ["after-release"] }],
+    },
+  ]);
 });

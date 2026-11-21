@@ -1,18 +1,25 @@
 // src/tui.ts
 // neo-blessed ships no types; treat as any at the import boundary.
-import { basename } from "node:path";
 import blessed from "neo-blessed";
 import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
-import { AWAITING_SLICES_STATUS, TRACKING_STATUS, bus, filterToLiveRows, isFlagged, readEvents, reduceRows, type BoardRow, type YimbotEvent } from "./events.ts";
+import { bus, filterToLiveRows, isFlagged, isParentRow, readEvents, reduceRows, statusFor, type BoardRow, type YimbotEvent } from "./events.ts";
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
+import type { UpdateState } from "./self-update.ts";
 import { unreachable, type Service } from "./reach.ts";
-import { makeOrderFetcher, type OrderEntry, type OrderSourceDeps } from "./review-order.ts";
-import { researchWords, ticketType } from "./ticket-type.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
-import { configFromEnv } from "./settings-model.ts";
+import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel } from "./board-format.ts";
+import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, applyOrder, partitionTable, isTableId, tableBoxes, tableFocusOrder, type ReviewEntry, type TableId } from "./table-view.ts";
+import { makeOrderFetcher, type OrderSourceDeps } from "./review-order.ts";
+import { createTableView } from "./tui-table-view.ts";
 import { openSettings, type SettingsDeps } from "./tui-settings.ts";
+import { openSetup, type SetupDeps } from "./tui-setup.ts";
+import { errMsg } from "./setup-core.ts";
+import type { ApplyResult } from "./settings-apply.ts";
+import { createCardColumn, type CardColumn } from "./tui-cards.ts";
+import { buildColumns, cardLines, cycleFocus, focusOrder, stepFocus, visibleWindow, type Card, type Column } from "./kanban.ts";
+import type { CycleBoard } from "./linear-api.ts";
 
 // How often the board repaints on its own, independent of daemon events. Without
 // it the TUI freezes on its last paint between events: time-based row pruning
@@ -23,6 +30,8 @@ function refreshMs(): number {
   const n = Number(envOr("TUI_REFRESH_MS", "5000"));
   return Number.isFinite(n) && n > 0 ? n : 5000;
 }
+
+const BOARD_REFRESH_MS = 30_000;
 
 export function returnKey(): string {
   return envOr("TUI_RETURN_KEY", "Y");
@@ -42,11 +51,9 @@ export function screenTerm(term: string | undefined): string | undefined {
 }
 
 // A lean legend: the full keybind list lives under ?, the footer only names
-// help, quit, and r/R. Both act on any pane -- placement is label-driven now,
-// so the row that most needs r (green, unlabeled, therefore in tasks) is
-// exactly the one a pane-gated r could not reach.
-export function footerHint(_pane: Pane): string {
-  return "r ready   R review   ? help   ^c quit";
+// help, quit, and r/R.
+export function footerHint(): string {
+  return "r ready   R review   v view   ? help   ^c quit";
 }
 
 // The help overlay's body: every keybind, one per line, aligned.
@@ -54,12 +61,15 @@ export function helpLines(key: string): string[] {
   const binds: [string, string][] = [
     ["j/k", "move selection"],
     ["^j/^k", "switch pane (tab cycles)"],
-    ["enter", "open the row's tmux session"],
+    ["h/l", "move between columns (kanban)"],
+    ["enter", "open the selected row's tmux session"],
     ["f", "flag/unflag the selected row"],
     ["r", "queue the selected row's PR to merge (also inside R)"],
     ["R", "review the selected row's PR"],
     ["m", "toggle supervised/autonomous"],
     ["s", "settings"],
+    ["W", "re-run setup"],
+    ["v", "toggle kanban view"],
     [`prefix+${key}`, "return here from a session"],
     ["?", "toggle this help"],
     ["^c", "quit"],
@@ -80,77 +90,89 @@ export function bindHelpKey(
   });
 }
 
-// A split parent's row: it has no work of its own, only slices to wait on.
-// A parent whose status is a hold (needs decision, review findings) is not
-// one of these; it owes a human an answer and stays with the tasks.
-const PARENT_STATUSES = new Set([TRACKING_STATUS, AWAITING_SLICES_STATUS]);
+export type View = "table" | "kanban";
 
-export function isParentRow(row: Pick<BoardRow, "status">): boolean {
-  return PARENT_STATUSES.has(row.status);
+export const DEFAULT_VIEW: View = "table";
+
+export function nextView(view: View): View {
+  return view === "table" ? "kanban" : "table";
 }
 
-// Placement reads the row's section, never its status. The daemon reports the
-// section each heartbeat from the facts that actually decide it (the ready
-// label, the draft flag), so a queued PR stays in the merge pane while its
-// status walks through a CI fix, a conflict fix or a review round -- the status
-// column is where that shows. A row only moves when the label does. The one
-// exception is the split parents: the daemon only ever gives that status to a
-// split's tracking ticket, and it outranks whatever section the key's own PR
-// left behind before the split, so they leave the work panes for their own.
-export function partitionRows(rows: BoardRow[]): Record<Pane, BoardRow[]> {
-  const review: BoardRow[] = [];
-  const merge: BoardRow[] = [];
-  const tasks: BoardRow[] = [];
-  const parents: BoardRow[] = [];
-  for (const r of rows) {
-    if (isParentRow(r)) parents.push(r);
-    else if (r.section === "review") review.push(r);
-    else if (r.section === "merge") merge.push(r);
-    else tasks.push(r);
+// v flips the board between the table and the kanban, gated like m.
+export function bindViewKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  toggle: () => void,
+): void {
+  screen.key(["v"], () => {
+    if (!isOverlayOpen()) toggle();
+  });
+}
+
+export function viewFocusOrder(
+  view: View,
+  tableCounts: Record<TableId, number>,
+  columns: Column[],
+  hasParents: boolean,
+): string[] {
+  if (view === "table") return tableFocusOrder(tableCounts, hasParents);
+  return focusOrder(columns, hasParents);
+}
+
+// A column id carried over from the kanban means nothing to the table, and
+// with every table pane empty resolveFocus would keep it; the table then
+// falls back to the tasks pane, as it did before the kanban existed. Entering
+// the kanban before its first board lands clears a stale id, so focus waits
+// for the first column instead of settling on the parents pane.
+export function viewFocus(view: View, order: string[], current: string, boardLoaded = true): string {
+  if (view === "kanban") {
+    const waiting = !boardLoaded && !order.includes(current);
+    return resolveFocus(order, waiting ? "" : current);
   }
-  return { review, merge, tasks, parents };
+  const id = resolveFocus(order, current);
+  return isTableId(id) || id === "parents" ? id : "tasks";
 }
 
-export type ReviewEntry = { row: BoardRow; reason: string };
-
-// Sort the review rows by the fetched order, reasons attached. A null order
-// (still fetching) and any row the order missed keep board order with a "…"
-// placeholder, so the section is usable before the AI order lands.
-export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): ReviewEntry[] {
-  const reasonByPr = new Map((order ?? []).map((e) => [e.pr, e.reason]));
-  const rank = new Map((order ?? []).map((e, i) => [e.pr, i]));
-  const ordered: ReviewEntry[] = [];
-  const unranked: ReviewEntry[] = [];
-  for (const row of review) {
-    const r = row.pr != null ? rank.get(row.pr) : undefined;
-    const entry = { row, reason: row.pr != null ? (reasonByPr.get(row.pr) ?? "…") : "…" };
-    if (r !== undefined) ordered.push(entry);
-    else unranked.push(entry);
-  }
-  ordered.sort((a, b) => rank.get(a.row.pr!)! - rank.get(b.row.pr!)!);
-  return [...ordered, ...unranked];
+// The widget blessed focus should move to, or null to leave it. With no
+// visible pane for the focus id (the kanban waiting for its first column)
+// focus parks on a neutral widget: a hide rewinds it onto whatever pane is
+// left in blessed's history, which would then take j/k and enter while styled
+// unfocused.
+export function focusMove<W extends { hidden: boolean }>(target: W | undefined, focused: W | undefined, neutral: W): W | null {
+  if (target && !target.hidden) return focused === target ? null : target;
+  if (focused === undefined || focused === neutral) return null;
+  return neutral;
 }
 
-// The board's geometry: three full-width bordered panes stacked top to
-// bottom -- tasks, ready to review, ready to merge. Each keeps an equal third
-// of the body (tasks takes the remainder) whether or not it has rows, so the
-// panes never jump around as PRs move between them. The floor of 4 keeps one
-// data row visible (header + 2 border rows) on a tiny screen.
-//
-// Below this the board's nine columns no longer fit beside the queue, so the
-// queue gives way rather than squeezing the rows it exists to annotate. The
-// queue holds the left edge and the board panes inset past it.
+export function headerBoard(view: View, board: CycleBoard | null): CycleBoard | null {
+  return view === "kanban" ? board : null;
+}
+
+// With no room for the parents box (narrow or short screen) the parents go
+// back to the tasks pane rather than off the board.
+export function tableSections(
+  rows: BoardRow[],
+  hasParentsBox: boolean,
+): { tasks: BoardRow[]; review: BoardRow[]; merge: BoardRow[]; parents: BoardRow[] } {
+  const split = partitionTable(rows);
+  if (hasParentsBox) return split;
+  return { ...split, tasks: [...split.tasks, ...split.parents], parents: [] };
+}
+
+export function onlyInView(view: View, current: () => View, fn: () => void): () => void {
+  return () => {
+    if (current() === view) fn();
+  };
+}
+
+// The board's geometry: the kanban columns share the body between the title
+// and the footer. Below this width the queue gives way rather than squeezing
+// the columns; the queue holds the left edge and the columns inset past it.
 //
 // The parent tickets box shares the queue's column, stacked under it at the
 // queue's width. It takes only what its rows need, capped at half the body so
 // the queue keeps the rest, and is gone entirely while empty or whenever the
 // queue is: those rows are context, and the board's width is the work's.
-const QUEUE_MIN_SCREEN_WIDTH = 80;
-
-// Header row plus the two border rows; a pane needs one more to show a row.
-const PANE_CHROME_ROWS = 3;
-const PANE_MIN_HEIGHT = PANE_CHROME_ROWS + 1;
-
 export type ParentsBox = { left: number; width: number; bottom: number; height: number };
 
 function parentsBoxHeight(body: number, parentRows: number): number {
@@ -165,118 +187,140 @@ export function boardLayout(
   screenWidth: number,
   parentRows = 0,
 ): {
-  tasks: { top: number; left: number; right: number; bottom: number };
-  review: { left: number; right: number; bottom: number; height: number };
-  merge: { left: number; right: number; bottom: number; height: number };
+  board: { top: number; left: number; right: number; bottom: number };
   parents: ParentsBox | null;
   queue: { top: number; left: number; width: number; bottom: number } | null;
 } {
   const footerRows = 1;
   const titleRows = 1;
   const body = screenHeight - titleRows - footerRows;
-  const third = Math.max(PANE_MIN_HEIGHT, Math.floor(body / 3));
   const showQueue = screenWidth >= QUEUE_MIN_SCREEN_WIDTH;
   const inset = showQueue ? QUEUE_PANE_WIDTH : 0;
   const parentsHeight = showQueue ? parentsBoxHeight(body, parentRows) : 0;
   return {
-    tasks: { top: titleRows, left: inset, right: 0, bottom: footerRows + 2 * third },
-    review: { left: inset, right: 0, bottom: footerRows + third, height: third },
-    merge: { left: inset, right: 0, bottom: footerRows, height: third },
+    board: { top: titleRows, left: inset, right: 0, bottom: footerRows },
     parents:
       parentsHeight > 0 ? { left: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows, height: parentsHeight } : null,
     queue: showQueue ? { top: titleRows, left: 0, width: QUEUE_PANE_WIDTH, bottom: footerRows + parentsHeight } : null,
   };
 }
 
-export type Pane = "tasks" | "review" | "merge" | "parents";
-export type PaneCounts = Record<Pane, number>;
+const PARENTS_BORDER = "grey";
 
-// Top to bottom on screen; the focus keys walk this order.
-export const PANE_ORDER: readonly Pane[] = ["tasks", "review", "merge", "parents"];
-
-// Each pane's resting outline; the focused pane takes the focus hue so the
-// operator can see where their keys land.
-export const PANE_BORDER: Record<Pane, string> = { tasks: "grey", review: "yellow", merge: "green", parents: "grey" };
-
-export function paneBorderColor(pane: Pane, focused: boolean): string {
-  return focused ? FOCUS_BORDER : PANE_BORDER[pane];
-}
-
-// Outline plus row highlight in one pass. Only the focused pane inverses its
-// selected row: keys act on that pane alone, so a second inversed row on an
-// unfocused pane reads as a cursor that does nothing. neo-blessed aliases
-// style.selected to style.cell.selected on a listtable and resolves it at
-// paint time, so mutating it here is enough.
-export function applyPaneFocusStyle(
-  widgets: Record<Pane, { style: { border: { fg: string }; label: { fg: string }; selected: { inverse: boolean } } }>,
-  focused: Pane,
+// The parents pane is the one listtable left on the board: only while it
+// holds the focus does it take the focus hue and inverse its selected row.
+// neo-blessed aliases style.selected to style.cell.selected on a listtable and
+// resolves it at paint time, so mutating it here is enough.
+export function styleParentsPane(
+  pane: { style: { border: { fg: string }; label: { fg: string }; selected: { inverse: boolean } } },
+  focused: boolean,
 ): void {
-  for (const p of PANE_ORDER) {
-    const fg = paneBorderColor(p, p === focused);
-    widgets[p].style.border.fg = fg;
-    widgets[p].style.label.fg = fg;
-    widgets[p].style.selected.inverse = p === focused;
-  }
+  const fg = focused ? FOCUS_BORDER : PARENTS_BORDER;
+  pane.style.border.fg = fg;
+  pane.style.label.fg = fg;
+  pane.style.selected.inverse = focused;
 }
 
-// The pane keypresses should act on. An empty pane can never hold the focus:
-// with every row a ready draft the tasks pane can be empty, and without this
-// the operator's f/r/R/enter would silently no-op against it.
-export function resolvePane(current: Pane, counts: PaneCounts): Pane {
-  if (counts[current] > 0) return current;
-  for (const p of PANE_ORDER) if (counts[p] > 0) return p;
-  return "tasks";
+// The focus id is a column id, a table pane id or "parents". A focused stop
+// that left the board hands the focus to the first entry; an empty board
+// keeps the id. An
+// unset focus waits for the first column rather than settling on the parents
+// pane before the first Linear board lands.
+export function resolveFocus(order: string[], current: string): string {
+  if (order.length === 0 || order.includes(current)) return current;
+  const hasColumns = order.some((id) => id !== "parents");
+  if (current === "" && !hasColumns) return current;
+  return order[0];
 }
 
-// Directional focus down and up the stacked panes, skipping empty ones (an
-// empty pane is hidden, so landing on it would focus nothing visible). No
-// non-empty pane in that direction stays put.
-export function movePane(current: Pane, dir: "up" | "down", counts: PaneCounts): Pane {
-  const step = dir === "down" ? 1 : -1;
-  for (let i = PANE_ORDER.indexOf(current) + step; i >= 0 && i < PANE_ORDER.length; i += step) {
-    if (counts[PANE_ORDER[i]] > 0) return PANE_ORDER[i];
-  }
-  return current;
+// Wraps a fetch so only results newer than the last applied one land: a slow
+// older request cannot overwrite a newer board. A rejection is dropped; a
+// failed Linear fetch already raises the reach warning inside the client.
+export function latestOnly<T>(fetch: () => Promise<T>, apply: (value: T) => void): () => void {
+  let issued = 0;
+  let applied = 0;
+  return () => {
+    const seq = ++issued;
+    fetch().then(
+      (value) => {
+        if (seq <= applied) return;
+        applied = seq;
+        apply(value);
+      },
+      () => {},
+    );
+  };
 }
 
-// Tab's fallback cycle through the panes, skipping empty ones.
-export function nextPane(current: Pane, counts: PaneCounts): Pane {
-  const i = PANE_ORDER.indexOf(current);
-  for (let step = 1; step <= PANE_ORDER.length; step++) {
-    const p = PANE_ORDER[(i + step) % PANE_ORDER.length];
-    if (counts[p] > 0) return p;
-  }
-  return current;
+export type ColumnSlot = { id: string; left: number; width: number };
+
+// The columns that fit the board area, with their screen offsets. The parents
+// pane is not a column, so while it holds the focus the window stays where it
+// was. The last visible column takes the cells the even split leaves over.
+export function placeColumns(
+  ids: string[],
+  focusedId: string,
+  prevStart: number,
+  left: number,
+  width: number,
+): { start: number; slots: ColumnSlot[] } {
+  if (ids.length === 0) return { start: 0, slots: [] };
+  const i = ids.indexOf(focusedId);
+  const focusedIndex = i >= 0 ? i : Math.min(prevStart, ids.length - 1);
+  const { start, count, colWidth } = visibleWindow(ids.length, focusedIndex, prevStart, width);
+  const slots = ids.slice(start, start + count).map((id, k) => {
+    const last = k === count - 1;
+    return { id, left: left + k * colWidth, width: last ? width - colWidth * (count - 1) : colWidth };
+  });
+  return { start, slots };
 }
 
-// Keep focusedPane honest against blessed's own focus: a mouse click on a list
-// item calls focus() on that list (neo-blessed list.js), which the key bindings
-// alone would not see, leaving keypresses acting on another pane's selection.
-export function bindPaneFocusSync(
-  widgets: Record<Pane, { on: (ev: string, fn: () => void) => void }>,
-  set: (pane: Pane) => void,
-): void {
-  for (const pane of Object.keys(widgets) as Pane[]) {
-    widgets[pane].on("focus", () => set(pane));
-  }
+export const PARENT_NOTICE = "{red-fg}parent tickets have no PR of their own{/red-fg}";
+
+// A parent row's pr, when it has one, is the PR the split closed: the fold
+// carries it forward, but nothing about it is actionable any more.
+export function prActionRefusal(row: Pick<BoardRow, "status">): string | undefined {
+  return isParentRow(row) ? PARENT_NOTICE : undefined;
 }
 
-// The setter for that sync. A click reaches blessed first: list.js focuses the
-// clicked list and repaints, but the pane highlight and footer are only fitted
-// by render(), so without this the board waits for the refresh timer to catch
-// up. The repaint is deferred past blessed's own click handler and dropped if
-// the focus moved on before the tick (hidePanesKeepingFocus's rewind).
+export const MANUAL_MERGE_NOTICE = "{red-fg}no merge queue in this repo: merge it by hand{/red-fg}";
+
+// r on top of prActionRefusal: the ready label queues nothing in a repo
+// without a merge queue.
+export function readyRefusal(row: Pick<BoardRow, "status">): string | undefined {
+  const refusal = prActionRefusal(row);
+  if (refusal) return refusal;
+  return row.status === statusFor("ready_manual")?.status ? MANUAL_MERGE_NOTICE : undefined;
+}
+
+export const NO_CARD_NOTICE = "{red-fg}no ticket selected{/red-fg}";
+export const NO_SESSION_NOTICE = "{red-fg}no yimbot session for this ticket{/red-fg}";
+
+// A card is a Linear ticket; only one yimbot has a row for can be opened,
+// flagged, queued or reviewed.
+export function rowForAction(card: Card | undefined): { row: BoardRow } | { notice: string } {
+  if (!card) return { notice: NO_CARD_NOTICE };
+  if (!card.row) return { notice: NO_SESSION_NOTICE };
+  return { row: card.row };
+}
+
+// The setter for the mouse focus sync. A click on a card or the parents list
+// moves blessed focus without going through focusPane, so this records the
+// clicked column as focused and repaints; the column borders and footer are
+// only fitted by render(), and without it the board waits for the refresh
+// timer. The repaint is deferred past blessed's own click handler and dropped
+// if the focus moved on before the tick (hidePanesKeepingFocus's rewind).
 export function onPaneFocusChange(
-  get: () => Pane,
-  set: (pane: Pane) => void,
+  get: () => string,
+  set: (id: string) => void,
   render: () => void,
   defer: (fn: () => void) => void = (fn) => setImmediate(fn),
-): (pane: Pane) => void {
-  return (pane) => {
-    if (pane === get()) return;
-    set(pane);
+): (id: string) => void {
+  return (id) => {
+    if (id === get()) return;
+    set(id);
     defer(() => {
-      if (get() === pane) render();
+      if (get() === id) render();
     });
   };
 }
@@ -286,28 +330,13 @@ export function onPaneFocusChange(
 // record as a pane switch; the overlay's close then puts the highlight and the
 // keys on that other pane. Hide, then put the pane the operator was on back.
 export function hidePanesKeepingFocus(
-  widgets: Record<Pane, { hide: () => void }>,
-  get: () => Pane,
-  set: (pane: Pane) => void,
+  widgets: { hide: () => void }[],
+  get: () => string,
+  set: (id: string) => void,
 ): void {
   const focused = get();
-  for (const pane of Object.keys(widgets) as Pane[]) widgets[pane].hide();
+  for (const widget of widgets) widget.hide();
   set(focused);
-}
-
-// The row the operator's keypress should act on: each pane keeps its own blessed
-// selection (1-based, row 0 is the column header), and the focused pane wins.
-export function selectedBoardRow(
-  pane: Pane,
-  panes: {
-    tasks: { rows: BoardRow[]; selected: number };
-    review: { entries: ReviewEntry[]; selected: number };
-    merge: { rows: BoardRow[]; selected: number };
-    parents: { rows: BoardRow[]; selected: number };
-  },
-): BoardRow | undefined {
-  if (pane === "review") return panes.review.entries[panes.review.selected - 1]?.row;
-  return panes[pane].rows[panes[pane].selected - 1];
 }
 
 // Tab cycles focus through the panes, gated like every other board key: an
@@ -337,6 +366,39 @@ export function bindPaneNavKeys(
   bind(["C-k"], "up");
 }
 
+export function bindColumnKeys(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  active: () => boolean,
+  move: (dir: "left" | "right") => void,
+): void {
+  const bind = (key: string, dir: "left" | "right") =>
+    screen.key([key], () => {
+      if (active() && !isOverlayOpen()) move(dir);
+    });
+  bind("h", "left");
+  bind("l", "right");
+}
+
+// Screen-level keys run before the focused widget's own listener, so arming
+// here lets a widget handler drop the same keypress's vi-mode "select".
+export function makeSelectGuard(): { arm(): void; consume(): boolean } {
+  let armed = false;
+  return {
+    arm() {
+      armed = true;
+      setImmediate(() => {
+        armed = false;
+      });
+    },
+    consume() {
+      const was = armed;
+      armed = false;
+      return was;
+    },
+  };
+}
+
 // The status bar's mode chip. Inverse-video blocks so the operating mode is
 // legible at a glance: supervised (human gates flagged PRs) in yellow,
 // autonomous (the bot self-resolves everything) in green.
@@ -346,15 +408,23 @@ export function modeContent(mode: Mode): string {
     : "{black-fg}{green-bg} AUTONOMOUS {/green-bg}{/black-fg}";
 }
 
-// The header row above the tasks pane. The panes below are bordered at column 0
+// The header row above the board. The panes below are bordered at column 0
 // and the last column, so "yimbot" and the status chips are inset past that
 // border plus one column of margin: the header then reads as sitting inside the
-// pane below instead of hanging off the screen edges. Exported so the layout
+// panes below instead of hanging off the screen edges. Exported so the layout
 // tests exercise these exact objects, not copies.
 export const headerInset = 2;
 
 export function titleLayout(): Record<string, unknown> {
-  return { top: 0, left: headerInset };
+  return { top: 0, left: headerInset, tags: true };
+}
+
+const WORDMARK = "{cyan-fg}{bold}yimbot{/bold}{/cyan-fg}";
+
+export function titleContent(board: { cycleNumber: number | null } | null): string {
+  if (!board) return WORDMARK;
+  if (board.cycleNumber === null) return `${WORDMARK}${grey(" no active cycle")}`;
+  return `${WORDMARK}${grey(` cycle ${board.cycleNumber}`)}`;
 }
 
 export function statusLayout(): Record<string, unknown> {
@@ -372,8 +442,7 @@ export function footerLayout(): Record<string, unknown> {
     width: "100%",
     height: 1,
     wrap: false,
-    // The initial focused pane; render() re-fits the legend to the pane.
-    content: footerHint("tasks"),
+    content: footerHint(),
     style: { fg: "white" },
   };
 }
@@ -394,18 +463,39 @@ export function reachWarnings(down: Service[]): string {
   return down.map((s) => `{red-fg}⚠ ${s}{/red-fg} `).join("");
 }
 
+export function updateChip(state: UpdateState | null, manualRestart = false): string {
+  if (!state || state.kind === "current") return "";
+  if (state.kind === "ready" && manualRestart) {
+    return "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg}";
+  }
+  if (state.kind === "ready") return "{black-fg}{cyan-bg} update ready {/cyan-bg}{/black-fg}";
+  return `{red-fg}update blocked: ${state.reason}{/red-fg}`;
+}
+
+export function bootNotice(env: NodeJS.ProcessEnv, head: string, now: number = Date.now()): Notice | null {
+  const rolledBack = env.YIMBOT_ROLLED_BACK;
+  if (rolledBack) {
+    return { text: `update rolled back: ${rolledBack.slice(0, 7)} crashed on boot`, until: now + NOTICE_ERROR_TTL_MS };
+  }
+  const from = env.YIMBOT_UPDATED_FROM;
+  if (from && from !== head) {
+    const minutes = Number(env.HEARTBEAT_INTERVAL_MINUTES ?? env.POLL_INTERVAL_MINUTES ?? "3");
+    return { text: `updated ${from.slice(0, 7)} → ${head.slice(0, 7)}`, until: now + minutes * 60_000 };
+  }
+  return null;
+}
+
+export type TuiHandle = { isBusy(): boolean; teardown(): void };
+
 export function statusContent(
   mode: Mode,
-  refineOn: boolean,
-  active: number,
   notice: Notice | null,
   now: number,
   down: Service[],
+  update: UpdateState | null = null,
+  manualRestart = false,
 ): string {
-  const refineChip = refineOn
-    ? "{black-fg}{green-bg} REFINE ON {/green-bg}{/black-fg} "
-    : "{black-fg}{red-bg} REFINE OFF {/red-bg}{/black-fg} ";
-  const base = `${reachWarnings(down)}${refineChip}${modeContent(mode)} live | ${active} active`;
+  const base = `${reachWarnings(down)}${updateChip(update, manualRestart)}${modeContent(mode)}`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -429,71 +519,21 @@ export async function handleReadyPress(
   }
 }
 
-function fmtTime(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+export async function handleOpenPr(
+  row: BoardRow,
+  openPr: (pr: number, repo?: string) => Promise<void>,
+  setNotice: (text: string, ttlMs: number) => void,
+): Promise<void> {
+  if (row.pr == null) return;
+  try {
+    await openPr(row.pr, row.repo);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setNotice(`{red-fg}opening #${row.pr} failed: ${msg}{/red-fg}`, NOTICE_ERROR_TTL_MS);
+  }
 }
 
-export function fmtDuration(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  const rm = m % 60;
-  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
-}
-
-// One header for all three panes, in one order, so a row reads the same
-// wherever it sits.
-export const BOARD_HEADER = ["TIME", "DUR", "STATUS", "TICKET", "PR", "REPO", "TITLE", "FLAG", "REASON"];
-
-// What the REPO column reads: nothing until the row has a PR, the codebase
-// checkout's directory name for a codebase-repo PR, the name half of the
-// owner/name slug for an extra-repo PR.
-export function repoDisplayName(row: Pick<BoardRow, "pr" | "repo">, codebaseName: string): string {
-  if (row.pr == null) return "";
-  if (!row.repo) return codebaseName;
-  return row.repo.split("/").pop() ?? row.repo;
-}
-
-function codebaseRepoName(): string {
-  return basename(configFromEnv(process.env).codebasePath);
-}
-
-// The TITLE cell: a research item gets a chip ahead of its title, so the type
-// reads at a glance without the board spending a column on a rare marker.
-export function titleCell(row: Pick<BoardRow, "title">, words: string[] = researchWords()): string {
-  const title = row.title ?? "";
-  const type = ticketType(row.title, words);
-  return type ? `{magenta-fg}[${type}]{/magenta-fg} ${title}` : title;
-}
-
-export type BoardEntry = { row: BoardRow };
-
-export function boardTable(
-  entries: BoardEntry[],
-  now: number = Date.now(),
-  codebaseName: string = codebaseRepoName(),
-  words: string[] = researchWords(),
-): string[][] {
-  const body = entries.map(({ row: r }) => {
-    const durMs = r.terminal ? r.ts - r.startTs : now - r.startTs;
-    return [
-      fmtTime(r.ts),
-      fmtDuration(durMs),
-      r.terminal ? `{grey-fg}${r.status}{/grey-fg}` : r.status,
-      r.label,
-      r.pr != null ? `#${r.pr}` : "",
-      repoDisplayName(r, codebaseName),
-      titleCell(r, words),
-      isFlagged(r) ? "{red-fg}⚑{/red-fg}" : "",
-      r.flagReasons.length > 0 ? `{red-fg}${r.flagReasons.join(",")}{/red-fg}` : "",
-    ];
-  });
-  return [BOARD_HEADER, ...body];
-}
+export { cellWidth, fitCell, fmtDuration, grey, paneLabel, repoDisplayName, titleCell } from "./board-format.ts";
 
 // The parent tickets box is the queue's width, far too narrow for the board's
 // nine columns, so each parent gets one line: the ticket, then whatever of the
@@ -507,45 +547,6 @@ export function parentRows(rows: BoardRow[]): string[][] {
     return [title ? `${label} {grey-fg}${title}{/grey-fg}` : label];
   });
   return [["PARENTS"], ...body];
-}
-
-function fitCell(text: string, room: number): string {
-  if (room <= 0) return "";
-  if (cellWidth(text) <= room) return text;
-  let out = "";
-  for (const ch of text) {
-    if (cellWidth(out + ch) > room - 1) break;
-    out += ch;
-  }
-  return `${out}…`;
-}
-
-// A cell's on-screen width, measured through blessed's own helpers rather than
-// reimplemented: Element.strWidth strips tags and then, under fullUnicode,
-// counts display columns (a CJK title is two per character, a combining mark
-// zero). Padding by String.length instead would size a non-ASCII title wrong
-// and knock that pane's columns off the shared grid.
-export function cellWidth(cell: string): number {
-  return blessed.unicode.strWidth(blessed.helpers.stripTags(cell));
-}
-
-// blessed sizes each table's columns from that table's own rows, so three panes
-// sharing a header still land on three different grids. Pad every cell out to
-// the widest cell in its column across ALL the tables and each pane computes the
-// same maxes, which is what puts the columns on the same offsets. An empty pane
-// still has its header row, so it lines up too.
-export function alignTables(tables: string[][][]): string[][][] {
-  const widths: number[] = [];
-  for (const table of tables) {
-    for (const row of table) {
-      row.forEach((cell, i) => {
-        widths[i] = Math.max(widths[i] ?? 0, cellWidth(cell));
-      });
-    }
-  }
-  return tables.map((table) =>
-    table.map((row) => row.map((cell, i) => cell + " ".repeat((widths[i] ?? 0) - cellWidth(cell)))),
-  );
 }
 
 // screen.key's handler runs before the focused widget's own keypress handling
@@ -635,8 +636,42 @@ export function bindReviewKey(
   });
 }
 
+// W (shift-w) re-runs the setup wizard on the live board, gated like s: a
+// second W while any overlay is open would stack widgets.
+export function bindSetupKey(
+  screen: { key: (keys: string[], fn: () => void) => void },
+  isOverlayOpen: () => boolean,
+  open: () => void,
+): void {
+  screen.key(["S-w"], () => {
+    if (!isOverlayOpen()) open();
+  });
+}
+
+// s and W both restart the daemon, so neither may open while W's apply is
+// still restarting it: two overlapping restarts can orphan a daemon.
+export function settingsGate(isOverlayOpen: () => boolean, isApplying: () => boolean): () => boolean {
+  return () => isOverlayOpen() || isApplying();
+}
+
+// The board notice after W's apply, mirroring the settings panel's footer:
+// "daemon stopped" only when the rollback restart failed too.
+export function setupApplyOutcome(result: ApplyResult): { text: string; isError: boolean; daemonStopped: boolean } {
+  if (result.ok) return { text: "setup saved, daemon restarted", isError: false, daemonStopped: false };
+  const suffix = result.rolledBack ? "" : ", daemon stopped";
+  return {
+    text: `{red-fg}setup not applied: ${blessed.escape(result.error)}${suffix}{/red-fg}`,
+    isError: true,
+    daemonStopped: !result.rolledBack,
+  };
+}
+
 export function runTui(opts: {
   onQuit: () => void;
+  updateState?: () => UpdateState | null;
+  // True when no wrapper will relaunch the board, so a ready update waits for a manual restart.
+  updateManualRestart?: boolean;
+  bootNotice?: Notice | null;
   liveKeys: () => Set<string>;
   // Keys of the instance's open PRs: a PR-backed row stays on the board while
   // its PR is open even with no worktree behind it. See filterToLiveRows.
@@ -645,53 +680,55 @@ export function runTui(opts: {
   // render as "working (manual)" instead of aging off the board.
   manualLiveKeys: () => Set<string>;
   // Merged split slices whose worktree cleanup holds for the group; their rows
-  // read "merged, waiting on slices" and stay on the merge pane.
+  // read "merged, waiting on slices" and stay on the board.
   heldSliceKeys: () => Set<string>;
   // Merged worktrees the cleanup step is holding for the ticket's other PRs or
   // its Linear state; their rows read "merged, waiting on ticket".
   heldMergedKeys: () => Set<string>;
   onToggleFlag: (key: string, label: string, flagged: boolean) => void;
   onOpenSession: (key: string, label: string) => void;
+  // Opens a PR on GitHub in the browser; the PR cell on the board is clickable.
+  onOpenPr: (pr: number, repo?: string) => Promise<void>;
   onAddReadyLabel: (pr: number, key: string, label: string, repo?: string) => Promise<void>;
   mode: () => Mode;
   onToggleMode: () => Mode;
-  refineEnabled: () => boolean;
   settings: SettingsDeps;
+  // The wizard behind W; its finish writes nothing, settings.apply does.
+  setupDeps: () => SetupDeps;
   reviewDeps: (pr: number, key: string, label: string, repo?: string) => ReviewDeps;
+  // The watched team's active cycle for the kanban columns.
+  fetchBoard: () => Promise<CycleBoard>;
   // Feeds the ready-to-review pane's AI ordering: per-PR meta reads and the
   // headless prompt runner (same claude -p shape as the review grouping).
   orderDeps: OrderSourceDeps;
-}): void {
+}): TuiHandle {
   const term = screenTerm(process.env.TERM);
   const screen = blessed.screen({ smartCSR: true, title: "yimbot", fullUnicode: true, ...(term ? { term } : {}) });
 
-  const makePane = (pane: Pane, position: Record<string, unknown>) =>
-    blessed.listtable({
-      parent: screen,
-      ...position,
-      tags: true,
-      align: "left",
-      keys: true,
-      vi: true,
-      mouse: true,
-      border: { type: "line" },
-      // A bordered listtable defaults to drawing cell borders between every
-      // column, which turns the pane into a full grid; keep the flat look.
-      noCellBorders: true,
-      style: {
-        header: { bold: true },
-        cell: { selected: { inverse: true } },
-        border: { fg: PANE_BORDER[pane] },
-        label: { fg: PANE_BORDER[pane] },
-      },
-    });
   // Positions are re-fit by render() from boardLayout on every repaint.
-  const tasksPane = makePane("tasks", { top: 1, left: 0, right: 0, bottom: 1 });
-  const reviewPane = makePane("review", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
-  const mergePane = makePane("merge", { left: 0, right: 0, bottom: 1, height: 4, hidden: true });
-  const parentsPane = makePane("parents", { left: 0, width: QUEUE_PANE_WIDTH, bottom: 1, height: 4, hidden: true });
-  const paneWidgets: Record<Pane, any> = { tasks: tasksPane, review: reviewPane, merge: mergePane, parents: parentsPane };
-  tasksPane.focus();
+  const parentsPane = blessed.listtable({
+    parent: screen,
+    left: 0,
+    width: QUEUE_PANE_WIDTH,
+    bottom: 1,
+    height: 4,
+    hidden: true,
+    tags: true,
+    align: "left",
+    keys: true,
+    vi: true,
+    mouse: true,
+    border: { type: "line" },
+    // A bordered listtable defaults to drawing cell borders between every
+    // column, which turns the pane into a full grid; keep the flat look.
+    noCellBorders: true,
+    style: {
+      header: { bold: true },
+      cell: { selected: { inverse: true } },
+      border: { fg: PARENTS_BORDER },
+      label: { fg: PARENTS_BORDER },
+    },
+  });
 
   // Never focused, never in the pane rotation. Reading the queue reaps stale
   // tickets, so this pane is a writer and not an observer. Inspection and
@@ -709,27 +746,110 @@ export function runTui(opts: {
     style: { header: { bold: true }, border: { fg: "grey" }, label: { fg: "grey" } },
   });
 
-  const title = blessed.text({ parent: screen, ...titleLayout(), content: "yimbot" });
+  const title = blessed.text({ parent: screen, ...titleLayout(), content: titleContent(null) });
   const status = blessed.text({ parent: screen, ...statusLayout(), content: "live" });
   const footer = blessed.text({ parent: screen, ...footerLayout() });
 
   let currentRows: BoardRow[] = [];
-  let currentTasks: BoardRow[] = [];
-  let currentMerge: BoardRow[] = [];
   let currentParents: BoardRow[] = [];
-  let currentReview: ReviewEntry[] = [];
-  let focusedPane: Pane = "tasks";
+  let currentTable: { tasks: BoardRow[]; review: ReviewEntry[]; merge: BoardRow[] } = { tasks: [], review: [], merge: [] };
+  let view: View = DEFAULT_VIEW;
+  let currentColumns: Column[] = [];
+  let lastBoard: CycleBoard | null = null;
+  const columnWidgets = new Map<string, CardColumn>();
+  let focusedId = "tasks";
+  let windowStart = 0;
+  let closed = false;
   // Set when a settings apply's rollback restart also failed, so the daemon
   // is confirmed down. The panel itself closes on esc/w regardless of draft
   // state, so this has to outlive it to keep showing on the board.
   let daemonStopped = false;
-  let notice: Notice | null = null;
-  const paneCounts = (): PaneCounts => ({
-    tasks: currentTasks.length,
-    review: currentReview.length,
-    merge: currentMerge.length,
-    parents: currentParents.length,
+  let notice: Notice | null = opts.bootNotice ?? null;
+
+  const focusedWidget = (): any => {
+    if (focusedId === "parents") return parentsPane;
+    if (view === "table") return isTableId(focusedId) ? tableView.widgets[focusedId] : undefined;
+    return columnWidgets.get(focusedId)?.widget;
+  };
+  const tableCounts = () => ({
+    tasks: currentTable.tasks.length,
+    review: currentTable.review.length,
+    merge: currentTable.merge.length,
   });
+  const currentOrder = () => viewFocusOrder(view, tableCounts(), currentColumns, currentParents.length > 0);
+  const cardFor = (columnId: string, key: string | null | undefined): Card | undefined =>
+    currentColumns.find((c) => c.id === columnId)?.cards.find((c) => c.key === key);
+  const selectedCard = () => cardFor(focusedId, columnWidgets.get(focusedId)?.selectedKey());
+  const setFocusId = (id: string) => {
+    focusedId = id;
+  };
+  const focusChange = onPaneFocusChange(() => focusedId, setFocusId, () => render());
+  parentsPane.on("focus", () => focusChange("parents"));
+
+  const tableView = createTableView({
+    parent: screen,
+    onFocus: (id) => focusChange(id),
+    onOpen: (r) => opts.onOpenSession(r.key, r.label),
+    onOpenPr: (r) => void handleOpenPr(r, opts.onOpenPr, setNotice),
+  });
+
+  const makeColumn = (id: string): CardColumn => {
+    const column = createCardColumn({
+      parent: screen,
+      onOpen: (key) => openCard(cardFor(id, key)),
+      onFocus: () => {
+        column.widget.focus();
+        focusChange(id);
+      },
+    });
+    return column;
+  };
+
+  // Columns are reconciled by Linear state id: a state that left the board
+  // loses its widget, a new one gets one, and the window decides which show.
+  const renderColumns = (area: { top: number; left: number; right: number; bottom: number }, screenWidth: number) => {
+    currentColumns = lastBoard ? buildColumns(lastBoard, currentRows) : [];
+    const ids = currentColumns.map((c) => c.id);
+    const keep = focusedId;
+    for (const [id, column] of columnWidgets) {
+      if (ids.includes(id)) continue;
+      column.widget.destroy();
+      columnWidgets.delete(id);
+    }
+    focusedId = viewFocus("kanban", currentOrder(), keep, lastBoard !== null);
+    const { start, slots } = placeColumns(ids, focusedId, windowStart, area.left, screenWidth - area.left - area.right);
+    windowStart = start;
+    const now = Date.now();
+    const codebase = codebaseRepoName();
+    for (const column of currentColumns) {
+      let widget = columnWidgets.get(column.id);
+      if (!widget) {
+        widget = makeColumn(column.id);
+        columnWidgets.set(column.id, widget);
+      }
+      const slot = slots.find((s) => s.id === column.id);
+      if (!slot) {
+        widget.widget.hide();
+        continue;
+      }
+      widget.widget.top = area.top;
+      widget.widget.bottom = area.bottom;
+      widget.widget.left = slot.left;
+      widget.widget.width = slot.width;
+      widget.setLabel(paneLabel(column.title, column.cards.length));
+      widget.setAccent(column.color);
+      // Less the column border and the card border.
+      widget.setCards(column.cards.map((card) => ({ key: card.key, lines: cardLines(card, slot.width - 4, now, codebase, column.color) })));
+      widget.setFocused(column.id === focusedId);
+      widget.widget.show();
+    }
+  };
+
+  const renderTable = (screenHeight: number, screenWidth: number) => {
+    focusedId = viewFocus("table", currentOrder(), focusedId);
+    tableView.render({ ...currentTable, now: Date.now(), boxes: tableBoxes(screenHeight, screenWidth), focusedId });
+  };
+
   const render = () => {
     currentRows = filterToLiveRows(
       reduceRows(readEvents(), Date.now(), {
@@ -740,47 +860,25 @@ export function runTui(opts: {
       opts.liveKeys(),
       opts.openPrKeys(),
     );
-    const split = partitionRows(currentRows);
-    const layout = boardLayout(Number(screen.rows) || 24, Number(screen.cols) || 80, split.parents.length);
-    // No room for the box (narrow screen, short screen): the parents go back
-    // to the tasks pane rather than off the board.
-    const parents = layout.parents ? split.parents : [];
-    const tasks = layout.parents ? split.tasks : [...split.tasks, ...split.parents];
-    const { review, merge } = split;
-    const withPr = review.filter((r): r is BoardRow & { pr: number } => r.pr != null);
-    orderFetcher.ensure(
-      withPr.map((r) => r.pr),
-      new Map(withPr.flatMap((r) => (r.repo ? [[r.pr, r.repo] as const] : []))),
-    );
-    currentReview = applyOrder(review, orderFetcher.get());
-    currentTasks = tasks;
-    currentMerge = merge;
-    currentParents = parents;
-    const now = Date.now();
-    const [tasksData, reviewData, mergeData] = alignTables([
-      boardTable(tasks.map((row) => ({ row })), now),
-      boardTable(currentReview.map((e) => ({ row: e.row })), now),
-      boardTable(merge.map((row) => ({ row })), now),
-    ]);
-    tasksPane.bottom = layout.tasks.bottom;
-    tasksPane.setLabel(` tasks (${tasks.length}) `);
-    tasksPane.setData(tasksData);
-    reviewPane.height = layout.review.height;
-    reviewPane.bottom = layout.review.bottom;
-    reviewPane.setLabel(` ready to review (${currentReview.length}) `);
-    reviewPane.setData(reviewData);
-    mergePane.height = layout.merge.height;
-    mergePane.bottom = layout.merge.bottom;
-    mergePane.setLabel(` ready to merge (${merge.length}) `);
-    mergePane.setData(mergeData);
+    const parents = currentRows.filter(isParentRow);
+    const screenHeight = Number(screen.rows) || 24;
+    const screenWidth = Number(screen.cols) || 80;
+    const layout = boardLayout(screenHeight, screenWidth, parents.length);
+    currentParents = layout.parents ? parents : [];
+    if (view === "table") {
+      const sections = tableSections(currentRows, layout.parents !== null);
+      const withPr = sections.review.filter((r): r is BoardRow & { pr: number } => r.pr != null);
+      orderFetcher.ensure(
+        withPr.map((r) => r.pr),
+        new Map(withPr.flatMap((r) => (r.repo ? [[r.pr, r.repo] as const] : []))),
+      );
+      currentTable = { tasks: sections.tasks, review: applyOrder(sections.review, orderFetcher.get()), merge: sections.merge };
+    }
     if (layout.parents) {
       parentsPane.height = layout.parents.height;
-      parentsPane.setLabel(` parent tickets (${parents.length}) `);
-      parentsPane.setData(parentRows(parents));
+      parentsPane.setLabel(paneLabel("parent tickets", currentParents.length));
+      parentsPane.setData(parentRows(currentParents));
     }
-    tasksPane.left = layout.tasks.left;
-    reviewPane.left = layout.review.left;
-    mergePane.left = layout.merge.left;
     // Skip the read while an overlay hides the pane: it reaps tickets, so
     // polling it here would write state nobody can see.
     if (layout.queue && !isOverlayOpen()) {
@@ -790,35 +888,40 @@ export function runTui(opts: {
     } else {
       queuePane.hide();
     }
-    // While an overlay is open every pane stays hidden (the overlay owns
-    // the screen); the close callback re-renders, which shows them again.
-    // The parents box has no reserved space, so no rows means hidden. Hiding
-    // it while focused makes blessed rewind focus onto a history pane, which
-    // the focus sync would record; keep the operator's pane so resolvePane
-    // below picks the fallback deterministically instead.
+    // While an overlay is open every pane stays hidden (the overlay owns the
+    // screen); the close callback re-renders, which shows them again. Hiding
+    // or destroying the focused pane makes blessed rewind focus onto another,
+    // which the focus sync would record; keep the operator's id so
+    // resolveFocus picks the fallback deterministically instead.
     if (!isOverlayOpen()) {
-      reviewPane.show();
-      mergePane.show();
-      if (layout.parents) {
-        parentsPane.show();
+      const keep = focusedId;
+      if (layout.parents) parentsPane.show();
+      else parentsPane.hide();
+      if (view === "table") {
+        for (const column of columnWidgets.values()) column.widget.hide();
+        tableView.show();
       } else {
-        const keep = focusedPane;
-        parentsPane.hide();
-        focusedPane = keep;
+        tableView.hide();
       }
+      focusedId = keep;
+      if (view === "table") renderTable(screenHeight, screenWidth);
+      else renderColumns(layout.board, screenWidth);
+      focusMove(focusedWidget(), screen.focused, title)?.focus();
     }
-    const pane = resolvePane(focusedPane, paneCounts());
-    if (pane !== focusedPane) {
-      focusedPane = pane;
-      if (!isOverlayOpen()) focusedWidget().focus();
-    }
-    applyPaneFocusStyle(paneWidgets, focusedPane);
-    footer.setContent(footerHint(focusedPane));
-    const active = currentRows.filter((r) => !r.terminal).length;
+    title.setContent(titleContent(headerBoard(view, lastBoard)));
+    styleParentsPane(parentsPane, focusedId === "parents");
+    footer.setContent(footerHint());
     status.setContent(
       daemonStopped
         ? "daemon stopped"
-        : statusContent(opts.mode(), opts.refineEnabled(), active, notice, Date.now(), unreachable()),
+        : statusContent(
+            opts.mode(),
+            notice,
+            Date.now(),
+            unreachable(),
+            opts.updateState?.() ?? null,
+            opts.updateManualRestart ?? false,
+          ),
     );
     screen.render();
   };
@@ -827,51 +930,57 @@ export function runTui(opts: {
     render();
   };
   const orderFetcher = makeOrderFetcher({ ...opts.orderDeps, onUpdate: () => render() });
-  const selRow = () =>
-    selectedBoardRow(focusedPane, {
-      tasks: { rows: currentTasks, selected: tasksPane.selected },
-      review: { entries: currentReview, selected: reviewPane.selected },
-      merge: { rows: currentMerge, selected: mergePane.selected },
-      parents: { rows: currentParents, selected: parentsPane.selected },
-    });
-  const focusedWidget = () => paneWidgets[focusedPane];
-  const focusPane = (p: Pane) => {
-    focusedPane = p;
-    focusedWidget().focus();
+  const focusPane = (id: string) => {
+    focusedId = id;
     render();
   };
-  bindPaneFocusSync(
-    paneWidgets,
-    onPaneFocusChange(
-      () => focusedPane,
-      (p) => {
-        focusedPane = p;
-      },
-      render,
-    ),
-  );
+
+  const openCard = (card: Card | undefined) => {
+    const target = rowForAction(card);
+    if ("notice" in target) {
+      setNotice(target.notice, NOTICE_ERROR_TTL_MS);
+      return;
+    }
+    opts.onOpenSession(target.row.key, target.row.label);
+  };
+
+  const refreshBoard = latestOnly(opts.fetchBoard, (board) => {
+    if (closed) return;
+    lastBoard = board;
+    render();
+  });
 
   const onEvent = (_ev: YimbotEvent) => render();
   bus.on("event", onEvent);
   const refreshTimer = setInterval(render, refreshMs());
+  const boardTimer = setInterval(onlyInView("kanban", () => view, refreshBoard), BOARD_REFRESH_MS);
   // Reposition the absolutely-placed section immediately on a terminal resize
   // instead of leaving stale rows painted until the next tick.
   screen.on("resize", render);
 
-  const quit = () => {
+  const teardown = () => {
+    closed = true;
     clearInterval(refreshTimer);
+    clearInterval(boardTimer);
     bus.off("event", onEvent);
     screen.destroy();
+  };
+  const quit = () => {
+    teardown();
     opts.onQuit();
   };
   let settingsOpen = false;
   let reviewOpen = false;
   let helpOpen = false;
-  const isOverlayOpen = () => settingsOpen || reviewOpen || helpOpen;
+  let setupOpen = false;
+  // Set while W's apply restarts the daemon, so a second W cannot race it.
+  let setupApplying = false;
+  const isOverlayOpen = () => settingsOpen || reviewOpen || helpOpen || setupOpen;
   // Swapped in by bindReviewKey's open below; openReview's getter reports
   // false once the overlay closes, so no reset is needed here.
   let reviewClaudeFocused: () => boolean = () => false;
-  bindQuitKeys(screen, () => reviewClaudeFocused(), quit);
+  // C-c inside the wizard cancels it back to the board instead of quitting.
+  bindQuitKeys(screen, () => reviewClaudeFocused() || setupOpen, quit);
 
   // The help box floats over the board (panes stay visible under it), owns
   // the keyboard while open, and closes on ?, q or escape.
@@ -896,30 +1005,24 @@ export function runTui(opts: {
       if (ch !== "?" && k?.name !== "q" && k?.name !== "escape") return;
       helpOpen = false;
       box.detach();
-      focusedWidget().focus();
+      focusedWidget()?.focus();
       render();
     });
     screen.render();
   });
 
+  // render() shows the panes again once the overlay closes.
   const hidePanes = () => {
     hidePanesKeepingFocus(
-      paneWidgets,
-      () => focusedPane,
-      (p) => {
-        focusedPane = p;
-      },
+      [parentsPane, tableView, ...[...columnWidgets.values()].map((c) => c.widget)],
+      () => focusedId,
+      setFocusId,
     );
     queuePane.hide();
   };
-  // The review and merge panes are deliberately not shown here: the render()
-  // every caller issues right after restores them only when they have rows.
-  const showPanes = () => {
-    tasksPane.show();
-    focusedWidget().focus();
-  };
 
-  bindSettingsKey(screen, isOverlayOpen, () => {
+  const applyBlocked = settingsGate(isOverlayOpen, () => setupApplying);
+  bindSettingsKey(screen, applyBlocked, () => {
     settingsOpen = true;
     hidePanes();
     openSettings(
@@ -928,30 +1031,69 @@ export function runTui(opts: {
       (stopped) => {
         settingsOpen = false;
         daemonStopped = stopped;
-        showPanes();
         render();
       },
       daemonStopped,
     );
   });
 
+  bindSetupKey(screen, applyBlocked, () => {
+    setupOpen = true;
+    hidePanes();
+    const prev = opts.settings.loadConfig();
+    openSetup(screen, opts.setupDeps(), (result) => {
+      setupOpen = false;
+      if (!result) {
+        render();
+        return;
+      }
+      setupApplying = true;
+      setNotice("applying setup...", NOTICE_ERROR_TTL_MS);
+      void opts.settings
+        .apply(result.config, prev)
+        .catch((err: unknown): ApplyResult => ({ ok: false, error: errMsg(err), rolledBack: false }))
+        .then((applied) => {
+          setupApplying = false;
+          const outcome = setupApplyOutcome(applied);
+          daemonStopped = outcome.daemonStopped;
+          setNotice(outcome.text, outcome.isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);
+        });
+    });
+  });
+
+  const selectedParent = () => currentParents[parentsPane.selected - 1];
+
+  // The row a key acts on: the parents pane's selection, the focused table
+  // pane's row, or the focused column's card when yimbot has a row for it (a
+  // notice otherwise).
+  const actionRow = (): BoardRow | undefined => {
+    if (focusedId === "parents") return selectedParent();
+    if (view === "table") return isTableId(focusedId) ? tableView.selectedRow(focusedId, currentTable) : undefined;
+    const target = rowForAction(selectedCard());
+    if ("row" in target) return target.row;
+    setNotice(target.notice, NOTICE_ERROR_TTL_MS);
+    return undefined;
+  };
+
   bindFlagKey(screen, isOverlayOpen, () => {
-    const r = selRow();
+    const r = actionRow();
     if (!r) return;
     opts.onToggleFlag(r.key, r.label, isFlagged(r));
   });
 
-  // A parent row's pr, when it has one, is the PR the split closed: the fold
-  // carries it forward, but nothing about it is actionable any more.
-  const refuseParentRow = (): boolean => {
-    if (focusedPane !== "parents") return false;
-    setNotice("{red-fg}parent tickets have no PR of their own{/red-fg}", NOTICE_ERROR_TTL_MS);
-    return true;
+  const prActionRow = (refuse = prActionRefusal): BoardRow | undefined => {
+    const r = actionRow();
+    if (!r) return undefined;
+    const refusal = refuse(r);
+    if (!refusal) return r;
+    setNotice(refusal, NOTICE_ERROR_TTL_MS);
+    return undefined;
   };
 
   bindReadyKey(screen, isOverlayOpen, () => {
-    if (refuseParentRow()) return;
-    void handleReadyPress(selRow(), opts.onAddReadyLabel, setNotice);
+    const r = prActionRow(readyRefusal);
+    if (!r) return;
+    void handleReadyPress(r, opts.onAddReadyLabel, setNotice);
   });
 
   bindModeKey(screen, isOverlayOpen, () => {
@@ -959,19 +1101,36 @@ export function runTui(opts: {
     render();
   });
 
+  bindViewKey(screen, isOverlayOpen, () => {
+    view = nextView(view);
+    if (view === "kanban") refreshBoard();
+    render();
+  });
+
   bindPaneToggle(screen, isOverlayOpen, () => {
-    const next = nextPane(focusedPane, paneCounts());
-    if (next !== focusedPane) focusPane(next);
+    const next = cycleFocus(currentOrder(), focusedId);
+    if (next !== focusedId) focusPane(next);
   });
 
   bindPaneNavKeys(screen, isOverlayOpen, (dir) => {
-    const next = movePane(focusedPane, dir, paneCounts());
-    if (next !== focusedPane) focusPane(next);
+    const next = stepFocus(currentOrder(), focusedId, dir === "down" ? "next" : "prev");
+    if (next !== focusedId) focusPane(next);
   });
 
+  const selectGuard = makeSelectGuard();
+  bindColumnKeys(
+    screen,
+    isOverlayOpen,
+    () => view === "kanban",
+    (dir) => {
+      if (dir === "right") selectGuard.arm();
+      const next = stepFocus(currentOrder(), focusedId, dir === "right" ? "next" : "prev");
+      if (next !== focusedId) focusPane(next);
+    },
+  );
+
   bindReviewKey(screen, isOverlayOpen, () => {
-    if (refuseParentRow()) return;
-    const r = selRow();
+    const r = prActionRow();
     if (!r) return;
     if (r.pr == null) {
       setNotice("{red-fg}selected row has no PR to review{/red-fg}", NOTICE_ERROR_TTL_MS);
@@ -981,21 +1140,18 @@ export function runTui(opts: {
     hidePanes();
     const overlay = openReview(screen, opts.reviewDeps(r.pr, r.key, r.label, r.repo), (noticeMsg, isError) => {
       reviewOpen = false;
-      showPanes();
       if (noticeMsg) setNotice(noticeMsg, isError ? NOTICE_ERROR_TTL_MS : NOTICE_TTL_MS);
       else render();
     });
     reviewClaudeFocused = overlay.claudeFocused;
   });
 
-  const openSelectedSession = (r: BoardRow | undefined) => {
-    if (!r) return;
-    opts.onOpenSession(r.key, r.label);
-  };
-  tasksPane.on("select", () => openSelectedSession(currentTasks[tasksPane.selected - 1]));
-  reviewPane.on("select", () => openSelectedSession(currentReview[reviewPane.selected - 1]?.row));
-  mergePane.on("select", () => openSelectedSession(currentMerge[mergePane.selected - 1]));
-  parentsPane.on("select", () => openSelectedSession(currentParents[parentsPane.selected - 1]));
+  parentsPane.on("select", () => {
+    if (selectGuard.consume()) return;
+    const r = selectedParent();
+    if (r) opts.onOpenSession(r.key, r.label);
+  });
 
   render();
+  return { isBusy: () => isOverlayOpen() || setupApplying, teardown };
 }

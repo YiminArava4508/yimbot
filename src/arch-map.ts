@@ -8,10 +8,14 @@ export type ArchNode = { id: string; label: string; role: string; files: string[
 export type ArchEdge = { from: string; to: string; carries: string };
 export type ArchMap = { generatedAt: string; commit: string; nodes: ArchNode[]; edges: ArchEdge[] };
 
+export const CATEGORIES = ["new", "contract", "behavior", "config", "risk"] as const;
+export type Category = (typeof CATEGORIES)[number];
+
 export type ArchAnnotation = {
   flow: string;
-  touched: { node: string; note: string }[];
-  atRisk: { node: string; why: string; viaEdge: string }[];
+  summary?: { what: string; why: string };
+  touched: { node: string; note: string; title?: string; category?: Category }[];
+  atRisk: { node: string; why: string; viaEdge: string; title?: string; category?: Category }[];
   added: { id: string; label: string; files: string[]; edges: { to: string; carries: string }[] }[];
 };
 

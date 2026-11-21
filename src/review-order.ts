@@ -94,7 +94,7 @@ export function orderCacheKey(prNumbers: number[]): string {
 }
 
 // Non-blocking cache in front of fetchOrder for the board's render loop: ensure()
-// kicks at most one async fetch per distinct PR set — landed orders are memoized
+// kicks at most one async fetch per distinct PR set: landed orders are memoized
 // and an in-flight set is never restarted, so a set flapping A/B/A costs one
 // fetch per distinct set, not one per flap. get() serves the current set's landed
 // order (null while it is still fetching, so a stale order is never shown against

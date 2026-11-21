@@ -67,7 +67,7 @@ function entryRow(mark: string, entry: QueueEntry, color?: string): string {
 }
 
 export function queueRows(state: QueueState): string[][] {
-  const header = [["QUEUE"]];
+  const header = [["BACKGROUND JOBS"]];
   if (!state.running && state.waiting.length === 0) return [...header, ["{grey-fg}idle{/grey-fg}"]];
   const rows: string[][] = [...header];
   if (state.running) rows.push([entryRow("▶ ", state.running, "green")]);

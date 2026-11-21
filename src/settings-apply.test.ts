@@ -16,6 +16,7 @@ const prev: YimbotConfig = {
   autoClaim: true,
   riskLabels: ["infra"],
   maxInProgress: 3,
+  claimsPerHeartbeat: 1,
   autoCleanup: true,
   autoContinue: true,
   maxContinuations: 5,
@@ -26,6 +27,8 @@ const prev: YimbotConfig = {
   refineUsers: "",
   refineLabelFilter: "",
   maxRefining: 1,
+  splitTickets: true,
+  agent: "claude",
 };
 const next: YimbotConfig = { ...prev, maxInProgress: 1, labelFilter: "bot" };
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { BlockedInfo, ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, UnresolvedInfo } from "./gh.ts";
+import type { BlockedInfo, BlockReason, ChecksInfo, CiState, MergeableInfo, MergeableState, OpenPR, PrLifecycle, UnresolvedInfo } from "./gh.ts";
 import {
   blockedSessionName,
   ciSessionName,
@@ -48,16 +48,26 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
   conflictSpawned: { name: string; branch: string; prNumber: number }[];
   blockedSpawned: { name: string; branch: string; prNumber: number }[];
   reaped: { prNumber: number; branch: string; kind: string }[];
+  settled: { prNumber: number; branch: string }[];
+  restored: { prNumber: number; branch: string; kind: string }[];
   flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[];
   logs: string[];
+  waiting: { prNumber: number; waitingOn: number[] }[];
+  waitingHold: { kind: string; note?: string }[];
+  requeued: number[];
 } {
   const spawned: { name: string; branch: string; prNumber: number }[] = [];
   const ciSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const conflictSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const blockedSpawned: { name: string; branch: string; prNumber: number }[] = [];
   const reaped: { prNumber: number; branch: string; kind: string }[] = [];
+  const settled: { prNumber: number; branch: string }[] = [];
+  const restored: { prNumber: number; branch: string; kind: string }[] = [];
   const flagRaised: { prNumber: number; branch: string; reason: string; signalTs?: number }[] = [];
   const logs: string[] = [];
+  const waiting: { prNumber: number; waitingOn: number[] }[] = [];
+  const waitingHold: { kind: string; note?: string }[] = [];
+  const requeued: number[] = [];
   const d: PrReviewDeps = {
     listOpenPRs: async () => [pr(4706)],
     unresolvedInfo: async () => info(2, 1000),
@@ -70,6 +80,21 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     raiseFlag: (prNumber, branch, reason, signalTs) => void flagRaised.push({ prNumber, branch, reason, signalTs }),
     inFlightFixKinds: () => [],
     reapFix: (prNumber, branch, kind) => void reaped.push({ prNumber, branch, kind }),
+    settleFixStatus: (prNumber, branch) => void settled.push({ prNumber, branch }),
+    restoreFixStatus: (prNumber, branch, kind) => void restored.push({ prNumber, branch, kind }),
+    blockReason: async () => ({ kind: "other" }),
+    prLifecycle: async () => "open",
+    markWaiting: (prNumber, _branch, waitingOn, kind, note) => {
+      waiting.push({ prNumber, waitingOn });
+      waitingHold.push({ kind, note });
+    },
+    requeue: async (prNumber) => {
+      requeued.push(prNumber);
+      return null;
+    },
+    blockedPaneActivity: () => null,
+    blockedSettleMs: 2 * 60 * 1000,
+    blockedStuckMs: 30 * 60 * 1000,
     now: () => 0,
     reapStaleMs: 90 * 60 * 1000,
     pendingSpawnMaxMs: 6 * 60 * 1000,
@@ -80,7 +105,7 @@ function deps(overrides: Partial<PrReviewDeps> = {}): {
     log: (m) => void logs.push(m),
     ...overrides,
   };
-  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, flagRaised, logs };
+  return { deps: d, spawned, ciSpawned, conflictSpawned, blockedSpawned, reaped, settled, restored, flagRaised, logs, waiting, waitingHold, requeued };
 }
 
 test("fixSessionName is keyed by PR number", () => {
@@ -860,4 +885,316 @@ test("a failed thread read does not stop the in-flight fixer from being reaped",
     h.reaped.map((r) => r.kind),
     ["fix"],
   );
+});
+
+test("reviewOnce settles the fix status once no fixer is in flight or starting", async () => {
+  const { deps: d, settled } = deps({ unresolvedInfo: async () => noComments });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(settled, [{ prNumber: 4706, branch: "eng-4706-x" }]);
+});
+
+test("reviewOnce leaves the fix status alone while a fixer is in flight", async () => {
+  const { deps: d, settled } = deps({ inFlightFixKinds: () => ["ci"] });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(settled.length, 0);
+});
+
+test("reviewOnce leaves the fix status alone while a just-spawned fixer is not yet visible", async () => {
+  const { deps: d, ciSpawned, settled } = deps({ unresolvedInfo: async () => noComments, checksInfo: async () => ci("failing", "abc") });
+  const state = freshReviewState();
+  await reviewOnce(state, d); // settles, then spawns the CI fix
+  await reviewOnce(state, d); // fixer still starting: must not settle
+  assert.equal(ciSpawned.length, 1);
+  assert.equal(settled.length, 1);
+});
+
+test("reviewOnce settles the fix status of a flagged PR too", async () => {
+  const { deps: d, settled } = deps({
+    mode: () => "supervised",
+    flagState: () => ({ flagged: true, clearedAt: null }),
+    unresolvedInfo: async () => info(1, 1000, { humanTs: 1000 }),
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.equal(settled.length, 1);
+});
+
+test("reviewOnce restores the status of each fixer it sees in flight", async () => {
+  const { deps: d, restored } = deps({ inFlightFixKinds: () => ["ci"] });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(restored, [{ prNumber: 4706, branch: "eng-4706-x", kind: "ci" }]);
+});
+
+test("reviewOnce reads the flag state by PR number as well as branch", async () => {
+  const seen: [number, string][] = [];
+  const { deps: d } = deps({
+    mode: () => "supervised",
+    flagState: (prNumber, branch) => {
+      seen.push([prNumber, branch]);
+      return { flagged: false, clearedAt: null };
+    },
+  });
+  await reviewOnce(freshReviewState(), d);
+  assert.deepEqual(seen, [[4706, "eng-4706-x"]]);
+});
+
+const MIN = 60 * 1000;
+
+test("an idle blocked window is closed once the PR conflicts, then a conflict fix spawns", async () => {
+  let windowOpen = true;
+  const h = deps({
+    inFlightFixKinds: () => (windowOpen ? (["blocked"] as FixKind[]) : []),
+    reapFix: () => void (windowOpen = false),
+    blockedPaneActivity: () => ({ working: false, quietMs: 5 * MIN }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  assert.equal(windowOpen, false);
+  assert.equal(h.conflictSpawned.length, 0);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.conflictSpawned, [{ name: "pr-4706-conflict", branch: "eng-4706-x", prNumber: 4706 }]);
+});
+
+test("an idle blocked window is closed once the blocked label is gone", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: false, quietMs: 5 * MIN }),
+    blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.reaped, [{ prNumber: 4706, branch: "eng-4706-x", kind: "blocked" }]);
+});
+
+test("an actively working blocked window is never closed", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: true, quietMs: 60 * MIN }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+    blockedInfo: async () => ({ blocked: false, headSha: "abc" }),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.equal(h.reaped.length, 0);
+});
+
+test("a blocked window with unreadable activity is never closed", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => null,
+    mergeableInfo: async () => merge("conflicting", "abc"),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.equal(h.reaped.length, 0);
+});
+
+test("a blocked window still blocked and clean with main is left alone until it goes idle past the stuck threshold", async () => {
+  let quietMs = 5 * MIN;
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: false, quietMs }),
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  assert.equal(h.reaped.length, 0);
+  quietMs = 31 * MIN;
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.reaped, [{ prNumber: 4706, branch: "eng-4706-x", kind: "blocked" }]);
+});
+
+test("a freshly quiet blocked window is not closed even when the PR conflicts", async () => {
+  const h = deps({
+    inFlightFixKinds: () => ["blocked"] as FixKind[],
+    blockedPaneActivity: () => ({ working: false, quietMs: 10_000 }),
+    mergeableInfo: async () => merge("conflicting", "abc"),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.equal(h.reaped.length, 0);
+});
+
+const queueConflict = (commentAt = "t1", waitingOn = [8062, 8081]): BlockReason => ({ kind: "conflict", waitingOn, commentAt });
+
+test("a queue merge conflict block records waiting and spawns no session", async () => {
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.waiting, [{ prNumber: 4706, waitingOn: [8062, 8081] }]);
+  assert.equal(h.blockedSpawned.length, 0);
+  assert.equal(h.requeued.length, 0);
+});
+
+test("a waiting PR stays held while any sibling is still open", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "merged", 8081: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n],
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.equal(h.requeued.length, 0);
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062, 8081], [8081]]);
+});
+
+test("a waiting PR drops merged and closed siblings from the row and keeps the open ones", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "open", 8081: "open", 8083: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062, 8081, 8083]),
+    prLifecycle: async (n) => life[n],
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  life[8062] = "merged";
+  life[8081] = "closed";
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062, 8081, 8083], [8083]]);
+  assert.deepEqual(h.waitingHold.map((w) => w.kind), ["landing", "landing"]);
+});
+
+test("a queue-conflict wait carries the open sibling's needs-approval note", async () => {
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062]),
+    holderNote: (n) => (n === 8062 ? "needs approval" : undefined),
+  });
+  await reviewOnce(freshReviewState(), h.deps);
+  assert.deepEqual(h.waitingHold, [{ kind: "landing", note: "needs approval" }]);
+});
+
+test("an overlap hold shows only the overlapping PR, with its note", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "merged", 8081: "merged" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n] ?? "open",
+    requeue: async () => 8090,
+    holderNote: (n) => (n === 8090 ? "needs approval" : undefined),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.waiting.at(-1), { prNumber: 4706, waitingOn: [8090] });
+  assert.deepEqual(h.waitingHold.at(-1), { kind: "overlap", note: "needs approval" });
+});
+
+test("once every sibling landed and the PR is mergeable it is re-queued with no session", async () => {
+  const life: Record<number, PrLifecycle> = { 8062: "open", 8081: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n],
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  life[8062] = "merged";
+  life[8081] = "closed";
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.requeued, [4706]);
+  assert.equal(h.blockedSpawned.length, 0);
+});
+
+test("once every sibling landed and the PR conflicts with main the conflict path takes over", async () => {
+  let state = "mergeable" as MergeableState;
+  const life: Record<number, PrLifecycle> = { 8062: "open", 8081: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    mergeableInfo: async () => merge(state, "abc"),
+    blockReason: async () => queueConflict(),
+    prLifecycle: async (n) => life[n],
+  });
+  const rs = freshReviewState();
+  await reviewOnce(rs, h.deps);
+  life[8062] = "merged";
+  life[8081] = "merged";
+  state = "conflicting";
+  await reviewOnce(rs, h.deps);
+  assert.equal(h.requeued.length, 0);
+  assert.equal(h.conflictSpawned.length, 1);
+});
+
+test("a re-block at the same head with a new failure comment re-enters waiting", async () => {
+  let at = "t1";
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict(at, at === "t1" ? [8062] : [9000]),
+    prLifecycle: async (n) => (n === 8062 ? "merged" : "open"),
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps); // waits, sees 8062 landed on the same tick, re-queues
+  assert.deepEqual(h.requeued, [4706]);
+  at = "t2";
+  await reviewOnce(state, h.deps);
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062], [9000]]);
+  assert.equal(h.blockedSpawned.length, 0);
+});
+
+test("a re-block showing the already-handled failure comment goes to a session", async () => {
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062]),
+    prLifecycle: async () => "merged",
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps);
+  await reviewOnce(state, h.deps);
+  assert.equal(h.requeued.length, 1);
+  assert.equal(h.blockedSpawned.length, 1);
+});
+
+test("a non-conflict block or an unreadable comment still goes to the blocked fix session", async () => {
+  const other = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+  });
+  await reviewOnce(freshReviewState(), other.deps);
+  assert.equal(other.blockedSpawned.length, 1);
+  const failing = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => {
+      throw new Error("gh down");
+    },
+  });
+  await reviewOnce(freshReviewState(), failing.deps);
+  assert.equal(failing.blockedSpawned.length, 1);
+});
+
+test("a re-queue that overlaps a queued PR waits on it, then re-queues once it lands", async () => {
+  let holder: number | null = 8082;
+  const life: Record<number, PrLifecycle> = { 8062: "merged", 8082: "open" };
+  const h = deps({
+    blockedInfo: async () => ({ blocked: true, headSha: "abc" }),
+    unresolvedInfo: async () => info(0, null),
+    blockReason: async () => queueConflict("t1", [8062]),
+    prLifecycle: async (n) => life[n],
+    requeue: async (n) => {
+      h.requeued.push(n);
+      return holder;
+    },
+  });
+  const state = freshReviewState();
+  await reviewOnce(state, h.deps); // siblings landed, but 8082 holds the queue
+  assert.deepEqual(h.waiting.map((w) => w.waitingOn), [[8062], [8082]]);
+  await reviewOnce(state, h.deps); // still waiting on 8082
+  assert.equal(h.requeued.length, 1);
+  life[8082] = "merged";
+  holder = null;
+  await reviewOnce(state, h.deps);
+  assert.equal(h.requeued.length, 2);
+  assert.equal(h.blockedSpawned.length, 0);
 });

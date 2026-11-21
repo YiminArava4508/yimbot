@@ -467,10 +467,10 @@ export function reachWarnings(down: Service[]): string {
 export function updateChip(state: UpdateState | null, manualRestart = false): string {
   if (!state || state.kind === "current") return "";
   if (state.kind === "ready" && manualRestart) {
-    return "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg}";
+    return "{black-fg}{cyan-bg} update ready (restart to apply) {/cyan-bg}{/black-fg} ";
   }
-  if (state.kind === "ready") return "{black-fg}{cyan-bg} update ready {/cyan-bg}{/black-fg}";
-  return `{red-fg}update blocked: ${state.reason}{/red-fg}`;
+  if (state.kind === "ready") return "{black-fg}{cyan-bg} update ready {/cyan-bg}{/black-fg} ";
+  return `{red-fg}update blocked: ${state.reason}{/red-fg} `;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

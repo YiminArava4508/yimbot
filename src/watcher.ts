@@ -521,6 +521,9 @@ export type ClaimDeps = {
   fetchMergedIdentifiers?: () => Promise<Set<string>>;
   // State names that count as a blocker's work having landed (clearedStateNames).
   clearedStates: Set<string>;
+  // Whether an identifier is one of the deploy step's Linear trackers. Its
+  // children are the work, not slices a session is still carving.
+  isLinearTracker?: (identifier: string) => boolean;
   // Move the chosen ticket into the watched "In Progress" state, so the
   // deploy step picks it up on the next poll.
   moveToInProgress: (issue: CycleTodoIssue) => Promise<void>;
@@ -627,10 +630,11 @@ export const ARCHIVE_PRECHECK_ERROR_TTL_MS = 10 * 60_000;
 
 // A started parent means its session may still be carving slices. A parent in
 // a cleared state (Merged or later) has landed, so its Todo children are late
-// follow-ups that are safe to claim.
-function splitInFlight(todo: CycleTodoIssue, cleared: Set<string>): boolean {
+// follow-ups that are safe to claim. A Linear tracker has no session at all.
+function splitInFlight(todo: CycleTodoIssue, cleared: Set<string>, isTracker?: (identifier: string) => boolean): boolean {
   const parent = todo.parent;
   if (!parent || isClearedState(parent.stateName, cleared)) return false;
+  if (isTracker?.(parent.identifier)) return false;
   return parent.stateType === "started";
 }
 
@@ -672,7 +676,7 @@ export async function claimOnce(state: ClaimState, deps: ClaimDeps): Promise<voi
   // A slice of a pickup split sits in Todo while its parent's session is still
   // carving it: claiming it would launch a second session on the same work.
   todos = todos.filter((t) => {
-    if (!splitInFlight(t, deps.clearedStates)) return true;
+    if (!splitInFlight(t, deps.clearedStates, deps.isLinearTracker)) return true;
     deps.log(`deferring ${t.identifier}: parent ${t.parent!.identifier} is in progress (split in flight)`);
     return false;
   });
@@ -2190,6 +2194,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     fetchCycleTodos: () => fetchCycleTodoIssues(config.apiKey, claim.todoContext),
     fetchMergedIdentifiers,
     clearedStates: config.clearedStates,
+    isLinearTracker: (identifier) => deployState.trackers.has(identifier),
     moveToInProgress: async (issue) => {
       await moveIssueToState(config.apiKey, issue.id, config.progressContext.stateId);
       const { key, label } = deriveKey({ identifier: issue.identifier });

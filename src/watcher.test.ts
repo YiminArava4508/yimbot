@@ -1133,6 +1133,17 @@ test("claimOnce defers a slice whose parent ticket is in progress (split in flig
   assert.ok(logs.some((l) => l.includes("deferring ENG-5") && l.includes("ENG-4")));
 });
 
+test("claimOnce claims a sub-issue whose in-progress parent is a Linear tracker (decomposed in Linear, no session)", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "5", priority: 1, parent: { identifier: "ENG-4", stateName: "In Progress", stateType: "started" } }),
+    ],
+    isLinearTracker: (identifier) => identifier === "ENG-4",
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.equal(moved.length, 1);
+});
+
 test("claimOnce claims a late follow-up whose parent already reached the merged state", async () => {
   const { deps, moved } = claimDeps({
     fetchCycleTodos: async () => [

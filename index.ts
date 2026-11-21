@@ -26,6 +26,7 @@ import { archMapPath, readFlow, readGroups, readViewed, writeFlow, writeGroups, 
 import type { ReviewDeps } from "./src/tui-review.ts";
 import { headlessInFlight, runHeadless, withoutApiKey } from "./src/headless.ts";
 import { readBootSha, startSelfUpdate } from "./src/self-update-wiring.ts";
+import { readLastUpdate, recordLastUpdate } from "./src/last-update.ts";
 import { ensureContextScaffold, makeSessionRegistry, spawnClaudePty } from "./src/claude-sessions.ts";
 import { contextFilePath } from "./src/review-context.ts";
 import {
@@ -227,7 +228,10 @@ if (process.stdout.isTTY) {
     },
     log: (msg) => console.log(msg),
   });
+  const lastUpdatePath = join(import.meta.dirname, "last-update.json");
+  if (updater) recordLastUpdate(lastUpdatePath, process.env, updater.bootSha);
   tui = runTui({
+    lastUpdate: readLastUpdate(lastUpdatePath),
     updateState: updater?.state,
     updateManualRestart: updater ? !updater.autoRestart : false,
     bootNotice: updater ? bootNotice(process.env, updater.bootSha) : null,

@@ -6,6 +6,7 @@ import { envOr } from "./env.ts";
 import { bus, filterToLiveRows, isFlagged, isParentRow, readEvents, reduceRows, statusFor, type BoardRow, type YimbotEvent } from "./events.ts";
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
 import type { Mode } from "./mode.ts";
+import type { LastUpdate } from "./last-update.ts";
 import type { UpdateState } from "./self-update.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
@@ -472,6 +473,16 @@ export function updateChip(state: UpdateState | null, manualRestart = false): st
   return `{red-fg}update blocked: ${state.reason}{/red-fg}`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+// When the running code last changed by self-update, in local time.
+export function lastUpdateChip(last: LastUpdate | null): string {
+  if (!last) return "";
+  const d = new Date(last.at);
+  return grey(`updated ${MONTHS[d.getMonth()]} ${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())} `);
+}
+
 export function bootNotice(env: NodeJS.ProcessEnv, head: string, now: number = Date.now()): Notice | null {
   const rolledBack = env.YIMBOT_ROLLED_BACK;
   if (rolledBack) {
@@ -494,8 +505,9 @@ export function statusContent(
   down: Service[],
   update: UpdateState | null = null,
   manualRestart = false,
+  lastUpdate: LastUpdate | null = null,
 ): string {
-  const base = `${reachWarnings(down)}${updateChip(update, manualRestart)}${modeContent(mode)}`;
+  const base = `${reachWarnings(down)}${updateChip(update, manualRestart)}${lastUpdateChip(lastUpdate)}${modeContent(mode)}`;
   return notice && now < notice.until ? `${base} | ${notice.text}` : base;
 }
 
@@ -672,6 +684,7 @@ export function runTui(opts: {
   // True when no wrapper will relaunch the board, so a ready update waits for a manual restart.
   updateManualRestart?: boolean;
   bootNotice?: Notice | null;
+  lastUpdate?: LastUpdate | null;
   liveKeys: () => Set<string>;
   // Keys of the instance's open PRs: a PR-backed row stays on the board while
   // its PR is open even with no worktree behind it. See filterToLiveRows.
@@ -932,6 +945,7 @@ export function runTui(opts: {
             unreachable(),
             opts.updateState?.() ?? null,
             opts.updateManualRestart ?? false,
+            opts.lastUpdate ?? null,
           ),
     );
     screen.render();

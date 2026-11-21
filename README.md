@@ -547,7 +547,8 @@ off (default on; `false`, `off`, `no` or `0` turn it off) and
 `SELF_UPDATE_INTERVAL_MINUTES` sets the poll interval (default `5`). Relaunching
 needs `scripts/run.sh`: under plain `pnpm start` the board shows
 `update ready (restart to apply)` and waits for you, and headless runs do not
-self-update at all.
+self-update at all. The header shows when the last self-update was applied
+(`updated Nov 20 21:12`); only the latest one is kept, in `last-update.json`.
 
 `pnpm start` opens a setup wizard in the TUI when yimbot is not fully set up:
 no `LINEAR_API_KEY`, a `CODEBASE_PATH` that is unset or not a git repository,

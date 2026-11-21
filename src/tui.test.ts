@@ -5,7 +5,6 @@ import blessed from "neo-blessed";
 import { TABLE_IDS, isTableId } from "./table-view.ts";
 import { focusMove, DEFAULT_VIEW, bindColumnKeys, makeSelectGuard, bindViewKey, headerBoard, nextView, onlyInView, tableSections, viewFocus, viewFocusOrder, latestOnly, bindFlagKey, bindModeKey, hidePanesKeepingFocus, onPaneFocusChange, bindHelpKey, bindPaneNavKeys, bindPaneToggle, bindQuitKeys, bindReadyKey, bindReviewKey, bindSettingsKey, bindSetupKey, setupApplyOutcome, settingsGate, boardLayout, cellWidth, fmtDuration, footerHint, footerLayout, grey, handleOpenPr, handleReadyPress, headerInset, statusLayout, titleLayout, helpLines, modeContent, paneLabel, placeColumns, prActionRefusal, readyRefusal, resolveFocus, rowForAction, styleParentsPane, titleContent, parentRows, returnKey, reachWarnings, screenTerm, statusContent, updateChip, lastUpdateChip, bootNotice, NOTICE_ERROR_TTL_MS } from "./tui.ts";
 import { stepFocus, type Card, type Column } from "./kanban.ts";
-import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
 
@@ -258,12 +257,14 @@ test("placeColumns places nothing on an empty board", () => {
   assert.deepEqual(placeColumns([], "", 0, 0, 80), { start: 0, slots: [] });
 });
 
-test("styleParentsPane outlines and inverses the parents pane only while it holds the focus", () => {
-  const pane = { style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } };
+test("styleParentsPane frames, fills and inverses the parents pane only while it holds the focus, keeping its grey", () => {
+  const pane = { border: { type: "line" }, style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } };
   styleParentsPane(pane, true);
-  assert.deepEqual(pane.style, { border: { fg: FOCUS_BORDER }, label: { fg: FOCUS_BORDER }, selected: { inverse: true } });
+  assert.equal(pane.border.type, "bg");
+  assert.deepEqual(pane.style, { bg: 236, border: { fg: "grey", bg: "grey" }, label: { fg: "grey" }, selected: { inverse: true } });
   styleParentsPane(pane, false);
-  assert.deepEqual(pane.style, { border: { fg: "grey" }, label: { fg: "grey" }, selected: { inverse: false } });
+  assert.equal(pane.border.type, "line");
+  assert.deepEqual(pane.style, { bg: undefined, border: { fg: "grey", bg: undefined }, label: { fg: "grey" }, selected: { inverse: false } });
 });
 
 test("bindQuitKeys binds only C-c: q and escape must not quit the board", () => {

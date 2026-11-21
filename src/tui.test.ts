@@ -130,8 +130,9 @@ test("statusContent is the mode chip alone: no refine, split or activity text", 
   assert.doesNotMatch(bar, /REFINE|SPLIT|live|active/);
 });
 
-test("paneLabel is the plain pane name and its count", () => {
+test("paneLabel is the plain pane name and its count, wrapped in inward arrows while focused", () => {
   assert.equal(paneLabel("tasks", 3), " tasks 3 ");
+  assert.equal(paneLabel("tasks", 3, true), " \u25b6 tasks 3 \u25c0 ");
 });
 
 test("titleContent is the plain cyan wordmark until a board arrives", () => {
@@ -257,14 +258,12 @@ test("placeColumns places nothing on an empty board", () => {
   assert.deepEqual(placeColumns([], "", 0, 0, 80), { start: 0, slots: [] });
 });
 
-test("styleParentsPane frames, fills and inverses the parents pane only while it holds the focus, keeping its grey", () => {
-  const pane = { border: { type: "line" }, style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } };
+test("styleParentsPane inverses the parents pane's selected row only while it holds the focus", () => {
+  const pane = { style: { selected: { inverse: true } } };
   styleParentsPane(pane, true);
-  assert.equal(pane.border.type, "bg");
-  assert.deepEqual(pane.style, { bg: 236, border: { fg: "grey", bg: "grey" }, label: { fg: "grey" }, selected: { inverse: true } });
+  assert.equal(pane.style.selected.inverse, true);
   styleParentsPane(pane, false);
-  assert.equal(pane.border.type, "line");
-  assert.deepEqual(pane.style, { bg: undefined, border: { fg: "grey", bg: undefined }, label: { fg: "grey" }, selected: { inverse: false } });
+  assert.equal(pane.style.selected.inverse, false);
 });
 
 test("bindQuitKeys binds only C-c: q and escape must not quit the board", () => {

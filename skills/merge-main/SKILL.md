@@ -49,8 +49,22 @@ resolve.
    ```
 
    The `--ff-only` step picks up anything a bot or another session pushed to the
-   branch, so the later push is not rejected. If it refuses to fast-forward the
-   branch has diverged; stop and report it.
+   branch, so the later push is not rejected. If it refuses to fast-forward, the
+   branch has diverged: a bot (e.g. an automated "merge main" workflow) or another
+   session pushed while this worktree held unpushed commits. That is routine, not a
+   reason to stop. Merge the remote branch in, never rebase, never `git reset
+   --hard`, never force push:
+
+   ```bash
+   git merge --no-edit "origin/$(git branch --show-current)"
+   ```
+
+   then carry on with the `origin/main` merge. Resolve the remote merge's conflicts
+   the same way as main's (steps 4–5). A diverged branch often carries the same
+   migration under two numbers (one side renumbered it, the other did not): keep
+   the copy that sorts after main's latest, `git rm` the other, and rehash
+   `atlas.sum`. Stop only when a conflict in hand-written code cannot be reconciled
+   safely (see "Stopping for a human" below).
 
    If it merges cleanly with no derived output to regenerate, skip to step 6.
 
@@ -83,7 +97,8 @@ resolve.
    git merge --abort
    ```
 
-   Leave the branch untouched and report that it needs a human.
+   Leave the branch untouched, follow "Stopping for a human" below, and report
+   that it needs a human.
 
 6. **Commit everything and push.** Review the full working tree first, then stage
    only the merge result and regenerated output (never the pre-existing dirty
@@ -97,12 +112,30 @@ resolve.
    ```
 
    If the push is rejected as non-fast-forward, merge the remote branch in and
-   retry once (`git pull --no-rebase --no-edit origin "$(git branch --show-current)"
-   && git push`). Never `git pull --rebase` here: a rebase flattens the main merge
-   and replays main's commits onto the branch as duplicates. If the merge
-   conflicts or the push still fails, `git merge --abort` and report the
-   divergence rather than force-pushing.
+   retry once (`git pull --no-rebase --no-edit origin "$(git branch
+   --show-current)" && git push`). Never `git pull --rebase` here: a rebase
+   flattens the main merge and replays main's commits onto the branch as
+   duplicates. If that merge conflicts, resolve it like any other: an `atlas.sum`
+   or migration-numbering conflict is mechanical (renumber or drop the duplicate
+   migration, rehash, stage), then commit and push. Only if a conflict in
+   hand-written code cannot be reconciled safely, or the push still fails, stop:
+   `git merge --abort`, follow "Stopping for a human" below, and leave the session
+   open. Never force push.
 
 7. **Re-run tests if generated output changed.** If codegen or a migration
    produced different content, run the relevant suite to confirm the branch still
    works before handing back.
+
+## Stopping for a human
+
+Every path above that ends with "stop" or "needs a human" also raises it on the
+board, so the row shows "needs decision" instead of still looking busy, and
+whoever is watching knows to look:
+
+```bash
+~/needs-decision.sh "PR #<number>: <one-line reason, e.g. conflict in api/foo.go needs a product call>"
+```
+
+Then print your summary and leave the session open. Do not stop for anything a
+rule above tells you how to resolve (a diverged remote, an `atlas.sum` or
+migration-numbering conflict): those are routine.

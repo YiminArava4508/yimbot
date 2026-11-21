@@ -43,8 +43,22 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    ```
 
    The `--ff-only` step picks up anything a bot or another session pushed to the
-   branch, so the push in step 7 is not rejected. If it refuses to fast-forward
-   the branch has diverged; stop and report it.
+   branch, so the push in step 7 is not rejected. If it refuses to fast-forward,
+   the branch has diverged: a bot (e.g. an automated "merge main" workflow) or
+   another session pushed while this worktree held unpushed commits. That is
+   routine, not a reason to stop. Merge the remote branch in, never rebase, never
+   `git reset --hard`, never force push:
+
+   ```bash
+   git merge --no-edit "origin/$(git branch --show-current)"
+   ```
+
+   then carry on with the `origin/main` merge. Resolve the remote merge's conflicts
+   the same way as main's (the atlas.sum shortcircuit and steps 3–4). A diverged
+   branch often carries the same migration under two numbers (one side renumbered
+   it, the other did not): keep the copy that sorts after main's latest, `git rm`
+   the other, and rehash `atlas.sum`. Stop only when a conflict in hand-written
+   code cannot be reconciled safely (see "Stopping for a human" below).
 
    If it merges clean, skip to step 6. Otherwise
    `git diff --name-only --diff-filter=U` lists the conflicted paths.
@@ -120,9 +134,9 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    git merge --abort
    ```
 
-   Restore the pre-existing worktree state, leave the session open, and report in
-   your summary which conflict you could not resolve and why it needs a human.
-   Stop here — do not continue to step 6.
+   Restore the pre-existing worktree state, follow "Stopping for a human" below,
+   leave the session open, and report in your summary which conflict you could
+   not resolve and why it needs a human. Stop here — do not continue to step 6.
 
 6. **Verify.** Run the project's tests and typecheck for anything the merge
    touched (e.g. `pnpm test`, `pnpm typecheck`) and confirm they are genuinely
@@ -158,9 +172,12 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    git pull --no-rebase --no-edit origin "$(git branch --show-current)" && git push
    ```
 
-   If the merge hits a conflict or the push still fails, **stop**: run
-   `git merge --abort`, leave the session open, and report that the branch
-   diverged and needs a human. Never force push.
+   If that merge conflicts, resolve it like any other: an `atlas.sum` or
+   migration-numbering conflict is mechanical (renumber or drop the duplicate
+   migration, rehash, stage), then commit and push. Only if a conflict in
+   hand-written code cannot be reconciled safely, or the push still fails, stop:
+   `git merge --abort`, follow "Stopping for a human" below, and leave the session
+   open. Never force push.
 
 8. **Flag the session ready to test** so the user knows they can run local dev
    here:
@@ -191,3 +208,17 @@ the PR's own commits stay intact; you only add a resolution merge commit.
    Only close on these success paths (pushed resolution, or deferral to the
    automation bot). If you bailed at step 5, or the branch diverged at step 7,
    leave the session open as those steps say.
+
+## Stopping for a human
+
+Every path above that ends with "stop" or "needs a human" also raises it on the
+board, so the row shows "needs decision" instead of still looking busy, and
+whoever is watching knows to look:
+
+```bash
+~/needs-decision.sh "PR #<number>: <one-line reason, e.g. conflict in api/foo.go needs a product call>"
+```
+
+Then print your summary and leave the session open. Do not stop for anything a
+rule above tells you how to resolve (a diverged remote, an `atlas.sum` or
+migration-numbering conflict): those are routine.

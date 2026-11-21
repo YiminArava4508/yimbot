@@ -35,7 +35,21 @@ not, no matter how blocked the PR looks.
    Before you merge, fast-forward the local branch to its remote (a bot or another
    session may have pushed): `git fetch origin main "$(git branch --show-current)"`
    then `git merge --ff-only "origin/$(git branch --show-current)"`. If that
-   fast-forward fails the branch has diverged; stop and report it.
+   fast-forward fails, the branch has diverged: a bot (e.g. an automated "merge
+   main" workflow) or another session pushed while this worktree held unpushed
+   commits. That is routine, not a reason to stop. Merge the remote branch in,
+   never rebase, never `git reset --hard`, never force push:
+
+   ```bash
+   git merge --no-edit "origin/$(git branch --show-current)"
+   ```
+
+   then carry on with the `origin/main` merge. Resolve the remote merge's conflicts
+   the same way as main's. A diverged branch often carries the same migration under
+   two numbers (one side renumbered it, the other did not): keep the copy that
+   sorts after main's latest, `git rm` the other, and rehash `atlas.sum`. Stop only
+   when a conflict in hand-written code cannot be reconciled safely (see "Stopping
+   for a human" below).
 
 2. **Fetch every unresolved review thread** (any author, humans and bots alike):
 
@@ -111,10 +125,12 @@ not, no matter how blocked the PR looks.
    git pull --no-rebase --no-edit origin "$(git branch --show-current)" && git push
    ```
 
-   If the merge hits a conflict or the push still fails, **stop**: run
-   `git merge --abort`, do NOT resolve any threads, leave the session open, and
-   report in the summary that the branch diverged and needs a human. Never force
-   push.
+   If that merge conflicts, resolve it like any other: an `atlas.sum` or
+   migration-numbering conflict is mechanical (renumber or drop the duplicate
+   migration, rehash, stage), then commit and push. Only if a conflict in
+   hand-written code cannot be reconciled safely, or the push still fails, stop:
+   `git merge --abort`, do NOT resolve any threads, follow "Stopping for a human"
+   below, and leave the session open. Never force push.
 
 7. **Resolve the threads you fixed in code.** If a reply genuinely helps, post
    at most one short line stating only what changed, e.g. `Fixed in <commit>`.
@@ -180,3 +196,17 @@ not, no matter how blocked the PR looks.
     since the operator reads them here by pressing Enter on the flagged row,
     and leave the session open, exactly as you do when step 6 reports a diverged
     branch that needs a human.
+
+## Stopping for a human
+
+Every path above that ends with "stop" or "needs a human" also raises it on the
+board, so the row shows "needs decision" instead of still looking busy, and
+whoever is watching knows to look:
+
+```bash
+~/needs-decision.sh "PR #<number>: <one-line reason, e.g. conflict in api/foo.go needs a product call>"
+```
+
+Then print your summary and leave the session open. Do not stop for anything a
+rule above tells you how to resolve (a diverged remote, an `atlas.sum` or
+migration-numbering conflict): those are routine.

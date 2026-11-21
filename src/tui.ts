@@ -1,7 +1,6 @@
 // src/tui.ts
 // neo-blessed ships no types; treat as any at the import boundary.
 import blessed from "neo-blessed";
-import { FOCUS_BORDER } from "./arch-layout.ts";
 import { envOr } from "./env.ts";
 import { bus, filterToLiveRows, isFlagged, isParentRow, readEvents, reduceRows, statusFor, type BoardRow, type YimbotEvent } from "./events.ts";
 import { QUEUE_PANE_WIDTH, queueRows, readQueueState } from "./heavy-queue.ts";
@@ -10,7 +9,7 @@ import type { LastUpdate } from "./last-update.ts";
 import type { UpdateState } from "./self-update.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
-import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel } from "./board-format.ts";
+import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel, stylePaneFocus } from "./board-format.ts";
 import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, applyOrder, partitionTable, isTableId, tableBoxes, tableFocusOrder, type ReviewEntry, type TableId } from "./table-view.ts";
 import { makeOrderFetcher, type OrderSourceDeps } from "./review-order.ts";
 import { createTableView } from "./tui-table-view.ts";
@@ -209,16 +208,17 @@ export function boardLayout(
 const PARENTS_BORDER = "grey";
 
 // The parents pane is the one listtable left on the board: only while it
-// holds the focus does it take the focus hue and inverse its selected row.
+// holds the focus does it wear the focus frame and inverse its selected row.
 // neo-blessed aliases style.selected to style.cell.selected on a listtable and
 // resolves it at paint time, so mutating it here is enough.
 export function styleParentsPane(
-  pane: { style: { border: { fg: string }; label: { fg: string }; selected: { inverse: boolean } } },
+  pane: {
+    border: { type: string };
+    style: { border: { fg: string; bg?: string }; label: { fg: string }; selected: { inverse: boolean } };
+  },
   focused: boolean,
 ): void {
-  const fg = focused ? FOCUS_BORDER : PARENTS_BORDER;
-  pane.style.border.fg = fg;
-  pane.style.label.fg = fg;
+  stylePaneFocus(pane, PARENTS_BORDER, focused);
   pane.style.selected.inverse = focused;
 }
 

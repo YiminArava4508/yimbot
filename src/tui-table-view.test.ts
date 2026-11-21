@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import blessed from "neo-blessed";
-import { FOCUS_BORDER } from "./arch-layout.ts";
 import type { BoardRow } from "./events.ts";
 import { BOARD_HEADER, tableBoxes } from "./table-view.ts";
+import { focusTint } from "./board-format.ts";
 import { createTableView, type TableViewInput } from "./tui-table-view.ts";
 
 function fakeTty(columns: number, rows: number) {
@@ -81,19 +81,25 @@ test("render fills the four panes and labels them with counts", () => {
   assert.equal(view.widgets.merge.rows.length, 2);
 });
 
-test("the focused pane takes the focus color and only it inverses its selected row", () => {
-  const { view, input } = setup();
-  assert.equal(view.widgets.tasks.style.border.fg, FOCUS_BORDER);
-  assert.equal(view.widgets.tasks.style.label.fg, FOCUS_BORDER);
-  assert.equal(view.widgets.tasks.style.selected.inverse, true);
-  assert.equal(view.widgets.review.style.border.fg, "yellow");
-  assert.equal(view.widgets.merge.style.border.fg, "green");
-  assert.equal(view.widgets.review.style.selected.inverse, false);
-  view.render({ ...input, focusedId: "review" });
-  assert.equal(view.widgets.tasks.style.border.fg, "grey");
-  assert.equal(view.widgets.review.style.border.fg, FOCUS_BORDER);
-  assert.equal(view.widgets.tasks.style.selected.inverse, false);
-  assert.equal(view.widgets.review.style.selected.inverse, true);
+test("every pane keeps its color; only the focused one wears a solid frame, a tinted fill, and an inverse row", () => {
+  const { view, input } = setup({ attention: 1, tasks: 2, review: 2, merge: 2 });
+  const colors = { attention: "red", tasks: "grey", review: "yellow", merge: "green" } as const;
+  for (const focusedId of ["attention", "tasks", "review", "merge"] as const) {
+    view.render({ ...input, focusedId });
+    for (const id of ["attention", "tasks", "review", "merge"] as const) {
+      const w = view.widgets[id];
+      const focused = id === focusedId;
+      assert.equal(w.style.border.fg, colors[id], `${id} border color with ${focusedId} focused`);
+      assert.equal(w.style.label.fg, colors[id]);
+      assert.equal(w.border.type, focused ? "bg" : "line", `${id} frame with ${focusedId} focused`);
+      assert.equal(w.style.border.bg, focused ? colors[id] : undefined);
+      const fill = focused ? focusTint(colors[id]) : undefined;
+      assert.equal(w.style.bg, fill, `${id} fill with ${focusedId} focused`);
+      assert.equal(w.style.header.bg, fill);
+      assert.equal(w.style.cell.bg, fill);
+      assert.equal(w.style.selected.inverse, focused);
+    }
+  }
 });
 
 test("only the focused pane drops tag colors on its selected row", () => {

@@ -1,6 +1,5 @@
 import blessed from "neo-blessed";
-import { FOCUS_BORDER } from "./arch-layout.ts";
-import { paneLabel } from "./board-format.ts";
+import { paneLabel, stylePaneFocus } from "./board-format.ts";
 import type { BoardRow } from "./events.ts";
 import { PR_COLUMN, TABLE_IDS, alignTables, boardTable, columnAt, type ReviewEntry, type TableBoxes, type TableId } from "./table-view.ts";
 
@@ -156,9 +155,7 @@ export function createTableView(opts: {
       for (const id of TABLE_IDS) {
         widgets[id].setLabel(paneLabel(TABLE_TITLE[id], counts[id]));
         widgets[id].setData(data[id]);
-        const fg = id === input.focusedId ? FOCUS_BORDER : TABLE_BORDER[id];
-        widgets[id].style.border.fg = fg;
-        widgets[id].style.label.fg = fg;
+        stylePaneFocus(widgets[id], TABLE_BORDER[id], id === input.focusedId);
         // neo-blessed aliases style.selected to style.cell.selected on a
         // listtable and resolves it at paint time, so mutating it is enough.
         widgets[id].style.selected.inverse = id === input.focusedId;

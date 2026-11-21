@@ -9,7 +9,7 @@ import type { LastUpdate } from "./last-update.ts";
 import type { UpdateState } from "./self-update.ts";
 import { unreachable, type Service } from "./reach.ts";
 import { openReview, type ReviewDeps } from "./tui-review.ts";
-import { UNFOCUSED_PANE, cellWidth, codebaseRepoName, fitCell, grey, paneLabel, paneTitle, stylePaneFocus } from "./board-format.ts";
+import { cellWidth, codebaseRepoName, fitCell, grey, paneLabel, stylePaneFocus } from "./board-format.ts";
 import { PANE_CHROME_ROWS, PANE_MIN_HEIGHT, QUEUE_MIN_SCREEN_WIDTH, applyOrder, partitionTable, isTableId, tableBoxes, tableFocusOrder, type ReviewEntry, type TableId } from "./table-view.ts";
 import { makeOrderFetcher, type OrderSourceDeps } from "./review-order.ts";
 import { createTableView } from "./tui-table-view.ts";
@@ -205,18 +205,20 @@ export function boardLayout(
   };
 }
 
-// The parents pane's color while it holds the focus.
-const PARENTS_COLOR = "white";
+const PARENTS_BORDER = "grey";
 
 // The parents pane is the one listtable left on the board: only while it
-// holds the focus is it lit (see stylePaneFocus) and inverses its selected row.
+// holds the focus does it wear the focus frame and inverse its selected row.
 // neo-blessed aliases style.selected to style.cell.selected on a listtable and
 // resolves it at paint time, so mutating it here is enough.
 export function styleParentsPane(
-  pane: { style: { border: { fg: string; bold?: boolean }; label: { fg: string }; selected: { inverse: boolean } } },
+  pane: {
+    border: { type: string };
+    style: { border: { fg: string; bg?: string }; label: { fg: string }; selected: { inverse: boolean } };
+  },
   focused: boolean,
 ): void {
-  stylePaneFocus(pane.style, PARENTS_COLOR, focused);
+  stylePaneFocus(pane, PARENTS_BORDER, focused);
   pane.style.selected.inverse = focused;
 }
 
@@ -736,8 +738,8 @@ export function runTui(opts: {
     style: {
       header: { bold: true },
       cell: { selected: { inverse: true } },
-      border: { fg: UNFOCUSED_PANE },
-      label: { fg: UNFOCUSED_PANE },
+      border: { fg: PARENTS_BORDER },
+      label: { fg: PARENTS_BORDER },
     },
   });
 
@@ -898,7 +900,7 @@ export function runTui(opts: {
     }
     if (layout.parents) {
       parentsPane.height = layout.parents.height;
-      parentsPane.setLabel(paneTitle("parent tickets", currentParents.length, focusedId === "parents"));
+      parentsPane.setLabel(paneLabel("parent tickets", currentParents.length));
       parentsPane.setData(parentRows(currentParents));
     }
     // Skip the read while an overlay hides the pane: it reaps tickets, so

@@ -257,12 +257,14 @@ test("placeColumns places nothing on an empty board", () => {
   assert.deepEqual(placeColumns([], "", 0, 0, 80), { start: 0, slots: [] });
 });
 
-test("styleParentsPane lights the parents pane (bold white border, inverse row) only while it holds the focus", () => {
-  const pane = { style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } };
+test("styleParentsPane frames, fills and inverses the parents pane only while it holds the focus, keeping its grey", () => {
+  const pane = { border: { type: "line" }, style: { border: { fg: "" }, label: { fg: "" }, selected: { inverse: true } } };
   styleParentsPane(pane, true);
-  assert.deepEqual(pane.style, { border: { fg: "white", bold: true }, label: { fg: "white" }, selected: { inverse: true } });
+  assert.equal(pane.border.type, "bg");
+  assert.deepEqual(pane.style, { bg: 236, border: { fg: "grey", bg: "grey" }, label: { fg: "grey" }, selected: { inverse: true } });
   styleParentsPane(pane, false);
-  assert.deepEqual(pane.style, { border: { fg: "grey", bold: false }, label: { fg: "grey" }, selected: { inverse: false } });
+  assert.equal(pane.border.type, "line");
+  assert.deepEqual(pane.style, { bg: undefined, border: { fg: "grey", bg: undefined }, label: { fg: "grey" }, selected: { inverse: false } });
 });
 
 test("bindQuitKeys binds only C-c: q and escape must not quit the board", () => {

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import blessed from "neo-blessed";
 import type { BoardRow } from "./events.ts";
 import { BOARD_HEADER, tableBoxes } from "./table-view.ts";
+import { focusTint } from "./board-format.ts";
 import { createTableView, type TableViewInput } from "./tui-table-view.ts";
 
 function fakeTty(columns: number, rows: number) {
@@ -72,9 +73,7 @@ test("render fills the four panes and labels them with counts", () => {
   const { view } = setup({ attention: 1, tasks: 3, review: 2, merge: 1 });
   assert.equal(view.widgets.attention._label.content, " needs attention 1 ");
   assert.equal(view.widgets.attention.rows.length, 2);
-  // tasks holds the focus in setup(): its title is the lit block.
-  assert.equal(view.widgets.tasks._label.content, "{inverse}{bold} ▶ in progress 3 {/bold}{/inverse}");
-  assert.equal(view.widgets.tasks._label.getText(), " ▶ in progress 3 ");
+  assert.equal(view.widgets.tasks._label.content, " in progress 3 ");
   assert.equal(view.widgets.review._label.content, " ready to review 2 ");
   assert.equal(view.widgets.merge._label.content, " ready to merge 1 ");
   assert.equal(view.widgets.tasks.rows.length, 4);
@@ -82,28 +81,25 @@ test("render fills the four panes and labels them with counts", () => {
   assert.equal(view.widgets.merge.rows.length, 2);
 });
 
-test("only the focused pane is lit: its color, a bold border, a ▶ title block, an inverse row; the rest go grey", () => {
+test("every pane keeps its color; only the focused one wears a solid frame, a tinted fill, and an inverse row", () => {
   const { view, input } = setup({ attention: 1, tasks: 2, review: 2, merge: 2 });
-  assert.equal(view.widgets.tasks.style.border.fg, "white");
-  assert.equal(view.widgets.tasks.style.border.bold, true);
-  assert.equal(view.widgets.tasks.style.label.fg, "white");
-  assert.equal(view.widgets.tasks.style.selected.inverse, true);
-  for (const id of ["attention", "review", "merge"] as const) {
-    assert.equal(view.widgets[id].style.border.fg, "grey", id);
-    assert.equal(view.widgets[id].style.border.bold, false, id);
-    assert.equal(view.widgets[id].style.selected.inverse, false, id);
-    assert.doesNotMatch(view.widgets[id]._label.content, /▶/, id);
+  const colors = { attention: "red", tasks: "grey", review: "yellow", merge: "green" } as const;
+  for (const focusedId of ["attention", "tasks", "review", "merge"] as const) {
+    view.render({ ...input, focusedId });
+    for (const id of ["attention", "tasks", "review", "merge"] as const) {
+      const w = view.widgets[id];
+      const focused = id === focusedId;
+      assert.equal(w.style.border.fg, colors[id], `${id} border color with ${focusedId} focused`);
+      assert.equal(w.style.label.fg, colors[id]);
+      assert.equal(w.border.type, focused ? "bg" : "line", `${id} frame with ${focusedId} focused`);
+      assert.equal(w.style.border.bg, focused ? colors[id] : undefined);
+      const fill = focused ? focusTint(colors[id]) : undefined;
+      assert.equal(w.style.bg, fill, `${id} fill with ${focusedId} focused`);
+      assert.equal(w.style.header.bg, fill);
+      assert.equal(w.style.cell.bg, fill);
+      assert.equal(w.style.selected.inverse, focused);
+    }
   }
-  view.render({ ...input, focusedId: "attention" });
-  assert.equal(view.widgets.attention.style.border.fg, "red");
-  assert.equal(view.widgets.attention.style.border.bold, true);
-  assert.match(view.widgets.attention._label.content, /▶ needs attention 1/);
-  assert.equal(view.widgets.tasks.style.border.fg, "grey");
-  assert.doesNotMatch(view.widgets.tasks._label.content, /▶/);
-  view.render({ ...input, focusedId: "review" });
-  assert.equal(view.widgets.review.style.border.fg, "yellow");
-  view.render({ ...input, focusedId: "merge" });
-  assert.equal(view.widgets.merge.style.border.fg, "green");
 });
 
 test("only the focused pane drops tag colors on its selected row", () => {

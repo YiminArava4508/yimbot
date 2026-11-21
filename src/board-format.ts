@@ -68,24 +68,37 @@ export function paneLabel(name: string, count: number): string {
   return ` ${name} ${count} `;
 }
 
-// The one look for "this pane has the keys", shared by every board pane: its
-// own color with a bold border, and its title as a solid block with a ▶
-// marker. Every other pane goes grey, so exactly one pane is lit at a time.
-export const UNFOCUSED_PANE = "grey";
+// Every pane keeps its own color; the one with the keys also wears a solid
+// frame in that color (its border drawn as a filled band instead of a thin
+// line) and has its background filled with a dark tint of it, so focus reads at
+// a glance without changing any pane's color. The tint is dark so row text and
+// status colors stay readable on it.
+// xterm-256 palette indexes (dark red, dark grey, olive, dark green), passed as
+// numbers: blessed's hex matcher snaps these exact shades to black.
+const FOCUS_TINT: Record<string, number> = { red: 52, grey: 236, yellow: 58, green: 22 };
 
-export function focusedPaneLabel(name: string, count: number): string {
-  return `{inverse}{bold} ▶ ${name} ${count} {/bold}{/inverse}`;
+export function focusTint(color: string): number {
+  return FOCUS_TINT[color] ?? FOCUS_TINT.grey!;
 }
 
-export function paneTitle(name: string, count: number, focused: boolean): string {
-  return focused ? focusedPaneLabel(name, count) : paneLabel(name, count);
-}
+type FramedPane = {
+  border: { type: string };
+  style: {
+    bg?: string | number;
+    border: { fg: string; bg?: string };
+    label: { fg: string };
+    header?: { bg?: string | number };
+    cell?: { bg?: string | number };
+  };
+};
 
-type PaneStyle = { border: { fg: string; bold?: boolean }; label: { fg: string } };
-
-export function stylePaneFocus(style: PaneStyle, color: string, focused: boolean): void {
-  const fg = focused ? color : UNFOCUSED_PANE;
-  style.border.fg = fg;
-  style.border.bold = focused;
-  style.label.fg = fg;
+export function stylePaneFocus(pane: FramedPane, color: string, focused: boolean): void {
+  pane.border.type = focused ? "bg" : "line";
+  pane.style.border.fg = color;
+  pane.style.border.bg = focused ? color : undefined;
+  pane.style.label.fg = color;
+  const fill = focused ? focusTint(color) : undefined;
+  pane.style.bg = fill;
+  if (pane.style.header) pane.style.header.bg = fill;
+  if (pane.style.cell) pane.style.cell.bg = fill;
 }

@@ -1,12 +1,13 @@
 import { cellWidth, codebaseRepoName, dimWhenDone, fmtDuration, grey, repoDisplayName, TYPE_CHIP_COLOR } from "./board-format.ts";
-import { isFlagged, isParentRow, type BoardRow } from "./events.ts";
+import { STUCK_STATUS, isFlagged, isParentRow, type BoardRow } from "./events.ts";
 import { QUEUE_PANE_WIDTH } from "./heavy-queue.ts";
 import type { OrderEntry } from "./review-order.ts";
 import { researchWords, rowType } from "./ticket-type.ts";
 
-export type TableId = "tasks" | "review" | "merge";
+export type TableId = "attention" | "tasks" | "review" | "merge";
 
-export const TABLE_IDS: readonly TableId[] = ["tasks", "review", "merge"];
+// Top to bottom: what needs a person first, then the work in flight.
+export const TABLE_IDS: readonly TableId[] = ["attention", "tasks", "review", "merge"];
 
 export function isTableId(id: string): id is TableId {
   return (TABLE_IDS as readonly string[]).includes(id);
@@ -20,7 +21,20 @@ export const QUEUE_MIN_SCREEN_WIDTH = 80;
 export const PANE_CHROME_ROWS = 3;
 export const PANE_MIN_HEIGHT = PANE_CHROME_ROWS + 1;
 
-// Placement reads the row's section, never its status. The daemon reports the
+// Rows waiting on a person: a session that handed back a decision or review
+// findings, or one the stuck detector or the nudge gave up on. They stay In
+// Progress in Linear (and in the WIP count); this only lifts them to the top of
+// the board so they are not lost among rows that are actually working.
+const ATTENTION_STATUSES = new Set(["needs decision", "review findings", STUCK_STATUS]);
+const ATTENTION_FLAGS = new Set(["decision", "findings", "stuck"]);
+
+export function needsAttention(r: BoardRow): boolean {
+  if (r.terminal) return false;
+  return ATTENTION_STATUSES.has(r.status) || r.flagReasons.some((f) => ATTENTION_FLAGS.has(f));
+}
+
+// Placement reads the row's section, never its status, except that a row
+// needing attention (above) goes to the attention pane wherever its PR sits. The daemon reports the
 // section each heartbeat from the facts that actually decide it (the ready
 // label, the draft flag), so a queued PR stays in the merge pane while its
 // status walks through a CI fix, a conflict fix or a review round. A row only
@@ -29,22 +43,28 @@ export const PANE_MIN_HEIGHT = PANE_CHROME_ROWS + 1;
 // outranks whatever section the key's own PR left behind before the split, so
 // they leave the work panes for their own.
 export function partitionTable(rows: BoardRow[]): {
+  attention: BoardRow[];
   tasks: BoardRow[];
   review: BoardRow[];
   merge: BoardRow[];
   parents: BoardRow[];
 } {
+  const attention: BoardRow[] = [];
   const review: BoardRow[] = [];
   const merge: BoardRow[] = [];
   const tasks: BoardRow[] = [];
   const parents: BoardRow[] = [];
   for (const r of rows) {
+    // A keyless row (an event from an old hook build that lost its branch) has
+    // no ticket to open or clear; showing it would pin a blank row on top.
+    if (!r.key) continue;
     if (isParentRow(r)) parents.push(r);
+    else if (needsAttention(r)) attention.push(r);
     else if (r.section === "review") review.push(r);
     else if (r.section === "merge") merge.push(r);
     else tasks.push(r);
   }
-  return { tasks, review, merge, parents };
+  return { attention, tasks, review, merge, parents };
 }
 
 export type ReviewEntry = { row: BoardRow; reason: string };
@@ -67,7 +87,7 @@ export function applyOrder(review: BoardRow[], order: OrderEntry[] | null): Revi
   return [...ordered, ...unranked];
 }
 
-// One header for all three panes, in one order, so a row reads the same
+// One header for all four panes, in one order, so a row reads the same
 // wherever it sits.
 function reasonCell(r: BoardRow): string {
   const reasons = r.stuckReason ? [...r.flagReasons, r.stuckReason] : r.flagReasons;
@@ -180,26 +200,28 @@ export function columnAt(maxes: number[], x: number): number {
 }
 
 export type TableBoxes = {
+  attention: { top: number; left: number; right: number; height: number };
   tasks: { top: number; left: number; right: number; bottom: number };
   review: { left: number; right: number; bottom: number; height: number };
   merge: { left: number; right: number; bottom: number; height: number };
 };
 
-// Three full-width bordered panes stacked top to bottom: tasks, ready to
-// review, ready to merge. Each keeps an equal third of the body (tasks takes
-// the remainder) whether or not it has rows, so the panes never jump around as
-// PRs move between them. The parents box sits in the queue's column, so it
+// Four full-width bordered panes stacked top to bottom: needs attention, tasks,
+// ready to review, ready to merge. Each keeps an equal quarter of the body
+// (tasks takes the remainder) whether or not it has rows, so the panes never
+// jump around as rows move between them. The parents box sits in the queue's column, so it
 // does not take height from these panes.
 export function tableBoxes(screenHeight: number, screenWidth: number): TableBoxes {
   const footerRows = 1;
   const titleRows = 1;
   const body = screenHeight - titleRows - footerRows;
-  const third = Math.max(PANE_MIN_HEIGHT, Math.floor(body / 3));
+  const quarter = Math.max(PANE_MIN_HEIGHT, Math.floor(body / 4));
   const inset = screenWidth >= QUEUE_MIN_SCREEN_WIDTH ? QUEUE_PANE_WIDTH : 0;
   return {
-    tasks: { top: titleRows, left: inset, right: 0, bottom: footerRows + 2 * third },
-    review: { left: inset, right: 0, bottom: footerRows + third, height: third },
-    merge: { left: inset, right: 0, bottom: footerRows, height: third },
+    attention: { top: titleRows, left: inset, right: 0, height: quarter },
+    tasks: { top: titleRows + quarter, left: inset, right: 0, bottom: footerRows + 2 * quarter },
+    review: { left: inset, right: 0, bottom: footerRows + quarter, height: quarter },
+    merge: { left: inset, right: 0, bottom: footerRows, height: quarter },
   };
 }
 

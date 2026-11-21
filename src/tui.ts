@@ -153,7 +153,7 @@ export function headerBoard(view: View, board: CycleBoard | null): CycleBoard | 
 export function tableSections(
   rows: BoardRow[],
   hasParentsBox: boolean,
-): { tasks: BoardRow[]; review: BoardRow[]; merge: BoardRow[]; parents: BoardRow[] } {
+): { attention: BoardRow[]; tasks: BoardRow[]; review: BoardRow[]; merge: BoardRow[]; parents: BoardRow[] } {
   const split = partitionTable(rows);
   if (hasParentsBox) return split;
   return { ...split, tasks: [...split.tasks, ...split.parents], parents: [] };
@@ -752,7 +752,12 @@ export function runTui(opts: {
 
   let currentRows: BoardRow[] = [];
   let currentParents: BoardRow[] = [];
-  let currentTable: { tasks: BoardRow[]; review: ReviewEntry[]; merge: BoardRow[] } = { tasks: [], review: [], merge: [] };
+  let currentTable: { attention: BoardRow[]; tasks: BoardRow[]; review: ReviewEntry[]; merge: BoardRow[] } = {
+    attention: [],
+    tasks: [],
+    review: [],
+    merge: [],
+  };
   let view: View = DEFAULT_VIEW;
   let currentColumns: Column[] = [];
   let lastBoard: CycleBoard | null = null;
@@ -772,6 +777,7 @@ export function runTui(opts: {
     return columnWidgets.get(focusedId)?.widget;
   };
   const tableCounts = () => ({
+    attention: currentTable.attention.length,
     tasks: currentTable.tasks.length,
     review: currentTable.review.length,
     merge: currentTable.merge.length,
@@ -872,7 +878,12 @@ export function runTui(opts: {
         withPr.map((r) => r.pr),
         new Map(withPr.flatMap((r) => (r.repo ? [[r.pr, r.repo] as const] : []))),
       );
-      currentTable = { tasks: sections.tasks, review: applyOrder(sections.review, orderFetcher.get()), merge: sections.merge };
+      currentTable = {
+        attention: sections.attention,
+        tasks: sections.tasks,
+        review: applyOrder(sections.review, orderFetcher.get()),
+        merge: sections.merge,
+      };
     }
     if (layout.parents) {
       parentsPane.height = layout.parents.height;

@@ -918,7 +918,7 @@ test("bindViewKey fires on v and not while an overlay is open", () => {
 const column = (id: string): Column => ({ id, title: id, color: "white", cards: [] });
 
 test("viewFocusOrder lists the non-empty table panes in table view and the column ids in kanban view, parents last when present", () => {
-  const counts = { tasks: 2, review: 0, merge: 1 };
+  const counts = { attention: 0, tasks: 2, review: 0, merge: 1 };
   const columns = [column("a"), column("b")];
   assert.deepEqual(viewFocusOrder("table", counts, columns, false), ["tasks", "merge"]);
   assert.deepEqual(viewFocusOrder("table", counts, columns, true), ["tasks", "merge", "parents"]);

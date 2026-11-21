@@ -310,6 +310,15 @@ without the label behave as before.
   to Todo if it is already In Progress.
 - **No blockers:** an `after-release` ticket with no blockers is never claimed,
   and the claim step logs that once per ticket.
+- **Flag-archive precheck:** a released blocker only means the flag's removal
+  merged, not that prod stopped reading it. So before claiming an "Archive
+  `<key>` flag …" ticket, the claim step runs the reference checks (checks 2
+  and 3 of `flag-archive-check.sh`: no references on gemini `main`, elsewhere
+  in the org, or in any build prod runs). It leaves the ticket in Todo while
+  they fail, logging `deferring ENG-1: flag-archive precheck for <key> failed
+  (…)`, and lets the next ticket take the slot. A result is reused for an hour
+  (10 minutes after an error). The quiet-time and PostHog checks still run in
+  the session. Disable with `FLAG_ARCHIVE_PRECHECK=false`.
 - **Creating one:** `~/create-subticket.sh <PARENT> "<title>" <points> --after-release`
   adds the label on top of the inherited ones, makes the parent block the new
   subticket, and implies `--claimable` and `--no-zero-parent`. The pickup-ticket

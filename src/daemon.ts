@@ -1,3 +1,4 @@
+import { runArchivePrecheck } from "./archive-precheck-runner.ts";
 import { createQueueGate, type QueueGate } from "./queue-overlap.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -134,6 +135,11 @@ export async function startDaemon(): Promise<() => void> {
     throw new Error("GO_CACHE_EMERGENCY_MAX_AGE_MINUTES must be a positive number");
   }
   const diskState = freshDiskGuardState();
+  // Claim-time flag-archive reference checks; on unless FLAG_ARCHIVE_PRECHECK
+  // is set to an off-value.
+  const flagArchivePrecheck = ["false", "off", "no", "0"].includes(envOr("FLAG_ARCHIVE_PRECHECK", "true").toLowerCase())
+    ? null
+    : runArchivePrecheck;
 
   if (!apiKey) throw new Error("LINEAR_API_KEY is required");
   if (!Number.isInteger(maxInProgress) || maxInProgress < 1) {
@@ -594,6 +600,7 @@ export async function startDaemon(): Promise<() => void> {
     clearedStates,
     claim: {
       autoClaim,
+      flagArchivePrecheck: flagArchivePrecheck ? (key) => flagArchivePrecheck(key, codebasePath) : undefined,
       riskLabels,
       rejectLabel,
       afterReleaseLabel,

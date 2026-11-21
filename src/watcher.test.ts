@@ -1844,3 +1844,60 @@ test("resumeClaudeInPane returns false when the pane is gone", () => {
 test("heartbeatRunning is false outside a heartbeat", () => {
   assert.equal(heartbeatRunning(), false);
 });
+
+const blockerDone = (identifier: string) => ({ identifier, stateName: "Done", stateType: "completed" });
+
+test("claimOnce skips an archive-flag ticket whose reference precheck fails and claims the next ticket", async () => {
+  const checked: string[] = [];
+  const { deps, moved, logs } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({
+        id: "1",
+        priority: 1,
+        title: "Archive `old-flag` flag in prod",
+        labels: ["after-release"],
+        blockedBy: [blockerDone("ENG-90")],
+      }),
+      cycleTodo({ id: "2", priority: 2 }),
+    ],
+    flagArchivePrecheck: async (key) => {
+      checked.push(key);
+      return { pass: false, detail: "prod-commits: key found in deployed builds" };
+    },
+  });
+  const state = freshClaimState();
+  await claimOnce(state, deps);
+  assert.deepEqual(checked, ["old-flag"]);
+  assert.deepEqual(moved.map((m) => m.identifier), ["ENG-2"]);
+  assert.ok(logs.some((l) => /deferring ENG-1: flag-archive precheck for old-flag failed/.test(l)));
+  // Cached: the next heartbeat does not re-run the check.
+  await claimOnce(state, deps);
+  assert.deepEqual(checked, ["old-flag"]);
+});
+
+test("claimOnce claims an archive-flag ticket once its reference precheck passes", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({
+        id: "1",
+        priority: 1,
+        title: "Archive `gone-flag` flag in prod",
+        labels: ["after-release"],
+        blockedBy: [blockerDone("ENG-90")],
+      }),
+    ],
+    flagArchivePrecheck: async () => ({ pass: true, detail: "reference checks pass" }),
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.identifier), ["ENG-1"]);
+});
+
+test("claimOnce without a precheck claims archive-flag tickets as before", async () => {
+  const { deps, moved } = claimDeps({
+    fetchCycleTodos: async () => [
+      cycleTodo({ id: "1", priority: 1, title: "Archive `x` flag in prod", labels: ["after-release"], blockedBy: [blockerDone("ENG-90")] }),
+    ],
+  });
+  await claimOnce(freshClaimState(), deps);
+  assert.deepEqual(moved.map((m) => m.identifier), ["ENG-1"]);
+});

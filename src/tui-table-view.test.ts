@@ -45,7 +45,7 @@ const row = (key: string): BoardRow => ({
 
 const rows = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => row(`${prefix}-${i}`));
 
-function setup(counts = { tasks: 2, review: 2, merge: 2 }, focusedId = "tasks") {
+function setup(counts = { attention: 0, tasks: 2, review: 2, merge: 2 }, focusedId = "tasks") {
   const screen = testScreen();
   const opened: BoardRow[] = [];
   const focused: string[] = [];
@@ -56,6 +56,7 @@ function setup(counts = { tasks: 2, review: 2, merge: 2 }, focusedId = "tasks") 
     onOpenPr: () => {},
   });
   const input: TableViewInput = {
+    attention: rows("A", counts.attention),
     tasks: rows("T", counts.tasks),
     review: rows("R", counts.review).map((r) => ({ row: r, reason: "" })),
     merge: rows("M", counts.merge),
@@ -68,8 +69,10 @@ function setup(counts = { tasks: 2, review: 2, merge: 2 }, focusedId = "tasks") 
   return { screen, view, input, opened, focused };
 }
 
-test("render fills the three panes and labels them with counts", () => {
-  const { view } = setup({ tasks: 3, review: 2, merge: 1 });
+test("render fills the four panes and labels them with counts", () => {
+  const { view } = setup({ attention: 1, tasks: 3, review: 2, merge: 1 });
+  assert.equal(view.widgets.attention._label.content, " needs attention 1 ");
+  assert.equal(view.widgets.attention.rows.length, 2);
   assert.equal(view.widgets.tasks._label.content, " in progress 3 ");
   assert.equal(view.widgets.review._label.content, " ready to review 2 ");
   assert.equal(view.widgets.merge._label.content, " ready to merge 1 ");
@@ -135,7 +138,7 @@ test("hide and show toggle all three panes", () => {
 });
 
 test("empty panes stay visible with their zero-count label", () => {
-  const { view, input } = setup({ tasks: 0, review: 0, merge: 0 });
+  const { view, input } = setup({ attention: 0, tasks: 0, review: 0, merge: 0 });
   for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
   assert.equal(view.widgets.review._label.content, " ready to review 0 ");
   view.hide();
@@ -165,9 +168,9 @@ test("hiding or emptying the focused pane does not report a focus", () => {
 test("a fresh view keeps its panes hidden until the first render", () => {
   const screen = testScreen();
   const view = createTableView({ parent: screen, onFocus: () => {}, onOpen: () => {}, onOpenPr: () => {} });
-  for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, true);
-  view.render({ tasks: [], review: [], merge: [], now: 0, boxes: tableBoxes(30, 100), focusedId: "tasks" });
-  for (const id of ["tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
+  for (const id of ["attention", "tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, true);
+  view.render({ attention: [], tasks: [], review: [], merge: [], now: 0, boxes: tableBoxes(30, 100), focusedId: "tasks" });
+  for (const id of ["attention", "tasks", "review", "merge"] as const) assert.equal(view.widgets[id].hidden, false);
 });
 
 test("the tasks pane stretches from the title to the review pane", () => {
@@ -197,6 +200,7 @@ function prSetup() {
     onOpenPr: (r) => openedPrs.push(r),
   });
   const input: TableViewInput = {
+    attention: [],
     tasks: [{ ...row("T-0"), pr: 41 }, row("T-1")],
     review: [],
     merge: [],

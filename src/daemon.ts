@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
 import { clearedStateNames } from "./blocked.ts";
 import { pullCodebase, resolveDefaultBranch } from "./codebase-sync.ts";
-import { checkDisk, freshDiskGuardState, parseDiskGb, tightestVolume } from "./disk-guard.ts";
-import { goCacheDir, trimGoCache } from "./go-cache.ts";
+import { checkDisk, freshDiskGuardState, parseDiskGb, volumes } from "./disk-guard.ts";
+import { goCacheDir, sweepGoBuildDirs, trimGoCache } from "./go-cache.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
@@ -637,6 +637,8 @@ export async function startDaemon(): Promise<() => void> {
   void safeSync();
   const syncTimer = setInterval(() => void safeSync(), heartbeatIntervalMinutes * 60 * 1000);
 
+  // A go-build work dir untouched this long belongs to a build that was killed.
+  const GO_BUILD_DIR_MAX_AGE_MS = 60 * 60 * 1000;
   // One trim at a time: the routine sweep and the disk guard's emergency sweep
   // share this latch, so a slow walk of a huge cache never runs twice at once.
   let trimming = false;
@@ -649,6 +651,10 @@ export async function startDaemon(): Promise<() => void> {
       const { removed, freedBytes } = await trimGoCache(dir, maxAgeMs);
       if (removed > 0) {
         console.log(`[go-cache] ${label}: removed ${removed} entries, freed ${(freedBytes / 1e9).toFixed(1)}G`);
+      }
+      const swept = await sweepGoBuildDirs(["/tmp", tmpdir()], GO_BUILD_DIR_MAX_AGE_MS);
+      if (swept.removed > 0) {
+        console.log(`[go-cache] removed ${swept.removed} abandoned go-build work dirs, freed ${(swept.freedBytes / 1e9).toFixed(1)}G`);
       }
     } catch (err) {
       console.warn(`[go-cache] trim failed: ${err}`);
@@ -675,7 +681,7 @@ export async function startDaemon(): Promise<() => void> {
       const goDir = goCacheTrim ? await goCacheDir() : null;
       const paths = ["/tmp", tmpdir(), worktreesDir, ...(goDir ? [goDir] : [])];
       await checkDisk(diskState, {
-        free: () => tightestVolume(paths),
+        free: () => volumes(paths),
         lowBytes: diskLowBytes,
         highBytes: diskRecoverBytes,
         relieve: async () => {

@@ -2077,7 +2077,7 @@ export function startWatcher(config: WatcherConfig): () => void {
     // stale fix status. The label writers stay pure GitHub side effects. A ready
     // draft says "draft pr" instead: it cannot merge until a human marks it
     // ready for review.
-    onVerdict: (n: number, verdict, hasLabel, isDraft, reason, manual, approved) => {
+    onVerdict: (n: number, verdict, hasLabel, isDraft, reason, manual, approved, changesRequested) => {
       const k = keyForPr(n);
       if (!boardReadyToMerge(verdict, hasLabel)) {
         const status = currentStatus(k.key);
@@ -2098,7 +2098,7 @@ export function startWatcher(config: WatcherConfig): () => void {
       }
       // A PR the overlap gate is holding keeps its "waiting on queue" row until the label goes on.
       if (!hasLabel && currentStatus(k.key) === statusFor("queue_held")?.status) return;
-      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual, approved), key: k.key, label: k.label, pr: n, repo: k.repo });
+      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual, approved, changesRequested), key: k.key, label: k.label, pr: n, repo: k.repo });
     },
     // Where the row sits, reported separately from its status so a queued PR
     // stays in the merge pane while its status walks through a CI fix or a

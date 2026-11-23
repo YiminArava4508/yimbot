@@ -60,6 +60,7 @@ export type PrReadyDeps = {
     reason: RegressReason | undefined,
     manual: boolean,
     approved: boolean,
+    changesRequested: boolean,
   ) => void;
   // Whether the PR's repo has no merge queue, so a ready PR waits on a human
   // to merge it whatever its labels say. Absent means every repo is queued.
@@ -140,10 +141,19 @@ export function boardReadyToMerge(verdict: ReadyVerdict, hasLabel: boolean): boo
 // waiting on a human to queue it, so the row says so instead of reading like a
 // queued one; autonomous labels it itself after the soak, so no prompt there.
 // A labeled but unapproved PR sits outside the merge queue, which only takes
-// approved PRs, so the row names the missing approval.
-export function boardReadyKind(isDraft: boolean, hasLabel: boolean, mode: Mode, manual = false, approved = true): EventKind {
+// approved PRs, so the row names the missing approval, or the outstanding
+// changes-requested review when that is what blocks it.
+export function boardReadyKind(
+  isDraft: boolean,
+  hasLabel: boolean,
+  mode: Mode,
+  manual = false,
+  approved = true,
+  changesRequested = false,
+): EventKind {
   if (isDraft) return "draft_pr";
   if (manual) return "ready_manual";
+  if (hasLabel && changesRequested) return "changes_requested";
   if (hasLabel && !approved) return "needs_approval";
   if (!hasLabel && mode === "supervised") return "ready_unqueued";
   return "ready_to_merge";
@@ -286,7 +296,7 @@ export async function readyOnce(state: ReadyState, deps: PrReadyDeps): Promise<v
       continue; // blocked-fix flow owns this PR's labels
     }
     if (manual === undefined) continue;
-    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft, reason, manual, live.approved);
+    deps.onVerdict?.(pr.number, verdict, hasLabel, live.isDraft, reason, manual, live.approved, live.changesRequested);
     if (deps.mode() === "supervised") continue; // the label is a human's to manage
     if (manual) continue;
     // A draft is a human's to promote: never add the label (which queues it to

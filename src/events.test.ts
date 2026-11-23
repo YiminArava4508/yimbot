@@ -165,6 +165,7 @@ test("statusFor maps kinds; only merged is terminal", () => {
   assert.deepEqual(statusFor("draft_pr"), { status: "draft pr", terminal: false });
   assert.deepEqual(statusFor("ready_unqueued"), { status: "ready: r to queue", terminal: false });
   assert.deepEqual(statusFor("needs_approval"), { status: "needs approval", terminal: false });
+  assert.deepEqual(statusFor("changes_requested"), { status: "changes requested", terminal: false });
   assert.deepEqual(statusFor("ready_regressed"), { status: "working", terminal: false });
   assert.deepEqual(statusFor("awaiting_slices"), { status: "waiting on slices", terminal: false });
   assert.deepEqual(statusFor("tracking"), { status: "tracker ticket", terminal: false });
@@ -1453,6 +1454,7 @@ test("yieldsToVerdict: ready claims and a finished fix give way to a regressed v
   assert.equal(yieldsToVerdict(statusFor("ready_to_merge")!.status), true);
   assert.equal(yieldsToVerdict(statusFor("fix_ended")!.status), true);
   assert.equal(yieldsToVerdict(statusFor("needs_approval")!.status), true);
+  assert.equal(yieldsToVerdict(statusFor("changes_requested")!.status), true);
   assert.equal(yieldsToVerdict(statusFor("ci_fix_started")!.status), false);
   assert.equal(yieldsToVerdict(undefined), false);
 });

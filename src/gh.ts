@@ -372,7 +372,8 @@ export function parseHolderNote(json: string): string | undefined {
     mergeStateStatus?: string;
   };
   if (state !== "OPEN") return undefined;
-  if (reviewDecision === "REVIEW_REQUIRED" || reviewDecision === "CHANGES_REQUESTED") return "needs approval";
+  if (reviewDecision === "CHANGES_REQUESTED") return "changes requested";
+  if (reviewDecision === "REVIEW_REQUIRED") return "needs approval";
   return mergeStateStatus === "BLOCKED" ? "blocked" : undefined;
 }
 
@@ -433,14 +434,19 @@ export async function prLabels(run: GhRunner, prNumber: number): Promise<string[
   return parseLabels(await run(["pr", "view", String(prNumber), "--json", "labels"]));
 }
 
-export type PrState = { labels: string[]; isDraft: boolean; approved: boolean };
+export type PrState = { labels: string[]; isDraft: boolean; approved: boolean; changesRequested: boolean };
 
 // Labels, the draft flag and approval together, from one `gh pr view`. The ready step
 // needs both live: the open-PR listing it walks is a snapshot taken at tick
 // start, and an operator queueing a PR mid-tick promotes it out of draft.
 export function parsePrState(json: string): PrState {
   const { reviewDecision } = JSON.parse(json) as { reviewDecision?: string | null };
-  return { labels: parseLabels(json), isDraft: parseIsDraft(json), approved: reviewDecision === "APPROVED" };
+  return {
+    labels: parseLabels(json),
+    isDraft: parseIsDraft(json),
+    approved: reviewDecision === "APPROVED",
+    changesRequested: reviewDecision === "CHANGES_REQUESTED",
+  };
 }
 
 export async function prState(run: GhRunner, prNumber: number): Promise<PrState> {

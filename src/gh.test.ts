@@ -641,9 +641,9 @@ test("prReviewMeta views the PR once with every field the review and order flows
 test("parsePrState reads the labels and the draft flag from one view", () => {
   assert.deepEqual(
     parsePrState(JSON.stringify({ labels: [{ name: "ready-to-merge" }], isDraft: true, reviewDecision: "APPROVED" })),
-    { labels: ["ready-to-merge"], isDraft: true, approved: true },
+    { labels: ["ready-to-merge"], isDraft: true, approved: true, changesRequested: false },
   );
-  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false, approved: false });
+  assert.deepEqual(parsePrState(JSON.stringify({ isDraft: false })), { labels: [], isDraft: false, approved: false, changesRequested: false });
 });
 
 test("parsePrState treats any review decision but APPROVED as not approved", () => {
@@ -782,11 +782,17 @@ test("parsePrFiles and parseQueuedPrs read paths and head SHAs", () => {
 
 test("parseHolderNote flags an open PR that needs approval or is blocked", () => {
   assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED"}'), "needs approval");
-  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"CHANGES_REQUESTED","mergeStateStatus":"BLOCKED"}'), "needs approval");
+  assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"CHANGES_REQUESTED","mergeStateStatus":"BLOCKED"}'), "changes requested");
   assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"APPROVED","mergeStateStatus":"BLOCKED"}'), "blocked");
   assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":"APPROVED","mergeStateStatus":"CLEAN"}'), undefined);
   assert.equal(parseHolderNote('{"state":"OPEN","reviewDecision":null,"mergeStateStatus":"CLEAN"}'), undefined);
   assert.equal(parseHolderNote('{"state":"MERGED","reviewDecision":"REVIEW_REQUIRED"}'), undefined);
+});
+
+test("parsePrState reports changesRequested from the review decision", () => {
+  assert.equal(parsePrState(JSON.stringify({ isDraft: false, reviewDecision: "CHANGES_REQUESTED" })).changesRequested, true);
+  assert.equal(parsePrState(JSON.stringify({ isDraft: false, reviewDecision: "REVIEW_REQUIRED" })).changesRequested, false);
+  assert.equal(parsePrState(JSON.stringify({ isDraft: false })).changesRequested, false);
 });
 
 test("prLifecycle reads the holder note in the same gh call", async () => {

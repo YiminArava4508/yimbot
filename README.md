@@ -5,17 +5,26 @@ tmux, via `~/new-session.sh`) when an issue assigned to you moves into
 In Progress.
 
 Watcher-only Linear daemon. Polls the Linear GraphQL
-API — no webhooks, no public endpoint. Issues already In Progress when the
-daemon starts are baselined and ignored; only transitions that happen while
-it runs launch sessions. Each issue launches at most once per run, and a
-failed launch is retried on the next poll.
+API, no webhooks and no public endpoint. Each heartbeat, every In Progress
+ticket without a session or worktree gets one. Tickets that already have one
+are adopted, so a restart never double-launches. A launch is tried up to 3
+times, then logged and dropped.
 
-The daemon also keeps the main codebase fresh: every poll interval it runs
-`git pull --rebase origin main` in `CODEBASE_PATH` (required;
-must be set), so new worktree sessions branch off up-to-date code. Pull
+The daemon also keeps the main codebase fresh: every poll interval it
+fast-forwards the default branch in `CODEBASE_PATH` (required; must be set) so
+new worktree sessions branch off up-to-date code. The default branch is
+`DEFAULT_BRANCH`, else origin/HEAD, else `main`. Pull
 failures are logged and never crash the daemon.
 
 ## How it works
+
+**Modes.** yimbot starts in supervised mode; press `m` on the board to switch to
+autonomous (the choice lives in the `mode` file next to the events log). In
+supervised mode, comments and changes-requested reviews from anyone outside
+`TRUSTED_REVIEWERS` (defaults to the Copilot reviewers) flag the PR and halt every
+fix session on it until you unflag it, the `ready-to-merge` label is never
+written, idle nudges are off, and sessions open PRs as drafts. Autonomous mode
+turns those on.
 
 The first time you run it, yimbot asks a few setup questions. After that it
 quietly checks your Linear board and your open PRs every few minutes (its
@@ -65,9 +74,9 @@ flowchart TD
     G5 --> T4{"Did one of your PRs merge,<br/>or a no-PR ticket<br/>reach Done?"}
     T4 -- yes --> CU["Remove that work's workspace<br/>and close its session"]
 
-    P --> G7["Advance the work"]
-    G7 --> T6{"Did one of your<br/>PRs just merge?"}
-    T6 -- yes --> AD["Judge the issue's acceptance<br/>criteria and spawn a continuation<br/>session while any remain"]
+    P --> G11["Advance the work"]
+    G11 --> T10{"Did one of your<br/>PRs just merge?"}
+    T10 -- yes --> AD["Judge the issue's acceptance<br/>criteria and spawn a continuation<br/>session while any remain"]
 
     P --> G10["Write how to test"]
     G10 --> T9{"Did the last child of a<br/>parent ticket merge, and is<br/>that merge live on nonprod?"}
@@ -75,7 +84,7 @@ flowchart TD
 
     P --> G8["Flag ready to merge"]
     G8 --> T7{"An open PR of yours that's clean?<br/>green CI, comments resolved,<br/>no conflicts"}
-    T7 -- yes --> RM["Add the 'ready-to-merge' label<br/>(and remove it again if the<br/>PR later regresses)"]
+    T7 -- yes --> RM["Add the 'ready-to-merge' label<br/>(the bot never removes it)"]
 
     classDef deploy fill:#c6f6d5,stroke:#2f855a,color:#1a202c;
     classDef claim fill:#bee3f8,stroke:#2b6cb0,color:#1a202c;
@@ -98,7 +107,7 @@ flowchart TD
     class G4,T3,F ready;
     class G5,T4,CU cleanup;
     class S sync;
-    class G7,T6,AD advance;
+    class G11,T10,AD advance;
     class G8,T7,RM readymerge;
     class G10,T9,QA qa;
 ```
@@ -114,13 +123,16 @@ flowchart TD
   between columns; it runs in the main checkout at `CODEBASE_PATH` with no
   worktree. The ticket's row reads **refining** while it works and **refined**
   once an estimate lands, which is also what ends the session; one that dies or
-  lingers without setting an estimate is torn down and the ticket is picked up
-  again on a later heartbeat. *(optional; settings: `AUTO_REFINE`, on by
+  lingers past `YIMBOT_FIX_REAP_STALE_MINUTES` (default 90) without setting an
+  estimate is torn down and the ticket is picked up again on a later heartbeat.
+  The board's auto-refine toggle persists to a `refine` file next to the events
+  log and overrides `AUTO_REFINE`. `SPLIT_TICKETS=false` turns decomposition off,
+  so refine only estimates. *(optional; settings: `AUTO_REFINE`, on by
   default; `REFINE_USERS`, comma-separated Linear names or emails, empty means
   just you; `REFINE_LABEL_FILTER`, same grammar as `LABEL_FILTER` and inherits
   it when blank; `MAX_REFINING`, defaults to 1)*
 - **Grab the next task (blue):** while you have fewer than your work-in-progress
-  limit of tickets in progress, it pulls your top to-do into progress so the
+  limit of tickets in progress, it pulls your top current-cycle to-do into progress so the
   deploy step picks it up next time. A ticket whose Linear "blocked by" relations
   point at work that has not landed yet is skipped, and one already in progress is
   moved back to to-do. A blocker counts as landed once it reaches the merge state
@@ -133,7 +145,9 @@ flowchart TD
   skipped, estimated or not, because a zero marks a decomposed container whose
   subtickets carry the actual work. A Todo sub-issue whose parent is In Progress
   is skipped too: that is a split in flight, and the parent's session is already
-  working the slice. Before claiming, it also reads the picked ticket's description:
+  working the slice (unless the parent is a Linear tracker, or is Merged or later).
+  Tickets labeled `RISK_LABELS` (defaults to `migration,infra,security,breaking`)
+  or `REJECT_LABEL`, and tickets above `MAX_ESTIMATE`, are never claimed. Before claiming, it also reads the picked ticket's description:
   when the description states a blocking dependency that was never recorded as a
   relation (for example "must land after ENG-1319"), it creates the real Linear
   relation, leaves a comment explaining what it inferred, and leaves the ticket in
@@ -169,10 +183,12 @@ flowchart TD
   cannot resolve safely without risking the feature, it aborts the merge and
   leaves the PR untouched for a human. It shares the PR's worktree with the
   comment and CI fixes and never runs at the same time as either; within a
-  heartbeat the order is comment, then conflict, then CI. Re-triggers only when
+  heartbeat the order is comment, conflict, queue block, then CI. Re-triggers only when
   the PR head moves, so a clean bail never loops. Needs `gh` installed and
-  authenticated. Any fix session (comment, CI, or conflict) that lingers too
-  long is torn down as a backstop, regardless of PR state; the clock survives
+  authenticated. A fix window also closes early once its goal is met (the PR is
+  mergeable again, or CI is passing). Any fix session (comment, CI, or conflict)
+  that lingers too long is torn down as a backstop, regardless of PR state;
+  queue-block fixers are never reaped this way; the clock survives
   a daemon restart (`fix-timers.json` next to the events log). *(setting:
   `YIMBOT_FIX_REAP_STALE_MINUTES`, defaults to 90)*
 - **Handle queue blocks (orange):** every heartbeat, for each of your open PRs
@@ -186,7 +202,9 @@ flowchart TD
   human. Re-triggers only when the head moves, so a re-block caused by another
   PR in the batch never loops. While the label is on, the board row reads
   "merge queue blocked" (or "unblocking" once the fix window has opened) instead
-  of staying on "ready to merge". Settings: `BLOCKED_LABEL` (defaults to
+  of staying on "ready to merge". When the block is only a queue conflict with
+  PRs ahead of it, no session opens: the daemon waits for those PRs to land,
+  then re-queues. Settings: `BLOCKED_LABEL` (defaults to
   `blocked`); re-queue reuses `READY_MERGE_LABEL`.
 - **Watch other repos:** a ticket whose change lands outside the codebase repo
   (a terraform repo, say) still links its PR to the board, moves it to the
@@ -196,8 +214,8 @@ flowchart TD
   repo. A ticket with PRs in several repos still shows as one card, and only
   one of those PRs is reachable from it. Fix sessions (comments, CI, conflicts, queue blocks) run on the
   codebase repo only.
-- **Flag changes-requested reviews:** every heartbeat, any of your open
-  non-draft PRs blocked by a changes-requested review raises that row's `⚑` on
+- **Flag changes-requested reviews:** in supervised mode, every heartbeat, any of
+  your open PRs (drafts included) blocked by a changes-requested review raises that row's `⚑` on
   the board. No fix session can lift that block, only the reviewer re-reviewing
   can, so the flag is raised again on the next heartbeat if you unflag it while
   the review still stands.
@@ -210,8 +228,10 @@ flowchart TD
   findings comment was the whole deliverable: yimbot mentions the creator, then
   moves the ticket to Done. Any other card entering review gets one comment
   mentioning its creator (never you). Any failed lookup leaves the card in
-  review, and a failed write is retried next heartbeat. *(setting:
-  `DONE_STATE_NAME`, defaults to `Done`)*
+  review. A failed comment is retried next heartbeat; a failed move to Done is
+  not, and the card gets the plain review notice instead. *(settings:
+  `DONE_STATE_NAME`, defaults to `Done`; `SPIKE_REVIEW_STATE_NAME`, the state the
+  sweep reads, defaults to `In Review`)*
 - **Clean up finished work (red):** every heartbeat, once one of your PRs is
   merged, yimbot tears down that branch's workspace (its worktree) and closes its
   tmux session via `~/end-session.sh`, but only once no PR on that branch is
@@ -219,7 +239,7 @@ flowchart TD
   that never gets a PR (a spike whose
   deliverable is an answer on the ticket) is reaped when its Linear ticket
   (an `eng-<n>` branch) has landed, as long as the worktree holds no local-only
-  work. Landed means a Done/Canceled state, or the merge state
+  work. Landed means a completed, canceled or duplicate state type, or the merge state
   (`MERGED_STATE_NAME`) or review state (`REVIEW_STATE_NAME`) that a team maps
   to "started" even though the work is finished. Same rule gates a split
   group's teardown and the reap of a worktree whose PR closed unmerged. *(optional; setting: `AUTO_CLEANUP`,
@@ -261,14 +281,15 @@ flowchart TD
   defaults to 5; `AC_JUDGE_MODEL`, blank uses the claude default)*
 - **Write how to test (amber):** every heartbeat, once one of your PRs merges,
   yimbot finds the ticket's parent (or the ticket itself) and waits until every
-  child sits in a landed state and the nonprod deploy workflow has a successful
+  child sits in the merge or review state (Done and Canceled do not count here) and the nonprod deploy workflow has a successful
   run at or past the last merge commit. It then opens a `qa-eng-<n>` session in
   the main checkout that walks the feature in your Chrome through the Chrome
   MCP, uploads screenshots to Linear (the local files are deleted right after),
   and upserts one `How to test` comment on the parent. The comment appearing is
   the completion signal; a session that dies or runs past the timeout is killed
   and the row shows `qa failed`. A parent whose children merged in different
-  repos is marked `qa failed` for now; multi-repo QA is a follow-up.
+  repos is marked `qa failed` for now; multi-repo QA is a follow-up. QA sessions
+  run one at a time (one Chrome), one spawn per heartbeat, deferred at the WIP cap.
   *(optional; settings: `QA_DEPLOY_WORKFLOW` and
   `QA_NONPROD_URL` turn it on; `QA_DEPLOY_WORKFLOW_<SLUG>` / `QA_NONPROD_URL_<SLUG>`
   per extra repo; `QA_SESSION_TIMEOUT_MINUTES`, defaults to 45)* Needs `gh`,
@@ -334,7 +355,7 @@ been released. If tickets are not moved to Done when a release ships, the gate
 waits forever. If someone moves a ticket to Done early, the follow-up runs
 before the release. Check this holds before relying on the label.
 
-**Prod flag archive.** The pickup-ticket skill archives a prod PostHog flag only
+**Prod flag archive.** The archive-flag-ticket skill archives a prod PostHog flag only
 after its checklist passes. Check 4 needs the flag quiet for `FLAG_ARCHIVE_QUIET_HOURS`
 (default `4`); a flag that was never called passes. Set the variable in `.env`
 to change the window.
@@ -354,17 +375,28 @@ checked, with wrappers (`cd <path> &&`, env assignments, subshells, `bash -c`,
 `pgrep foo; task generate` queues just like a bare `task generate`. The default covers the common build, test, and codegen
 commands:
 
+The shipped `settings/heavy-jobs.conf` covers lint, install, compile, codegen,
+vitest, playwright, docker build, `task` targets, `go vet`/`generate`,
+`golangci-lint` and the api-tests stack. Edit that file to add or drop commands.
+The built-in fallback, used when the conf file is missing, is:
+
 ```
 HEAVY_PATTERNS='^(task (generate|gqlgen|build-all|test|test-integration|ci-local)|pnpm (run )?(build|typecheck|test)[a-z:]*|go build|go test)'
 ```
-
-Edit that file to add or drop commands.
 
 It runs on its own: a `PreToolUse` hook in `session-settings.json`
 (installed by `pnpm onboard` alongside the deny-list) intercepts a matching
 command, waits for the slot, then runs it. Sessions need no cooperation.
 
-Two tunables live in the same conf file. `HEAVY_WAIT_TIMEOUT` caps how long a
+More tunables live in the same conf file: `HEAVY_STACK_WAIT` (default `600`,
+one api-tests stack per machine; a bring-up waits this long, then is denied with
+a message naming the owner), `HEAVY_MIN_FREE_PCT` (default `20`, a heavy job also
+waits while free memory is below this; `0` turns the gate off), `HEAVY_STALE_WAIT`
+(default `30`), `HEAVY_STACK_PROJECT` (default `api-tests`) and `HEAVY_STACK_PORT`
+(default `31003`). `pnpm heavy status` also prints the stack owner and takes
+`--json`.
+
+Two of them set the timeouts. `HEAVY_WAIT_TIMEOUT` caps how long a
 session waits for its turn (seconds, default `1200`). Past that it gives up its
 place in line and runs the command anyway, still under the lock, so a wedged
 queue costs a session its fairness and never its serialization.
@@ -442,10 +474,24 @@ the label, so a queued PR whose CI breaks reads **ready to merge, CI failing**,
 then **ready to merge, fixing CI** once the fix window opens, until the label
 comes off (which is what Aviator does when it blocks a PR).
 
+Press `m` to toggle supervised and autonomous mode (see [How it works](#how-it-works)),
+and `r` to add the `ready-to-merge` label to the selected row's PR by hand.
+
+Press `R` to open the review overlay on the selected row's PR: a review plan
+(an AI grouping of the changed files, `REVIEW_GROUP_MODEL`), the diff, and an
+embedded claude pane (`a` focuses it, `C-h` or `C-\` comes back). In the plan,
+`j`/`k` move, `space` marks a file viewed, `c` adds it to claude's context, `z`
+toggles the side-by-side diff, `f` opens the flow view (an architecture map of
+the PR), `o` opens the ticket session, `r` queues the PR once every file is
+viewed, and `q` or `esc` goes back. Viewed marks persist in `review-state.json`
+by PR and head SHA. `pnpm arch-map` regenerates the architecture map headless
+(`ARCH_MAP_MODEL`).
+
 Press `s` for the settings screen: every value `pnpm onboard` asks about, shown
 with the team, the assignee the API key resolves to, the three workflow states,
-the ticket slice (`LABEL_FILTER`), and the WIP cap. `enter` edits the selected
-row, `w` writes `.env` and restarts the daemon in place, `esc` goes back. A save
+the ticket slice (`LABEL_FILTER`), and the WIP cap. `tab` or `h`/`l` switch between the list and detail panes, `enter` edits the
+selected row, `w` writes `.env` and restarts the daemon in place, `esc` goes back
+(press it twice to discard unsaved edits). A save
 is all or nothing: if the daemon refuses to start on the new config (a codebase
 path that is not a git repository, a rejected API key, Linear unreachable), the
 old config is restored, the daemon restarts on it, and the panel shows the
@@ -581,19 +627,12 @@ The wizard begins with a two-tier prerequisite pre-flight:
   read and write tickets through `~/get-ticket.sh`, `~/comment-ticket.sh` and
   `~/move-ticket.sh`, which use the daemon's `LINEAR_API_KEY`.
 
-**Rejecting mis-estimated tickets.** After planning, pickup sizes the work and
-runs `~/reject-ticket.sh <TICKET> <planned-points> <reason | ->`. When the
-planned size is 2 or more steps above the human estimate (scale 1, 2, 3, 5, 8,
-13, 21), it comments the reason, adds the `rejected` label (`REJECT_LABEL`
-overrides the name), moves the ticket back to Todo (`TODO_STATE_NAME`) and
-stops. The daemon skips labelled tickets when claiming and when launching In
-Progress sessions. To retry, re-estimate the ticket and remove the label; end
-the old session first if its worktree is still up.
-
 Then it authenticates your Linear API key, lets you pick your team and workflow
 states from the real Linear data (the configure step is the settings screen),
-validates the codebase path is a git repo, links the session launcher and
-pickup-ticket skill into place, then writes `.env` and continues into the
+validates the codebase path is a git repo, links the helper scripts into `~/`,
+the skills into `~/.claude/skills/` and the deny-list, hooks and heavy-job
+config into `~/.config/yimbot/` (the daemon re-links anything missing at
+startup), then writes `.env` and continues into the
 daemon and the board.
 
 Press `W` on the board to re-run the wizard. Its finish goes through the same
@@ -610,11 +649,14 @@ safety net that never prompts, the launcher also passes
 `--settings` a deny-list (`~/.config/yimbot/session-settings.json`, symlinked by
 `pnpm onboard`) that hard-blocks catastrophic commands (force-push, `git clean`,
 `rm -rf /` or `~`, `terraform destroy`, `kubectl delete`, `docker` prune/volume
-rm, `dropdb`); a denied command fails silently rather than prompting, so it adds
+rm, `dropdb`, `git reset --hard origin`); a denied command fails silently rather than prompting, so it adds
 safety without any hang risk. Point `SESSION_SETTINGS` at your own file to extend
 it per repo.
 
-The same file wires a `PreToolUse` hook, `scripts/no-self-rebase.sh`, that
+The same file wires hooks for the board's flag events (Notification,
+UserPromptSubmit, Stop, SessionEnd), the heavy-queue `PreToolUse` hook, and a
+`PreToolUse` hook, `~/.config/yimbot/no-self-rebase.sh` (symlinked from
+`scripts/`), that
 denies rebasing a branch onto its own remote in any spelling (`git pull
 --rebase`, `git pull -r`, a bare `git pull` under `pull.rebase=true`,
 `git rebase origin/<branch>`, `git rebase @{u}`). Fix sessions bring main in
@@ -624,6 +666,15 @@ the push then fast-forwards past the force-push deny. The hook tells the session
 to `git pull --no-rebase` instead. Rebasing onto anything else stays allowed
 (`git rebase --onto main <slice>` in split work), since landing it would need
 the force push the deny-list already blocks.
+
+**Rejecting mis-estimated tickets.** After planning, pickup sizes the work and
+runs `~/reject-ticket.sh <TICKET> <planned-points> <reason | ->`. When the
+planned size is 2 or more steps above the human estimate (scale 1, 2, 3, 5, 8,
+13, 21), it comments the reason, adds the `rejected` label (`REJECT_LABEL`
+overrides the name), moves the ticket back to Todo (`TODO_STATE_NAME`) and
+stops. The daemon skips labelled tickets when claiming and when launching In
+Progress sessions. To retry, re-estimate the ticket and remove the label; end
+the old session first if its worktree is still up.
 
 ### Running a second instance
 
@@ -661,6 +712,9 @@ pnpm onboard   # (re)configure via the CLI prompts (W on the board does it in th
 pnpm check     # one-shot: print the issues the deploy state and label filter currently match
 scripts/run.sh # run the daemon (Ctrl+C to stop); opens the setup wizard first if not set up
 pnpm start     # same, without relaunch after a self-update
+pnpm arch-map  # regenerate the architecture map for the review overlay
+pnpm heavy     # heavy job queue: status, hold
+pnpm test      # unit tests (pnpm test:sh for the shell tests, pnpm typecheck for types)
 ```
 
 ## Session launcher & skill
@@ -669,17 +723,23 @@ When an issue enters the deploy state, the daemon shells out to
 `~/new-session.sh <name>`, which creates (or reuses) a git worktree off
 `CODEBASE_PATH`, opens a tmux session with a Claude window, and seeds the session
 by name: ticket sessions (`eng-…` / `sc-…`) hand off to the **pickup-ticket**
-skill (plan, implement, self-review, finish); PR comment fixes (`pr-<n>-fix`,
+skill (plan, implement, self-review, finish), which delegates spikes to
+**spike-ticket**, "Archive flag" tickets to **archive-flag-ticket**, local and
+preview UAT to **ticket-uat**, and branches over 500 LOC to **split-ticket-prs**;
+continuation sessions (`eng-<n>-cont-<k>`) implement only the acceptance criteria
+still open; PR comment fixes (`pr-<n>-fix`,
 launched by the review step with `~/new-session.sh pr-<n>-fix <branch>`) hand off
 to the **address-pr-comments** skill (fix comments, push, resolve threads,
 re-request review); PR CI fixes (`pr-<n>-ci`, launched the same way) hand off to
 the **fix-pr-ci** skill (sync main if stale, otherwise fix the build, push); and
 PR conflict fixes (`pr-<n>-conflict`, launched the same way) hand off to the
 **fix-pr-conflict** skill (understand the PR, merge main in, resolve conflicts
-preserving the feature, push). A PR fix is added as a window inside its branch's
+preserving the feature, push); PR queue blocks (`pr-<n>-blocked`) hand off to
+**fix-pr-blocked**; and `refine-<ticket>` and `qa-eng-<n>` sessions use
+**refine-ticket** and **qa-instructions**. A PR fix is added as a window inside its branch's
 ticket session when that session is still alive, so a PR and its ticket share one
 session; if the ticket session has ended, it becomes a standalone `pr-<n>-fix` /
-`pr-<n>-ci` / `pr-<n>-conflict` session instead.
+`pr-<n>-ci` / `pr-<n>-conflict` / `pr-<n>-blocked` session instead.
 
 Every daemon-spawned launch runs with `SESSION_DETACH=1`, so the new session is
 left in the background and your tmux client stays on whatever you were doing.
@@ -697,12 +757,11 @@ this repo:
 [`skills/address-pr-comments`](skills/address-pr-comments/SKILL.md),
 [`skills/fix-pr-ci`](skills/fix-pr-ci/SKILL.md),
 [`skills/fix-pr-conflict`](skills/fix-pr-conflict/SKILL.md), and
-[`skills/merge-main`](skills/merge-main/SKILL.md). **`pnpm onboard`
-symlinks them into place** (`~/new-session.sh`, `~/end-session.sh`,
-`~/.claude/skills/pickup-ticket`, `~/.claude/skills/address-pr-comments`,
-`~/.claude/skills/fix-pr-ci`, `~/.claude/skills/fix-pr-conflict`,
-`~/.claude/skills/merge-main`), verifying them
-in its pre-flight. An existing file
+[`skills/merge-main`](skills/merge-main/SKILL.md), plus the other helper scripts
+in [`scripts/`](scripts/) and the rest of [`skills/`](skills/). **`pnpm onboard`
+symlinks them all into place** (scripts into `~/`, skills into `~/.claude/skills/`,
+config into `~/.config/yimbot/`; the full list is `hostLinks` in
+`src/setup-core.ts`), verifying them in its pre-flight. An existing file
 at any path is never overwritten without asking (it's backed up first).
 
 Nothing project-specific is baked in. Point it at your repo and, if you need

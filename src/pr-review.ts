@@ -22,12 +22,6 @@ export function blockedSessionName(prNumber: number): string {
   return `pr-${prNumber}-blocked`;
 }
 
-// Every fix session/window name a PR can have — the set the in-flight guard
-// checks so any one fix kind blocks the others on the shared worktree.
-export function fixSessionNames(prNumber: number): string[] {
-  return [fixSessionName(prNumber), ciSessionName(prNumber), conflictSessionName(prNumber), blockedSessionName(prNumber)];
-}
-
 // Per-process record of the newest other-authored unresolved comment timestamp
 // (epoch ms) handled per PR. Re-triggering compares against this so a later round
 // of comments re-spawns while threads deliberately left unresolved do not loop.

@@ -7,7 +7,6 @@ import {
   conflictSessionName,
   type FixKind,
   fixSessionName,
-  fixSessionNames,
   freshReviewState,
   type PrReviewDeps,
   reviewOnce,
@@ -248,10 +247,6 @@ test("reviewOnce skips CI when a fix is already in flight", async () => {
 
 test("conflictSessionName is keyed by PR number", () => {
   assert.equal(conflictSessionName(4706), "pr-4706-conflict");
-});
-
-test("fixSessionNames lists every fix session kind for the PR (the in-flight guard set)", () => {
-  assert.deepEqual(fixSessionNames(4706), ["pr-4706-fix", "pr-4706-ci", "pr-4706-conflict", "pr-4706-blocked"]);
 });
 
 test("reviewOnce spawns a conflict fix for a conflicting PR with no comments and passing CI", async () => {

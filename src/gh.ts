@@ -430,10 +430,6 @@ export function parseLabels(json: string): string[] {
   return (data.labels ?? []).map((l) => l.name);
 }
 
-export async function prLabels(run: GhRunner, prNumber: number): Promise<string[]> {
-  return parseLabels(await run(["pr", "view", String(prNumber), "--json", "labels"]));
-}
-
 export type PrState = { labels: string[]; isDraft: boolean; approved: boolean; changesRequested: boolean };
 
 // Labels, the draft flag and approval together, from one `gh pr view`. The ready step

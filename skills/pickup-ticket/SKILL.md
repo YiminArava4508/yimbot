@@ -20,14 +20,14 @@ yourself is the job.
 
 **Spike check first.** If the ticket is a spike, meaning its deliverable is an
 answer or recommendation (feasibility, investigation, comparison, "figure out
-whether/how ...") rather than code that ships, skip this flow entirely and
-follow **Spike Tickets** below. Signals: a "spike" label, or a title/description
+whether/how ...") rather than code that ships, skip this flow entirely:
+invoke the `spike-ticket` skill now and follow it instead. Signals: a "spike" label, or a title/description
 that asks a question or asks to investigate, research, or evaluate instead of
 asking for a behavior change.
 
 **Flag-archive check second.** If the ticket is an after-release "Archive
 `<flag>` flag in prod" ticket (the `after-release` label plus that title), skip
-this flow and follow **Flag Archive Tickets** below.
+this flow: invoke the `archive-flag-ticket` skill now and follow it instead.
 
 1. **Plan.** Invoke `superpowers:writing-plans` and produce the implementation
    plan for this ticket. Design/plan docs are written under `docs/superpowers/`.
@@ -120,39 +120,9 @@ this flow and follow **Flag Archive Tickets** below.
    the full test suite and loop until it is green again. In a split, run
    this once on the full implementation, before slicing it into PRs.
 
-6a. **Local UAT (before any PR).** Use the feature in the running app the way
-   a user would, before a reviewer does.
-   - **When it runs:** the change touches user-facing UI in a repo with
-     Playwright set up (gemini's `react-ui/tests`). Backend-only changes and
-     repos without Playwright skip it; record `UAT: skipped (<reason>)` for
-     the PR body and go to step 7.
-   - **Start the env:** from the worktree root, set `WT=$(git rev-parse
-     --show-toplevel)`, run `~/run-local-env.sh "$(basename "$WT")"`, then
-     `BASE_URL=$(~/wait-local-env.sh "$WT")`. If the wait exits non-zero,
-     retry once with `~/run-local-env.sh --force "$(basename "$WT")"` and wait
-     again. If that also fails, skip UAT with the error as the reason.
-   - **Write the spec** at `react-ui/tests/<ticket-slug>.spec.ts`, following
-     `react-ui/tests/AGENTS.md`. It creates the data it needs, opens the
-     feature with its default settings (the test picks no operator,
-     predicate, or mode), enters the input the ticket describes, and asserts
-     the acceptance criteria. At the passing state it calls
-     `page.screenshot({ path: process.env.UAT_SCREENSHOT })`. Admin-only
-     screens use gemini's `admin-session-stub` skill. This spec is the
-     default-path test from step 4 when step 4 did not already write one in
-     Playwright. It ships in the PR and counts toward the PR Size Limits.
-   - **Run it** from `react-ui`: `SHOT=$(mktemp --suffix=.png)`, then
-     `PLAYWRIGHT_BASE_URL=$BASE_URL UAT_SCREENSHOT=$SHOT npx playwright test
-     tests/<ticket-slug>.spec.ts`.
-   - **On failure:** fix the code (not the spec, unless the spec misreads the
-     ticket), re-run the full test suite, and re-run the spec. After 3 failed
-     rounds, stop fixing: record `UAT: failed` with the last failure output
-     for the PR body and go to step 7, which then opens a draft and leaves the
-     ticket out of Review.
-   - **On pass:** run `~/attach-ticket.sh "$SHOT"`; it prints the asset URL
-     and deletes the file. Record `UAT: passed (local)` with
-     `![uat](<asset-url>)` for the PR body. If the upload fails, record
-     `UAT: passed (local, screenshot upload failed)` and `shred -u "$SHOT"`.
-   - Leave the env running.
+6a. **Local UAT (before any PR).** Before step 7,
+   invoke the `ticket-uat` skill now (local phase). Continue only once it has
+   recorded a `UAT:` line for the PR body.
 
 7. **Ship at green.** When the full test suite passes, run the
    end-of-implementation steps in this order:
@@ -167,8 +137,8 @@ this flow and follow **Flag Archive Tickets** below.
      `--draft` (a human marks the PR ready for review); in `autonomous`
      mode open it non-draft. The daemon's review and ready steps process
      drafts too, so this only gates the merge. A `UAT: failed` result from
-     step 6a forces `--draft` in either mode, and a failed step 7b converts the
-     PR back to draft (`gh pr ready --undo`). **Always create a brand-new
+     step 6a forces `--draft` in either mode, and a failed preview walk-through
+     converts the PR back to draft (`gh pr ready --undo`). **Always create a brand-new
      PR; never reopen a previously
      closed PR, even one referenced by the branch, commit, or ticket.** Title = the ticket summary; body = a short "what changed /
      why / test result", the `UAT:` line from step 6a, any **Decisions** you made to resolve uncertainty
@@ -176,51 +146,11 @@ this flow and follow **Flag Archive Tickets** below.
      ticket reference so the tracker auto-links the PR. Follow the repo's
      commit/PR conventions: never mention Claude, Claude Code, or AI, and
      add no "Generated with" or "Co-Authored-By" trailers.
-   - **Preview environment (gemini PRs only).** Right after `gh pr create`
-     on a gemini branch, run `gh pr edit <pr> --add-label preview`. A bot then
-     builds a seeded environment at `https://pr-<n>-portal.devmk8s.com` and
-     comments the live URL on the PR (see gemini
-     `docs/runbooks/feature-environments.md`, "Preview a PR"). Skip it for a
-     docs-only or test-only PR, and for a PR from a fork or another repo. The
-     label is best-effort: if it is refused (capacity, branch behind `main`),
-     the bot removes it and says why in its comment; note that in the summary
-     and carry on, never retry in a loop and never block the ticket on it.
-     Previews are torn down after 7 days without a push.
-   - **7b. Preview walk-through (gemini UI changes, after the `preview`
-     label).** Once the PR is open and labeled `preview`, wait for the
-     `preview-live` label (`gh pr view <pr> --json labels`, check every 60s,
-     give up after 25 minutes). The URL is
-     `https://pr-<n>-portal.devmk8s.com`. Live means the images built, so the
-     first page load may fail for a few minutes while Argo rolls out; retry it.
-     Then walk the feature in the user's signed-in Chrome (its Okta session
-     signs in on its own):
-     1. Call `mcp__claude-in-chrome__tabs_context_mcp`, then
-        `mcp__claude-in-chrome__tabs_create_mcp`, and navigate the new tab to
-        the preview URL. Work only in tabs you created.
-     2. If a sign-in page appears, do not type any credentials: close your
-        tabs, record `Preview: not walked (Chrome not signed in)`, and carry on.
-     3. Navigate to each changed screen and do what the ticket's acceptance
-        criteria describe. For each state worth showing, take a screenshot
-        with the `computer` tool (`action: "screenshot", save_to_disk: true`)
-        and immediately run `~/attach-ticket.sh <saved-path>`. It prints the
-        asset URL and deletes the file. If it exits non-zero, run
-        `shred -u <saved-path>` and continue without that image. Confirm the
-        file is gone with `test ! -e <saved-path>`; if not, `shred -u` it.
-        Never copy a screenshot anywhere else.
-     4. Close your tabs with `mcp__claude-in-chrome__tabs_close_mcp`.
-     5. Post one PR comment (`gh pr comment <pr> --body-file`; on a rerun use
-        `--edit-last`) with the preview URL, a line per acceptance criterion
-        saying what you did and what you saw, and the `![](<asset-url>)`
-        images.
-     - **If a criterion visibly fails:** fix the code, re-run the full test
-       suite, push, wait for the new build to go live, and walk it again.
-       After 3 failed rounds record `UAT: failed` with what you saw in the PR
-       body and convert the PR to draft (`gh pr ready --undo`).
-     - **If the label is refused or removed, or the preview is not live in
-       time:** skip the walk-through, say why in the PR body, and carry on.
-       Never block the ticket on the preview.
-   - **If over the hard limit:** follow the split flow described in **PR
-     Size Limits** below instead of opening a single PR. The ticket branch
+   - **Preview (gemini PRs).** Right after `gh pr create`,
+     invoke the `ticket-uat` skill now (preview phase).
+   - **If over the hard limit:** invoke the `split-ticket-prs` skill now and
+     follow it instead of opening a single PR; come back here for the
+     remaining bullets once the whole series is open. The ticket branch
      itself never gets a PR in a split; only its slice branches do.
    - **If the change lands in another repo** (a terraform repo, say), branch
      there under the same name as this worktree's branch and open the PR from
@@ -233,8 +163,8 @@ this flow and follow **Flag Archive Tickets** below.
      ticket to Review, run
      `~/create-subticket.sh <TICKET> "<follow-up title>" <points> --after-release`.
      For a flag archive, title it exactly "Archive `<flag-key>` flag in prod"
-     and put these two lines in the description, since the checklist in **Flag
-     Archive Tickets** reads them: `Flag key: <exact key>` and
+     and put these two lines in the description, since the `archive-flag-ticket`
+     skill reads them: `Flag key: <exact key>` and
      `PostHog flag ID: <id>` (prod project 117986, verified). Also list the
      checks still outstanding (experiments, surveys, dependent flags,
      scheduled changes, early-access features, replay link, external
@@ -244,118 +174,15 @@ this flow and follow **Flag Archive Tickets** below.
      parent has to reach Done for the follow-up to unblock.
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
-     PR, or in a split the whole series, is open. Skip this when UAT failed
-     (step 6a or 7b): the draft PR waits for a human.
+     PR, or in a split the whole series, is open. Move it once, and
+     in a split, every slice subticket too, once each. Skip this when UAT failed
+     (local or preview phase): the draft PR waits for a human.
    - **Spin up the local server on this session's tmux pane** so the change
      can be inspected running. In a split, run it from the ticket branch,
      since that branch is the one that keeps every change for whole-app
      local testing. When step 6a already started it, this no-ops.
    Then STOP. Print a summary of what changed, the PR URL (or URLs, for a
    split), the preview URL when one was requested, and the test result.
-
-## Spike Tickets
-
-A spike's output is knowledge, not a PR. There is nothing to ship, so the PR,
-review, split, and local-server steps above do not apply.
-
-1. **Investigate** as cheaply as correctness allows. Any code you write is
-   throwaway scaffolding: never open a PR for it.
-2. **Leave no local-only work**, or the reaper will spare the worktree forever.
-   Either discard the scaffolding (`git reset --hard` and
-   `git clean -fd -e '.yimbot-*'` so yimbot's marker files survive), or if it
-   is worth keeping for
-   reference, commit and push the branch (`git push -u origin HEAD`, still no
-   PR). The working tree must end clean with every commit on origin.
-3. **Report findings on the ticket.** Post a comment with: the question, what
-   you tried, the answer or recommendation, and suggested next steps (for
-   example the follow-up ticket to write). Linear tickets (`eng-*`): write the
-   markdown to a file and run `~/comment-ticket.sh <TICKET> - < findings.md`.
-   Shortcut tickets (`sc-*`): use the Shortcut MCP.
-4. **Move the ticket to the Review column.** Linear: run
-   `~/move-ticket.sh <TICKET> "In Review"`. Shortcut: use the Shortcut MCP.
-   Always Review, never Done: for Linear tickets the daemon checks the branch
-   when the ticket enters review, and if it has no PR and no code it moves the
-   ticket to Done itself and mentions the creator. Otherwise a human reads it
-   there. The daemon then reaps this worktree and session, but only if step 2
-   was honored. Shortcut tickets (`sc-*`) are not watched by the daemon: note
-   in the findings summary that the session should be ended manually
-   (`~/end-session.sh <branch>`).
-5. **STOP.** Print the findings summary and where it was posted.
-
-## Flag Archive Tickets
-
-An after-release "Archive `<flag>` flag in prod" ticket may archive the flag
-itself, but only through this checklist. There is no PR, review, split, or
-local-server step. Read the exact flag key and PostHog flag ID from the ticket
-description (`~/get-ticket.sh <TICKET>`) when it has `Flag key:` and `PostHog
-flag ID:` lines; the ID must resolve to that key in prod project 117986. Older
-tickets have no such lines: take the key from the backticked name in the title
-("Archive `hubspot-call-list-sync` flag in prod"), search prod project 117986
-for that exact key, and require exactly one flag with that key. Missing lines
-alone never fail check 5. It fails only when the key can't be found or matches
-more than one flag.
-
-**Fail closed.** If any input can't be read (gh, git, Linear, PostHog), that
-check fails. Never pass a check on missing data, and never skip one.
-
-1. **Run the reference checks (checks 2 and 3).** `~/flag-archive-check.sh <key>`
-   prints JSON (`pass`, `checks`, `builds`, `prodShas`, `docMatches`,
-   `ignoredMatches`, `quietHours`) and exits non-zero on failure. It covers: no
-   code references on `origin/main` of MatthewsREIS/gemini or anywhere else in
-   the org, and none in the source folder of each gemini build prod runs (each
-   app's chart and its local subcharts, at the commit their `appVersion` names;
-   `builds` lists every app, chart, commit, and folder searched). `*.md` files
-   are never searched in prod builds; on `origin/main` and the org they land in
-   `docMatches` and don't fail. A code reference, in a non-test file, is the
-   exact key as a quoted string (`"key"`, `'key'`, `` `key` ``), the key as a
-   whole token in a config file (yaml, json, tf, `.env`, ...), or `.key` /
-   `key:` in code. Every other match
-   (the key inside a comment or a longer name such as a bucket or option, a test
-   id, a mock, anything in a test file) lands in `ignoredMatches` and doesn't
-   fail. The check is the gate: don't second-guess an ignored match, and don't
-   override a failure because a hit "looks harmless"; raise needs-decision
-   instead.
-2. **Check 1, released.** The `Blocked by:` line of `~/get-ticket.sh <TICKET>`
-   must list at least one blocker, and every blocker must be `Done`. The
-   claim gate already checked this; re-check it anyway.
-3. **Check 4, quiet in prod.** With the PostHog MCP, read the flag in project
-   117986. `last_called_at` must be older than `quietHours` from step 1 (4
-   unless `FLAG_ARCHIVE_QUIET_HOURS` is set). A null or missing `last_called_at`
-   means the flag was never called: the check passes, and the readback says
-   "never called". If the flag can't be read (PostHog error, flag not found),
-   the check fails; that is not the same as never called.
-4. **Check 5, nothing depends on it and archiving changes nothing for users.**
-   In project 117986 all of these must hold:
-   - no experiments, surveys, early-access features, or scheduled changes use
-     the flag;
-   - no other flag depends on it (search other flags' filters for this flag's
-     ID);
-   - session replay isn't linked to it;
-   - the flag is active, at 100% rollout, with no release conditions.
-   Product tours are out of scope (the PostHog key can't read them). Don't
-   fail on them, but say so in the readback.
-
-**If every check passes**, in this order:
-
-a. **Save the flag's state** as a comment on the ticket before touching it: id,
-   key, active, filters/rollout, `last_called_at`, enough to restore it.
-b. **Archive the flag** with the PostHog MCP.
-c. **Read it back** and confirm it now reads as archived. If it doesn't, raise
-   needs-decision (below) with what you saw and stop.
-d. **Post a readback comment** listing every check with its evidence, the prod
-   commits searched (`prodShas`), any `docMatches`, any `ignoredMatches` (so a
-   reviewer can audit what the check skipped), and the note that tours weren't
-   checked.
-e. **Move the ticket to In Review**, same as the spike flow: `~/move-ticket.sh
-   <TICKET> "In Review"` (Shortcut: use the Shortcut MCP). No PR. Then STOP and
-   print the readback.
-
-**If any check fails**, archive nothing:
-
-a. Run `~/needs-decision.sh "<failed check number and name>: <evidence>"` so
-   the board stops showing the session as "working".
-b. Post the same failed check and evidence as a comment on the ticket.
-c. STOP.
 
 ## Hard-Stop Rubric
 
@@ -373,9 +200,8 @@ mutate real resources right now**, before any review can happen:
 - Any data-destroying or otherwise irreversible command executed during
   implementation.
 
-**Exception: archiving a prod PostHog flag.** It is allowed without a "go",
-only through the **Flag Archive Tickets** checklist, and only when every check
-passes. Every other prod change still needs a "go".
+**Exception:** the only prod change allowed without a go is archiving a PostHog
+flag through the `archive-flag-ticket` skill.
 
 Nothing else pauses. Writing migration, auth, or billing code, touching many
 files, touching shared or core code, or the plan containing an open question is
@@ -397,7 +223,7 @@ and snapshots).
   be split into multiple smaller PRs before shipping, no exceptions.
 - **Exception: `echo "$SPLIT_TICKETS"` is `false`, `off`, `0`, or `no`.**
   Splitting is disabled: never split, whatever the size. Ship the ticket
-  branch as one PR through the single-PR flow, skip the split flow below, and
+  branch as one PR through the single-PR flow, skip the split flow, and
   create no slices, subtickets, or `.yimbot-split-parent` flag. Unset or any
   other value means the limit applies as written.
 
@@ -406,82 +232,7 @@ Splitting is a **PR-time operation**, not a set of separate implementation
 branches: do all the work on the ticket branch, get it fully green (including
 the reuse audit above), and only then decide how to slice it into PRs.
 
-**The split flow, driven by `~/split-pr.sh`:**
-
-- **First, before anything else,** flag the ticket's own worktree as a split
-  parent so cleanup never reaps it mid-split (this covers the window before the
-  first slice exists, and the case where the ticket already has a PR you are
-  about to close): `touch .yimbot-split-parent` from the ticket worktree root.
-- The **original ticket branch keeps every change and gets no PR of its
-  own.** Leave it up as a local integration branch: it is the only place the
-  whole app can be run and tested locally, end to end.
-- Every PR is a **new, independent slice branch off `main`**, never a
-  branch stacked on another slice and never a GitHub stacked PR. Every slice
-  also gets its **own subticket** under the original ticket, and its branch is
-  named after that subticket, so each slice tracks and shows on the board as
-  its own task. For each slice:
-  1. Create the slice's subticket, titled `[i/n] <slice summary>`, with a
-     points estimate sized to the slice. **Keep the parent's points:** read the
-     parent's estimate before creating the first slice, and make the slice
-     points add up to exactly that number, never more (the split redistributes
-     the parent's points, it does not add to them). If the parent had no
-     estimate, size the whole ticket as one unit first and use that as the
-     total:
-     - Linear tickets (`eng-*`): run
-       `~/create-subticket.sh <TICKET> "[i/n] <slice summary>" <points> --claimable`.
-       It creates the sub-issue in Todo and the current cycle, where intake
-       lives (never Triage), carrying the parent's labels and zeroing the
-       parent ticket's estimate so points live only on the slices. It prints
-       two lines: the subticket identifier, then the slice branch name. Use
-       that branch name verbatim in the next step. The daemon will not claim
-       the slice out from under you: it skips Todo sub-issues whose parent is
-       In Progress.
-     - Shortcut tickets (`sc-*`): create a subtask under the story via the
-       Shortcut MCP (`stories-create-subtask`), set the parent story's
-       estimate to 0 (`stories-update`), and derive the slice branch from the
-       subticket yourself: `<subticket-id>-<title-slug>`, lowercase,
-       alphanumerics and dashes only, max 50 chars.
-  2. Create the slice branch off `main`, named after the subticket as above
-     (never after the parent ticket: the board keys rows by the ticket slug in
-     the branch, so a parent-slug branch would collapse the slices into one
-     row again).
-  3. Cherry-pick the subset of commits for that slice onto it.
-  4. Push the slice branch.
-  5. `gh pr create`, draft in `supervised` mode / non-draft in `autonomous`
-     mode exactly as in the single-PR flow above (always a brand-new PR,
-     never a reopened closed one), with a series marker `[i/n]` in the title and a
-     body that references the slice's subticket and lists every sibling slice
-     branch/PR and its order in the series.
-     Add the `preview` label to a slice that changes runtime code, per the
-     **Preview environment** step above; skip test-only and docs-only slices,
-     since the preview cap is small.
-  6. Run `~/split-pr.sh <slice-branch> <i> <n>`. This gives the slice its own
-     worktree **and its own tmux session** (named after the slice branch), with
-     a linked Claude session. Never improvise the split yourself by opening
-     tmux windows in the ticket's session or worktree; every slice lives in
-     its own worktree + session, always via the script.
-- Repeat until the whole series is open, then move the ticket **and every
-  slice subticket** to the Review column, once each.
-
-**If a slice did end up stacked on a sibling** (a PR based on another slice's
-branch rather than `main`), it gets no real CI: the CI workflow only triggers on
-PRs whose base matches, so the stack sits on `pr-size` alone. Reroot it onto
-`main`, but do the move **in place, on the ticket branch**:
-
-```bash
-git switch <ticket-branch>
-git branch backup/<ticket>-pre-reroot HEAD
-git rebase --onto main <sibling-branch>
-```
-
-Never build the rerooted history on a temp branch to move back afterwards. That
-is two steps, and if the second is denied or the session ends between them, the
-worktree is stranded on a branch carrying no ticket slug, which breaks the
-board's row and its session jump. If any git command in the sequence is denied,
-**stop and hand the remaining commands to the human** rather than improvising a
-workaround that leaves history half-moved. Only reroot when the slice's own
-commits do not use the sibling's code: check the diff first, build the affected
-modules after.
+Over the hard limit, the split flow lives in the `split-ticket-prs` skill.
 
 Prefer to catch large scope at **plan time**: if the plan clearly exceeds
 ~500 LOC, anticipate the split from the start. Even so, implement the whole

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AWAITING_SLICES_STATUS, TRACKING_STATUS, branchesFullyMerged, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, fixStartKind, isFlagged, isWorkingStatus, isFixerStatus, isParentRow, pinEventsLog, yieldsToVerdict, type BoardRow, type YimbotEvent } from "./events.ts";
+import { AWAITING_SLICES_STATUS, TRACKING_STATUS, mergedRowKeys, prRowKey, ticketKeyOf, currentStatus, isHoldStatus, deriveKey, titleFromBranch, statusFor, sectionFor, sectionKind, bus, emitEvent, emitFlagged, emitQueuedToMerge, emitSection, emitStatus, foldAttention, foldSections, foldStuck, STUCK_STATUS, readEvents, eventsLogPath, reduceRows, filterToLiveRows, fixStartKind, isFlagged, isWorkingStatus, isFixerStatus, isParentRow, pinEventsLog, yieldsToVerdict, type BoardRow, type YimbotEvent } from "./events.ts";
 import { writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -123,26 +123,6 @@ test("deriveKey: pr fallback when branch has no ticket slug", () => {
 
 test("deriveKey: bare pr", () => {
   assert.deepEqual(deriveKey({ pr: 5 }), { key: "pr:5", label: "PR #5" });
-});
-
-test("branchesFullyMerged holds back a merged branch while another PR on its row is open", () => {
-  const merged = new Set(["sc-1234-thing-part-1"]);
-  const open = new Set(["sc-1234-thing-part-2", "sc-1234-thing-part-3"]);
-  assert.deepEqual(branchesFullyMerged(merged, open), []);
-});
-
-test("branchesFullyMerged releases the key once no open PR shares it", () => {
-  const merged = new Set(["sc-1234-thing-part-1", "sc-1234-thing-part-2", "sc-1234-thing-part-3"]);
-  assert.deepEqual(
-    branchesFullyMerged(merged, new Set()).sort(),
-    ["sc-1234-thing-part-1", "sc-1234-thing-part-2", "sc-1234-thing-part-3"],
-  );
-});
-
-test("branchesFullyMerged only holds back branches sharing the open row key", () => {
-  const merged = new Set(["eng-9-solo", "sc-1234-thing-part-1"]);
-  const open = new Set(["sc-1234-thing-part-2"]);
-  assert.deepEqual(branchesFullyMerged(merged, open), ["eng-9-solo"]);
 });
 
 test("titleFromBranch strips ticket prefix and humanizes", () => {

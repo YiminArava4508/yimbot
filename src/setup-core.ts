@@ -437,6 +437,11 @@ export const hostLinks: HostLink[] = [
     label: "spike-ticket skill (~/.claude/skills/spike-ticket)",
   },
   {
+    source: join(repoRoot, "skills/archive-flag-ticket"),
+    target: join(homedir(), ".claude/skills/archive-flag-ticket"),
+    label: "archive-flag-ticket skill (~/.claude/skills/archive-flag-ticket)",
+  },
+  {
     source: join(repoRoot, "skills/address-pr-comments"),
     target: join(homedir(), ".claude/skills/address-pr-comments"),
     label: "address-pr-comments skill (~/.claude/skills/address-pr-comments)",

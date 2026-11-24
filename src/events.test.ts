@@ -77,6 +77,34 @@ test("reduceRows: a later section event's pr replaces an older one", () => {
   assert.equal(rows[0].pr, 456);
 });
 
+test("reduceRows: a PR title wins over a session's branch-slug title, even when the session event is newer", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", key: "ENG-7", label: "ENG-7", title: "7 fix the thi" }),
+      ev({ ts: 2, kind: "section_review", key: "ENG-7", label: "ENG-7", pr: 123, prTitle: "Fix the thing" }),
+      ev({ ts: 3, kind: "review_started", key: "ENG-7", label: "ENG-7", title: "7 fix the thi", pr: 123 }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].title, "Fix the thing");
+});
+
+test("reduceRows: a row only the PR poller ever reported takes its title from the PR", () => {
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "needs_approval", key: "ENG-8", label: "ENG-8", pr: 9, prTitle: "[2/2] Second half" }),
+      ev({ ts: 2, kind: "section_review", key: "ENG-8", label: "ENG-8", pr: 9 }),
+    ],
+    100,
+  );
+  assert.equal(rows[0].title, "[2/2] Second half");
+});
+
+test("reduceRows: a row with no PR title keeps its session title", () => {
+  const rows = reduceRows([ev({ ts: 1, kind: "task_started", key: "ENG-7", label: "ENG-7", title: "7 fix the thi" })], 100);
+  assert.equal(rows[0].title, "7 fix the thi");
+});
+
 test("reduceRows: a section event for a key with no row creates no row", () => {
   const rows = reduceRows([ev({ ts: 1, kind: "section_review", key: "ENG-8", label: "ENG-8", pr: 9 })], 100);
   assert.equal(rows.length, 0);
@@ -1225,6 +1253,17 @@ test("emitSection skips a section that has not changed", () => {
     emitSection({ kind: "section_merge", key: "ENG-9", label: "ENG-9" });
     emitSection({ kind: "section_merge", key: "ENG-9", label: "ENG-9" });
     assert.equal(readEvents(path).length, 1);
+  });
+});
+
+test("emitSection re-reports an unchanged section when the PR title is new or changed, not when it repeats", () => {
+  withTmpLog((path) => {
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 4 });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 4, prTitle: "First" });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 4, prTitle: "First" });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 4, prTitle: "Renamed" });
+    emitSection({ kind: "section_review", key: "ENG-9", label: "ENG-9", pr: 4 });
+    assert.deepEqual(readEvents(path).map((e) => e.prTitle), [undefined, "First", "Renamed"]);
   });
 });
 

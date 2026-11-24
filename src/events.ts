@@ -57,6 +57,11 @@ export type YimbotEvent = {
   key: string;
   label: string;
   title?: string;
+  // The PR's own title, carried on events from the PR poller. Wins over
+  // `title` on the board: a session's title is only its branch slug, cut off
+  // at the branch name's length, and a PR no session ever ran on (the second
+  // half of a split) has no other source of one.
+  prTitle?: string;
   pr?: number;
   // owner/name when `pr` lives in one of EXTRA_REPOS; absent for the codebase
   // repo. The TUI's gh calls for the row route through it.
@@ -499,10 +504,17 @@ export function emitQueuedToMerge(ev: { key: string; label: string; pr: number; 
 // so without this the log would fill with restatements.
 export function emitSection(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {
   let last: Section | undefined;
+  let lastPrTitle: string | undefined;
   for (const e of readEvents()) {
-    if (e.key === ev.key) last = foldSection(last, e);
+    if (e.key !== ev.key) continue;
+    last = foldSection(last, e);
+    lastPrTitle = e.prTitle ?? lastPrTitle;
   }
-  if (last !== undefined && last === sectionFor(ev.kind)) return;
+  // A new or renamed PR title re-reports the unchanged section, so a row from
+  // before PR titles were sent (or a PR retitled since) still gets it. Section
+  // events survive the log trim, so the title does too.
+  const titleChanged = ev.prTitle !== undefined && ev.prTitle !== lastPrTitle;
+  if (last !== undefined && last === sectionFor(ev.kind) && !titleChanged) return;
   emitEvent(ev);
 }
 
@@ -666,6 +678,8 @@ export function reduceRows(
   const maxRows = opts.maxRows ?? maxRowsDefault();
 
   const byKey = new Map<string, BoardRow>();
+  // Newest PR title per key; see YimbotEvent.prTitle.
+  const prTitles = new Map<string, string>();
   for (const e of events) {
     const mapped = statusFor(e.kind);
     const key = rowKeyOf(e);
@@ -677,8 +691,10 @@ export function reduceRows(
         prev.pr = e.pr;
         prev.repo = e.repo ?? prev.repo;
       }
+      if (e.prTitle && sectionFor(e.kind)) prTitles.set(key, e.prTitle);
       continue; // flag signals + any kind retired in a newer build
     }
+    if (e.prTitle) prTitles.set(key, e.prTitle);
     const startTs = prev ? (prev.terminal ? e.ts : prev.startTs) : e.ts;
     byKey.set(key, {
       key,
@@ -704,6 +720,10 @@ export function reduceRows(
   // force it there rather than dropping it into tasks. Keyed on the merged
   // status rather than on `terminal`, because `refined` is terminal too and a
   // refined ticket has no PR and never entered the queue.
+  for (const row of byKey.values()) {
+    row.title = prTitles.get(row.key) ?? row.title;
+  }
+
   const sections = foldSections(events);
   for (const row of byKey.values()) {
     row.section = row.status === MERGED_STATUS ? "merge" : (sections.get(row.key) ?? "tasks");

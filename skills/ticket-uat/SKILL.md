@@ -26,8 +26,9 @@ it into the next command.
   `grep -q '^PLAYWRIGHT_USERNAME=' react-ui/.env.local`). A missing file or
   key records `UAT: skipped (no Playwright credentials in react-ui/.env.local)`.
 - **Start the env:** run `~/run-local-env.sh <worktree-dir-name>` with the
-  worktree directory's literal name, then `~/wait-local-env.sh
-  <absolute-worktree-path>` with the Bash tool's `timeout: 600000`. It prints
+  worktree directory's literal name, then
+  `~/wait-local-env.sh <absolute-worktree-path> 540` with the Bash tool's
+  `timeout: 600000`, so the script times out (exit 2) before the tool does. It prints
   the React URL. Retry once with `~/run-local-env.sh --force
   <worktree-dir-name>` and wait again only when the wait exits 2 (timed out).
   Exit 1 means no `.env.worktree` or ports: skip UAT with that as the reason.

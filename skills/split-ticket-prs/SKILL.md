@@ -52,7 +52,8 @@ The ticket branch is done and green; this slices it.
      mode exactly as in pickup-ticket's single-PR flow (always a brand-new PR,
      never a reopened closed one), with a series marker `[i/n]` in the title and a
      body that references the slice's subticket and lists every sibling slice
-     branch/PR and its order in the series.
+     branch/PR and its order in the series. Include the ticket's `UAT:`
+     line, and open the PR as a draft if that line says `failed`.
      Add the `preview` label to a slice that changes runtime code, per the
      `ticket-uat` skill's preview label rule; skip test-only and docs-only slices,
      since the preview cap is small.
@@ -61,8 +62,9 @@ The ticket branch is done and green; this slices it.
      a linked Claude session. Never improvise the split yourself by opening
      tmux windows in the ticket's session or worktree; every slice lives in
      its own worktree + session, always via the script.
-- Repeat until the whole series is open, then move the ticket **and every
-  slice subticket** to the Review column, once each.
+- Repeat until the whole series is open, then return to pickup-ticket's
+  remaining step 7 bullets. Its Review move covers the ticket and every slice
+  subticket.
 
 **If a slice did end up stacked on a sibling** (a PR based on another slice's
 branch rather than `main`), it gets no real CI: the CI workflow only triggers on

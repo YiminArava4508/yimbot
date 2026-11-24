@@ -174,7 +174,8 @@ this flow: invoke the `archive-flag-ticket` skill now and follow it instead.
      parent has to reach Done for the follow-up to unblock.
    - **Move the ticket to the Review column** in the kanban board (not Done,
      since Review signals the PR is ready for someone to review) once the
-     PR, or in a split the whole series, is open. Skip this when UAT failed
+     PR, or in a split the whole series, is open. Move it once, and
+     in a split, every slice subticket too, once each. Skip this when UAT failed
      (local or preview phase): the draft PR waits for a human.
    - **Spin up the local server on this session's tmux pane** so the change
      can be inspected running. In a split, run it from the ticket branch,

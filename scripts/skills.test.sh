@@ -69,5 +69,10 @@ lacks "$PICKUP" "step 7b" "no stale 7b refs"
 has "$PICKUP" 'invoke the `ticket-uat` skill now (local phase)' "pickup hands off local UAT"
 has "$PICKUP" 'invoke the `ticket-uat` skill now (preview phase)' "pickup hands off preview UAT"
 
+has "$U" "wait-local-env.sh <absolute-worktree-path> 540" "wait exits before the tool timeout"
+lacks "$S" "Repeat until the whole series is open, then move" "split skill does not move tickets to Review"
+has "$PICKUP" "in a split, every slice subticket" "pickup Review move covers slices"
+has "$S" "draft if that line says \`failed\`" "slice step 5 applies the UAT draft rule"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: skills split tests"; fi
 exit "$fail"

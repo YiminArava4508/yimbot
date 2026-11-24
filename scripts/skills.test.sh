@@ -34,5 +34,18 @@ lacks "$PICKUP" "**Flag Archive Tickets**" "no stale flag section refs"
 has "$PICKUP" 'invoke the `archive-flag-ticket` skill now' "pickup hands off flag archives"
 has "$PICKUP" 'through the `archive-flag-ticket` skill' "rubric points at the skill"
 
+S="$SK/split-ticket-prs/SKILL.md"
+frontmatter_ok split-ticket-prs
+has "$S" "touch .yimbot-split-parent" "split flow moved"
+has "$S" "git rebase --onto main <sibling-branch>" "reroot moved"
+has "$S" "same \`UAT:\` line" "every slice PR carries the local UAT line"
+has "$S" "no preview walk-through" "slices get no walk-through"
+has "$S" "every slice PR as a draft" "failed UAT drafts every slice"
+lacks "$PICKUP" "touch .yimbot-split-parent" "split flow removed from pickup"
+lacks "$PICKUP" "rebase --onto main" "reroot removed from pickup"
+has "$PICKUP" "Hard limit: 500 LOC" "pickup keeps the limit"
+has "$PICKUP" "SPLIT_TICKETS" "pickup keeps the exception"
+has "$PICKUP" 'invoke the `split-ticket-prs` skill now' "pickup hands off splits"
+
 if [ "$fail" -eq 0 ]; then echo "PASS: skills split tests"; fi
 exit "$fail"

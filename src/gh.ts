@@ -6,7 +6,7 @@ const execFileAsync = promisify(execFile);
 
 // `repo` is the owner/name slug when the PR lives in one of EXTRA_REPOS;
 // absent for the codebase repo, which is what every other reader assumes.
-export type OpenPR = { number: number; headRefName: string; isDraft: boolean; repo?: string };
+export type OpenPR = { number: number; headRefName: string; isDraft: boolean; title?: string; repo?: string };
 export type RepoSlug = { owner: string; name: string };
 
 // Injectable `gh` invoker: takes CLI args, resolves to stdout. The default shells
@@ -45,6 +45,7 @@ export function parseOpenPRs(json: string, repo?: string): OpenPR[] {
     number: r.number,
     headRefName: r.headRefName,
     isDraft: r.isDraft,
+    ...(r.title ? { title: r.title } : {}),
     ...(repo ? { repo } : {}),
   }));
 }
@@ -53,7 +54,7 @@ export function parseOpenPRs(json: string, repo?: string): OpenPR[] {
 // `repo` tags each row when the runner points at an extra repo.
 export async function listMyOpenPRs(run: GhRunner, repo?: string): Promise<OpenPR[]> {
   return parseOpenPRs(
-    await run(["pr", "list", "--author", "@me", "--state", "open", "--json", "number,headRefName,isDraft", "--limit", "100"]),
+    await run(["pr", "list", "--author", "@me", "--state", "open", "--json", "number,headRefName,isDraft,title", "--limit", "100"]),
     repo,
   );
 }

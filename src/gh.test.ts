@@ -65,11 +65,17 @@ function capturingRunner(byCall: string[]): { run: GhRunner; calls: string[][] }
   return { run, calls };
 }
 
-test("parseOpenPRs keeps only number/headRefName/isDraft", () => {
+test("parseOpenPRs keeps only number/headRefName/isDraft/title", () => {
   const prs = parseOpenPRs(
-    JSON.stringify([{ number: 4706, headRefName: "eng-948-x", isDraft: false, title: "ignored" }]),
+    JSON.stringify([{ number: 4706, headRefName: "eng-948-x", isDraft: false, title: "Fix x", body: "ignored" }]),
   );
-  assert.deepEqual(prs, [{ number: 4706, headRefName: "eng-948-x", isDraft: false }]);
+  assert.deepEqual(prs, [{ number: 4706, headRefName: "eng-948-x", isDraft: false, title: "Fix x" }]);
+});
+
+test("listMyOpenPRs asks gh for the PR title", async () => {
+  const { run, calls } = capturingRunner([JSON.stringify([])]);
+  await listMyOpenPRs(run);
+  assert.equal(calls[0][calls[0].indexOf("--json") + 1], "number,headRefName,isDraft,title");
 });
 
 test("listMyOpenPRs requests author=@me open PRs and parses them", async () => {

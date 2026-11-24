@@ -2053,11 +2053,13 @@ export function startWatcher(config: WatcherConfig): () => void {
   const prBranchByNumber = new Map<number, string>();
   // The PR's EXTRA_REPOS slug, so the row's TUI actions address the right repo.
   const prRepoByNumber = new Map<number, string>();
+  // The PR's title, sent as prTitle so the board shows it (see YimbotEvent.prTitle).
+  const prTitleByNumber = new Map<number, string>();
   const keyForPr = (n: number) => {
     const branch = prBranchByNumber.get(n);
     const repo = prRepoByNumber.get(n);
     const k = branch ? prRowKey({ branch, pr: n, repo }) : deriveKey({ pr: n });
-    return { ...k, repo };
+    return { ...k, repo, prTitle: prTitleByNumber.get(n) };
   };
   const readyDeps: PrReadyDeps | null = config.ready && {
     ...config.ready,
@@ -2065,9 +2067,11 @@ export function startWatcher(config: WatcherConfig): () => void {
       const prs = await config.ready!.listOpenPRs();
       prBranchByNumber.clear();
       prRepoByNumber.clear();
+      prTitleByNumber.clear();
       for (const pr of prs) {
         prBranchByNumber.set(pr.number, pr.headRefName);
         if (pr.repo) prRepoByNumber.set(pr.number, pr.repo);
+        if (pr.title) prTitleByNumber.set(pr.number, pr.title);
       }
       return prs;
     },
@@ -2085,27 +2089,27 @@ export function startWatcher(config: WatcherConfig): () => void {
         // session ever emitted task_started for it), so a PR that is not yet
         // ready still needs a row to sit in the review pane.
         if (k.repo && status === undefined) {
-          emitStatus({ kind: "task_started", key: k.key, label: k.label, pr: n, repo: k.repo });
+          emitStatus({ kind: "task_started", key: k.key, label: k.label, pr: n, repo: k.repo, prTitle: k.prTitle });
         }
         // A row still claiming readiness, or one whose fixer has finished, names
         // the failure after a hard failure. A live fixer's own status ("fixing
         // CI", "addressing review") is already the truth and is left alone.
         if (verdict === "regressed" && reason && yieldsToVerdict(status)) {
           const kind = reason === "ci" ? "ci_failing" : "review_unresolved";
-          emitStatus({ kind, key: k.key, label: k.label, pr: n, repo: k.repo });
+          emitStatus({ kind, key: k.key, label: k.label, pr: n, repo: k.repo, prTitle: k.prTitle });
         }
         return;
       }
       // A PR the overlap gate is holding keeps its "waiting on queue" row until the label goes on.
       if (!hasLabel && currentStatus(k.key) === statusFor("queue_held")?.status) return;
-      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual, approved, changesRequested), key: k.key, label: k.label, pr: n, repo: k.repo });
+      emitStatus({ kind: boardReadyKind(isDraft, hasLabel, readMode(), manual, approved, changesRequested), key: k.key, label: k.label, pr: n, repo: k.repo, prTitle: k.prTitle });
     },
     // Where the row sits, reported separately from its status so a queued PR
     // stays in the merge pane while its status walks through a CI fix or a
     // review round. Deduped by emitSection, so this is a no-op most heartbeats.
     onSection: (n: number, section) => {
       const k = keyForPr(n);
-      emitSection({ kind: sectionKind(section), key: k.key, label: k.label, pr: n, repo: k.repo });
+      emitSection({ kind: sectionKind(section), key: k.key, label: k.label, pr: n, repo: k.repo, prTitle: k.prTitle });
     },
     // A queue-blocked PR stops reading as ready-to-merge. Left alone once the
     // blocked fixer has claimed the row ("unblocking"), so this never stomps a
@@ -2114,11 +2118,11 @@ export function startWatcher(config: WatcherConfig): () => void {
       const k = keyForPr(n);
       const status = currentStatus(k.key);
       if (status === statusFor("blocked_fix_started")?.status || status === statusFor("blocked_waiting")?.status) return;
-      emitStatus({ kind: "merge_blocked", key: k.key, label: k.label, pr: n, repo: k.repo });
+      emitStatus({ kind: "merge_blocked", key: k.key, label: k.label, pr: n, repo: k.repo, prTitle: k.prTitle });
     },
     onHeld: (n: number, holder: number) => {
       const k = keyForPr(n);
-      emitStatus({ kind: "queue_held", key: k.key, label: k.label, pr: n, repo: k.repo, waitingOn: [holder], waitNote: config.prReview?.holderNote?.(holder) });
+      emitStatus({ kind: "queue_held", key: k.key, label: k.label, pr: n, repo: k.repo, prTitle: k.prTitle, waitingOn: [holder], waitNote: config.prReview?.holderNote?.(holder) });
     },
     addLabel: (n: number, label: string) => config.ready!.addLabel(n, label),
     mode: readMode,

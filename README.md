@@ -82,6 +82,10 @@ flowchart TD
     G10 --> T9{"Did the last child of a<br/>parent ticket merge, and is<br/>that merge live on nonprod?"}
     T9 -- yes --> QA["Open nonprod in your Chrome,<br/>screenshot the feature, and post<br/>'How to test' on the parent"]
 
+    P --> G12["Improve yimbot itself"]
+    G12 --> T11{"Is a nightly job due, with<br/>no self-improvement PR open?"}
+    T11 -- yes --> SI["Run the job in its own session,<br/>open one draft PR on yimbot master,<br/>then close the session"]
+
     P --> G8["Flag ready to merge"]
     G8 --> T7{"An open PR of yours that's clean?<br/>green CI, comments resolved,<br/>no conflicts"}
     T7 -- yes --> RM["Add the 'ready-to-merge' label<br/>(the bot never removes it)"]
@@ -98,6 +102,7 @@ flowchart TD
     classDef readymerge fill:#d9f99d,stroke:#65a30d,color:#1a202c;
     classDef blocked fill:#fed7aa,stroke:#c2410c,color:#1a202c;
     classDef qa fill:#fde68a,stroke:#b45309,color:#1a202c;
+    classDef selfimprove fill:#e0e7ff,stroke:#4338ca,color:#1a202c;
     class G1,T1,L deploy;
     class G2,PK,M claim;
     class G3,T2,R review;
@@ -110,6 +115,7 @@ flowchart TD
     class G11,T10,AD advance;
     class G8,T7,RM readymerge;
     class G10,T9,QA qa;
+    class G12,T11,SI selfimprove;
 ```
 
 - **Start new work (green):** when you move a card to **In Progress**, yimbot
@@ -318,6 +324,23 @@ flowchart TD
   repo; `READY_SOAK_MINUTES`, defaults to 10; `READY_MAX_QUEUED`, defaults to 3;
   `READY_MAX_AWAITING_REVIEW`, no cap by default; `IGNORE_CHECKS`, empty by
   default)* Needs `gh` installed and authenticated.
+- **Improve yimbot itself (indigo):** once per local day, after
+  `SELF_IMPROVE_HOUR` (defaults to 0, so a machine asleep at midnight runs it on
+  wake), yimbot runs the next due self-improvement job in a
+  `self-improve-<job>` tmux session on its own repo, in a worktree off `master`.
+  The first job is `dead-code-scan`: it removes exports that nothing references
+  (outside tests, scripts, skills and docs), together with their tests, and only when
+  typecheck and every test stay green. The session opens one **draft** PR on yimbot
+  `master` and exits, or logs `nothing to change` and exits; the daemon then closes
+  the session and removes its worktree. A session that runs past
+  `YIMBOT_FIX_REAP_STALE_MINUTES` is reaped. One job runs at a time, and nothing starts
+  while a previous self-improvement PR is open or the disk guard is holding. yimbot never
+  marks these PRs ready, labels them or merges them; you review each draft. Each job
+  is a skill plus an entry in `src/self-improve-jobs.ts`, and all share the
+  `self-improve-contract` skill. *(optional; settings: `AUTO_SELF_IMPROVE`, off by
+  default and the master switch; `AUTO_SELF_IMPROVE_DEAD_CODE_SCAN`, on by default
+  once the master is on; `SELF_IMPROVE_HOUR`; the last run per job is kept in
+  `self-improve.json` next to the events log)* Needs `gh` installed and authenticated.
 
 ## After-release gating
 
@@ -736,7 +759,8 @@ PR conflict fixes (`pr-<n>-conflict`, launched the same way) hand off to the
 **fix-pr-conflict** skill (understand the PR, merge main in, resolve conflicts
 preserving the feature, push); PR queue blocks (`pr-<n>-blocked`) hand off to
 **fix-pr-blocked**; and `refine-<ticket>` and `qa-eng-<n>` sessions use
-**refine-ticket** and **qa-instructions**. A PR fix is added as a window inside its branch's
+**refine-ticket** and **qa-instructions**; `self-improve-<job>` sessions (launched with
+`~/self-improve-session.sh <job> <branch>`) use the job's skill and **self-improve-contract**. A PR fix is added as a window inside its branch's
 ticket session when that session is still alive, so a PR and its ticket share one
 session; if the ticket session has ended, it becomes a standalone `pr-<n>-fix` /
 `pr-<n>-ci` / `pr-<n>-conflict` / `pr-<n>-blocked` session instead.

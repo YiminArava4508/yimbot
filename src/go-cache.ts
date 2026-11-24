@@ -59,6 +59,49 @@ export async function trimGoCache(
   return result;
 }
 
+// Each go build or go test gets a go-build<N> work dir in the temp dir and
+// removes it on exit; a build that is killed (an ended session) leaves it
+// behind, and on a RAM-backed /tmp a few of those fill it. A live build keeps
+// creating b<N> subdirs, so a dir whose own and child mtimes are all past the
+// cutoff is abandoned.
+export async function sweepGoBuildDirs(
+  tmpDirs: string[],
+  maxAgeMs: number,
+  now: number = Date.now(),
+): Promise<TrimResult> {
+  const result: TrimResult = { removed: 0, freedBytes: 0 };
+  const cutoff = now - maxAgeMs;
+  for (const tmp of new Set(tmpDirs)) {
+    let names: string[];
+    try {
+      names = (await readdir(tmp)).filter((name) => /^go-build\d+$/.test(name));
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const path = join(tmp, name);
+      try {
+        if (await touchedSince(path, cutoff)) continue;
+        const size = await sizeOf(path);
+        await rm(path, { recursive: true, force: true });
+        result.removed += 1;
+        result.freedBytes += size;
+      } catch {
+        // Its build may finish and remove it mid-sweep; skip.
+      }
+    }
+  }
+  return result;
+}
+
+async function touchedSince(dir: string, cutoff: number): Promise<boolean> {
+  if ((await lstat(dir)).mtimeMs >= cutoff) return true;
+  for (const name of await readdir(dir)) {
+    if ((await lstat(join(dir, name))).mtimeMs >= cutoff) return true;
+  }
+  return false;
+}
+
 export async function goCacheDir(): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("go", ["env", "GOCACHE"], { timeout: 10_000 });

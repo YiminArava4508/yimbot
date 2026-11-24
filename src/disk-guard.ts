@@ -3,7 +3,7 @@
 // cache), and a session that hits ENOSPC cannot run a single shell command, so
 // it stops. This guard watches free space on the volumes sessions write to.
 // Below lowBytes it marks the disk low and runs `relieve` (an aggressive cache
-// trim) on every check. It clears only once free space is back above highBytes,
+// trim) on every check. It clears only once every volume is back above highBytes,
 // so it doesn't flap at the boundary. While the disk is low, callers hold new
 // session launches and idle nudges.
 import { statfs } from "node:fs/promises";
@@ -16,32 +16,38 @@ export function parseDiskGb(raw: string | undefined, fallbackGb: number): number
   return (Number.isFinite(gb) && gb > 0 ? gb : fallbackGb) * GB;
 }
 
-// Bytes available to an unprivileged writer on path's volume, or null when the
-// path does not exist or cannot be statted.
-export async function freeBytesOf(path: string): Promise<number | null> {
+// Bytes available to an unprivileged writer on path's volume and the volume's
+// size, or null when the path does not exist or cannot be statted.
+export async function spaceOf(path: string): Promise<{ bytes: number; size: number } | null> {
   try {
     const s = await statfs(path);
-    return s.bavail * s.bsize;
+    return { bytes: s.bavail * s.bsize, size: s.blocks * s.bsize };
   } catch {
     return null;
   }
 }
 
-export type FreeSpace = { path: string; bytes: number };
+export type FreeSpace = { path: string; bytes: number; size: number };
 
-// The tightest volume among paths (several usually share one volume). Null
-// when none could be statted.
-export async function tightestVolume(
+export async function volumes(
   paths: string[],
-  free: (path: string) => Promise<number | null> = freeBytesOf,
-): Promise<FreeSpace | null> {
-  let min: FreeSpace | null = null;
+  stat: (path: string) => Promise<{ bytes: number; size: number } | null> = spaceOf,
+): Promise<FreeSpace[]> {
+  const out: FreeSpace[] = [];
   for (const path of paths) {
-    const bytes = await free(path);
-    if (bytes === null) continue;
-    if (!min || bytes < min.bytes) min = { path, bytes };
+    const space = await stat(path);
+    if (space) out.push({ path, ...space });
   }
-  return min;
+  return out;
+}
+
+// A small volume (a RAM-backed /tmp) could never reach fixed GB marks, so each
+// mark is capped at a share of the volume's size.
+const LOW_SHARE = 0.25;
+const HIGH_SHARE = 0.5;
+
+function marksFor(space: FreeSpace, lowBytes: number, highBytes: number) {
+  return { ...space, low: Math.min(lowBytes, space.size * LOW_SHARE), high: Math.min(highBytes, space.size * HIGH_SHARE) };
 }
 
 export type DiskGuardState = { low: boolean };
@@ -51,7 +57,7 @@ export function freshDiskGuardState(): DiskGuardState {
 }
 
 export type DiskGuardDeps = {
-  free: () => Promise<FreeSpace | null>;
+  free: () => Promise<FreeSpace[]>;
   lowBytes: number;
   highBytes: number;
   // Free up space. Runs on every check while the disk is low.
@@ -62,17 +68,19 @@ export type DiskGuardDeps = {
 const gb = (bytes: number) => `${(bytes / GB).toFixed(1)}G`;
 
 export async function checkDisk(state: DiskGuardState, deps: DiskGuardDeps): Promise<void> {
-  const space = await deps.free();
-  if (!space) return; // nothing measurable: keep the last verdict
-  if (!state.low && space.bytes < deps.lowBytes) {
+  const spaces = (await deps.free()).map((s) => marksFor(s, deps.lowBytes, deps.highBytes));
+  if (spaces.length === 0) return; // nothing measurable: keep the last verdict
+  const short = spaces.find((s) => s.bytes < s.low);
+  if (!state.low && short) {
     state.low = true;
     deps.log(
-      `disk low: ${gb(space.bytes)} free on ${space.path} (< ${gb(deps.lowBytes)}); ` +
-        `trimming caches and holding new launches and idle nudges until ${gb(deps.highBytes)} free`,
+      `disk low: ${gb(short.bytes)} free on ${short.path} (< ${gb(short.low)}); ` +
+        `trimming caches and holding new launches and idle nudges until ${gb(short.high)} free`,
     );
-  } else if (state.low && space.bytes >= deps.highBytes) {
+  } else if (state.low && spaces.every((s) => s.bytes >= s.high)) {
     state.low = false;
-    deps.log(`disk recovered: ${gb(space.bytes)} free on ${space.path}; resuming launches and nudges`);
+    const tightest = spaces.reduce((a, b) => (b.bytes < a.bytes ? b : a));
+    deps.log(`disk recovered: ${gb(tightest.bytes)} free on ${tightest.path}; resuming launches and nudges`);
   }
   if (state.low) await deps.relieve();
 }

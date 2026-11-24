@@ -7,8 +7,8 @@ In Progress.
 Watcher-only Linear daemon. Polls the Linear GraphQL
 API, no webhooks and no public endpoint. Each heartbeat, every In Progress
 ticket without a session or worktree gets one. Tickets that already have one
-are adopted, so a restart never double-launches. A failed launch is retried up
-to 3 times, then logged and dropped.
+are adopted, so a restart never double-launches. A launch is tried up to 3
+times, then logged and dropped.
 
 The daemon also keeps the main codebase fresh: every poll interval it
 fast-forwards the default branch in `CODEBASE_PATH` (required; must be set) so

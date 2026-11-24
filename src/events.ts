@@ -376,45 +376,85 @@ function parseLine(line: string): YimbotEvent | null {
   }
 }
 
-// The standing state a key carries outside its status, of which there are two
-// kinds. A "clear" (unflag, input received) is what keeps an already
-// acknowledged raise signal down, via emitFlagged's signalTs check, so losing
-// it would re-flag a signal a human dismissed. A "section" is the row's pane;
-// section events only fire on a change, so a long-lived queued PR's is older
-// than its status lines and would be trimmed first, dropping the row into the
-// tasks pane until the next heartbeat re-reported it. Returns null for
-// everything else.
-function standingKind(e: YimbotEvent): string | null {
+// The standing state a key carries, which a trim must not lose with the lines
+// that set it:
+// - "clear" (unflag, input received) keeps an already acknowledged raise
+//   signal down, via emitFlagged's signalTs check, so losing it would re-flag a
+//   signal a human dismissed.
+// - "section" is the row's pane. Section events only fire on a change, so a
+//   long-lived queued PR's is older than its status lines and would be trimmed
+//   first, dropping the row into the tasks pane until the next heartbeat
+//   re-reported it.
+// - "status" is the row itself: reduceRows builds rows only from status events.
+//   A session's task_started fires once and nothing re-observes it before a PR
+//   exists, so on a busy board a long-running or stalled pre-PR session lost
+//   its row, and with it the stuck detector's idle nudge.
+// - "pane" is the newest event naming the row's tmux pane (and its turn
+//   state), which the stuck detector needs to judge and nudge that session.
+// - "stuck" is the stuck mark, so a row already reported stuck is not
+//   re-reported every time its session_stuck line ages out.
+// status, pane and stuck only stand while the key's newest status is
+// non-terminal; see ROW_KINDS.
+function standingKinds(e: YimbotEvent): string[] {
+  const kinds: string[] = [];
   // A reason-scoped unflag (stale-raise.ts) is not an acknowledgment and
   // carries no clearedAt, so it must not stand in for the key's real clear.
-  if ((e.kind === "unflagged" && !e.reason) || e.kind === "input_received") return "clear";
-  return sectionFor(e.kind) !== undefined ? "section" : null;
+  if ((e.kind === "unflagged" && !e.reason) || e.kind === "input_received") kinds.push("clear");
+  if (sectionFor(e.kind) !== undefined) kinds.push("section");
+  if (statusFor(e.kind) !== undefined) kinds.push("status");
+  if (e.pane) kinds.push("pane");
+  if (e.kind === "session_stuck" || e.kind === "session_resumed") kinds.push("stuck");
+  return kinds;
 }
 
+// Kinds that only matter while the row is live. A merged (or otherwise
+// terminal) row ages off the board on its own, so keeping these for it would
+// only grow the log by a few lines per finished ticket, forever.
+const ROW_KINDS = new Set(["status", "pane", "stuck"]);
+
 // Keep the newest dropped event of each standing kind per key, unless the kept
-// window already holds a newer one. At most two extra lines per key ride above
-// the cap.
+// window already holds a newer one. At most five extra lines per live key, and
+// two per finished one, ride above the cap.
 function preservedStanding(dropped: string[], kept: string[]): string[] {
-  const newest = new Map<string, YimbotEvent>();
-  const idOf = (e: YimbotEvent, kind: string) => `${e.key}\u0000${kind}`;
+  const newest = new Map<string, { e: YimbotEvent; line: string }>();
+  // Whether each key's newest status, across both windows, is terminal.
+  const terminal = new Map<string, { ts: number; terminal: boolean }>();
+  const idOf = (key: string, kind: string) => `${key}\u0000${kind}`;
+  const noteStatus = (key: string, e: YimbotEvent) => {
+    const mapped = statusFor(e.kind);
+    const cur = terminal.get(key);
+    if (mapped && (!cur || e.ts >= cur.ts)) terminal.set(key, { ts: e.ts, terminal: mapped.terminal });
+  };
   for (const line of dropped) {
     const e = parseLine(line);
     if (e === null) continue;
-    const kind = standingKind(e);
-    if (kind === null) continue;
-    const cur = newest.get(idOf(e, kind));
-    if (!cur || e.ts >= cur.ts) newest.set(idOf(e, kind), e);
+    const key = rowKeyOf(e);
+    noteStatus(key, e);
+    for (const kind of standingKinds(e)) {
+      const cur = newest.get(idOf(key, kind));
+      if (!cur || e.ts >= cur.e.ts) newest.set(idOf(key, kind), { e, line });
+    }
   }
   if (newest.size === 0) return [];
   for (const line of kept) {
     const e = parseLine(line);
     if (e === null) continue;
-    const kind = standingKind(e);
-    if (kind === null) continue;
-    const cur = newest.get(idOf(e, kind));
-    if (cur && e.ts >= cur.ts) newest.delete(idOf(e, kind));
+    const key = rowKeyOf(e);
+    noteStatus(key, e);
+    for (const kind of standingKinds(e)) {
+      const cur = newest.get(idOf(key, kind));
+      if (cur && e.ts >= cur.e.ts) newest.delete(idOf(key, kind));
+    }
   }
-  return [...newest.values()].sort((a, b) => a.ts - b.ts).map((e) => JSON.stringify(e));
+  // One event can stand for several kinds (an input_received is both a clear
+  // and a pane); write it once.
+  const out = new Map<string, YimbotEvent>();
+  for (const [id, { e, line }] of newest) {
+    const [key, kind] = id.split("\u0000");
+    if (ROW_KINDS.has(kind) && terminal.get(key)?.terminal !== false) continue;
+    out.set(line, e);
+  }
+  return [...out.values()].sort((a, b) => a.ts - b.ts).map((e) => JSON.stringify(e));
 }
 
 export function emitEvent(ev: Omit<YimbotEvent, "ts"> & { ts?: number }): void {

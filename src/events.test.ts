@@ -235,7 +235,8 @@ test("emitEvent truncates to EVENTS_LOG_MAX_LINES", () => {
     const prev = process.env.EVENTS_LOG_MAX_LINES;
     process.env.EVENTS_LOG_MAX_LINES = "3";
     try {
-      for (let i = 0; i < 10; i++) emitEvent({ kind: "task_started", key: `ENG-${i}`, label: `ENG-${i}` });
+      // merged rows carry no standing state, so nothing rides above the cap.
+      for (let i = 0; i < 10; i++) emitEvent({ kind: "merged", key: `ENG-${i}`, label: `ENG-${i}` });
       assert.equal(readEvents(path).length, 3);
       assert.equal(readEvents(path)[2].key, "ENG-9");
     } finally {
@@ -399,6 +400,66 @@ test("trimming the log preserves each key's newest clear event", () => {
       assert.equal(foldAttention(readEvents(path)).get("ENG-1")?.clearedAt, 200);
       emitFlagged({ key: "ENG-1", label: "ENG-1", reason: "human-comment", signalTs: 150 });
       assert.equal(readEvents(path).filter((e) => e.kind === "flagged").length, 0);
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("trimming keeps a live row's status, pane and stuck mark", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitEvent({ kind: "task_started", key: "ENG-306", label: "ENG-306", ts: 100 });
+      emitEvent({ kind: "turn_ended", key: "ENG-306", label: "ENG-306", ts: 200, pane: "%12", transcript: "/t.jsonl" });
+      emitEvent({ kind: "session_stuck", key: "ENG-306", label: "ENG-306", reason: "no activity 31m", ts: 300 });
+      for (let i = 0; i < 6; i++) emitEvent({ kind: "merged", key: `X-${i}`, label: `X-${i}`, ts: 400 + i });
+      // A pre-PR session's task_started fires once; trimming it used to drop
+      // the row, and with it the stuck detector's idle nudge.
+      const events = readEvents(path);
+      const row = reduceRows(events, 1000).find((r) => r.key === "ENG-306");
+      assert.equal(row?.status, STUCK_STATUS);
+      assert.equal(row?.stuckReason, "no activity 31m");
+      const turn = events.find((e) => e.key === "ENG-306" && e.kind === "turn_ended");
+      assert.equal(turn?.pane, "%12");
+      assert.equal(turn?.transcript, "/t.jsonl");
+      assert.equal(events.filter((e) => e.key === "ENG-306").length, 3);
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("trimming lets a finished row's status, pane and stuck mark go", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitEvent({ kind: "task_started", key: "ENG-1", label: "ENG-1", ts: 100, pane: "%1" });
+      emitEvent({ kind: "session_stuck", key: "ENG-1", label: "ENG-1", reason: "session ended", ts: 150 });
+      emitEvent({ kind: "merged", key: "ENG-1", label: "ENG-1", ts: 200 });
+      for (let i = 0; i < 6; i++) emitEvent({ kind: "merged", key: `X-${i}`, label: `X-${i}`, ts: 300 + i });
+      assert.equal(readEvents(path).filter((e) => e.key === "ENG-1").length, 0);
+    } finally {
+      if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
+      else process.env.EVENTS_LOG_MAX_LINES = prev;
+    }
+  });
+});
+
+test("trimming writes an event standing for several kinds once", () => {
+  withTmpLog((path) => {
+    const prev = process.env.EVENTS_LOG_MAX_LINES;
+    process.env.EVENTS_LOG_MAX_LINES = "3";
+    try {
+      emitEvent({ kind: "task_started", key: "ENG-1", label: "ENG-1", ts: 100 });
+      emitEvent({ kind: "input_received", key: "ENG-1", label: "ENG-1", ts: 200, pane: "%1" });
+      for (let i = 0; i < 6; i++) emitEvent({ kind: "merged", key: `X-${i}`, label: `X-${i}`, ts: 300 + i });
+      const mine = readEvents(path).filter((e) => e.key === "ENG-1");
+      assert.deepEqual(mine.map((e) => e.kind), ["task_started", "input_received"]);
     } finally {
       if (prev === undefined) delete process.env.EVENTS_LOG_MAX_LINES;
       else process.env.EVENTS_LOG_MAX_LINES = prev;

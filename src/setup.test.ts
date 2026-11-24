@@ -398,7 +398,7 @@ test("hostLinks installs the fix-pr-ci skill", () => {
   assert.ok(link!.source.endsWith("skills/fix-pr-ci"), "sourced from skills/fix-pr-ci");
 });
 
-const SUB_SKILLS = ["spike-ticket", "archive-flag-ticket", "split-ticket-prs", "ticket-uat"];
+const SUB_SKILLS = ["spike-ticket", "archive-flag-ticket", "split-ticket-prs", "ticket-uat", "self-improve-contract", "dead-code-scan"];
 test("hostLinks installs the pickup-ticket sub-skills", () => {
   for (const name of SUB_SKILLS) {
     const link = hostLinks.find((l) => l.target.endsWith(`/.claude/skills/${name}`));

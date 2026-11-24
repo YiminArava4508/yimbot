@@ -457,6 +457,16 @@ export const hostLinks: HostLink[] = [
     label: "ticket-uat skill (~/.claude/skills/ticket-uat)",
   },
   {
+    source: join(repoRoot, "skills/self-improve-contract"),
+    target: join(homedir(), ".claude/skills/self-improve-contract"),
+    label: "self-improve-contract skill (~/.claude/skills/self-improve-contract)",
+  },
+  {
+    source: join(repoRoot, "skills/dead-code-scan"),
+    target: join(homedir(), ".claude/skills/dead-code-scan"),
+    label: "dead-code-scan skill (~/.claude/skills/dead-code-scan)",
+  },
+  {
     source: join(repoRoot, "skills/address-pr-comments"),
     target: join(homedir(), ".claude/skills/address-pr-comments"),
     label: "address-pr-comments skill (~/.claude/skills/address-pr-comments)",

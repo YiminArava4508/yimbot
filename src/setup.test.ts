@@ -57,6 +57,9 @@ const sample: YimbotConfig = {
   refineLabelFilter: "",
   maxRefining: 1,
   splitTickets: true,
+  autoSelfImprove: false,
+  autoSelfImproveDeadCodeScan: true,
+  selfImproveHour: 0,
   agent: "claude",
 };
 

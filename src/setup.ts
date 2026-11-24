@@ -640,6 +640,9 @@ export async function runSetup(): Promise<YimbotConfig> {
     refineUsers: "",
     refineLabelFilter: "",
     maxRefining: 1,
+    autoSelfImprove: current.autoSelfImprove,
+    autoSelfImproveDeadCodeScan: current.autoSelfImproveDeadCodeScan,
+    selfImproveHour: current.selfImproveHour,
     splitTickets: true,
     agent: current.agent,
   };

@@ -28,6 +28,9 @@ const prev: YimbotConfig = {
   refineLabelFilter: "",
   maxRefining: 1,
   splitTickets: true,
+  autoSelfImprove: false,
+  autoSelfImproveDeadCodeScan: true,
+  selfImproveHour: 0,
   agent: "claude",
 };
 const next: YimbotConfig = { ...prev, maxInProgress: 1, labelFilter: "bot" };

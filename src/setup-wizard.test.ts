@@ -29,6 +29,9 @@ const config: YimbotConfig = {
   refineLabelFilter: "",
   maxRefining: 1,
   splitTickets: true,
+  autoSelfImprove: false,
+  autoSelfImproveDeadCodeScan: true,
+  selfImproveHour: 0,
 };
 
 function fakeFx(overrides: Partial<Parameters<typeof finishWizard>[1]> = {}) {

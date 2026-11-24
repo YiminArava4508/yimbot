@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { extractPassthroughLines, serializeEnvFile, type YimbotConfig } from "./settings-model.ts";
-import { finishWizard, nextStep, prevStep, stepHeader, validateKey, WIZARD_STEPS } from "./setup-wizard.ts";
+import { finishWizard, stepHeader, validateKey, WIZARD_STEPS } from "./setup-wizard.ts";
 
 const config: YimbotConfig = {
   apiKey: "lin_api_secret123",
@@ -57,13 +57,8 @@ function fakeFx(overrides: Partial<Parameters<typeof finishWizard>[1]> = {}) {
   return { fx, calls, written, backups };
 }
 
-test("step order with null at both ends", () => {
+test("step order", () => {
   assert.deepEqual(WIZARD_STEPS, ["prereqs", "key", "configure", "confirm"]);
-  assert.equal(prevStep("prereqs"), null);
-  assert.equal(nextStep("prereqs"), "key");
-  assert.equal(nextStep("configure"), "confirm");
-  assert.equal(prevStep("confirm"), "configure");
-  assert.equal(nextStep("confirm"), null);
 });
 
 test("stepHeader numbers the steps", () => {

@@ -36,7 +36,6 @@ import {
   parseRunHeadShas,
   prDiff,
   prIsDraft,
-  prLabels,
   parsePrState,
   prMergeCommit,
   prState,
@@ -501,12 +500,6 @@ test("parseLabels extracts label names", () => {
 
 test("parseLabels returns [] for a PR with no labels", () => {
   assert.deepEqual(parseLabels(JSON.stringify({ labels: [] })), []);
-});
-
-test("prLabels requests the labels field and parses names", async () => {
-  const { run, calls } = capturingRunner([JSON.stringify({ labels: [{ name: "ready-to-merge" }] })]);
-  assert.deepEqual(await prLabels(run, 4706), ["ready-to-merge"]);
-  assert.deepEqual(calls[0], ["pr", "view", "4706", "--json", "labels"]);
 });
 
 test("addLabel runs pr edit --add-label for the PR", async () => {

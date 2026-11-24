@@ -18,14 +18,6 @@ const STEP_TITLES: Record<WizardStep, string> = {
   confirm: "Confirm",
 };
 
-export function nextStep(step: WizardStep): WizardStep | null {
-  return WIZARD_STEPS[WIZARD_STEPS.indexOf(step) + 1] ?? null;
-}
-
-export function prevStep(step: WizardStep): WizardStep | null {
-  return WIZARD_STEPS[WIZARD_STEPS.indexOf(step) - 1] ?? null;
-}
-
 export function stepHeader(step: WizardStep): string {
   return `Step ${WIZARD_STEPS.indexOf(step) + 1} of ${WIZARD_STEPS.length}: ${STEP_TITLES[step]}`;
 }

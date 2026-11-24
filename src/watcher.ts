@@ -85,7 +85,7 @@ import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
 import { freshSelfImproveState, selfImproveOnce, type SelfImproveDeps } from "./self-improve.ts";
 import { SELF_IMPROVE_JOBS, type SelfImproveJob } from "./self-improve-jobs.ts";
 import { loadSelfImproveState, saveSelfImproveState } from "./self-improve-state.ts";
-import { removeSelfImproveWorktree, selfImproveBranch, spawnSelfImproveSession } from "./self-improve-host.ts";
+import { existingSelfImproveBranch, removeSelfImproveWorktree, selfImproveBranch, selfImproveDoneEvent, spawnSelfImproveSession } from "./self-improve-host.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
@@ -2183,6 +2183,7 @@ export function startWatcher(config: WatcherConfig): () => void {
         hasSession: tmuxHasSession,
         listSessions: listTmuxSessions,
         branchFor: (job, now) => selfImproveBranch(job.id, now),
+        existingBranch: (job) => existingSelfImproveBranch(selfImprove.repoRoot, job.id),
         prForBranch: selfImprove.prForBranch,
         openSelfImprovePrs: selfImprove.openSelfImprovePrs,
         spawn: (job, branch) => spawnSelfImproveSession(job.id, branch),
@@ -2190,14 +2191,7 @@ export function startWatcher(config: WatcherConfig): () => void {
         removeWorktree: (branch, deleteBranch) => removeSelfImproveWorktree(selfImprove.repoRoot, branch, deleteBranch),
         markStarted: (job) =>
           emitEvent({ kind: "self_improve_started", key: selfImproveKey(job), label: job.label, title: job.label }),
-        markDone: (job, pr) =>
-          emitStatus({
-            kind: "self_improve_done",
-            key: selfImproveKey(job),
-            label: job.label,
-            title: pr === null ? "nothing to change" : `PR #${pr}`,
-            ...(pr === null ? {} : { pr }),
-          }),
+        markDone: (job, pr) => emitStatus(selfImproveDoneEvent(job, pr)),
         reapStaleMs: config.reapStaleMs,
         log: (msg) => console.log(`[self-improve] ${msg}`),
       }

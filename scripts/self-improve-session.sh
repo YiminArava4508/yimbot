@@ -23,6 +23,12 @@ self_improve_args_safe() {
   return 0
 }
 
+# The pane runs a shell; ending it with `exit` after claude makes the tmux
+# session end when claude does, so the daemon sees a finished run.
+self_improve_launch_line() {
+  printf '%s "%s"; exit' "$1" "$2"
+}
+
 # Pure; unit-tested via sourcing.
 self_improve_seed_prompt() {
   local job=$1 skill=$2
@@ -77,5 +83,5 @@ tmux rename-window -t "$WIN_ID" Claude
 
 PROMPT=$(self_improve_seed_prompt "$JOB" "$JOB")
 CMD=$(build_claude_cmd)
-tmux send-keys -t "$WIN_ID" "$CMD \"$PROMPT\"" C-m
+tmux send-keys -t "$WIN_ID" "$(self_improve_launch_line "$CMD" "$PROMPT")" C-m
 echo "Created self-improve session '$SESSION' on $BRANCH"

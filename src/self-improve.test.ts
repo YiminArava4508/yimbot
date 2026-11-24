@@ -24,6 +24,7 @@ function setup(overrides: Partial<SelfImproveDeps> = {}) {
     hasSession: (n) => sessions.has(n),
     listSessions: () => [...sessions],
     branchFor: (job) => `chore/self-improve-${job.id}-2026-11-24`,
+    existingBranch: () => null,
     prForBranch: async () => null,
     openSelfImprovePrs: async () => 0,
     spawn: (job, branch) => {
@@ -229,4 +230,64 @@ test("skips the tick when the PR lookup for an in-flight run rejects", async () 
   assert.deepEqual(h.calls, []);
   assert.equal(state.inFlight.size, 1);
   assert.match(h.logs[h.logs.length - 1], /gh down/);
+});
+
+test("adopts a live session with the branch of its existing worktree, not today's date", async () => {
+  const state = freshSelfImproveState();
+  const h = setup({
+    jobs: [jobA],
+    loadState: () => ({ a: "2026-11-24" }),
+    existingBranch: () => "chore/self-improve-a-2026-11-23",
+    prForBranch: async (b) => (b === "chore/self-improve-a-2026-11-23" ? 5 : null),
+  });
+  h.sessions.add("self-improve-a");
+  await selfImproveOnce(state, h.deps);
+  assert.ok(h.calls.includes("done:a:5"));
+  assert.ok(h.calls.includes("rm:chore/self-improve-a-2026-11-23:false"));
+});
+
+test("removes a leftover worktree from a dead run before spawning, keeping the branch when it has a PR", async () => {
+  let leftover: string | null = "chore/self-improve-a-2026-11-20";
+  const h = setup({
+    jobs: [jobA],
+    existingBranch: () => leftover,
+    prForBranch: async (b) => (b === "chore/self-improve-a-2026-11-20" ? 3 : null),
+    removeWorktree: (b, del) => {
+      leftover = null;
+      h.calls.push(`rm:${b}:${del}`);
+    },
+  });
+  await selfImproveOnce(freshSelfImproveState(), h.deps);
+  assert.deepEqual(h.calls.slice(0, 3), [
+    "rm:chore/self-improve-a-2026-11-20:false",
+    "spawn:a:chore/self-improve-a-2026-11-24",
+    "started:a",
+  ]);
+});
+
+test("a leftover worktree with no PR is removed with its branch before spawning", async () => {
+  let leftover: string | null = "chore/self-improve-a-2026-11-20";
+  const h = setup({
+    jobs: [jobA],
+    existingBranch: () => leftover,
+    removeWorktree: (b, del) => {
+      leftover = null;
+      h.calls.push(`rm:${b}:${del}`);
+    },
+  });
+  await selfImproveOnce(freshSelfImproveState(), h.deps);
+  assert.equal(h.calls[0], "rm:chore/self-improve-a-2026-11-20:true");
+});
+
+test("does not spawn when removing the leftover worktree throws, and logs it", async () => {
+  const h = setup({
+    jobs: [jobA],
+    existingBranch: () => "chore/self-improve-a-2026-11-20",
+    removeWorktree: () => {
+      throw new Error("locked");
+    },
+  });
+  await selfImproveOnce(freshSelfImproveState(), h.deps);
+  assert.equal(h.calls.filter((c) => c.startsWith("spawn:")).length, 0);
+  assert.match(h.logs[h.logs.length - 1], /locked/);
 });

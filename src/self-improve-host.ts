@@ -1,7 +1,9 @@
 import { execFileSync, spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { YimbotEvent } from "./events.ts";
+import type { SelfImproveJob } from "./self-improve-jobs.ts";
 
 export const selfImproveScriptPath = join(homedir(), "self-improve-session.sh");
 
@@ -14,6 +16,17 @@ export function yimbotRepoRoot(): string {
 export function selfImproveBranch(jobId: string, now: Date): string {
   const pad = (n: number): string => String(n).padStart(2, "0");
   return `${BRANCH_PREFIX}${jobId}-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+// The board row for a finished run. It carries no PR number on purpose: the TUI
+// resolves a row's PR against the codebase repo, and this PR lives in the yimbot repo.
+export function selfImproveDoneEvent(job: SelfImproveJob, pr: number | null): Omit<YimbotEvent, "ts"> {
+  return {
+    kind: "self_improve_done",
+    key: `self-improve:${job.id}`,
+    label: job.label,
+    title: pr === null ? "nothing to change" : `PR #${pr}`,
+  };
 }
 
 export function selfImproveSessionArgs(jobId: string, branch: string): string[] {
@@ -29,6 +42,23 @@ export function spawnSelfImproveSession(jobId: string, branch: string): void {
   proc.once("exit", (code) => {
     if (code !== 0) console.error(`[self-improve] self-improve-session.sh for '${jobId}' exited ${code}`);
   });
+}
+
+export function existingSelfImproveBranch(repoRoot: string, jobId: string): string | null {
+  let out: string;
+  try {
+    out = execFileSync("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  } catch {
+    return null;
+  }
+  let path = "";
+  for (const line of out.split("\n")) {
+    if (line.startsWith("worktree ")) path = line.slice("worktree ".length).trim();
+    else if (line.startsWith("branch refs/heads/") && basename(path) === `self-improve-${jobId}`) {
+      return line.slice("branch refs/heads/".length);
+    }
+  }
+  return null;
 }
 
 function worktreePathForBranch(repoRoot: string, branch: string): string | null {

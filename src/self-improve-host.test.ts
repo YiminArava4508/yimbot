@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tempDir } from "./test-temp.ts";
-import { removeSelfImproveWorktree, selfImproveBranch, selfImproveScriptPath, selfImproveSessionArgs } from "./self-improve-host.ts";
+import { existingSelfImproveBranch, removeSelfImproveWorktree, selfImproveBranch, selfImproveDoneEvent, selfImproveScriptPath, selfImproveSessionArgs } from "./self-improve-host.ts";
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -75,4 +75,24 @@ test("selfImproveBranch carries the job id and the local date", () => {
     selfImproveBranch("dead-code-scan", new Date(2026, 10, 4, 0, 30)),
     "chore/self-improve-dead-code-scan-2026-11-04",
   );
+});
+
+test("selfImproveDoneEvent never carries a PR number, so board keys cannot act on the wrong repo", () => {
+  const job = { id: "a", skill: "a", settingKey: "K", cadence: "daily" as const, hour: 0, label: "dead code scan" };
+  const withPr = selfImproveDoneEvent(job, 42);
+  assert.equal(withPr.kind, "self_improve_done");
+  assert.equal(withPr.key, "self-improve:a");
+  assert.equal(withPr.title, "PR #42");
+  assert.equal("pr" in withPr, false);
+  assert.equal(selfImproveDoneEvent(job, null).title, "nothing to change");
+});
+
+test("existingSelfImproveBranch finds the branch of the job's worktree by directory name", () => {
+  const repo = tempDir("yimbot-si-repo-");
+  git(repo, "init", "-q", "-b", "master");
+  git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+  const root = tempDir("yimbot-si-wt-");
+  git(repo, "worktree", "add", "-q", "-b", "chore/self-improve-a-2026-11-23", join(root, "self-improve-a"));
+  assert.equal(existingSelfImproveBranch(repo, "a"), "chore/self-improve-a-2026-11-23");
+  assert.equal(existingSelfImproveBranch(repo, "b"), null);
 });

@@ -13,6 +13,8 @@ export type SelfImproveDeps = {
   hasSession: (name: string) => boolean;
   listSessions: () => string[];
   branchFor: (job: SelfImproveJob, now: Date) => string;
+  // Branch of an existing worktree for this job (a live run, or a dead run's leftover), if any.
+  existingBranch: (job: SelfImproveJob) => string | null;
   prForBranch: (branch: string) => Promise<number | null>;
   openSelfImprovePrs: () => Promise<number>;
   spawn: (job: SelfImproveJob, branch: string) => void;
@@ -42,7 +44,7 @@ function adoptLiveSessions(state: SelfImproveState, deps: SelfImproveDeps): void
     const job = deps.jobs.find((j) => j.id === name.slice(PREFIX.length));
     if (!job || state.inFlight.has(job.id)) continue;
     const now = deps.now();
-    state.inFlight.set(job.id, { branch: deps.branchFor(job, now), startedAt: now.getTime() });
+    state.inFlight.set(job.id, { branch: deps.existingBranch(job) ?? deps.branchFor(job, now), startedAt: now.getTime() });
   }
 }
 
@@ -95,11 +97,28 @@ async function canSpawn(state: SelfImproveState, deps: SelfImproveDeps): Promise
   }
 }
 
-function spawnFirstDue(state: SelfImproveState, deps: SelfImproveDeps): void {
+// A dead run (tmux gone, reboot) leaves its worktree at the job's fixed path, which
+// would make every later launch fail. Returns false when it could not be cleared.
+async function clearLeftover(job: SelfImproveJob, deps: SelfImproveDeps): Promise<boolean> {
+  const leftover = deps.existingBranch(job);
+  if (!leftover) return true;
+  try {
+    const pr = await deps.prForBranch(leftover);
+    deps.removeWorktree(leftover, pr === null);
+    deps.log(`${job.id}: cleared leftover worktree for ${leftover}`);
+    return true;
+  } catch (err) {
+    deps.log(`self-improve: could not clear leftover worktree for ${job.id}: ${err}`);
+    return false;
+  }
+}
+
+async function spawnFirstDue(state: SelfImproveState, deps: SelfImproveDeps): Promise<void> {
   const now = deps.now();
   const lastRun = deps.loadState();
   const job = deps.jobs.find((j) => deps.jobEnabled(j) && isDue(j, lastRun[j.id], now, deps.hourOverride));
   if (!job) return;
+  if (!(await clearLeftover(job, deps))) return;
   const branch = deps.branchFor(job, now);
   try {
     deps.spawn(job, branch);
@@ -118,5 +137,5 @@ export async function selfImproveOnce(state: SelfImproveState, deps: SelfImprove
   adoptLiveSessions(state, deps);
   if (!(await sweepInFlight(state, deps))) return;
   if (!(await canSpawn(state, deps))) return;
-  spawnFirstDue(state, deps);
+  await spawnFirstDue(state, deps);
 }

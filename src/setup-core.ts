@@ -372,6 +372,11 @@ export const hostLinks: HostLink[] = [
     label: "refine session launcher (~/refine-session.sh)",
   },
   {
+    source: join(repoRoot, "scripts/self-improve-session.sh"),
+    target: join(homedir(), "self-improve-session.sh"),
+    label: "self-improve session launcher (~/self-improve-session.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/qa-session.sh"),
     target: join(homedir(), "qa-session.sh"),
     label: "QA session launcher (~/qa-session.sh)",

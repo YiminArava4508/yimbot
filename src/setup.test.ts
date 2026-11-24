@@ -386,6 +386,12 @@ test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {
   assert.ok(link!.source.endsWith("scripts/split-pr.sh"), "sourced from scripts/split-pr.sh");
 });
 
+test("hostLinks installs the self-improve launcher at ~/self-improve-session.sh", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/self-improve-session.sh"));
+  assert.ok(link, "self-improve-session.sh host link is present");
+  assert.ok(link!.source.endsWith("scripts/self-improve-session.sh"), "sourced from scripts/self-improve-session.sh");
+});
+
 test("hostLinks installs the fix-pr-ci skill", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-ci"));
   assert.ok(link, "fix-pr-ci skill host link is present");

@@ -74,5 +74,20 @@ lacks "$S" "Repeat until the whole series is open, then move" "split skill does 
 has "$PICKUP" "in a split, every slice subticket" "pickup Review move covers slices"
 has "$S" "draft if that line says \`failed\`" "slice step 5 applies the UAT draft rule"
 
+C="$SK/self-improve-contract/SKILL.md"
+frontmatter_ok self-improve-contract
+has "$C" "gh pr create --draft" "contract opens draft PRs"
+has "$C" "Never mark it ready" "contract never marks ready"
+has "$C" "exit claude" "contract ends the session"
+has "$C" "Prove or skip" "contract skips unproven changes"
+has "$C" "pnpm typecheck" "contract verifies with typecheck"
+
+D="$SK/dead-code-scan/SKILL.md"
+frontmatter_ok dead-code-scan
+has "$D" 'invoke the `self-improve-contract` skill' "scan invokes the contract first"
+has "$D" "Never in scope" "scan lists what it must not touch"
+has "$D" "Provable means all of" "scan states the provable rule"
+
+
 if [ "$fail" -eq 0 ]; then echo "PASS: skills split tests"; fi
 exit "$fail"

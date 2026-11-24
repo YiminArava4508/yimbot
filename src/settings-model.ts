@@ -33,6 +33,9 @@ export type YimbotConfig = {
   refineLabelFilter: string;
   maxRefining: number;
   splitTickets: boolean;
+  autoSelfImprove: boolean;
+  autoSelfImproveDeadCodeScan: boolean;
+  selfImproveHour: number;
   agent: Agent;
 };
 
@@ -96,11 +99,14 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     REFINE_LABEL_FILTER: c.refineLabelFilter,
     MAX_REFINING: String(c.maxRefining),
     SPLIT_TICKETS: String(c.splitTickets),
+    AUTO_SELF_IMPROVE: String(c.autoSelfImprove),
+    AUTO_SELF_IMPROVE_DEAD_CODE_SCAN: String(c.autoSelfImproveDeadCodeScan),
+    SELF_IMPROVE_HOUR: String(c.selfImproveHour),
     AGENT: c.agent,
   };
 }
 
-// The 24 keys this file's generated sections own. Anything else found in an
+// The generated keys this file's generated sections own. Anything else found in an
 // existing .env is a hand-edited setting (BLOCKED_LABEL, TUI_*, ...) that a
 // regenerated file must not drop.
 const OWNED_ENV_KEYS = new Set([
@@ -128,6 +134,9 @@ const OWNED_ENV_KEYS = new Set([
   "REFINE_LABEL_FILTER",
   "MAX_REFINING",
   "SPLIT_TICKETS",
+  "AUTO_SELF_IMPROVE",
+  "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN",
+  "SELF_IMPROVE_HOUR",
   "AGENT",
 ]);
 
@@ -186,6 +195,11 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `REFINE_LABEL_FILTER=${r.REFINE_LABEL_FILTER}`,
     `MAX_REFINING=${r.MAX_REFINING}`,
     `SPLIT_TICKETS=${r.SPLIT_TICKETS}`,
+    "",
+    "# --- Self-improvement ---",
+    `AUTO_SELF_IMPROVE=${r.AUTO_SELF_IMPROVE}`,
+    `AUTO_SELF_IMPROVE_DEAD_CODE_SCAN=${r.AUTO_SELF_IMPROVE_DEAD_CODE_SCAN}`,
+    `SELF_IMPROVE_HOUR=${r.SELF_IMPROVE_HOUR}`,
   ];
   if (passthroughLines.length > 0) {
     lines.push("", "# --- Hand-edited settings this file's writer doesn't manage (preserved) ---", ...passthroughLines);
@@ -261,6 +275,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     refineLabelFilter: or("REFINE_LABEL_FILTER", ""),
     maxRefining: Number(or("MAX_REFINING", "1")),
     splitTickets: !isOff(or("SPLIT_TICKETS", "true")),
+    autoSelfImprove: !isOff(or("AUTO_SELF_IMPROVE", "false")),
+    autoSelfImproveDeadCodeScan: !isOff(or("AUTO_SELF_IMPROVE_DEAD_CODE_SCAN", "true")),
+    selfImproveHour: Number(or("SELF_IMPROVE_HOUR", "0")),
     agent: agentOr(or("AGENT", "claude")),
   };
 }
@@ -325,6 +342,9 @@ const ROW_SPECS: RowSpec[] = [
   { envKey: "PLAN_MODEL", label: "plan model", editor: "text", category: "Models", help: "Model alias or id for planning sessions." },
   { envKey: "IMPL_MODEL", label: "impl model", editor: "text", category: "Models", help: "Model alias or id for implementation sessions." },
   { envKey: "HEARTBEAT_INTERVAL_MINUTES", label: "heartbeat minutes", editor: "number", category: "System", help: "Minutes between daemon passes over the board." },
+  { envKey: "AUTO_SELF_IMPROVE", label: "self-improve", editor: "toggle", category: "System", help: "Run nightly self-improvement jobs that open draft PRs on yimbot itself. Off by default." },
+  { envKey: "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN", label: "dead code scan", editor: "toggle", category: "System", help: "Self-improvement job that removes provably dead code. Needs self-improve on." },
+  { envKey: "SELF_IMPROVE_HOUR", label: "self-improve hour", editor: "number", category: "System", help: "Local hour (0 to 23) at or after which the day's jobs may start." },
   { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", category: "System", help: "Git repo that worktrees are cut from. Must exist." },
 ];
 
@@ -345,6 +365,8 @@ function displayValue(envKey: string, value: string): string {
     case "AUTO_CONTINUE":
     case "AUTO_REFINE":
     case "SPLIT_TICKETS":
+    case "AUTO_SELF_IMPROVE":
+    case "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN":
       return isOff(value) ? "off" : "on";
     case "AC_JUDGE_MODEL":
       return value || "(agent default)";
@@ -402,6 +424,9 @@ export function validateDraft(draft: Draft): Record<string, string> {
       case "MAX_CONTINUATIONS":
       case "MAX_REFINING":
         if (!isPositiveInt(raw)) errors[envKey] = "must be a positive integer";
+        break;
+      case "SELF_IMPROVE_HOUR":
+        if (!/^(\d|1\d|2[0-3])$/.test(raw.trim())) errors[envKey] = "must be a whole hour from 0 to 23";
         break;
       case "HEARTBEAT_INTERVAL_MINUTES":
         if (!isPositiveNumber(raw)) errors[envKey] = "must be a positive number";

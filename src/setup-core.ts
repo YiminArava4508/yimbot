@@ -372,6 +372,11 @@ export const hostLinks: HostLink[] = [
     label: "refine session launcher (~/refine-session.sh)",
   },
   {
+    source: join(repoRoot, "scripts/self-improve-session.sh"),
+    target: join(homedir(), "self-improve-session.sh"),
+    label: "self-improve session launcher (~/self-improve-session.sh)",
+  },
+  {
     source: join(repoRoot, "scripts/qa-session.sh"),
     target: join(homedir(), "qa-session.sh"),
     label: "QA session launcher (~/qa-session.sh)",
@@ -450,6 +455,16 @@ export const hostLinks: HostLink[] = [
     source: join(repoRoot, "skills/ticket-uat"),
     target: join(homedir(), ".claude/skills/ticket-uat"),
     label: "ticket-uat skill (~/.claude/skills/ticket-uat)",
+  },
+  {
+    source: join(repoRoot, "skills/self-improve-contract"),
+    target: join(homedir(), ".claude/skills/self-improve-contract"),
+    label: "self-improve-contract skill (~/.claude/skills/self-improve-contract)",
+  },
+  {
+    source: join(repoRoot, "skills/dead-code-scan"),
+    target: join(homedir(), ".claude/skills/dead-code-scan"),
+    label: "dead-code-scan skill (~/.claude/skills/dead-code-scan)",
   },
   {
     source: join(repoRoot, "skills/address-pr-comments"),

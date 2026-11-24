@@ -82,6 +82,10 @@ import { freshQaState, loadQaState, type QaPhase, type QaUnit, saveQaState } fro
 import { isLinearTracker, loadTrackerState, saveTrackerState, type TrackerShape } from "./tracker-state.ts";
 import { qaOnce, type QaDeps } from "./qa.ts";
 import { freshRefineState, refineOnce, type RefineDeps } from "./refine.ts";
+import { freshSelfImproveState, selfImproveOnce, type SelfImproveDeps } from "./self-improve.ts";
+import { SELF_IMPROVE_JOBS, type SelfImproveJob } from "./self-improve-jobs.ts";
+import { loadSelfImproveState, saveSelfImproveState } from "./self-improve-state.ts";
+import { existingSelfImproveBranch, removeSelfImproveWorktree, selfImproveBranch, selfImproveDoneEvent, spawnSelfImproveSession } from "./self-improve-host.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
@@ -871,6 +875,15 @@ export type WatcherConfig = {
   // autoRefineDefault seeds the live toggle (AUTO_REFINE); the R key on the
   // board overrides it per tick via the refine toggle file.
   refine: { autoRefineDefault: boolean; maxRefining: number; labelFilter: LabelFilter; assigneeIds: string[] };
+  // Self-improvement jobs on the yimbot repo itself (draft PRs only); null
+  // disables the step (AUTO_SELF_IMPROVE off, or gh unavailable).
+  selfImprove: {
+    repoRoot: string;
+    hour: number;
+    jobEnabled: (job: SelfImproveJob) => boolean;
+    prForBranch: (branch: string) => Promise<number | null>;
+    openSelfImprovePrs: () => Promise<number>;
+  } | null;
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
   // listOpenPRs spans every repo (EXTRA_REPOS included) for the board and the
@@ -2154,6 +2167,36 @@ export function startWatcher(config: WatcherConfig): () => void {
     log: refineLog,
   };
 
+  const selfImproveState = freshSelfImproveState();
+  const { selfImprove } = config;
+  const selfImproveKey = (job: SelfImproveJob) => `self-improve:${job.id}`;
+  const selfImproveDeps: SelfImproveDeps | null = selfImprove
+    ? {
+        enabled: () => true,
+        jobEnabled: selfImprove.jobEnabled,
+        jobs: SELF_IMPROVE_JOBS,
+        hourOverride: selfImprove.hour,
+        diskHeld: () => config.diskLow?.() ?? false,
+        now: () => new Date(),
+        loadState: loadSelfImproveState,
+        saveState: saveSelfImproveState,
+        hasSession: tmuxHasSession,
+        listSessions: listTmuxSessions,
+        branchFor: (job, now) => selfImproveBranch(job.id, now),
+        existingBranch: (job) => existingSelfImproveBranch(selfImprove.repoRoot, job.id),
+        prForBranch: selfImprove.prForBranch,
+        openSelfImprovePrs: selfImprove.openSelfImprovePrs,
+        spawn: (job, branch) => spawnSelfImproveSession(job.id, branch),
+        kill: killTmuxSession,
+        removeWorktree: (branch, deleteBranch) => removeSelfImproveWorktree(selfImprove.repoRoot, branch, deleteBranch),
+        markStarted: (job) =>
+          emitEvent({ kind: "self_improve_started", key: selfImproveKey(job), label: job.label, title: job.label }),
+        markDone: (job, pr) => emitStatus(selfImproveDoneEvent(job, pr)),
+        reapStaleMs: config.reapStaleMs,
+        log: (msg) => console.log(`[self-improve] ${msg}`),
+      }
+    : null;
+
   // Claim step: on each heartbeat, while below the WIP cap, move the top
   // current-cycle Todo into "In Progress" so the deploy step launches it.
   const claimLog = (msg: string) => console.log(`[claim] ${msg}`);
@@ -2337,6 +2380,13 @@ export function startWatcher(config: WatcherConfig): () => void {
       // Refine runs right before claim so an estimate that lands this tick is
       // visible to the claim query on the next one, never mid-selection.
       await refineOnce(refineState, refineDeps);
+      if (selfImproveDeps) {
+        try {
+          await selfImproveOnce(selfImproveState, selfImproveDeps);
+        } catch (err) {
+          console.error(`[self-improve] step failed: ${err}`);
+        }
+      }
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

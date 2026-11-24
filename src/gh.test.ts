@@ -21,6 +21,8 @@ import {
   listMyMergedPRs,
   listMyOpenPRs,
   listSuccessfulRunHeadShas,
+  countOpenSelfImprovePrs,
+  prNumberForBranch,
   markPrReadyForReview,
   mergeableInfo,
   parseBlockedInfo,
@@ -797,4 +799,32 @@ test("prLifecycle reads the holder note in the same gh call", async () => {
   assert.equal(await prLifecycle(run, 8090), "open");
   assert.equal(holderNote(8090), "needs approval");
   assert.equal(calls.length, 1);
+});
+
+test("prNumberForBranch returns the first PR number for the head branch, or null", async () => {
+  const first = capturingRunner([JSON.stringify([{ number: 12 }, { number: 9 }])]);
+  assert.equal(await prNumberForBranch(first.run, "chore/self-improve-a-2026-11-24"), 12);
+  assert.deepEqual(first.calls[0], ["pr", "list", "--head", "chore/self-improve-a-2026-11-24", "--state", "all", "--json", "number"]);
+  const none = capturingRunner(["[]"]);
+  assert.equal(await prNumberForBranch(none.run, "x"), null);
+});
+
+test("countOpenSelfImprovePrs counts only chore/self-improve- branches", async () => {
+  const { run, calls } = capturingRunner([
+    JSON.stringify([
+      { number: 1, headRefName: "chore/self-improve-dead-code-scan-2026-11-24" },
+      { number: 2, headRefName: "eng-5-thing" },
+      { number: 3, headRefName: "chore/self-improve-other-2026-11-25" },
+    ]),
+  ]);
+  assert.equal(await countOpenSelfImprovePrs(run), 2);
+  assert.deepEqual(calls[0], ["pr", "list", "--state", "open", "--search", "head:chore/self-improve-", "--json", "number,headRefName"]);
+});
+
+test("self-improvement lookups reject when gh fails", async () => {
+  const run: GhRunner = async () => {
+    throw new Error("gh down");
+  };
+  await assert.rejects(prNumberForBranch(run, "x"), /gh down/);
+  await assert.rejects(countOpenSelfImprovePrs(run), /gh down/);
 });

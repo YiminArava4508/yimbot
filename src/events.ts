@@ -40,6 +40,8 @@ export type EventKind =
   | "review_findings"
   | "refine_started"
   | "refined"
+  | "self_improve_started"
+  | "self_improve_done"
   | "qa_waiting"
   | "qa_awaiting_deploy"
   | "qa_started"
@@ -192,6 +194,8 @@ const STATUS: Partial<Record<EventKind, { status: string; terminal: boolean }>> 
   review_findings: { status: "review findings", terminal: false },
   refine_started: { status: "refining", terminal: false },
   refined: { status: "refined", terminal: true },
+  self_improve_started: { status: "self-improving", terminal: false },
+  self_improve_done: { status: "self-improved", terminal: true },
   qa_waiting: { status: "qa: waiting on children", terminal: false },
   qa_awaiting_deploy: { status: "qa: awaiting deploy", terminal: false },
   qa_started: { status: "qa: in session", terminal: false },

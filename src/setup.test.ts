@@ -57,6 +57,9 @@ const sample: YimbotConfig = {
   refineLabelFilter: "",
   maxRefining: 1,
   splitTickets: true,
+  autoSelfImprove: false,
+  autoSelfImproveDeadCodeScan: true,
+  selfImproveHour: 0,
   agent: "claude",
 };
 
@@ -386,13 +389,19 @@ test("hostLinks installs the split-pr launcher at ~/split-pr.sh", () => {
   assert.ok(link!.source.endsWith("scripts/split-pr.sh"), "sourced from scripts/split-pr.sh");
 });
 
+test("hostLinks installs the self-improve launcher at ~/self-improve-session.sh", () => {
+  const link = hostLinks.find((l) => l.target.endsWith("/self-improve-session.sh"));
+  assert.ok(link, "self-improve-session.sh host link is present");
+  assert.ok(link!.source.endsWith("scripts/self-improve-session.sh"), "sourced from scripts/self-improve-session.sh");
+});
+
 test("hostLinks installs the fix-pr-ci skill", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-ci"));
   assert.ok(link, "fix-pr-ci skill host link is present");
   assert.ok(link!.source.endsWith("skills/fix-pr-ci"), "sourced from skills/fix-pr-ci");
 });
 
-const SUB_SKILLS = ["spike-ticket", "archive-flag-ticket", "split-ticket-prs", "ticket-uat"];
+const SUB_SKILLS = ["spike-ticket", "archive-flag-ticket", "split-ticket-prs", "ticket-uat", "self-improve-contract", "dead-code-scan"];
 test("hostLinks installs the pickup-ticket sub-skills", () => {
   for (const name of SUB_SKILLS) {
     const link = hostLinks.find((l) => l.target.endsWith(`/.claude/skills/${name}`));

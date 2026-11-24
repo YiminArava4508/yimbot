@@ -449,6 +449,25 @@ export async function prState(run: GhRunner, prNumber: number): Promise<PrState>
   return parsePrState(await run(["pr", "view", String(prNumber), "--json", "labels,isDraft,reviewDecision"]));
 }
 
+export function parseHeadPrNumbers(json: string): number[] {
+  return (JSON.parse(json) as { number: number }[]).map((p) => p.number);
+}
+
+export async function prNumberForBranch(run: GhRunner, branch: string): Promise<number | null> {
+  const numbers = parseHeadPrNumbers(await run(["pr", "list", "--head", branch, "--state", "all", "--json", "number"]));
+  return numbers[0] ?? null;
+}
+
+const SELF_IMPROVE_BRANCH_PREFIX = "chore/self-improve-";
+
+export async function countOpenSelfImprovePrs(run: GhRunner): Promise<number> {
+  const json = await run([
+    "pr", "list", "--state", "open", "--search", `head:${SELF_IMPROVE_BRANCH_PREFIX}`, "--json", "number,headRefName",
+  ]);
+  const prs = JSON.parse(json) as { headRefName: string }[];
+  return prs.filter((p) => p.headRefName.startsWith(SELF_IMPROVE_BRANCH_PREFIX)).length;
+}
+
 // Add / remove a single label on a PR. The gh stdout is discarded; a non-zero
 // exit rejects (e.g. --add-label with a label that doesn't exist in the repo),
 // which the caller catches and logs.

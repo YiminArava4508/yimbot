@@ -392,6 +392,15 @@ test("hostLinks installs the fix-pr-ci skill", () => {
   assert.ok(link!.source.endsWith("skills/fix-pr-ci"), "sourced from skills/fix-pr-ci");
 });
 
+const SUB_SKILLS = ["spike-ticket"];
+test("hostLinks installs the pickup-ticket sub-skills", () => {
+  for (const name of SUB_SKILLS) {
+    const link = hostLinks.find((l) => l.target.endsWith(`/.claude/skills/${name}`));
+    assert.ok(link, `${name} skill host link is present`);
+    assert.ok(link!.source.endsWith(`skills/${name}`), `sourced from skills/${name}`);
+  }
+});
+
 test("hostLinks installs the fix-pr-conflict skill", () => {
   const link = hostLinks.find((l) => l.target.endsWith("/.claude/skills/fix-pr-conflict"));
   assert.ok(link, "fix-pr-conflict skill host link is present");

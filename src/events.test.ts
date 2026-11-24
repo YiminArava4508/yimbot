@@ -1445,3 +1445,8 @@ test("fixStartKind maps each fix kind to the event its session starts with", () 
   assert.equal(fixStartKind("conflict"), "conflict_fix_started");
   assert.equal(fixStartKind("blocked"), "blocked_fix_started");
 });
+
+test("statusFor maps the self-improvement kinds", () => {
+  assert.deepEqual(statusFor("self_improve_started"), { status: "self-improving", terminal: false });
+  assert.deepEqual(statusFor("self_improve_done"), { status: "self-improved", terminal: true });
+});

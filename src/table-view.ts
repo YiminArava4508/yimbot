@@ -113,6 +113,7 @@ const STATUS_COLOR: Record<string, string> = {
   "resolving conflict": "cyan",
   unblocking: "cyan",
   refining: "cyan",
+  "self-improving": "cyan",
   stuck: "red",
   "CI failing": "red",
   "merge queue blocked": "red",

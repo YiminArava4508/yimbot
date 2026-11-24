@@ -121,6 +121,7 @@ const STATUS_TONES: Record<string, Tone> = {
   unblocking: "ok",
   "resolving conflict": "ok",
   refining: "ok",
+  "self-improving": "ok",
   "qa: in session": "ok",
   "spike closed": "ok",
   "ready to review": "wait",

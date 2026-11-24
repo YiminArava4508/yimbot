@@ -13,6 +13,8 @@ import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
 import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
+import { isOff } from "./settings-model.ts";
+import { yimbotRepoRoot } from "./self-improve-host.ts";
 import { runHeadless } from "./headless.ts";
 import {
   addLabel,
@@ -20,6 +22,8 @@ import {
   listQueuedPrs,
   prFiles,
   blockReason,
+  countOpenSelfImprovePrs,
+  prNumberForBranch,
   prLifecycle,
   holderNote,
   removeLabel,
@@ -560,6 +564,23 @@ export async function startDaemon(): Promise<() => void> {
   // blocker can live on the other instance's slice of the board. Filtering it
   // would leave a ticket blocked forever behind a merged bot PR.
   const blocked = prReview ? { listMergedPRs: listAllMergedPRs } : null;
+
+  // Self-improvement jobs open draft PRs on the repo yimbot runs from, so they
+  // get their own gh runner there. Off unless AUTO_SELF_IMPROVE is on and gh works.
+  const selfImproveHour = Number(envOr("SELF_IMPROVE_HOUR", "0"));
+  const selfImprove =
+    prReview && !isOff(envOr("AUTO_SELF_IMPROVE", "false"))
+      ? (() => {
+          const selfRun = ghRunner(yimbotRepoRoot());
+          return {
+            repoRoot: yimbotRepoRoot(),
+            hour: Number.isInteger(selfImproveHour) && selfImproveHour >= 0 && selfImproveHour <= 23 ? selfImproveHour : 0,
+            jobEnabled: (job: { settingKey: string }) => !isOff(envOr(job.settingKey, "true")),
+            prForBranch: (branch: string) => prNumberForBranch(selfRun, branch),
+            openSelfImprovePrs: () => countOpenSelfImprovePrs(selfRun),
+          };
+        })()
+      : null;
   // A blocker stops blocking once it reaches the merge state: Done is too late,
   // since that column means released. The review state counts too (it is past
   // merge), as does any completed/canceled state, by type.
@@ -584,6 +605,11 @@ export async function startDaemon(): Promise<() => void> {
     readRefineEnabled(autoRefine)
       ? `[yimbot] refine step ON: sizing unestimated Backlog/Todo tickets for ${refineAssigneeIds.length} user(s), up to ${maxRefining} at a time (toggle with 'R' on the board)`
       : "[yimbot] refine step OFF (toggle with 'R' on the board)",
+  );
+  console.log(
+    selfImprove
+      ? `[yimbot] self-improve ON: draft PRs on ${yimbotRepoRoot()}, jobs start at or after ${selfImprove.hour}:00`
+      : "[yimbot] self-improve OFF",
   );
   console.log(`[yimbot] label filter: ${describeLabelFilter(labelFilter)}`);
 
@@ -612,6 +638,7 @@ export async function startDaemon(): Promise<() => void> {
       progressStateName: stateName,
     },
     refine: { autoRefineDefault: autoRefine, maxRefining, labelFilter: refineLabelFilter, assigneeIds: refineAssigneeIds },
+    selfImprove,
     prReview,
     cleanup,
     advance,

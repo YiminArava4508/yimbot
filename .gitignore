@@ -6,6 +6,7 @@ daemon.log.bak.*
 events.jsonl
 review-state.json
 fix-timers.json
+master-merge.json
 last-update.json
 tracker-state.json
 architecture-map-*.json

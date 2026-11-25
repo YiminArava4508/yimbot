@@ -555,6 +555,44 @@ export async function fetchMasterAccess(run: GhRunner): Promise<MasterAccess> {
   }
 }
 
+export type YimbotPr = { number: number; headRefName: string; isDraft: boolean; author: string; headSha: string };
+
+export function parseYimbotPrs(json: string): YimbotPr[] {
+  const rows = JSON.parse(json) as {
+    number: number;
+    headRefName: string;
+    isDraft: boolean;
+    author?: { login?: string } | null;
+    headRefOid: string;
+  }[];
+  return rows.map((r) => ({
+    number: r.number,
+    headRefName: r.headRefName,
+    isDraft: r.isDraft,
+    author: (r.author?.login ?? "").toLowerCase(),
+    headSha: r.headRefOid,
+  }));
+}
+
+export async function listYimbotPrs(run: GhRunner): Promise<YimbotPr[]> {
+  return parseYimbotPrs(
+    await run(["pr", "list", "--state", "open", "--json", "number,headRefName,isDraft,author,headRefOid", "--limit", "100"]),
+  );
+}
+
+export async function markPrReady(run: GhRunner, prNumber: number): Promise<void> {
+  await run(["pr", "ready", String(prNumber)]);
+}
+
+// --match-head-commit makes gh refuse the merge if the branch moved since review.
+export async function squashMergePr(run: GhRunner, prNumber: number, headSha: string): Promise<void> {
+  await run(["pr", "merge", String(prNumber), "--squash", "--delete-branch", "--match-head-commit", headSha]);
+}
+
+export async function commentOnPr(run: GhRunner, prNumber: number, body: string): Promise<void> {
+  await run(["pr", "comment", String(prNumber), "--body", body]);
+}
+
 // The PR's raw unified diff, for the review view. Returned verbatim;
 // src/review-diff.ts owns the parsing.
 export async function prDiff(run: GhRunner, prNumber: number): Promise<string> {

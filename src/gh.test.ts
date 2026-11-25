@@ -56,6 +56,11 @@ import {
   fetchMasterAccess,
   unresolvedThreadInfo,
   viewerLogin,
+  parseYimbotPrs,
+  listYimbotPrs,
+  markPrReady,
+  squashMergePr,
+  commentOnPr,
 } from "./gh.ts";
 
 // Records the args each gh call received so we can assert on them.
@@ -854,4 +859,36 @@ test("fetchMasterAccess fails closed when a lookup rejects", async () => {
     throw new Error("gh down");
   };
   assert.deepEqual(await fetchMasterAccess(run), NO_MASTER_ACCESS);
+});
+
+test("parseYimbotPrs maps fields, lowercases author, tolerates a null author", () => {
+  const prs = parseYimbotPrs(
+    JSON.stringify([
+      { number: 7, headRefName: "feat/x", isDraft: true, author: { login: "YimBot" }, headRefOid: "abc" },
+      { number: 8, headRefName: "feat/y", isDraft: false, author: null, headRefOid: "def" },
+    ]),
+  );
+  assert.deepEqual(prs, [
+    { number: 7, headRefName: "feat/x", isDraft: true, author: "yimbot", headSha: "abc" },
+    { number: 8, headRefName: "feat/y", isDraft: false, author: "", headSha: "def" },
+  ]);
+});
+
+test("listYimbotPrs asks gh for open PRs with the needed fields", async () => {
+  const { run, calls } = capturingRunner(["[]"]);
+  assert.deepEqual(await listYimbotPrs(run), []);
+  assert.deepEqual(calls[0].slice(0, 5), ["pr", "list", "--state", "open", "--json"]);
+  assert.equal(calls[0][5], "number,headRefName,isDraft,author,headRefOid");
+});
+
+test("markPrReady, squashMergePr and commentOnPr pass exact gh args", async () => {
+  const { run, calls } = capturingRunner([]);
+  await markPrReady(run, 7);
+  await squashMergePr(run, 7, "abc");
+  await commentOnPr(run, 7, "hello");
+  assert.deepEqual(calls, [
+    ["pr", "ready", "7"],
+    ["pr", "merge", "7", "--squash", "--delete-branch", "--match-head-commit", "abc"],
+    ["pr", "comment", "7", "--body", "hello"],
+  ]);
 });

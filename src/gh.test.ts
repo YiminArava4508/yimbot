@@ -58,7 +58,6 @@ import {
   viewerLogin,
   parseYimbotPrs,
   listYimbotPrs,
-  markPrReady,
   squashMergePr,
   commentOnPr,
 } from "./gh.ts";
@@ -881,13 +880,11 @@ test("listYimbotPrs asks gh for open PRs with the needed fields", async () => {
   assert.equal(calls[0][5], "number,headRefName,isDraft,author,headRefOid");
 });
 
-test("markPrReady, squashMergePr and commentOnPr pass exact gh args", async () => {
+test("squashMergePr and commentOnPr pass exact gh args", async () => {
   const { run, calls } = capturingRunner([]);
-  await markPrReady(run, 7);
   await squashMergePr(run, 7, "abc");
   await commentOnPr(run, 7, "hello");
   assert.deepEqual(calls, [
-    ["pr", "ready", "7"],
     ["pr", "merge", "7", "--squash", "--delete-branch", "--match-head-commit", "abc"],
     ["pr", "comment", "7", "--body", "hello"],
   ]);

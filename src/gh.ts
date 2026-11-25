@@ -580,10 +580,6 @@ export async function listYimbotPrs(run: GhRunner): Promise<YimbotPr[]> {
   );
 }
 
-export async function markPrReady(run: GhRunner, prNumber: number): Promise<void> {
-  await run(["pr", "ready", String(prNumber)]);
-}
-
 // --match-head-commit makes gh refuse the merge if the branch moved since review.
 export async function squashMergePr(run: GhRunner, prNumber: number, headSha: string): Promise<void> {
   await run(["pr", "merge", String(prNumber), "--squash", "--delete-branch", "--match-head-commit", headSha]);

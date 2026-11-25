@@ -58,8 +58,8 @@ test("rowsToLines ticks the checkbox from the displayed state, not the raw value
 });
 
 test("categoryLines marks the active category and shows dirty counts", () => {
-  const lines = categoryLines({ Linear: 0, Claim: 2, Refine: 0, Advance: 0, Models: 0, System: 0 }, 1);
-  assert.equal(lines.length, 6);
+  const lines = categoryLines({ Linear: 0, Claim: 2, Refine: 0, Advance: 0, Models: 0, System: 0, Master: 0 }, 1);
+  assert.equal(lines.length, 7);
   assert.match(lines[0], /Linear/);
   assert.equal(lines[0].includes("*"), false);
   assert.match(lines[1], /Claim/);
@@ -133,6 +133,9 @@ const baseConfig: YimbotConfig = {
   autoSelfImproveDeadCodeScan: true,
   selfImproveHour: 0,
   agent: "claude",
+  yimbotMaster: false,
+  autoMasterMerge: false,
+  masterMergeAuthors: "",
 };
 
 function testDeps(overrides: Partial<SettingsDeps> = {}): SettingsDeps {
@@ -176,7 +179,7 @@ test("openSettings paints the first category's rows and every category in the si
   const screen = testScreen();
   openSettings(screen, testDeps(), () => {});
   const { detail, sidebar } = panes(screen);
-  assert.equal(sidebar.items.length, 6);
+  assert.equal(sidebar.items.length, 7);
   assert.equal(detail.items.length, 6);
   assert.match(detail.ritems[0], /linear api key/);
   screen.destroy();

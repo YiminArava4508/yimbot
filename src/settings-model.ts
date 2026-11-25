@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
 import { AGENTS, agentOr, type Agent } from "./agent.ts";
+import type { MasterAccess } from "./master.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
 // collects these; the daemon reads them back via envOr() at startup.
@@ -37,6 +38,9 @@ export type YimbotConfig = {
   autoSelfImproveDeadCodeScan: boolean;
   selfImproveHour: number;
   agent: Agent;
+  yimbotMaster: boolean;
+  autoMasterMerge: boolean;
+  masterMergeAuthors: string;
 };
 
 // Where the daemon's --env-file points (relative to the project root, which is
@@ -103,6 +107,9 @@ export function configToEnvRecord(c: YimbotConfig): Record<string, string> {
     AUTO_SELF_IMPROVE_DEAD_CODE_SCAN: String(c.autoSelfImproveDeadCodeScan),
     SELF_IMPROVE_HOUR: String(c.selfImproveHour),
     AGENT: c.agent,
+    YIMBOT_MASTER: String(c.yimbotMaster),
+    AUTO_MASTER_MERGE: String(c.autoMasterMerge),
+    MASTER_MERGE_AUTHORS: c.masterMergeAuthors,
   };
 }
 
@@ -138,6 +145,9 @@ const OWNED_ENV_KEYS = new Set([
   "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN",
   "SELF_IMPROVE_HOUR",
   "AGENT",
+  "YIMBOT_MASTER",
+  "AUTO_MASTER_MERGE",
+  "MASTER_MERGE_AUTHORS",
 ]);
 
 // The KEY=value lines of an existing .env that this file's generated sections
@@ -200,6 +210,11 @@ export function serializeEnvFile(c: YimbotConfig, passthroughLines: string[] = [
     `AUTO_SELF_IMPROVE=${r.AUTO_SELF_IMPROVE}`,
     `AUTO_SELF_IMPROVE_DEAD_CODE_SCAN=${r.AUTO_SELF_IMPROVE_DEAD_CODE_SCAN}`,
     `SELF_IMPROVE_HOUR=${r.SELF_IMPROVE_HOUR}`,
+    "",
+    "# --- Master mode ---",
+    `YIMBOT_MASTER=${r.YIMBOT_MASTER}`,
+    `AUTO_MASTER_MERGE=${r.AUTO_MASTER_MERGE}`,
+    `MASTER_MERGE_AUTHORS=${r.MASTER_MERGE_AUTHORS}`,
   ];
   if (passthroughLines.length > 0) {
     lines.push("", "# --- Hand-edited settings this file's writer doesn't manage (preserved) ---", ...passthroughLines);
@@ -279,6 +294,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     autoSelfImproveDeadCodeScan: !isOff(or("AUTO_SELF_IMPROVE_DEAD_CODE_SCAN", "true")),
     selfImproveHour: Number(or("SELF_IMPROVE_HOUR", "0")),
     agent: agentOr(or("AGENT", "claude")),
+    yimbotMaster: !isOff(or("YIMBOT_MASTER", "false")),
+    autoMasterMerge: !isOff(or("AUTO_MASTER_MERGE", "false")),
+    masterMergeAuthors: or("MASTER_MERGE_AUTHORS", ""),
   };
 }
 
@@ -294,7 +312,7 @@ export type EditorKind =
   | "labelFilter"
   | "readonly";
 
-export const SETTING_CATEGORIES = ["Linear", "Claim", "Refine", "Advance", "Models", "System"] as const;
+export const SETTING_CATEGORIES = ["Linear", "Claim", "Refine", "Advance", "Models", "System", "Master"] as const;
 export type SettingCategory = (typeof SETTING_CATEGORIES)[number];
 
 export type SettingRow = {
@@ -346,7 +364,14 @@ const ROW_SPECS: RowSpec[] = [
   { envKey: "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN", label: "dead code scan", editor: "toggle", category: "System", help: "Self-improvement job that removes provably dead code. Needs self-improve on." },
   { envKey: "SELF_IMPROVE_HOUR", label: "self-improve hour", editor: "number", category: "System", help: "Local hour (0 to 23) at or after which the day's jobs may start." },
   { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", category: "System", help: "Git repo that worktrees are cut from. Must exist." },
+  { envKey: "YIMBOT_MASTER", label: "master mode", editor: "toggle", category: "Master", help: "Make this machine the master: it also handles yimbot's own PRs." },
+  { envKey: "AUTO_MASTER_MERGE", label: "auto-merge", editor: "toggle", category: "Master", help: "Merge approved, green yimbot PRs from allowed authors on each heartbeat." },
+  { envKey: "MASTER_MERGE_AUTHORS", label: "merge authors", editor: "list", category: "Master", help: "Comma-separated GitHub logins whose PRs may auto-merge. Empty means only the gh viewer." },
+  { envKey: "MASTER_ACCESS", label: "gh access", editor: "readonly", category: "Master", help: "Your GitHub permission on the yimbot repo. Master settings need write access to it." },
 ];
+
+const MASTER_KEYS = new Set(["YIMBOT_MASTER", "AUTO_MASTER_MERGE", "MASTER_MERGE_AUTHORS"]);
+const MASTER_READONLY_HELP = "Master settings need write access to the yimbot repo.";
 
 export function rowsInCategory(rows: SettingRow[], category: SettingCategory): SettingRow[] {
   return rows.filter((r) => r.category === category);
@@ -368,6 +393,11 @@ function displayValue(envKey: string, value: string): string {
     case "AUTO_SELF_IMPROVE":
     case "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN":
       return isOff(value) ? "off" : "on";
+    case "YIMBOT_MASTER":
+    case "AUTO_MASTER_MERGE":
+      return isOff(value) ? "off" : "on";
+    case "MASTER_MERGE_AUTHORS":
+      return value || "(viewer only)";
     case "AC_JUDGE_MODEL":
       return value || "(agent default)";
     case "REFINE_USERS":
@@ -381,17 +411,24 @@ function displayValue(envKey: string, value: string): string {
   }
 }
 
-function rowsFrom(record: Record<string, string>, assignee: string): SettingRow[] {
+function rowsFrom(record: Record<string, string>, assignee: string, access?: MasterAccess | null): SettingRow[] {
   return ROW_SPECS.map((spec) => {
+    if (spec.envKey === "MASTER_ACCESS") {
+      const display = access ? `${access.login} (${access.permission})` : "unknown";
+      return { ...spec, value: display, display };
+    }
     const value = spec.envKey === "ASSIGNEE" ? assignee : (record[spec.envKey] ?? "");
     const display =
       spec.envKey === "ASSIGNEE" ? `${assignee || "unknown"} (this API key)` : displayValue(spec.envKey, value);
+    if (MASTER_KEYS.has(spec.envKey) && access?.canEdit !== true) {
+      return { ...spec, editor: "readonly", help: `${spec.help} ${MASTER_READONLY_HELP}`, value, display };
+    }
     return { ...spec, value, display };
   });
 }
 
-export function settingRows(config: YimbotConfig, assignee: string): SettingRow[] {
-  return rowsFrom(configToEnvRecord(config), assignee);
+export function settingRows(config: YimbotConfig, assignee: string, access?: MasterAccess | null): SettingRow[] {
+  return rowsFrom(configToEnvRecord(config), assignee, access);
 }
 
 export type Draft = { base: YimbotConfig; edits: Record<string, string> };
@@ -411,8 +448,8 @@ export function dirtyKeys(draft: Draft): string[] {
   return Object.keys(draft.edits);
 }
 
-export function draftRows(draft: Draft, assignee: string): SettingRow[] {
-  return rowsFrom({ ...configToEnvRecord(draft.base), ...draft.edits }, assignee);
+export function draftRows(draft: Draft, assignee: string, access?: MasterAccess | null): SettingRow[] {
+  return rowsFrom({ ...configToEnvRecord(draft.base), ...draft.edits }, assignee, access);
 }
 
 export function validateDraft(draft: Draft): Record<string, string> {

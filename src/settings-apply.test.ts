@@ -32,6 +32,9 @@ const prev: YimbotConfig = {
   autoSelfImproveDeadCodeScan: true,
   selfImproveHour: 0,
   agent: "claude",
+  yimbotMaster: false,
+  autoMasterMerge: false,
+  masterMergeAuthors: "",
 };
 const next: YimbotConfig = { ...prev, maxInProgress: 1, labelFilter: "bot" };
 

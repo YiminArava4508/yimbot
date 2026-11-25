@@ -67,6 +67,9 @@ const baseConfig: YimbotConfig = {
   autoSelfImprove: false,
   autoSelfImproveDeadCodeScan: true,
   selfImproveHour: 0,
+  yimbotMaster: false,
+  autoMasterMerge: false,
+  masterMergeAuthors: "",
 };
 
 function settingsDeps(): SettingsDeps {

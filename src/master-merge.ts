@@ -57,7 +57,10 @@ function findingsComment(findings: string[]): string {
   return ["Review found problems, not merging:", "", ...findings.map((f) => `- ${f}`)].join("\n");
 }
 
-async function runReview(pr: YimbotPr, prior: MasterMergeEntry | undefined, deps: MasterMergeDeps): Promise<MasterMergeEntry | null> {
+// Records the new entry in state before any callback runs, so a throwing callback cannot cause a re-review.
+async function runReview(pr: YimbotPr, state: State, deps: MasterMergeDeps): Promise<MasterMergeEntry | null> {
+  const key = String(pr.number);
+  const prior = state[key]?.sha === pr.headSha ? state[key] : undefined;
   const diff = await deps.diff(pr.number);
   if (diff.length > MAX_DIFF_CHARS) {
     deps.log(`master: #${pr.number} skipped: diff too large (${diff.length} chars)`);
@@ -69,6 +72,7 @@ async function runReview(pr: YimbotPr, prior: MasterMergeEntry | undefined, deps
     return null;
   }
   const entry: MasterMergeEntry = { sha: pr.headSha, clean: false, commented: false, attempts: (prior?.attempts ?? 0) + 1 };
+  state[key] = entry;
   let out: string;
   try {
     out = await deps.review(buildMasterReviewPrompt(pr.headRefName, diff));
@@ -90,7 +94,11 @@ async function runReview(pr: YimbotPr, prior: MasterMergeEntry | undefined, deps
       return entry;
     }
     entry.commented = true;
-    deps.onFindings(pr, verdict.findings);
+    try {
+      deps.onFindings(pr, verdict.findings);
+    } catch (err) {
+      deps.log(`master: #${pr.number} onFindings failed: ${err}`);
+    }
   }
   return entry;
 }
@@ -105,17 +113,16 @@ async function processPr(pr: YimbotPr, state: State, deps: MasterMergeDeps): Pro
     deps.log(`master: #${pr.number} skipped: review failed ${MAX_ATTEMPTS} times for ${pr.headSha}`);
     return false;
   }
-  const prState = await passGates(pr, deps);
+  let prState = await passGates(pr, deps);
   if (!prState) return false;
 
-  let entry = cached;
   if (needsReview) {
-    const reviewed = await runReview(pr, cached, deps);
-    if (!reviewed) return false;
-    entry = reviewed;
-    state[key] = reviewed;
+    const reviewed = await runReview(pr, state, deps);
+    if (!reviewed?.clean) return false;
+    // The review can take minutes; a human may have blocked the PR meanwhile.
+    prState = await passGates(pr, deps);
+    if (!prState) return false;
   }
-  if (!entry?.clean) return false;
 
   if (pr.isDraft || prState.isDraft) await deps.markReady(pr.number);
   try {
@@ -124,8 +131,12 @@ async function processPr(pr: YimbotPr, state: State, deps: MasterMergeDeps): Pro
     deps.log(`master: #${pr.number} merge rejected, retrying next tick: ${err}`);
     return false;
   }
-  deps.onMerged(pr);
   deps.log(`master: merged #${pr.number} at ${pr.headSha}`);
+  try {
+    deps.onMerged(pr);
+  } catch (err) {
+    deps.log(`master: #${pr.number} onMerged failed: ${err}`);
+  }
   return true;
 }
 

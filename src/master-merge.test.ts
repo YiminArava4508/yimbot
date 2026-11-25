@@ -275,3 +275,74 @@ test("a failing findings comment counts an attempt and retries the review", asyn
   assert.deepEqual(h.state()["1"], { sha: "sha1", clean: false, commented: true, attempts: 2 });
   assert.deepEqual(h.calls, ["review", "review", "findings:1:off by one"]);
 });
+
+const postReviewGateFailures: [string, (blocked: () => boolean) => Partial<MasterMergeDeps>][] = [
+  [
+    "unresolved thread",
+    (blocked) => ({
+      unresolved: async () => ({
+        count: blocked() ? 1 : 0,
+        newestOtherCommentAt: null,
+        newestTrustedCommentAt: null,
+        newestHumanCommentAt: null,
+      }),
+    }),
+  ],
+  [
+    "changes requested",
+    (blocked) => ({
+      prState: async () => ({ labels: [], isDraft: true, approved: false, changesRequested: blocked() }),
+    }),
+  ],
+  [
+    "CI no longer passing",
+    (blocked) => ({
+      checks: async () => ({ state: blocked() ? "pending" : "passing", headSha: "sha1" }),
+    }),
+  ],
+];
+
+for (const [name, makeOver] of postReviewGateFailures) {
+  test(`gates are rechecked after a clean review: ${name}`, async () => {
+    let reviewed = false;
+    let ticks = 0;
+    const blocked = () => reviewed && ticks === 1;
+    const h = setup([pr(1, { isDraft: true })], makeOver(blocked));
+    const review = h.deps.review;
+    h.deps.review = async (p) => {
+      reviewed = true;
+      return review(p);
+    };
+    ticks = 1;
+    await masterMergeOnce(h.deps);
+    assert.deepEqual(h.calls, ["review"]);
+    assert.deepEqual(h.state()["1"], { sha: "sha1", clean: true, commented: false, attempts: 1 });
+    ticks = 2;
+    await masterMergeOnce(h.deps);
+    assert.deepEqual(h.calls, ["review", "ready:1", "merge:1:sha1", "merged:1"]);
+  });
+}
+
+test("a throwing onMerged still ends the tick after one merge", async () => {
+  const h = setup([pr(1), pr(2)], {
+    onMerged: () => {
+      throw new Error("event log down");
+    },
+  });
+  await masterMergeOnce(h.deps);
+  assert.deepEqual(h.calls, ["review", "merge:1:sha1"]);
+  assert.ok(h.logs.some((l) => l.includes("event log down")));
+});
+
+test("a throwing onFindings does not re-review or re-comment next tick", async () => {
+  const h = setup([pr(1)], {
+    onFindings: () => {
+      throw new Error("event log down");
+    },
+  });
+  h.setReview(DIRTY);
+  await masterMergeOnce(h.deps);
+  await masterMergeOnce(h.deps);
+  assert.deepEqual(h.calls, ["review", "comment:1:true"]);
+  assert.deepEqual(h.state()["1"], { sha: "sha1", clean: false, commented: true, attempts: 1 });
+});

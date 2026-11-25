@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { hasWriteAccess, NO_MASTER_ACCESS, type MasterAccess } from "./master.ts";
 import { observeReach } from "./reach.ts";
 
 const execFileAsync = promisify(execFile);
@@ -458,7 +459,7 @@ export async function prNumberForBranch(run: GhRunner, branch: string): Promise<
   return numbers[0] ?? null;
 }
 
-const SELF_IMPROVE_BRANCH_PREFIX = "chore/self-improve-";
+export const SELF_IMPROVE_BRANCH_PREFIX = "chore/self-improve-";
 
 export async function countOpenSelfImprovePrs(run: GhRunner): Promise<number> {
   const json = await run([
@@ -538,6 +539,58 @@ export function parseViewerLogin(json: string): string {
 // from the re-trigger recency signal.
 export async function viewerLogin(run: GhRunner): Promise<string> {
   return parseViewerLogin(await run(["api", "graphql", "-f", "query=query{viewer{login}}"]));
+}
+
+export function parseViewerPermission(json: string): string {
+  return (JSON.parse(json) as { viewerPermission?: string }).viewerPermission ?? "";
+}
+
+export async function fetchMasterAccess(run: GhRunner, repo: string): Promise<MasterAccess> {
+  try {
+    const [permissionJson, login] = await Promise.all([
+      run(["repo", "view", repo, "--json", "viewerPermission"]),
+      viewerLogin(run),
+    ]);
+    const permission = parseViewerPermission(permissionJson);
+    return { login, permission, canEdit: hasWriteAccess(permission) };
+  } catch {
+    return NO_MASTER_ACCESS;
+  }
+}
+
+export type YimbotPr = { number: number; headRefName: string; isDraft: boolean; author: string; headSha: string };
+
+export function parseYimbotPrs(json: string): YimbotPr[] {
+  const rows = JSON.parse(json) as {
+    number: number;
+    headRefName: string;
+    isDraft: boolean;
+    author?: { login?: string } | null;
+    headRefOid: string;
+  }[];
+  return rows.map((r) => ({
+    number: r.number,
+    headRefName: r.headRefName,
+    isDraft: r.isDraft,
+    author: (r.author?.login ?? "").toLowerCase(),
+    headSha: r.headRefOid,
+  }));
+}
+
+export async function listYimbotPrs(run: GhRunner): Promise<YimbotPr[]> {
+  return parseYimbotPrs(
+    await run(["pr", "list", "--state", "open", "--json", "number,headRefName,isDraft,author,headRefOid", "--limit", "100"]),
+  );
+}
+
+// --match-head-commit makes gh refuse the merge if the branch moved since review.
+// --repo keeps gh off the local checkout, so --delete-branch only deletes the remote branch.
+export async function squashMergePr(run: GhRunner, repo: string, prNumber: number, headSha: string): Promise<void> {
+  await run(["pr", "merge", String(prNumber), "--repo", repo, "--squash", "--delete-branch", "--match-head-commit", headSha]);
+}
+
+export async function commentOnPr(run: GhRunner, prNumber: number, body: string): Promise<void> {
+  await run(["pr", "comment", String(prNumber), "--body", body]);
 }
 
 // The PR's raw unified diff, for the review view. Returned verbatim;

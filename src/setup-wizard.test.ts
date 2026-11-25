@@ -32,6 +32,9 @@ const config: YimbotConfig = {
   autoSelfImprove: false,
   autoSelfImproveDeadCodeScan: true,
   selfImproveHour: 0,
+  yimbotMaster: false,
+  autoMasterMerge: false,
+  masterMergeAuthors: "",
 };
 
 function fakeFx(overrides: Partial<Parameters<typeof finishWizard>[1]> = {}) {

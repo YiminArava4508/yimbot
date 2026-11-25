@@ -6,7 +6,8 @@ import { execFile } from "node:child_process";
 import { codebasePath, envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
 import { worktreeSyncStatus } from "./src/worktree-sync.ts";
-import { applyReadyLabel, ghRunner, prDiff, prHeadSha, prReviewMeta } from "./src/gh.ts";
+import { applyReadyLabel, fetchMasterAccess, ghRunner, prDiff, prHeadSha, prReviewMeta } from "./src/gh.ts";
+import { YIMBOT_REPO } from "./src/master.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
@@ -19,6 +20,7 @@ import { linearSettingsDeps, reconfigureFinish, runTuiSetup, setupDeps, shouldRu
 import { startDaemon } from "./src/daemon.ts";
 import { bootNotice, returnKey, runTui, type TuiHandle } from "./src/tui.ts";
 import { fetchCycleBoard } from "./src/linear-api.ts";
+import { yimbotRepoRoot } from "./src/self-improve-host.ts";
 import { applySettings } from "./src/settings-apply.ts";
 import { configFromEnv, envPath, writeEnvFile } from "./src/settings-model.ts";
 import type { SettingsDeps } from "./src/tui-settings.ts";
@@ -108,6 +110,7 @@ if (process.stdout.isTTY) {
   const settings: SettingsDeps = {
     loadConfig: () => configFromEnv(process.env),
     ...linearSettingsDeps(apiKey),
+    masterAccess: () => fetchMasterAccess(ghRunner(yimbotRepoRoot()), YIMBOT_REPO),
     apply: async (next, prev) => {
       const result = await applySettings(next, prev, {
         readEnv: () => (existsSync(envPath) ? readFileSync(envPath, "utf8") : null),

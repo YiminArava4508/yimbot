@@ -42,6 +42,8 @@ export type EventKind =
   | "refined"
   | "self_improve_started"
   | "self_improve_done"
+  | "master_merged"
+  | "master_review_findings"
   | "qa_waiting"
   | "qa_awaiting_deploy"
   | "qa_started"

@@ -28,10 +28,11 @@ export function runHeadless(
   timeoutMs: number = TIMEOUT_MS,
   agent: Agent = agentFromEnv(),
   env: NodeJS.ProcessEnv = process.env,
+  opts: { restricted?: boolean } = {},
 ): (prompt: string) => Promise<string> {
   const run = (prompt: string) =>
     new Promise<string>((resolve, reject) => {
-      const { bin, args } = headlessCommand(agent, model);
+      const { bin, args } = headlessCommand(agent, model, opts);
       const child = spawn(bin, args, { cwd, env });
       inFlight++;
       let settled = false;

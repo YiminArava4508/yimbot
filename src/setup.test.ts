@@ -61,6 +61,9 @@ const sample: YimbotConfig = {
   autoSelfImproveDeadCodeScan: true,
   selfImproveHour: 0,
   agent: "claude",
+  yimbotMaster: false,
+  autoMasterMerge: false,
+  masterMergeAuthors: "",
 };
 
 test("isConfigured requires a non-empty API key", () => {

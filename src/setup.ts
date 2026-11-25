@@ -645,6 +645,9 @@ export async function runSetup(): Promise<YimbotConfig> {
     selfImproveHour: current.selfImproveHour,
     splitTickets: true,
     agent: current.agent,
+    yimbotMaster: current.yimbotMaster,
+    autoMasterMerge: current.autoMasterMerge,
+    masterMergeAuthors: current.masterMergeAuthors,
   };
   const existingEnv = existsSync(envPath) ? readFileSync(envPath, "utf8") : null;
   writeEnvFile(serializeEnvFile(config, existingEnv ? extractPassthroughLines(existingEnv) : []));

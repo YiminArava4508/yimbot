@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { NO_MASTER_ACCESS } from "./master.ts";
 import { test } from "node:test";
 import {
   parseBlockReason,
@@ -51,8 +52,14 @@ import {
   parseHumanChangesRequested,
   parseUnresolvedInfo,
   parseViewerLogin,
+  parseViewerPermission,
+  fetchMasterAccess,
   unresolvedThreadInfo,
   viewerLogin,
+  parseYimbotPrs,
+  listYimbotPrs,
+  squashMergePr,
+  commentOnPr,
 } from "./gh.ts";
 
 // Records the args each gh call received so we can assert on them.
@@ -827,4 +834,68 @@ test("self-improvement lookups reject when gh fails", async () => {
   };
   await assert.rejects(prNumberForBranch(run, "x"), /gh down/);
   await assert.rejects(countOpenSelfImprovePrs(run), /gh down/);
+});
+
+test("parseViewerPermission reads viewerPermission and defaults to empty", () => {
+  assert.equal(parseViewerPermission('{"viewerPermission":"WRITE"}'), "WRITE");
+  assert.equal(parseViewerPermission("{}"), "");
+});
+
+function accessRunner(permission: string): GhRunner {
+  return async (args) => {
+    if (args[0] === "repo") return JSON.stringify({ viewerPermission: permission });
+    return JSON.stringify({ data: { viewer: { login: "yimbot" } } });
+  };
+}
+
+test("fetchMasterAccess allows WRITE and blocks READ", async () => {
+  assert.deepEqual(await fetchMasterAccess(accessRunner("WRITE"), "o/yimbot"), { login: "yimbot", permission: "WRITE", canEdit: true });
+  assert.deepEqual(await fetchMasterAccess(accessRunner("READ"), "o/yimbot"), { login: "yimbot", permission: "READ", canEdit: false });
+});
+
+test("fetchMasterAccess reads the permission of the named repo, not the cwd's", async () => {
+  const calls: string[][] = [];
+  const inner = accessRunner("WRITE");
+  await fetchMasterAccess(async (args) => {
+    calls.push(args);
+    return inner(args);
+  }, "o/yimbot");
+  assert.deepEqual(calls.find((a) => a[0] === "repo"), ["repo", "view", "o/yimbot", "--json", "viewerPermission"]);
+});
+
+test("fetchMasterAccess fails closed when a lookup rejects", async () => {
+  const run: GhRunner = async () => {
+    throw new Error("gh down");
+  };
+  assert.deepEqual(await fetchMasterAccess(run, "o/yimbot"), NO_MASTER_ACCESS);
+});
+
+test("parseYimbotPrs maps fields, lowercases author, tolerates a null author", () => {
+  const prs = parseYimbotPrs(
+    JSON.stringify([
+      { number: 7, headRefName: "feat/x", isDraft: true, author: { login: "YimBot" }, headRefOid: "abc" },
+      { number: 8, headRefName: "feat/y", isDraft: false, author: null, headRefOid: "def" },
+    ]),
+  );
+  assert.deepEqual(prs, [
+    { number: 7, headRefName: "feat/x", isDraft: true, author: "yimbot", headSha: "abc" },
+    { number: 8, headRefName: "feat/y", isDraft: false, author: "", headSha: "def" },
+  ]);
+});
+
+test("listYimbotPrs asks gh for open PRs with the needed fields", async () => {
+  const { run, calls } = capturingRunner(["[]"]);
+  assert.deepEqual(await listYimbotPrs(run), []);
+  assert.deepEqual(calls[0].slice(0, 5), ["pr", "list", "--state", "open", "--json"]);
+  assert.equal(calls[0][5], "number,headRefName,isDraft,author,headRefOid");
+});
+
+test("squashMergePr and commentOnPr pass exact gh args", async () => {
+  const { run, calls } = capturingRunner([]);
+  await squashMergePr(run, "o/yimbot", 7, "abc");
+  await commentOnPr(run, 7, "hello");
+  assert.deepEqual(calls, [
+    ["pr", "merge", "7", "--repo", "o/yimbot", "--squash", "--delete-branch", "--match-head-commit", "abc"],
+    ["pr", "comment", "7", "--body", "hello"],
+  ]);
 });

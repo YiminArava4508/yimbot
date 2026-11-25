@@ -110,7 +110,7 @@ export async function linearConfigError(
 }
 
 export function summaryLines(c: YimbotConfig, viewerName: string): string[] {
-  const rows = settingRows(c, viewerName).filter((r) => r.envKey !== "LINEAR_API_KEY" && r.envKey !== "ASSIGNEE");
+  const rows = settingRows(c, viewerName).filter((r) => r.envKey !== "LINEAR_API_KEY" && r.envKey !== "ASSIGNEE" && r.category !== "Master");
   return rows.map((r) => `  ${r.label.padEnd(LABEL_WIDTH, " ")}${blessed.escape(r.display)}`);
 }
 

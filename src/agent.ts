@@ -15,7 +15,13 @@ export function agentFromEnv(env: Record<string, string | undefined> = process.e
 }
 
 // The prompt always goes in on stdin, so neither shape puts it in argv.
-export function headlessCommand(agent: Agent, model: string): { bin: string; args: string[] } {
+// restricted strips claude of every tool, MCP server and command, for runs whose
+// input is untrusted; codex is already confined to a read-only sandbox.
+export function headlessCommand(
+  agent: Agent,
+  model: string,
+  opts: { restricted?: boolean } = {},
+): { bin: string; args: string[] } {
   if (agent === "codex") {
     const args = ["exec", "--skip-git-repo-check", "--sandbox", "read-only"];
     if (model) args.push("-m", model);
@@ -24,6 +30,9 @@ export function headlessCommand(agent: Agent, model: string): { bin: string; arg
   }
   const args = ["-p"];
   if (model) args.push("--model", model);
+  if (opts.restricted) {
+    args.push("--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--permission-mode", "dontAsk");
+  }
   return { bin: "claude", args };
 }
 

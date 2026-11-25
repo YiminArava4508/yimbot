@@ -67,7 +67,9 @@ import {
   worktreeKeysUnder,
   parsePaneInfo,
   resumeClaudeInPane,
+  runMasterMergeStep,
 } from "./watcher.ts";
+import type { MasterMergeDeps } from "./master-merge.ts";
 
 function issue(id: string, identifier: string, title: string): LinearIssue {
   return { id, identifier, title };
@@ -1916,4 +1918,29 @@ test("claimOnce without a precheck claims archive-flag tickets as before", async
   });
   await claimOnce(freshClaimState(), deps);
   assert.deepEqual(moved.map((m) => m.identifier), ["ENG-1"]);
+});
+
+test("runMasterMergeStep runs the step only when master merge is wired", async () => {
+  const deps = {} as MasterMergeDeps;
+  const seen: MasterMergeDeps[] = [];
+  const step = async (d: MasterMergeDeps) => {
+    seen.push(d);
+  };
+  await runMasterMergeStep(null, step);
+  assert.equal(seen.length, 0);
+  await runMasterMergeStep({ deps }, step);
+  await runMasterMergeStep({ deps }, step);
+  assert.deepEqual(seen, [deps, deps]);
+});
+
+test("runMasterMergeStep swallows a throwing step so the claim step still runs", async () => {
+  const logs: string[] = [];
+  await runMasterMergeStep(
+    { deps: {} as MasterMergeDeps },
+    async () => {
+      throw new Error("state file unreadable");
+    },
+    (m: string) => logs.push(m),
+  );
+  assert.deepEqual(logs, ["[master-merge] step failed: Error: state file unreadable"]);
 });

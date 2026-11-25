@@ -18,7 +18,7 @@ import { NO_MASTER_ACCESS, isOn, masterAuthors, masterMergeEnabled, masterStatus
 import { masterFindingsEvent, masterMergedEvent, type MasterMergeDeps } from "./master-merge.ts";
 import { loadMasterMergeState, saveMasterMergeState } from "./master-merge-state.ts";
 import { yimbotRepoRoot } from "./self-improve-host.ts";
-import { runHeadless } from "./headless.ts";
+import { runHeadless, withoutApiKey } from "./headless.ts";
 import {
   addLabel,
   blockedInfo,
@@ -604,7 +604,9 @@ export async function startDaemon(): Promise<() => void> {
   if (masterMergeOn) {
     try {
       const selfSlug = await repoSlug(selfRun);
-      const reviewRun = runHeadless(envOr("IMPL_MODEL", "sonnet"), yimbotRepoRoot(), undefined, undefined, undefined, { restricted: true });
+      const reviewRun = runHeadless(envOr("IMPL_MODEL", "sonnet"), yimbotRepoRoot(), undefined, undefined, withoutApiKey(), {
+        restricted: true,
+      });
       masterMerge = {
         deps: {
           enabled: () => true,

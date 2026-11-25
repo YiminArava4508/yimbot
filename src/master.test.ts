@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NO_MASTER_ACCESS, hasWriteAccess, masterAuthors, masterStatus, selfImproveAllowed, type MasterAccess } from "./master.ts";
+import { NO_MASTER_ACCESS, hasWriteAccess, isOn, masterAuthors, masterMergeEnabled, masterStatus, selfImproveAllowed, type MasterAccess } from "./master.ts";
 
 const writeAccess: MasterAccess = { login: "me", permission: "WRITE", canEdit: true };
 
@@ -31,4 +31,19 @@ test("selfImproveAllowed needs auto self-improve and master", () => {
   assert.equal(selfImproveAllowed(true, false), false);
   assert.equal(selfImproveAllowed(false, true), false);
   assert.equal(selfImproveAllowed(false, false), false);
+});
+
+test("isOn accepts only an explicit truthy value", () => {
+  for (const v of ["true", "on", "yes", "1", " TRUE ", "On"]) assert.equal(isOn(v), true, v);
+  for (const v of ["", "false", "flase", "disabled", "n", "off", "0", "2"]) assert.equal(isOn(v), false, v);
+});
+
+test("masterMergeEnabled needs gh, master, an explicit on flag and a viewer login", () => {
+  const base = { gh: true, master: true, flag: "true", login: "me" };
+  assert.equal(masterMergeEnabled(base), true);
+  assert.equal(masterMergeEnabled({ ...base, flag: "flase" }), false);
+  assert.equal(masterMergeEnabled({ ...base, flag: "" }), false);
+  assert.equal(masterMergeEnabled({ ...base, gh: false }), false);
+  assert.equal(masterMergeEnabled({ ...base, master: false }), false);
+  assert.equal(masterMergeEnabled({ ...base, login: "" }), false);
 });

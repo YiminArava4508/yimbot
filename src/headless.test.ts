@@ -113,3 +113,24 @@ test("headlessInFlight drops when the binary cannot spawn", async () => {
     process.env.PATH = saved;
   }
 });
+
+test("headlessCommand restricted claude runs with no tools, no MCP servers and no commands", () => {
+  assert.deepEqual(headlessCommand("claude", "sonnet", { restricted: true }), {
+    bin: "claude",
+    args: ["-p", "--model", "sonnet", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--permission-mode", "dontAsk"],
+  });
+  assert.deepEqual(headlessCommand("claude", "", { restricted: true }).args, [
+    "-p", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--permission-mode", "dontAsk",
+  ]);
+  assert.deepEqual(headlessCommand("claude", "sonnet", { restricted: false }), headlessCommand("claude", "sonnet"));
+});
+
+test("headlessCommand restricted codex keeps the read-only sandbox shape", () => {
+  assert.deepEqual(headlessCommand("codex", "gpt-5", { restricted: true }), headlessCommand("codex", "gpt-5"));
+});
+
+test("runHeadless passes the restricted flags through to the agent", async () => {
+  onPath('printf "argv:%s " "$@"; cat');
+  const out = await runHeadless("opus", process.cwd(), 5000, "claude", process.env, { restricted: true })("x");
+  assert.equal(out, "argv:-p argv:--model argv:opus argv:--tools argv: argv:--strict-mcp-config argv:--disable-slash-commands argv:--permission-mode argv:dontAsk x");
+});

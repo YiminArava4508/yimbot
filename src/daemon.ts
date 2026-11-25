@@ -14,7 +14,7 @@ import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, emitEvent, pinEventsLog, prRowKey } from "./events.ts";
 import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
 import { isOff } from "./settings-model.ts";
-import { NO_MASTER_ACCESS, masterAuthors, masterStatus, selfImproveAllowed } from "./master.ts";
+import { NO_MASTER_ACCESS, isOn, masterAuthors, masterMergeEnabled, masterStatus, selfImproveAllowed } from "./master.ts";
 import { masterFindingsEvent, masterMergedEvent, type MasterMergeDeps } from "./master-merge.ts";
 import { loadMasterMergeState, saveMasterMergeState } from "./master-merge-state.ts";
 import { yimbotRepoRoot } from "./self-improve-host.ts";
@@ -579,7 +579,7 @@ export async function startDaemon(): Promise<() => void> {
   const selfImproveHour = Number(envOr("SELF_IMPROVE_HOUR", "0"));
   const selfRun = ghRunner(yimbotRepoRoot());
   const masterAccess = prReview ? await fetchMasterAccess(selfRun) : NO_MASTER_ACCESS;
-  const master = masterStatus(!isOff(envOr("YIMBOT_MASTER", "false")), masterAccess);
+  const master = masterStatus(isOn(envOr("YIMBOT_MASTER", "false")), masterAccess);
   if (master.reason) console.log(`[yimbot] ${master.reason}`);
   console.log(`[yimbot] ${master.master ? "master" : "not master"}`);
   const selfImprove =
@@ -595,10 +595,16 @@ export async function startDaemon(): Promise<() => void> {
   // Master merge reviews and merges yimbot PRs. Needs a resolved viewer login and
   // repo slug; any failed lookup leaves the step off.
   let masterMerge: { deps: MasterMergeDeps } | null = null;
-  if (prReview && master.master && !isOff(envOr("AUTO_MASTER_MERGE", "false")) && masterAccess.login) {
+  const masterMergeOn = masterMergeEnabled({
+    gh: prReview !== null,
+    master: master.master,
+    flag: envOr("AUTO_MASTER_MERGE", "false"),
+    login: masterAccess.login,
+  });
+  if (masterMergeOn) {
     try {
       const selfSlug = await repoSlug(selfRun);
-      const reviewRun = runHeadless(envOr("IMPL_MODEL", "sonnet"), yimbotRepoRoot());
+      const reviewRun = runHeadless(envOr("IMPL_MODEL", "sonnet"), yimbotRepoRoot(), undefined, undefined, undefined, { restricted: true });
       masterMerge = {
         deps: {
           enabled: () => true,

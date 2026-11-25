@@ -21,3 +21,7 @@ export function masterAuthors(raw: string, viewer: string): Set<string> {
     .filter(Boolean);
   return new Set(names.length > 0 ? names : [viewer.toLowerCase()]);
 }
+
+export function selfImproveAllowed(autoSelfImprove: boolean, master: boolean): boolean {
+  return autoSelfImprove && master;
+}

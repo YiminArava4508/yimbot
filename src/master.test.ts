@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NO_MASTER_ACCESS, hasWriteAccess, masterAuthors, masterStatus, type MasterAccess } from "./master.ts";
+import { NO_MASTER_ACCESS, hasWriteAccess, masterAuthors, masterStatus, selfImproveAllowed, type MasterAccess } from "./master.ts";
 
 const writeAccess: MasterAccess = { login: "me", permission: "WRITE", canEdit: true };
 
@@ -24,4 +24,11 @@ test("masterStatus needs the flag and write access", () => {
 test("masterAuthors lowercases, trims and defaults to the viewer", () => {
   assert.deepEqual(masterAuthors("", "Me"), new Set(["me"]));
   assert.deepEqual(masterAuthors(" A, b ", "me"), new Set(["a", "b"]));
+});
+
+test("selfImproveAllowed needs auto self-improve and master", () => {
+  assert.equal(selfImproveAllowed(true, true), true);
+  assert.equal(selfImproveAllowed(true, false), false);
+  assert.equal(selfImproveAllowed(false, true), false);
+  assert.equal(selfImproveAllowed(false, false), false);
 });

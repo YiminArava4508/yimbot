@@ -14,6 +14,7 @@ import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
 import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
 import { isOff } from "./settings-model.ts";
+import { NO_MASTER_ACCESS, masterStatus, selfImproveAllowed } from "./master.ts";
 import { yimbotRepoRoot } from "./self-improve-host.ts";
 import { runHeadless } from "./headless.ts";
 import {
@@ -30,6 +31,7 @@ import {
   checksInfo,
   compareStatus,
   defaultBranch,
+  fetchMasterAccess,
   ghRunner,
   humanChangesRequested,
   listMyClosedUnmergedPRs,
@@ -568,18 +570,20 @@ export async function startDaemon(): Promise<() => void> {
   // Self-improvement jobs open draft PRs on the repo yimbot runs from, so they
   // get their own gh runner there. Off unless AUTO_SELF_IMPROVE is on and gh works.
   const selfImproveHour = Number(envOr("SELF_IMPROVE_HOUR", "0"));
+  const selfRun = ghRunner(yimbotRepoRoot());
+  const masterAccess = prReview ? await fetchMasterAccess(selfRun) : NO_MASTER_ACCESS;
+  const master = masterStatus(!isOff(envOr("YIMBOT_MASTER", "false")), masterAccess);
+  if (master.reason) console.log(`[yimbot] ${master.reason}`);
+  console.log(`[yimbot] ${master.master ? "master" : "not master"}`);
   const selfImprove =
-    prReview && !isOff(envOr("AUTO_SELF_IMPROVE", "false"))
-      ? (() => {
-          const selfRun = ghRunner(yimbotRepoRoot());
-          return {
-            repoRoot: yimbotRepoRoot(),
-            hour: Number.isInteger(selfImproveHour) && selfImproveHour >= 0 && selfImproveHour <= 23 ? selfImproveHour : 0,
-            jobEnabled: (job: { settingKey: string }) => !isOff(envOr(job.settingKey, "true")),
-            prForBranch: (branch: string) => prNumberForBranch(selfRun, branch),
-            openSelfImprovePrs: () => countOpenSelfImprovePrs(selfRun),
-          };
-        })()
+    prReview && selfImproveAllowed(!isOff(envOr("AUTO_SELF_IMPROVE", "false")), master.master)
+      ? {
+          repoRoot: yimbotRepoRoot(),
+          hour: Number.isInteger(selfImproveHour) && selfImproveHour >= 0 && selfImproveHour <= 23 ? selfImproveHour : 0,
+          jobEnabled: (job: { settingKey: string }) => !isOff(envOr(job.settingKey, "true")),
+          prForBranch: (branch: string) => prNumberForBranch(selfRun, branch),
+          openSelfImprovePrs: () => countOpenSelfImprovePrs(selfRun),
+        }
       : null;
   // A blocker stops blocking once it reaches the merge state: Done is too late,
   // since that column means released. The review state counts too (it is past

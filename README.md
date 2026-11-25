@@ -26,6 +26,19 @@ fix session on it until you unflag it, the `ready-to-merge` label is never
 written, idle nudges are off, and sessions open PRs as drafts. Autonomous mode
 turns those on.
 
+**Master mode.** One machine can be the master: it runs self-improvement and,
+when `AUTO_MASTER_MERGE` is on, reviews open PRs on the yimbot repo and
+squash-merges each one that passes every gate. A PR qualifies only when its author
+is in `MASTER_MERGE_AUTHORS` (defaults to your own GitHub login), CI is green, it
+is mergeable, it has no unresolved threads or changes requested, and a headless
+review of its diff (run with `IMPL_MODEL`) comes back clean. A draft is marked
+ready before the merge. Findings are posted as one PR comment and the PR is left
+open. Master mode needs write access to the yimbot repo; without it, or when a
+lookup fails, the machine runs as a normal one. *(optional; settings:
+`YIMBOT_MASTER`, off by default; `AUTO_MASTER_MERGE`, off by default and read only
+on the master; `MASTER_MERGE_AUTHORS`, empty by default; review state is kept in
+`master-merge.json` next to the events log)* Needs `gh` installed and authenticated.
+
 The first time you run it, yimbot asks a few setup questions. After that it
 quietly checks your Linear board and your open PRs every few minutes (its
 **heartbeat**) and can do several things (plus keep your code up to date):
@@ -85,6 +98,7 @@ flowchart TD
     P --> G12["Improve yimbot itself"]
     G12 --> T11{"Is a nightly job due, with<br/>no self-improvement PR open?"}
     T11 -- yes --> SI["Run the job in its own session,<br/>open one draft PR on yimbot master,<br/>then close the session"]
+    G12 --> MM["Master only: review open yimbot PRs<br/>and squash-merge the clean ones"]
 
     P --> G8["Flag ready to merge"]
     G8 --> T7{"An open PR of yours that's clean?<br/>green CI, comments resolved,<br/>no conflicts"}
@@ -115,7 +129,7 @@ flowchart TD
     class G11,T10,AD advance;
     class G8,T7,RM readymerge;
     class G10,T9,QA qa;
-    class G12,T11,SI selfimprove;
+    class G12,T11,SI,MM selfimprove;
 ```
 
 - **Start new work (green):** when you move a card to **In Progress**, yimbot
@@ -334,8 +348,9 @@ flowchart TD
   `master` and exits, or logs `nothing to change` and exits; the daemon then closes
   the session and removes its worktree. A session that runs past
   `YIMBOT_FIX_REAP_STALE_MINUTES` is reaped. One job runs at a time, and nothing starts
-  while a previous self-improvement PR is open or the disk guard is holding. yimbot never
-  marks these PRs ready, labels them or merges them; you review each draft. Each job
+  while a previous self-improvement PR is open or the disk guard is holding. Jobs run
+  only on the master machine (see **Master mode**). Only the master merges these PRs,
+  through its master merge step; otherwise you review each draft. Each job
   is a skill plus an entry in `src/self-improve-jobs.ts`, and all share the
   `self-improve-contract` skill. *(optional; settings: `AUTO_SELF_IMPROVE`, off by
   default and the master switch; `AUTO_SELF_IMPROVE_DEAD_CODE_SCAN`, on by default

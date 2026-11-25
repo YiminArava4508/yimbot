@@ -11,10 +11,12 @@ import { checkDisk, freshDiskGuardState, parseDiskGb, volumes } from "./disk-gua
 import { goCacheDir, sweepGoBuildDirs, trimGoCache } from "./go-cache.ts";
 import { scanDescription } from "./dependency.ts";
 import { parseMaxEstimate } from "./claim.ts";
-import { deriveKey, pinEventsLog, prRowKey } from "./events.ts";
+import { deriveKey, emitEvent, pinEventsLog, prRowKey } from "./events.ts";
 import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
 import { isOff } from "./settings-model.ts";
-import { NO_MASTER_ACCESS, masterStatus, selfImproveAllowed } from "./master.ts";
+import { NO_MASTER_ACCESS, masterAuthors, masterStatus, selfImproveAllowed } from "./master.ts";
+import { masterFindingsEvent, masterMergedEvent, type MasterMergeDeps } from "./master-merge.ts";
+import { loadMasterMergeState, saveMasterMergeState } from "./master-merge-state.ts";
 import { yimbotRepoRoot } from "./self-improve-host.ts";
 import { runHeadless } from "./headless.ts";
 import {
@@ -29,6 +31,7 @@ import {
   holderNote,
   removeLabel,
   checksInfo,
+  commentOnPr,
   compareStatus,
   defaultBranch,
   fetchMasterAccess,
@@ -38,12 +41,16 @@ import {
   listMyMergedPRs,
   listMyOpenPRs,
   listSuccessfulRunHeadShas,
+  listYimbotPrs,
+  markPrReadyForReview,
   mergeableInfo,
   prMergeCommit,
+  prDiff,
   prState,
   repoMergesManually,
   repoSlug,
   type RepoSlug,
+  squashMergePr,
   unresolvedThreadInfo,
   viewerLogin,
 } from "./gh.ts";
@@ -585,6 +592,38 @@ export async function startDaemon(): Promise<() => void> {
           openSelfImprovePrs: () => countOpenSelfImprovePrs(selfRun),
         }
       : null;
+  // Master merge reviews and merges yimbot PRs. Needs a resolved viewer login and
+  // repo slug; any failed lookup leaves the step off.
+  let masterMerge: { deps: MasterMergeDeps } | null = null;
+  if (prReview && master.master && !isOff(envOr("AUTO_MASTER_MERGE", "false")) && masterAccess.login) {
+    try {
+      const selfSlug = await repoSlug(selfRun);
+      const reviewRun = runHeadless(envOr("IMPL_MODEL", "sonnet"), yimbotRepoRoot());
+      masterMerge = {
+        deps: {
+          enabled: () => true,
+          authors: masterAuthors(envOr("MASTER_MERGE_AUTHORS", ""), masterAccess.login),
+          listPrs: () => listYimbotPrs(selfRun),
+          checks: (n) => checksInfo(selfRun, n),
+          mergeable: (n) => mergeableInfo(selfRun, n),
+          unresolved: (n) => unresolvedThreadInfo(selfRun, selfSlug, n, masterAccess.login),
+          prState: (n) => prState(selfRun, n),
+          diff: (n) => prDiff(selfRun, n),
+          review: reviewRun,
+          comment: (n, body) => commentOnPr(selfRun, n, body),
+          markReady: (n) => markPrReadyForReview(selfRun, n),
+          merge: (n, headSha) => squashMergePr(selfRun, n, headSha),
+          loadState: loadMasterMergeState,
+          saveState: saveMasterMergeState,
+          onMerged: (pr) => emitEvent(masterMergedEvent(pr)),
+          onFindings: (pr, findings) => emitEvent(masterFindingsEvent(pr, findings)),
+          log: (msg) => console.log(`[master-merge] ${msg}`),
+        },
+      };
+    } catch (err) {
+      console.log(`[yimbot] master merge OFF: yimbot repo unresolved (${err})`);
+    }
+  }
   // A blocker stops blocking once it reaches the merge state: Done is too late,
   // since that column means released. The review state counts too (it is past
   // merge), as does any completed/canceled state, by type.
@@ -615,6 +654,11 @@ export async function startDaemon(): Promise<() => void> {
       ? `[yimbot] self-improve ON: draft PRs on ${yimbotRepoRoot()}, jobs start at or after ${selfImprove.hour}:00`
       : "[yimbot] self-improve OFF",
   );
+  console.log(
+    masterMerge
+      ? `[yimbot] master merge ON: reviewing and merging PRs by [${[...masterMerge.deps.authors].join(", ")}] on ${yimbotRepoRoot()}`
+      : "[yimbot] master merge OFF",
+  );
   console.log(`[yimbot] label filter: ${describeLabelFilter(labelFilter)}`);
 
   const stop = startWatcher({
@@ -643,6 +687,7 @@ export async function startDaemon(): Promise<() => void> {
     },
     refine: { autoRefineDefault: autoRefine, maxRefining, labelFilter: refineLabelFilter, assigneeIds: refineAssigneeIds },
     selfImprove,
+    masterMerge,
     prReview,
     cleanup,
     advance,

@@ -1,4 +1,5 @@
 import type { ChecksInfo, MergeableInfo, PrState, UnresolvedInfo, YimbotPr } from "./gh.ts";
+import type { YimbotEvent } from "./events.ts";
 import type { MasterMergeEntry } from "./master-merge-state.ts";
 import { buildMasterReviewPrompt, MAX_DIFF_CHARS, parseMasterVerdict } from "./master-review.ts";
 
@@ -164,4 +165,18 @@ export async function masterMergeOnce(deps: MasterMergeDeps): Promise<void> {
     deps.saveState(state);
     if (merged) return;
   }
+}
+
+// No pr field: the TUI resolves a row's PR against the codebase repo, and this PR lives in the yimbot repo.
+function yimbotPrRow(pr: YimbotPr): Pick<YimbotEvent, "key" | "label"> {
+  return { key: `yimbot-pr:${pr.number}`, label: `yimbot PR #${pr.number}` };
+}
+
+export function masterMergedEvent(pr: YimbotPr): Omit<YimbotEvent, "ts"> {
+  return { kind: "master_merged", ...yimbotPrRow(pr), title: pr.headRefName };
+}
+
+export function masterFindingsEvent(pr: YimbotPr, findings: string[]): Omit<YimbotEvent, "ts"> {
+  const noun = findings.length === 1 ? "finding" : "findings";
+  return { kind: "master_review_findings", ...yimbotPrRow(pr), title: `${findings.length} ${noun}` };
 }

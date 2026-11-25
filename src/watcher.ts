@@ -87,6 +87,7 @@ import { SELF_IMPROVE_JOBS, type SelfImproveJob } from "./self-improve-jobs.ts";
 import { loadSelfImproveState, saveSelfImproveState } from "./self-improve-state.ts";
 import { existingSelfImproveBranch, removeSelfImproveWorktree, selfImproveBranch, selfImproveDoneEvent, spawnSelfImproveSession } from "./self-improve-host.ts";
 import { readRefineEnabled } from "./refine-toggle.ts";
+import { masterMergeOnce, type MasterMergeDeps } from "./master-merge.ts";
 
 export const sessionScriptPath = join(homedir(), "new-session.sh");
 export const endSessionScriptPath = join(homedir(), "end-session.sh");
@@ -884,6 +885,9 @@ export type WatcherConfig = {
     prForBranch: (branch: string) => Promise<number | null>;
     openSelfImprovePrs: () => Promise<number>;
   } | null;
+  // Master-only review and merge of yimbot repo PRs; null disables the step
+  // (not master, AUTO_MASTER_MERGE off, or gh unavailable).
+  masterMerge: { deps: MasterMergeDeps } | null;
   // gh-backed hooks for the review step; null disables PR comment + CI handling
   // (e.g. when gh isn't available or the repo couldn't be resolved at startup).
   // listOpenPRs spans every repo (EXTRA_REPOS included) for the board and the
@@ -1749,6 +1753,20 @@ export function heartbeatRunning(): boolean {
   return heartbeatActive;
 }
 
+// Runs in its own try/catch so a failed master merge (state file included) never stops the claim step.
+export async function runMasterMergeStep(
+  masterMerge: WatcherConfig["masterMerge"],
+  step: (deps: MasterMergeDeps) => Promise<void> = masterMergeOnce,
+  logError: (msg: string) => void = console.error,
+): Promise<void> {
+  if (!masterMerge) return;
+  try {
+    await step(masterMerge.deps);
+  } catch (err) {
+    logError(`[master-merge] step failed: ${err}`);
+  }
+}
+
 export function startWatcher(config: WatcherConfig): () => void {
   const log = (msg: string) => console.log(`[watcher] ${msg}`);
 
@@ -2387,6 +2405,7 @@ export function startWatcher(config: WatcherConfig): () => void {
           console.error(`[self-improve] step failed: ${err}`);
         }
       }
+      await runMasterMergeStep(config.masterMerge);
       // The claim step MUST run last: the deploy poll fetches first, so a ticket
       // the claim step moves to In Progress this tick is launched on the NEXT
       // tick (not double-launched now), and the higher In-Progress count keeps

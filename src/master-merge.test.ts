@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { masterMergeOnce, type MasterMergeDeps } from "./master-merge.ts";
+import { masterFindingsEvent, masterMergedEvent, masterMergeOnce, type MasterMergeDeps } from "./master-merge.ts";
 import type { MasterMergeEntry } from "./master-merge-state.ts";
 import { MAX_DIFF_CHARS } from "./master-review.ts";
 import type { ChecksInfo, MergeableInfo, PrState, UnresolvedInfo, YimbotPr } from "./gh.ts";
@@ -345,4 +345,13 @@ test("a throwing onFindings does not re-review or re-comment next tick", async (
   await masterMergeOnce(h.deps);
   assert.deepEqual(h.calls, ["review", "comment:1:true"]);
   assert.deepEqual(h.state()["1"], { sha: "sha1", clean: false, commented: true, attempts: 1 });
+});
+
+test("master merge events key on the yimbot PR and carry no pr field", () => {
+  const merged = masterMergedEvent(pr(7));
+  assert.deepEqual(merged, { kind: "master_merged", key: "yimbot-pr:7", label: "yimbot PR #7", title: "feat/pr-7" });
+  const findings = masterFindingsEvent(pr(8), ["a", "b"]);
+  assert.deepEqual(findings, { kind: "master_review_findings", key: "yimbot-pr:8", label: "yimbot PR #8", title: "2 findings" });
+  assert.equal(masterFindingsEvent(pr(9), ["a"]).title, "1 finding");
+  assert.equal("pr" in merged, false);
 });

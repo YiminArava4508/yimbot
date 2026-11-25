@@ -1450,3 +1450,18 @@ test("statusFor maps the self-improvement kinds", () => {
   assert.deepEqual(statusFor("self_improve_started"), { status: "self-improving", terminal: false });
   assert.deepEqual(statusFor("self_improve_done"), { status: "self-improved", terminal: true });
 });
+
+test("master merge kinds carry no status and leave the fold alone", () => {
+  assert.equal(statusFor("master_merged"), undefined);
+  assert.equal(statusFor("master_review_findings"), undefined);
+  const rows = reduceRows(
+    [
+      ev({ ts: 1, kind: "task_started", title: "auth guard" }),
+      ev({ ts: 2, kind: "master_merged", key: "yimbot-pr:7", label: "yimbot PR #7" }),
+      ev({ ts: 3, kind: "master_review_findings", key: "yimbot-pr:8", label: "yimbot PR #8" }),
+    ],
+    100,
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "working");
+});

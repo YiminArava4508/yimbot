@@ -65,8 +65,10 @@ it into the next command.
 
 ## Preview phase
 
-The preview walk-through runs only for single-PR tickets. In a split, slices
-follow the label rules in `split-ticket-prs` and get no walk-through.
+The preview walk-through runs on one PR that holds the whole feature: the
+ticket's single-PR, or in a split the UAT umbrella PR that `split-ticket-prs`
+opens from the ticket branch. Slices get no label and no walk-through. With
+`SPLIT_TICKETS` off there is always a single PR, so it runs on that.
 
 - **Preview environment (gemini PRs only).** Right after `gh pr create`
   on a gemini branch, run `gh pr edit <pr> --add-label preview`. A bot then

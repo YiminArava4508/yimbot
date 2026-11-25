@@ -151,7 +151,8 @@ this flow: invoke the `archive-flag-ticket` skill now and follow it instead.
    - **If over the hard limit:** invoke the `split-ticket-prs` skill now and
      follow it instead of opening a single PR; come back here for the
      remaining bullets once the whole series is open. The ticket branch
-     itself never gets a PR in a split; only its slice branches do.
+     itself gets no mergeable PR in a split; only its slice branches do, plus a
+     draft UAT umbrella PR that is never merged (see `split-ticket-prs`).
    - **If the change lands in another repo** (a terraform repo, say), branch
      there under the same name as this worktree's branch and open the PR from
      that checkout (`gh pr create` in that directory). The board links a PR to

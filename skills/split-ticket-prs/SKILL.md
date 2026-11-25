@@ -13,8 +13,8 @@ The ticket branch is done and green; this slices it.
   parent so cleanup never reaps it mid-split (this covers the window before the
   first slice exists, and the case where the ticket already has a PR you are
   about to close): `touch .yimbot-split-parent` from the ticket worktree root.
-- The **original ticket branch keeps every change and gets no PR of its
-  own.** Leave it up as a local integration branch: it is the only place the
+- The **original ticket branch keeps every change and gets no mergeable PR
+  of its own (only the draft UAT umbrella PR below).** Leave it up as a local integration branch: it is the only place the
   whole app can be run and tested locally, end to end.
 - Every PR is a **new, independent slice branch off `main`**, never a
   branch stacked on another slice and never a GitHub stacked PR. Every slice
@@ -54,16 +54,16 @@ The ticket branch is done and green; this slices it.
      body that references the slice's subticket and lists every sibling slice
      branch/PR and its order in the series. Include the ticket's `UAT:`
      line, and open the PR as a draft if that line says `failed`.
-     Add the `preview` label to a slice that changes runtime code, per the
-     `ticket-uat` skill's preview label rule; skip test-only and docs-only slices,
-     since the preview cap is small.
+     Add no `preview` label to a slice: the preview cap is small and a slice
+     alone cannot show the feature. The UAT umbrella PR below covers it.
   6. Run `~/split-pr.sh <slice-branch> <i> <n>`. This gives the slice its own
      worktree **and its own tmux session** (named after the slice branch), with
      a linked Claude session. Never improvise the split yourself by opening
      tmux windows in the ticket's session or worktree; every slice lives in
      its own worktree + session, always via the script.
-- Repeat until the whole series is open, then return to pickup-ticket's
-  remaining step 7 bullets. Its Review move covers the ticket and every slice
+- Repeat until the whole series is open, then open the UAT umbrella PR
+  (see "UAT in a split") and return to pickup-ticket's remaining step 7
+  bullets. Its Review move covers the ticket and every slice
   subticket.
 
 **If a slice did end up stacked on a sibling** (a PR based on another slice's
@@ -90,8 +90,21 @@ modules after.
 
 - Local UAT already ran once on the full ticket branch. Put the
   same `UAT:` line (and screenshot) in every slice PR body.
-- Add the `preview` label to runtime-code slices for humans, but run
-  no preview walk-through on a slice: a slice preview lacks its siblings.
+- **UAT umbrella PR (gemini UI changes).** A feature can only be UAT'd
+  whole, and no slice has it. After the last slice is open, from the ticket
+  branch (push it first), open one draft PR:
+  `gh pr create --draft --title "[UAT] <ticket summary> (Do not merge)" --body-file <file>`,
+  with a body that says it exists only to run a preview of the whole feature,
+  lists every slice PR, and carries no ticket auto-link keyword (no
+  `Resolves`). Then `gh pr edit <pr> --add-label preview` and run the
+  `ticket-uat` preview phase on it. The ticket branch has no PR of its own
+  otherwise, so this is the only PR it ever gets.
+- **Release the slot when the walk-through ends,** pass or fail:
+  `gh pr edit <pr> --remove-label preview`, then
+  `gh pr close <pr> --comment "UAT done, merging happens through the slice PRs"`.
+  Never merge it. Link it from every slice PR body as the UAT evidence.
+- **Skip the umbrella** for backend-only or test-only tickets, or when the
+  label is refused: say why in each slice PR body and carry on.
 - If the `UAT:` line says `failed`, open every slice PR as a draft
   regardless of mode, and skip the Review moves for the ticket and every
   slice.

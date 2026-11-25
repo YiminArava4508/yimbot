@@ -544,3 +544,15 @@ test("draftRows keeps the master editors with write access", () => {
   assert.equal(editors.AUTO_MASTER_MERGE, "toggle");
   assert.equal(editors.MASTER_MERGE_AUTHORS, "list");
 });
+
+test("a mistyped master flag reads, shows and saves as off", () => {
+  const c = configFromEnv({ LINEAR_API_KEY: "k", YIMBOT_MASTER: "flase", AUTO_MASTER_MERGE: "flase" });
+  assert.equal(c.yimbotMaster, false);
+  assert.equal(c.autoMasterMerge, false);
+  assert.match(serializeEnvFile(c), /^YIMBOT_MASTER=false$/m);
+  assert.match(serializeEnvFile(c), /^AUTO_MASTER_MERGE=false$/m);
+  const draft = setEdit(setEdit(newDraft(c), "YIMBOT_MASTER", "flase"), "AUTO_MASTER_MERGE", "flase");
+  const rows = draftRows(draft, "me", { login: "me", permission: "WRITE", canEdit: true });
+  assert.equal(rows.find((r) => r.envKey === "YIMBOT_MASTER")!.display, "off");
+  assert.equal(rows.find((r) => r.envKey === "AUTO_MASTER_MERGE")!.display, "off");
+});

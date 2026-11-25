@@ -459,7 +459,7 @@ export async function prNumberForBranch(run: GhRunner, branch: string): Promise<
   return numbers[0] ?? null;
 }
 
-const SELF_IMPROVE_BRANCH_PREFIX = "chore/self-improve-";
+export const SELF_IMPROVE_BRANCH_PREFIX = "chore/self-improve-";
 
 export async function countOpenSelfImprovePrs(run: GhRunner): Promise<number> {
   const json = await run([
@@ -545,9 +545,12 @@ export function parseViewerPermission(json: string): string {
   return (JSON.parse(json) as { viewerPermission?: string }).viewerPermission ?? "";
 }
 
-export async function fetchMasterAccess(run: GhRunner): Promise<MasterAccess> {
+export async function fetchMasterAccess(run: GhRunner, repo: string): Promise<MasterAccess> {
   try {
-    const [permissionJson, login] = await Promise.all([run(["repo", "view", "--json", "viewerPermission"]), viewerLogin(run)]);
+    const [permissionJson, login] = await Promise.all([
+      run(["repo", "view", repo, "--json", "viewerPermission"]),
+      viewerLogin(run),
+    ]);
     const permission = parseViewerPermission(permissionJson);
     return { login, permission, canEdit: hasWriteAccess(permission) };
   } catch {
@@ -581,8 +584,9 @@ export async function listYimbotPrs(run: GhRunner): Promise<YimbotPr[]> {
 }
 
 // --match-head-commit makes gh refuse the merge if the branch moved since review.
-export async function squashMergePr(run: GhRunner, prNumber: number, headSha: string): Promise<void> {
-  await run(["pr", "merge", String(prNumber), "--squash", "--delete-branch", "--match-head-commit", headSha]);
+// --repo keeps gh off the local checkout, so --delete-branch only deletes the remote branch.
+export async function squashMergePr(run: GhRunner, repo: string, prNumber: number, headSha: string): Promise<void> {
+  await run(["pr", "merge", String(prNumber), "--repo", repo, "--squash", "--delete-branch", "--match-head-commit", headSha]);
 }
 
 export async function commentOnPr(run: GhRunner, prNumber: number, body: string): Promise<void> {

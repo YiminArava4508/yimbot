@@ -1,3 +1,10 @@
+export const YIMBOT_REPO = "YiminArava4508/yimbot";
+
+export function isYimbotRepo(slug: { owner: string; name: string } | null): boolean {
+  if (!slug) return false;
+  return `${slug.owner}/${slug.name}`.toLowerCase() === YIMBOT_REPO.toLowerCase();
+}
+
 export type MasterAccess = { login: string; permission: string; canEdit: boolean };
 
 export const NO_MASTER_ACCESS: MasterAccess = { login: "", permission: "unknown", canEdit: false };

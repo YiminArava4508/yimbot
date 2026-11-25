@@ -31,6 +31,7 @@ function setup(prs: YimbotPr[], over: Partial<MasterMergeDeps> = {}) {
       newestHumanCommentAt: null,
     }),
     prState: async (): Promise<PrState> => ({ labels: [], isDraft: false, approved: false, changesRequested: false }),
+    changesRequested: async () => false,
     diff: async (n) => `diff for ${n}`,
     review: async () => {
       calls.push("review");
@@ -116,7 +117,7 @@ const gateFailures: [string, Partial<MasterMergeDeps>][] = [
   ],
   [
     "changes requested",
-    { prState: async () => ({ labels: [], isDraft: false, approved: false, changesRequested: true }) },
+    { changesRequested: async () => true },
   ],
   [
     "checks lookup throws",
@@ -238,8 +239,8 @@ test("findings are commented once across two ticks and never merged", async () =
   assert.deepEqual(h.state()["1"], { sha: "sha1", clean: false, commented: true, attempts: 1 });
 });
 
-test("clean draft is marked ready before merge", async () => {
-  const h = setup([pr(1, { isDraft: true })]);
+test("clean self-improve draft is marked ready before merge", async () => {
+  const h = setup([pr(1, { isDraft: true, headRefName: "chore/self-improve-dead-code-scan-2026-11-24" })]);
   await masterMergeOnce(h.deps);
   assert.deepEqual(h.calls, ["review", "ready:1", "merge:1:sha1", "merged:1"]);
 });
@@ -291,7 +292,7 @@ const postReviewGateFailures: [string, (blocked: () => boolean) => Partial<Maste
   [
     "changes requested",
     (blocked) => ({
-      prState: async () => ({ labels: [], isDraft: true, approved: false, changesRequested: blocked() }),
+      changesRequested: async () => blocked(),
     }),
   ],
   [
@@ -307,7 +308,7 @@ for (const [name, makeOver] of postReviewGateFailures) {
     let reviewed = false;
     let ticks = 0;
     const blocked = () => reviewed && ticks === 1;
-    const h = setup([pr(1, { isDraft: true })], makeOver(blocked));
+    const h = setup([pr(1, { isDraft: true, headRefName: "chore/self-improve-x" })], makeOver(blocked));
     const review = h.deps.review;
     h.deps.review = async (p) => {
       reviewed = true;
@@ -354,4 +355,40 @@ test("master merge events key on the yimbot PR and carry no pr field", () => {
   assert.deepEqual(findings, { kind: "master_review_findings", key: "yimbot-pr:8", label: "yimbot PR #8", title: "2 findings" });
   assert.equal(masterFindingsEvent(pr(9), ["a"]).title, "1 finding");
   assert.equal("pr" in merged, false);
+});
+
+test("a changes-requested review stops review and merge even with reviewDecision empty", async () => {
+  const h = setup([pr(1)], { changesRequested: async () => true });
+  await masterMergeOnce(h.deps);
+  assert.deepEqual(h.calls, []);
+  assert.ok(h.logs.some((l) => l.includes("changes requested")));
+});
+
+test("a draft outside self-improvement is skipped as work in progress", async () => {
+  const h = setup([pr(1, { isDraft: true })]);
+  await masterMergeOnce(h.deps);
+  assert.deepEqual(h.calls, []);
+  assert.ok(h.logs.some((l) => l.includes("#1 skipped: draft")));
+});
+
+test("a PR that turned draft mid-tick outside self-improvement is not marked ready", async () => {
+  const h = setup([pr(1)], {
+    prState: async () => ({ labels: [], isDraft: true, approved: false, changesRequested: false }),
+  });
+  await masterMergeOnce(h.deps);
+  assert.deepEqual(h.calls, []);
+});
+
+test("findings comment neutralises @ mentions", async () => {
+  const bodies: string[] = [];
+  const h = setup([pr(1)], {
+    comment: async (_n, body) => {
+      bodies.push(body);
+    },
+  });
+  h.setReview('{"clean": false, "findings": ["ping @alice about it"]}');
+  await masterMergeOnce(h.deps);
+  assert.equal(bodies.length, 1);
+  assert.ok(!/@[A-Za-z0-9]/.test(bodies[0]));
+  assert.ok(bodies[0].includes("alice"));
 });

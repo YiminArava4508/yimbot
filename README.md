@@ -30,11 +30,14 @@ turns those on.
 when `AUTO_MASTER_MERGE` is on, reviews open PRs on the yimbot repo and
 squash-merges each one that passes every gate. A PR qualifies only when its author
 is in `MASTER_MERGE_AUTHORS` (defaults to your own GitHub login), CI is green, it
-is mergeable, it has no unresolved threads or changes requested, and a headless
-review of its diff (run with `IMPL_MODEL`) comes back clean. A draft is marked
-ready before the merge. Findings are posted as one PR comment and the PR is left
-open. Master mode needs write access to the yimbot repo; without it, or when a
-lookup fails, the machine runs as a normal one. *(optional; settings:
+is mergeable, it has no unresolved threads or changes-requested reviews, and a
+headless review of its diff (run with `IMPL_MODEL`, with no tools) comes back
+clean. Merges only happen for PRs with passing CI checks on the yimbot repo, so
+the repo needs CI checks configured before anything merges. Only self-improvement
+drafts (`chore/self-improve-*`) are marked ready and merged; any other draft is
+skipped as work in progress. Findings are posted as one PR comment and the PR is
+left open. Master mode needs a clone of `YiminArava4508/yimbot` and write access
+to it; without them, or when a lookup fails, the machine runs as a normal one. *(optional; settings:
 `YIMBOT_MASTER`, off by default; `AUTO_MASTER_MERGE`, off by default and read only
 on the master; `MASTER_MERGE_AUTHORS`, empty by default; review state is kept in
 `master-merge.json` next to the events log)* Needs `gh` installed and authenticated.

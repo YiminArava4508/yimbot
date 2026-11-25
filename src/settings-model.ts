@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { describeLabelFilter, parseLabelFilter } from "./labels.ts";
 import { AGENTS, agentOr, type Agent } from "./agent.ts";
-import type { MasterAccess } from "./master.ts";
+import { isOn, type MasterAccess } from "./master.ts";
 
 // The full set of settings the daemon reads from the environment. The wizard
 // collects these; the daemon reads them back via envOr() at startup.
@@ -294,8 +294,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv): YimbotConfig {
     autoSelfImproveDeadCodeScan: !isOff(or("AUTO_SELF_IMPROVE_DEAD_CODE_SCAN", "true")),
     selfImproveHour: Number(or("SELF_IMPROVE_HOUR", "0")),
     agent: agentOr(or("AGENT", "claude")),
-    yimbotMaster: !isOff(or("YIMBOT_MASTER", "false")),
-    autoMasterMerge: !isOff(or("AUTO_MASTER_MERGE", "false")),
+    yimbotMaster: isOn(or("YIMBOT_MASTER", "false")),
+    autoMasterMerge: isOn(or("AUTO_MASTER_MERGE", "false")),
     masterMergeAuthors: or("MASTER_MERGE_AUTHORS", ""),
   };
 }
@@ -365,7 +365,7 @@ const ROW_SPECS: RowSpec[] = [
   { envKey: "SELF_IMPROVE_HOUR", label: "self-improve hour", editor: "number", category: "System", help: "Local hour (0 to 23) at or after which the day's jobs may start." },
   { envKey: "CODEBASE_PATH", label: "codebase path", editor: "text", category: "System", help: "Git repo that worktrees are cut from. Must exist." },
   { envKey: "YIMBOT_MASTER", label: "master mode", editor: "toggle", category: "Master", help: "Make this machine the master: it also handles yimbot's own PRs." },
-  { envKey: "AUTO_MASTER_MERGE", label: "auto-merge", editor: "toggle", category: "Master", help: "Merge approved, green yimbot PRs from allowed authors on each heartbeat." },
+  { envKey: "AUTO_MASTER_MERGE", label: "auto-merge", editor: "toggle", category: "Master", help: "Merge reviewed, green yimbot PRs from allowed authors on each heartbeat." },
   { envKey: "MASTER_MERGE_AUTHORS", label: "merge authors", editor: "list", category: "Master", help: "Comma-separated GitHub logins whose PRs may auto-merge. Empty means only the gh viewer." },
   { envKey: "MASTER_ACCESS", label: "gh access", editor: "readonly", category: "Master", help: "Your GitHub permission on the yimbot repo. Master settings need write access to it." },
 ];
@@ -392,9 +392,10 @@ function displayValue(envKey: string, value: string): string {
     case "SPLIT_TICKETS":
     case "AUTO_SELF_IMPROVE":
     case "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN":
+      return isOff(value) ? "off" : "on";
     case "YIMBOT_MASTER":
     case "AUTO_MASTER_MERGE":
-      return isOff(value) ? "off" : "on";
+      return isOn(value) ? "on" : "off";
     case "MASTER_MERGE_AUTHORS":
       return value || "(viewer only)";
     case "AC_JUDGE_MODEL":

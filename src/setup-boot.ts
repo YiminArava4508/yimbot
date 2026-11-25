@@ -3,6 +3,7 @@ import blessed from "neo-blessed";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnPty } from "./claude-sessions.ts";
 import { fetchMasterAccess, ghRunner } from "./gh.ts";
+import { YIMBOT_REPO } from "./master.ts";
 import { yimbotRepoRoot } from "./self-improve-host.ts";
 import { fetchTeamLabels, fetchTeamStates, fetchTeams, fetchViewer } from "./linear-api.ts";
 import { configFromEnv, envPath, isConfigured, writeEnvFile, type YimbotConfig } from "./settings-model.ts";
@@ -103,7 +104,7 @@ export function setupDeps(finish: SetupDeps["finish"]): SetupDeps {
     settings: (apiKey) => ({
       ...linearSettingsDeps(() => apiKey),
       loadConfig: () => configFromEnv(process.env),
-      masterAccess: () => fetchMasterAccess(ghRunner(yimbotRepoRoot())),
+      masterAccess: () => fetchMasterAccess(ghRunner(yimbotRepoRoot()), YIMBOT_REPO),
       apply: async () => ({ ok: true }),
     }),
     finish,

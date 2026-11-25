@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NO_MASTER_ACCESS, hasWriteAccess, isOn, masterAuthors, masterMergeEnabled, masterStatus, selfImproveAllowed, type MasterAccess } from "./master.ts";
+import { NO_MASTER_ACCESS, YIMBOT_REPO, hasWriteAccess, isOn, isYimbotRepo, masterAuthors, masterMergeEnabled, masterStatus, selfImproveAllowed, type MasterAccess } from "./master.ts";
 
 const writeAccess: MasterAccess = { login: "me", permission: "WRITE", canEdit: true };
 
@@ -46,4 +46,12 @@ test("masterMergeEnabled needs gh, master, an explicit on flag and a viewer logi
   assert.equal(masterMergeEnabled({ ...base, gh: false }), false);
   assert.equal(masterMergeEnabled({ ...base, master: false }), false);
   assert.equal(masterMergeEnabled({ ...base, login: "" }), false);
+});
+
+test("isYimbotRepo matches only the upstream yimbot repo, ignoring case", () => {
+  assert.equal(YIMBOT_REPO, "YiminArava4508/yimbot");
+  assert.equal(isYimbotRepo({ owner: "YiminArava4508", name: "yimbot" }), true);
+  assert.equal(isYimbotRepo({ owner: "yiminarava4508", name: "YIMBOT" }), true);
+  assert.equal(isYimbotRepo({ owner: "someone", name: "yimbot" }), false);
+  assert.equal(isYimbotRepo(null), false);
 });

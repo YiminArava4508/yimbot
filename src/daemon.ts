@@ -1,7 +1,7 @@
 import { runArchivePrecheck } from "./archive-precheck-runner.ts";
 import { createQueueGate, type QueueGate } from "./queue-overlap.ts";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AC_COMMENT_MARKER, type AC } from "./acceptance.ts";
@@ -14,7 +14,7 @@ import { parseMaxEstimate } from "./claim.ts";
 import { deriveKey, emitEvent, pinEventsLog, prRowKey } from "./events.ts";
 import { codebasePath as requireCodebasePath, envCsvSet, envOr } from "./env.ts";
 import { isOff } from "./settings-model.ts";
-import { NO_MASTER_ACCESS, isOn, masterAuthors, masterMergeEnabled, masterStatus, selfImproveAllowed } from "./master.ts";
+import { NO_MASTER_ACCESS, YIMBOT_REPO, isOn, isYimbotRepo, masterAuthors, masterMergeEnabled, masterStatus, selfImproveAllowed } from "./master.ts";
 import { masterFindingsEvent, masterMergedEvent, type MasterMergeDeps } from "./master-merge.ts";
 import { loadMasterMergeState, saveMasterMergeState } from "./master-merge-state.ts";
 import { yimbotRepoRoot } from "./self-improve-host.ts";
@@ -578,12 +578,20 @@ export async function startDaemon(): Promise<() => void> {
   // get their own gh runner there. Off unless AUTO_SELF_IMPROVE is on and gh works.
   const selfImproveHour = Number(envOr("SELF_IMPROVE_HOUR", "0"));
   const selfRun = ghRunner(yimbotRepoRoot());
-  const masterAccess = prReview ? await fetchMasterAccess(selfRun) : NO_MASTER_ACCESS;
-  const master = masterStatus(isOn(envOr("YIMBOT_MASTER", "false")), masterAccess);
+  // Master access is read from the upstream repo, and only when this checkout is a
+  // clone of it, so a fork never reads its own permission as the master's.
+  const selfSlug = prReview ? await repoSlug(selfRun).catch(() => null) : null;
+  const masterFlag = isOn(envOr("YIMBOT_MASTER", "false"));
+  if (masterFlag && prReview && !isYimbotRepo(selfSlug)) {
+    console.log(`[yimbot] master mode needs ${yimbotRepoRoot()} to be a clone of ${YIMBOT_REPO}`);
+  }
+  const masterAccess = isYimbotRepo(selfSlug) ? await fetchMasterAccess(selfRun, YIMBOT_REPO) : NO_MASTER_ACCESS;
+  const master = masterStatus(masterFlag, masterAccess);
   if (master.reason) console.log(`[yimbot] ${master.reason}`);
   console.log(`[yimbot] ${master.master ? "master" : "not master"}`);
+  const autoSelfImprove = !isOff(envOr("AUTO_SELF_IMPROVE", "false"));
   const selfImprove =
-    prReview && selfImproveAllowed(!isOff(envOr("AUTO_SELF_IMPROVE", "false")), master.master)
+    prReview && selfImproveAllowed(autoSelfImprove, master.master)
       ? {
           repoRoot: yimbotRepoRoot(),
           hour: Number.isInteger(selfImproveHour) && selfImproveHour >= 0 && selfImproveHour <= 23 ? selfImproveHour : 0,
@@ -601,36 +609,34 @@ export async function startDaemon(): Promise<() => void> {
     flag: envOr("AUTO_MASTER_MERGE", "false"),
     login: masterAccess.login,
   });
-  if (masterMergeOn) {
-    try {
-      const selfSlug = await repoSlug(selfRun);
-      const reviewRun = runHeadless(envOr("IMPL_MODEL", "sonnet"), yimbotRepoRoot(), undefined, undefined, withoutApiKey(), {
-        restricted: true,
-      });
-      masterMerge = {
-        deps: {
-          enabled: () => true,
-          authors: masterAuthors(envOr("MASTER_MERGE_AUTHORS", ""), masterAccess.login),
-          listPrs: () => listYimbotPrs(selfRun),
-          checks: (n) => checksInfo(selfRun, n),
-          mergeable: (n) => mergeableInfo(selfRun, n),
-          unresolved: (n) => unresolvedThreadInfo(selfRun, selfSlug, n, masterAccess.login),
-          prState: (n) => prState(selfRun, n),
-          diff: (n) => prDiff(selfRun, n),
-          review: reviewRun,
-          comment: (n, body) => commentOnPr(selfRun, n, body),
-          markReady: (n) => markPrReadyForReview(selfRun, n),
-          merge: (n, headSha) => squashMergePr(selfRun, n, headSha),
-          loadState: loadMasterMergeState,
-          saveState: saveMasterMergeState,
-          onMerged: (pr) => emitEvent(masterMergedEvent(pr)),
-          onFindings: (pr, findings) => emitEvent(masterFindingsEvent(pr, findings)),
-          log: (msg) => console.log(`[master-merge] ${msg}`),
-        },
-      };
-    } catch (err) {
-      console.log(`[yimbot] master merge OFF: yimbot repo unresolved (${err})`);
-    }
+  if (masterMergeOn && selfSlug) {
+    // An empty cwd keeps the owner's CLAUDE.md and project memory out of a review whose findings are public.
+    const reviewDir = mkdtempSync(join(tmpdir(), "yimbot-master-review-"));
+    const reviewRun = runHeadless(envOr("IMPL_MODEL", "sonnet"), reviewDir, undefined, undefined, withoutApiKey(), {
+      restricted: true,
+    });
+    masterMerge = {
+      deps: {
+        enabled: () => true,
+        authors: masterAuthors(envOr("MASTER_MERGE_AUTHORS", ""), masterAccess.login),
+        listPrs: () => listYimbotPrs(selfRun),
+        checks: (n) => checksInfo(selfRun, n),
+        mergeable: (n) => mergeableInfo(selfRun, n),
+        unresolved: (n) => unresolvedThreadInfo(selfRun, selfSlug, n, masterAccess.login),
+        prState: (n) => prState(selfRun, n),
+        changesRequested: async (n) => (await humanChangesRequested(selfRun, n, new Set())).requested,
+        diff: (n) => prDiff(selfRun, n),
+        review: reviewRun,
+        comment: (n, body) => commentOnPr(selfRun, n, body),
+        markReady: (n) => markPrReadyForReview(selfRun, n),
+        merge: (n, headSha) => squashMergePr(selfRun, YIMBOT_REPO, n, headSha),
+        loadState: loadMasterMergeState,
+        saveState: saveMasterMergeState,
+        onMerged: (pr) => emitEvent(masterMergedEvent(pr)),
+        onFindings: (pr, findings) => emitEvent(masterFindingsEvent(pr, findings)),
+        log: (msg) => console.log(`[master-merge] ${msg}`),
+      },
+    };
   }
   // A blocker stops blocking once it reaches the merge state: Done is too late,
   // since that column means released. The review state counts too (it is past
@@ -657,11 +663,13 @@ export async function startDaemon(): Promise<() => void> {
       ? `[yimbot] refine step ON: sizing unestimated Backlog/Todo tickets for ${refineAssigneeIds.length} user(s), up to ${maxRefining} at a time (toggle with 'R' on the board)`
       : "[yimbot] refine step OFF (toggle with 'R' on the board)",
   );
-  console.log(
-    selfImprove
-      ? `[yimbot] self-improve ON: draft PRs on ${yimbotRepoRoot()}, jobs start at or after ${selfImprove.hour}:00`
-      : "[yimbot] self-improve OFF",
-  );
+  if (selfImprove) {
+    console.log(`[yimbot] self-improve ON: draft PRs on ${yimbotRepoRoot()}, jobs start at or after ${selfImprove.hour}:00`);
+  } else if (prReview && autoSelfImprove && !master.master) {
+    console.log("[yimbot] self-improve OFF: AUTO_SELF_IMPROVE is on but it needs YIMBOT_MASTER on a master machine");
+  } else {
+    console.log("[yimbot] self-improve OFF");
+  }
   console.log(
     masterMerge
       ? `[yimbot] master merge ON: reviewing and merging PRs by [${[...masterMerge.deps.authors].join(", ")}] on ${yimbotRepoRoot()}`

@@ -1,4 +1,4 @@
-import type { ChecksInfo, MergeableInfo, PrState, UnresolvedInfo, YimbotPr } from "./gh.ts";
+import { SELF_IMPROVE_BRANCH_PREFIX, type ChecksInfo, type MergeableInfo, type PrState, type UnresolvedInfo, type YimbotPr } from "./gh.ts";
 import type { YimbotEvent } from "./events.ts";
 import type { MasterMergeEntry } from "./master-merge-state.ts";
 import { buildMasterReviewPrompt, MAX_DIFF_CHARS, parseMasterVerdict } from "./master-review.ts";
@@ -11,6 +11,7 @@ export type MasterMergeDeps = {
   mergeable: (n: number) => Promise<MergeableInfo>;
   unresolved: (n: number) => Promise<UnresolvedInfo>;
   prState: (n: number) => Promise<PrState>;
+  changesRequested: (n: number) => Promise<boolean>;
   diff: (n: number) => Promise<string>;
   review: (prompt: string) => Promise<string>;
   comment: (n: number, body: string) => Promise<void>;
@@ -46,16 +47,30 @@ async function passGates(pr: YimbotPr, deps: MasterMergeDeps): Promise<PrState |
     deps.log(`master: #${pr.number} skipped: ${unresolved.count} unresolved threads`);
     return null;
   }
-  const prState = await deps.prState(pr.number);
-  if (prState.changesRequested) {
+  if (await deps.changesRequested(pr.number)) {
     deps.log(`master: #${pr.number} skipped: changes requested`);
+    return null;
+  }
+  const prState = await deps.prState(pr.number);
+  if (prState.isDraft && !mayMarkReady(pr)) {
+    deps.log(`master: #${pr.number} skipped: draft, work in progress`);
     return null;
   }
   return prState;
 }
 
+// Only self-improvement drafts are the step's to mark ready; any other draft is still being worked on.
+function mayMarkReady(pr: YimbotPr): boolean {
+  return pr.headRefName.startsWith(SELF_IMPROVE_BRANCH_PREFIX);
+}
+
+// A zero-width space after each @ keeps a finding from mentioning anyone.
+function noMentions(text: string): string {
+  return text.replaceAll("@", "@\u200b");
+}
+
 function findingsComment(findings: string[]): string {
-  return ["Review found problems, not merging:", "", ...findings.map((f) => `- ${f}`)].join("\n");
+  return ["Review found problems, not merging:", "", ...findings.map((f) => `- ${noMentions(f)}`)].join("\n");
 }
 
 // Records the new entry in state before any callback runs, so a throwing callback cannot cause a re-review.
@@ -109,6 +124,10 @@ async function processPr(pr: YimbotPr, state: State, deps: MasterMergeDeps): Pro
   const key = String(pr.number);
   const cached = state[key]?.sha === pr.headSha ? state[key] : undefined;
   if (cached && !cached.clean && cached.commented) return false;
+  if (pr.isDraft && !mayMarkReady(pr)) {
+    deps.log(`master: #${pr.number} skipped: draft, work in progress`);
+    return false;
+  }
   const needsReview = !cached?.clean;
   if (needsReview && (cached?.attempts ?? 0) >= MAX_ATTEMPTS) {
     deps.log(`master: #${pr.number} skipped: review failed ${MAX_ATTEMPTS} times for ${pr.headSha}`);

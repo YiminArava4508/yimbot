@@ -7,6 +7,7 @@ import { codebasePath, envOr } from "./src/env.ts";
 import { deriveKey, emitEvent, emitQueuedToMerge } from "./src/events.ts";
 import { worktreeSyncStatus } from "./src/worktree-sync.ts";
 import { applyReadyLabel, fetchMasterAccess, ghRunner, prDiff, prHeadSha, prReviewMeta } from "./src/gh.ts";
+import { YIMBOT_REPO } from "./src/master.ts";
 import { readMode, toggleMode } from "./src/mode.ts";
 import { heldMergedKeys } from "./src/held-merged.ts";
 import { openPrKeys } from "./src/open-prs.ts";
@@ -109,7 +110,7 @@ if (process.stdout.isTTY) {
   const settings: SettingsDeps = {
     loadConfig: () => configFromEnv(process.env),
     ...linearSettingsDeps(apiKey),
-    masterAccess: () => fetchMasterAccess(ghRunner(yimbotRepoRoot())),
+    masterAccess: () => fetchMasterAccess(ghRunner(yimbotRepoRoot()), YIMBOT_REPO),
     apply: async (next, prev) => {
       const result = await applySettings(next, prev, {
         readEnv: () => (existsSync(envPath) ? readFileSync(envPath, "utf8") : null),

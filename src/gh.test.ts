@@ -849,15 +849,25 @@ function accessRunner(permission: string): GhRunner {
 }
 
 test("fetchMasterAccess allows WRITE and blocks READ", async () => {
-  assert.deepEqual(await fetchMasterAccess(accessRunner("WRITE")), { login: "yimbot", permission: "WRITE", canEdit: true });
-  assert.deepEqual(await fetchMasterAccess(accessRunner("READ")), { login: "yimbot", permission: "READ", canEdit: false });
+  assert.deepEqual(await fetchMasterAccess(accessRunner("WRITE"), "o/yimbot"), { login: "yimbot", permission: "WRITE", canEdit: true });
+  assert.deepEqual(await fetchMasterAccess(accessRunner("READ"), "o/yimbot"), { login: "yimbot", permission: "READ", canEdit: false });
+});
+
+test("fetchMasterAccess reads the permission of the named repo, not the cwd's", async () => {
+  const calls: string[][] = [];
+  const inner = accessRunner("WRITE");
+  await fetchMasterAccess(async (args) => {
+    calls.push(args);
+    return inner(args);
+  }, "o/yimbot");
+  assert.deepEqual(calls.find((a) => a[0] === "repo"), ["repo", "view", "o/yimbot", "--json", "viewerPermission"]);
 });
 
 test("fetchMasterAccess fails closed when a lookup rejects", async () => {
   const run: GhRunner = async () => {
     throw new Error("gh down");
   };
-  assert.deepEqual(await fetchMasterAccess(run), NO_MASTER_ACCESS);
+  assert.deepEqual(await fetchMasterAccess(run, "o/yimbot"), NO_MASTER_ACCESS);
 });
 
 test("parseYimbotPrs maps fields, lowercases author, tolerates a null author", () => {
@@ -882,10 +892,10 @@ test("listYimbotPrs asks gh for open PRs with the needed fields", async () => {
 
 test("squashMergePr and commentOnPr pass exact gh args", async () => {
   const { run, calls } = capturingRunner([]);
-  await squashMergePr(run, 7, "abc");
+  await squashMergePr(run, "o/yimbot", 7, "abc");
   await commentOnPr(run, 7, "hello");
   assert.deepEqual(calls, [
-    ["pr", "merge", "7", "--squash", "--delete-branch", "--match-head-commit", "abc"],
+    ["pr", "merge", "7", "--repo", "o/yimbot", "--squash", "--delete-branch", "--match-head-commit", "abc"],
     ["pr", "comment", "7", "--body", "hello"],
   ]);
 });

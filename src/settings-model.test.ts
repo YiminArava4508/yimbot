@@ -535,3 +535,12 @@ test("master rows are readonly without write access", () => {
   for (const r of draft) assert.equal(r.editor, "readonly");
   assert.equal(draft.find((r) => r.envKey === "MASTER_MERGE_AUTHORS")!.display, "(viewer only)");
 });
+
+test("draftRows keeps the master editors with write access", () => {
+  const access = { login: "me", permission: "WRITE", canEdit: true };
+  const rows = rowsInCategory(draftRows(newDraft(sample), "me", access), "Master");
+  const editors = Object.fromEntries(rows.map((r) => [r.envKey, r.editor]));
+  assert.equal(editors.YIMBOT_MASTER, "toggle");
+  assert.equal(editors.AUTO_MASTER_MERGE, "toggle");
+  assert.equal(editors.MASTER_MERGE_AUTHORS, "list");
+});

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { NO_MASTER_ACCESS } from "./master.ts";
 import { test } from "node:test";
 import {
   parseBlockReason,
@@ -51,6 +52,8 @@ import {
   parseHumanChangesRequested,
   parseUnresolvedInfo,
   parseViewerLogin,
+  parseViewerPermission,
+  fetchMasterAccess,
   unresolvedThreadInfo,
   viewerLogin,
 } from "./gh.ts";
@@ -827,4 +830,28 @@ test("self-improvement lookups reject when gh fails", async () => {
   };
   await assert.rejects(prNumberForBranch(run, "x"), /gh down/);
   await assert.rejects(countOpenSelfImprovePrs(run), /gh down/);
+});
+
+test("parseViewerPermission reads viewerPermission and defaults to empty", () => {
+  assert.equal(parseViewerPermission('{"viewerPermission":"WRITE"}'), "WRITE");
+  assert.equal(parseViewerPermission("{}"), "");
+});
+
+function accessRunner(permission: string): GhRunner {
+  return async (args) => {
+    if (args[0] === "repo") return JSON.stringify({ viewerPermission: permission });
+    return JSON.stringify({ data: { viewer: { login: "yimbot" } } });
+  };
+}
+
+test("fetchMasterAccess allows WRITE and blocks READ", async () => {
+  assert.deepEqual(await fetchMasterAccess(accessRunner("WRITE")), { login: "yimbot", permission: "WRITE", canEdit: true });
+  assert.deepEqual(await fetchMasterAccess(accessRunner("READ")), { login: "yimbot", permission: "READ", canEdit: false });
+});
+
+test("fetchMasterAccess fails closed when a lookup rejects", async () => {
+  const run: GhRunner = async () => {
+    throw new Error("gh down");
+  };
+  assert.deepEqual(await fetchMasterAccess(run), NO_MASTER_ACCESS);
 });

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { hasWriteAccess, NO_MASTER_ACCESS, type MasterAccess } from "./master.ts";
 import { observeReach } from "./reach.ts";
 
 const execFileAsync = promisify(execFile);
@@ -538,6 +539,20 @@ export function parseViewerLogin(json: string): string {
 // from the re-trigger recency signal.
 export async function viewerLogin(run: GhRunner): Promise<string> {
   return parseViewerLogin(await run(["api", "graphql", "-f", "query=query{viewer{login}}"]));
+}
+
+export function parseViewerPermission(json: string): string {
+  return (JSON.parse(json) as { viewerPermission?: string }).viewerPermission ?? "";
+}
+
+export async function fetchMasterAccess(run: GhRunner): Promise<MasterAccess> {
+  try {
+    const [permissionJson, login] = await Promise.all([run(["repo", "view", "--json", "viewerPermission"]), viewerLogin(run)]);
+    const permission = parseViewerPermission(permissionJson);
+    return { login, permission, canEdit: hasWriteAccess(permission) };
+  } catch {
+    return NO_MASTER_ACCESS;
+  }
 }
 
 // The PR's raw unified diff, for the review view. Returned verbatim;

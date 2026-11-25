@@ -10,7 +10,7 @@ import type { YimbotConfig } from "./settings-model.ts";
 import { PREREQUISITES, fixCommandFor, type CheckResult } from "./setup-core.ts";
 import { tempDir } from "./test-temp.ts";
 import type { SettingsDeps } from "./tui-settings.ts";
-import { configureError, linearConfigError, linkLines, openSetup, tooSmallMessage, type SetupDeps } from "./tui-setup.ts";
+import { configureError, linearConfigError, linkLines, openSetup, summaryLines, tooSmallMessage, type SetupDeps } from "./tui-setup.ts";
 
 const KEY = "lin_api_SECRETKEY0123456789";
 
@@ -624,4 +624,10 @@ test("finishing detaches every widget the wizard added", async () => {
   assert.ok(h.screen.children.length < before);
   assert.equal(h.screen.children.length, 0);
   h.screen.destroy();
+});
+
+test("summaryLines hides the master rows", () => {
+  const lines = summaryLines(baseConfig, "me");
+  assert.equal(lines.some((l) => /master mode|auto-merge|merge authors|gh access/i.test(l)), false);
+  assert.equal(lines.some((l) => l.includes("wip cap")), true);
 });

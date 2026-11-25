@@ -17,6 +17,7 @@ import {
   type SettingRow,
   type YimbotConfig,
 } from "./settings-model.ts";
+import { NO_MASTER_ACCESS, type MasterAccess } from "./master.ts";
 import type { ApplyResult } from "./settings-apply.ts";
 
 const LABEL_WIDTH = 20;
@@ -103,6 +104,7 @@ export type SettingsDeps = {
   states: (teamName: string) => Promise<string[]>;
   labels: (teamName: string) => Promise<string[]>;
   apply: (next: YimbotConfig, prev: YimbotConfig) => Promise<ApplyResult>;
+  masterAccess?: () => Promise<MasterAccess>;
 };
 
 const TEAM_STATE_KEYS = ["DEPLOY_STATE_NAME", "TODO_STATE_NAME", "REVIEW_STATE_NAME"];
@@ -152,6 +154,7 @@ export function openSettings(
   let base = deps.loadConfig();
   let draft: Draft = newDraft(base);
   let assigneeName = "resolving...";
+  let access: MasterAccess = NO_MASTER_ACCESS;
   let editing = false;
   let category = 0;
   let pane: "sidebar" | "detail" = "detail";
@@ -178,7 +181,7 @@ export function openSettings(
   let painting = false;
 
   function visibleRows(): SettingRow[] {
-    return rowsInCategory(draftRows(draft, assigneeName), SETTING_CATEGORIES[category]);
+    return rowsInCategory(draftRows(draft, assigneeName, access), SETTING_CATEGORIES[category]);
   }
 
   function paintHelp(): void {
@@ -231,7 +234,7 @@ export function openSettings(
   }
 
   function currentTeamName(): string {
-    const row = draftRows(draft, assigneeName).find((r) => r.envKey === "LINEAR_TEAM_NAME");
+    const row = draftRows(draft, assigneeName, access).find((r) => r.envKey === "LINEAR_TEAM_NAME");
     return row ? row.value : base.teamName;
   }
 
@@ -482,7 +485,7 @@ export function openSettings(
     const errors = validateDraft(draft);
     const firstError = Object.keys(errors)[0];
     if (firstError) {
-      const rows = draftRows(draft, assigneeName);
+      const rows = draftRows(draft, assigneeName, access);
       const bad = rows.find((r) => r.envKey === firstError);
       if (bad) {
         category = SETTING_CATEGORIES.indexOf(bad.category);
@@ -586,6 +589,18 @@ export function openSettings(
 
   focusPane();
   paint();
+
+  (deps.masterAccess?.() ?? Promise.resolve(NO_MASTER_ACCESS))
+    .catch(() => NO_MASTER_ACCESS)
+    .then((loaded) => {
+      if (closed) return;
+      access = loaded;
+      painting = true;
+      list.setItems(rowsToLines(visibleRows(), dirtyKeys(draft), validateDraft(draft)));
+      painting = false;
+      paintHelp();
+      s.render();
+    });
 
   deps
     .assignee()

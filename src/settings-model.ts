@@ -392,7 +392,6 @@ function displayValue(envKey: string, value: string): string {
     case "SPLIT_TICKETS":
     case "AUTO_SELF_IMPROVE":
     case "AUTO_SELF_IMPROVE_DEAD_CODE_SCAN":
-      return isOff(value) ? "off" : "on";
     case "YIMBOT_MASTER":
     case "AUTO_MASTER_MERGE":
       return isOff(value) ? "off" : "on";

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import blessed from "neo-blessed";
 import { categoryLines, openSettings, rowsToLines, settingsFooterHint, settingsLayout, type SettingsDeps } from "./tui-settings.ts";
 import type { SettingRow, YimbotConfig } from "./settings-model.ts";
+import type { MasterAccess } from "./master.ts";
 import type { ApplyResult } from "./settings-apply.ts";
 
 const rows: SettingRow[] = [
@@ -780,4 +781,42 @@ test("openSettings: re-picking the same team keeps the state edits", async () =>
   list = await pickRemote(screen, "team", "Engineering");
   assert.match(rowText(list, "deploy state"), /Todo \*/);
   screen.destroy();
+});
+
+const writeAccess: MasterAccess = { login: "me", permission: "WRITE", canEdit: true };
+const readAccess: MasterAccess = { login: "me", permission: "READ", canEdit: false };
+
+async function pressMasterToggle(access: MasterAccess) {
+  const screen = testScreen();
+  let calls = 0;
+  openSettings(
+    screen,
+    testDeps({
+      masterAccess: () => {
+        calls += 1;
+        return Promise.resolve(access);
+      },
+    }),
+    () => {},
+  );
+  await new Promise((r) => setImmediate(r));
+  showCategory(screen, "Master");
+  const { detail, sidebar } = panes(screen);
+  detail.select(detail.ritems.findIndex((l: string) => l.startsWith("master mode")));
+  press(screen, "enter");
+  const dirty = sidebar.ritems.find((l: string) => l.includes("Master"));
+  screen.destroy();
+  return { calls, dirty };
+}
+
+test("openSettings: master toggle edits when the viewer has write access", async () => {
+  const { calls, dirty } = await pressMasterToggle(writeAccess);
+  assert.equal(calls, 1);
+  assert.match(dirty, /1\*/);
+});
+
+test("openSettings: master toggle stays clean without write access", async () => {
+  const { calls, dirty } = await pressMasterToggle(readAccess);
+  assert.equal(calls, 1);
+  assert.equal(dirty.includes("*"), false);
 });
